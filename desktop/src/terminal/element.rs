@@ -255,6 +255,8 @@ impl Element for TerminalElement {
         let origin = point(snap(bounds.origin.x), snap(bounds.origin.y));
 
         let mut guard = self.state.borrow_mut();
+        guard.origin = origin;
+        let scroll = guard.scroll;
         let PaneState {
             cache,
             palette,
@@ -264,18 +266,17 @@ impl Element for TerminalElement {
         let cols = pre.cols.min(cache.cols);
         let (skip, rows, cursor_row) = bottom(cache.rows, pre.rows, cache.cursor.row);
         let cache = &*cache;
+        // Scrolled back, the rows on show start `scroll` rows above the live screen's.
+        let first = (cache.top_abs + u64::from(skip)).saturating_sub(scroll);
 
         // Batch every visible row first so backgrounds and text can be painted as two groups.
         bgs.clear();
         let mut texts: Vec<(u16, TextRun<'_>)> = Vec::with_capacity(512);
         let (mut row_bgs, mut row_texts) = (Vec::with_capacity(64), Vec::with_capacity(64));
-        for (r, row) in cache
-            .visible()
-            .skip(usize::from(skip))
-            .take(usize::from(rows))
-            .enumerate()
-        {
-            let Some(row) = row else { continue };
+        for r in 0..rows {
+            let Some(row) = cache.row(first + u64::from(r)) else {
+                continue;
+            };
             row_bgs.clear();
             row_texts.clear();
             batch_row(
@@ -285,7 +286,6 @@ impl Element for TerminalElement {
                 &mut row_bgs,
                 &mut row_texts,
             );
-            let r = r as u16;
             bgs.extend(row_bgs.iter().map(|b| (r, *b)));
             texts.extend(row_texts.iter().map(|t| (r, *t)));
         }
@@ -324,8 +324,9 @@ impl Element for TerminalElement {
             }
         });
 
+        // ponytail: the cursor is hidden while scrolled back; upgrade: draw it `scroll` rows lower.
         let c = cache.cursor;
-        if let Some(row) = cursor_row.filter(|_| c.visible && c.col < cols) {
+        if let Some(row) = cursor_row.filter(|_| c.visible && c.col < cols && scroll == 0) {
             let origin = origin + point(cell_w * f32::from(c.col), line_h * f32::from(row));
             let cell = Bounds::new(origin, size(cell_w, line_h));
             let color = Hsla::from(NEON);
