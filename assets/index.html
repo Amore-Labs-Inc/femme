@@ -617,14 +617,23 @@
   $('text').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && matchMedia('(pointer: fine)').matches) { e.preventDefault(); $('compose').requestSubmit(); } };
   for (const id of ['cam', 'pho', 'file']) $(id).onchange = () => { files.push(...$(id).files); $(id).value = ''; drawCompose(); };
 
-  // Attachments first, their paths pasted in (Claude Code reads an image path as the image), then the
-  // message, handed to the agent as one submitted prompt; a shell gets a line and Enter.
+  // Attachments go as their uploaded paths (Claude Code reads an image path as the image): with the
+  // message in one prompt for an agent, typed in for a shell. A refusal (the agent waits for an
+  // answer, a headless session's input is not a keyboard) is an error the user sees, never a drop.
   async function deliver(pane, text, atts, toAgent) {
-    const type = data => api(`/api/terminals/${pane}/input`, { method: 'POST', body: JSON.stringify({ data }) });
-    for (const f of atts) { const p = await uploadOne(f); await type(toAgent ? `\x1b[200~${p}\x1b[201~` : p + ' '); }
-    if (!text) return;
-    if (toAgent && (await api(`/api/terminals/${pane}/prompt`, { method: 'POST', body: JSON.stringify({ text }) })).ok) return;
-    await type(toAgent ? `\x1b[200~${text}\x1b[201~\r` : text + '\r');  // the agent was busy: queued as its next message
+    const paths = [];
+    for (const f of atts) paths.push(await uploadOne(f));
+    const send = async (what, body) => {
+      const r = await api(`/api/terminals/${pane}/${what}`, { method: 'POST', body: JSON.stringify(body) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `${what}: ${r.status}`);
+    };
+    if (toAgent) {
+      const msg = [...paths, text].filter(Boolean).join('\n');
+      if (msg) await send('prompt', { text: msg });  // a busy agent queues it; 409 while it waits for an answer
+      return;
+    }
+    for (const p of paths) await send('input', { data: p + ' ' });
+    if (text) await send('input', { data: text + '\r' });
   }
   $('compose').onsubmit = async e => {
     e.preventDefault();
