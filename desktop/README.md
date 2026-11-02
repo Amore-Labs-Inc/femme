@@ -6,9 +6,10 @@ An all-Rust desktop shell for FEMME on [gpui](https://crates.io/crates/gpui-pre)
 (desk pink with a dot grid, paper cards, 1.2px ink rules, black VT323 title bars, hard 3px shadows).
 It exists to measure one thing: whether frame time stays under budget (p99 <= 10 ms on a 120 Hz
 display, <= 16 ms on 60 Hz) while every terminal repaints at 60 Hz and the transcript streams.
-No networking: the terminals are synthetic holders (`src/terminal/synth.rs`) that speak the real wire
-protocol (frames up, `Open`/`Ack`/`Resize` down) and the client cache is the real
-`femme_term::client::RowCache`.
+By default there is no networking: the terminals are synthetic holders (`src/terminal/synth.rs`) that
+speak the real wire protocol (frames up, `Open`/`Ack`/`Resize` down) and the client cache is the real
+`femme_term::client::RowCache`. Given `--daemon`/`--ssh` (see "Talking to a daemon") the same panes
+show the real sessions of a `femmed` through the `femme-client` crate.
 
 ## Build and run
 
@@ -38,7 +39,53 @@ cargo run --release --features bench -- --bench 20 --target-ms 10 --panes 5 --mo
 
 Keys: `ctrl-k` palette (placeholder, `escape` closes), `ctrl-j` drawer, `ctrl-b` sidebar,
 `ctrl-alt-b` right panel (`cmd` instead of `ctrl` on macOS), `F6` focus cycle sidebar, transcript,
-composer, drawer. Transcript: PageUp / PageDown / End.
+composer, drawer. Transcript: PageUp / PageDown / End. These chords belong to the app even when a
+terminal has the keyboard (the shell never sees `ctrl-k`, `ctrl-j`, `ctrl-b`); every other key goes to
+the terminal.
+
+## Talking to a daemon
+
+With a daemon the sidebar lists its real sessions, the drawer has a tab per pane and the panes are live
+shells. The transcript, right panel, composer, lanes and accounts stay mock. No synthetic panes are
+created (`--panes`/`--mode` only drive the benchmark; `--bench` refuses to run with a daemon).
+
+```sh
+femme-desktop --show-spki --ssh myvps          # prints this device's key and the line to run on the box:
+#   ssh myvps femmed enroll --name <this host> --spki <64 hex>   (prints fingerprint=<hex> quic_port=<n> ...)
+femme-desktop --daemon 203.0.113.7:7788 --fingerprint <hex from enroll> --ssh myvps
+```
+
+| Flag | Env / `~/.config/femme/desktop.env` | Meaning |
+|---|---|---|
+| `--daemon ADDR:PORT` | `FEMME_DAEMON` | The daemon's QUIC address (resolved once at start). Needs a fingerprint. |
+| `--fingerprint HEX64` | `FEMME_FINGERPRINT` | SHA-256 of the daemon's certificate, what `femmed enroll` prints. |
+| `--ssh HOST` | `FEMME_SSH` | ssh alias of the box: the fallback (`ssh -T HOST femmed proxy`, BatchMode, so keys or an agent) and the host the enroll hint names. Alone it runs on ssh only. |
+| `--identity DIR` | | This device's certificate and key, default `~/.config/femme/device` (created mode 0700). |
+| `--show-spki` | | Print the device's SPKI hash and the exact enroll line, exit 0. Works before there is any daemon. |
+
+Flags win over the environment, which wins over the file (`KEY=value` lines, `#` comments, one pair of
+quotes dropped, no `export`). Without `--daemon` and `--ssh` (or their keys) the app runs synthetic.
+
+- **Nav bar** shows the link: `quic 23 ms`, `ssh`, `connecting…`, `offline: <reason>`. When QUIC
+  refused this device while ssh worked it adds the enroll line to run on the box; a failed request
+  (new session, close) is appended to it.
+- **Sidebar**: live sessions, newest first, dot = status (working green, blocked/asks yellow, idle or
+  starting grey, interrupted/paused/crashed/failed red), title = name, else label, else the last
+  directory component, then agent and directory. The list scrolls; a click shows the session's first
+  pane (and opens the drawer).
+- **Drawer**: one tab per pane of a live session (label: the program's terminal title, else the pane
+  title, else `<session> · <no>`), `+` starts a shell session in the directory of the one on show,
+  `close` closes the session when the tab is its only pane, else the pane. Only the tab on show is
+  drawn; terminals are attached at start for up to 8 panes, else when their tab opens.
+- **Terminals**: keys (`femme_proto::term::Key`), paste (`ctrl-shift-v`, `cmd-v`), the wheel (to the program
+  when it reports the mouse or is on the alternate screen, else it scrolls the holder's scrollback and
+  any new output snaps back), resize, and focus in/out (for programs that ask). A holder that was
+  restarted is taken as a new screen; a frame that does not apply re-opens the stream.
+- The client reconnects by itself (QUIC, else ssh), terminals pick up where they were.
+
+Tested on a Linux VPS with no GPU: Xvfb + lavapipe (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`),
+a scratch `femmed` (own `FEMME_STATE`, `XDG_RUNTIME_DIR`, `QUIC_PORT`, `FEMME_HOLDER_DIRECT=1`) and input
+injected with XTEST.
 
 Environment:
 
@@ -116,15 +163,19 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | File | What |
 |---|---|
 | `src/main.rs` | CLI, mimalloc, calls `run`. |
-| `src/lib.rs` | Builds the 2-worker tokio side runtime, boots gpui, installs theme, keys, window. |
-| `src/app.rs` | The shell: nav bar, three resizable columns over a bottom terminal drawer (`--full-height`: the drawer alone), palette placeholder, key bindings, F6 focus cycle, bench driver (`bench` feature). |
+| `src/lib.rs` | Builds the 2-worker tokio side runtime (time and IO), starts the daemon's client on it when asked, boots gpui, installs theme, keys, window. |
+| `src/connect.rs` | `--daemon`/`--fingerprint`/`--ssh`/`--identity` and their env and `desktop.env` keys, the device identity (dir 0700), `--show-spki`. |
+| `src/net.rs` | The daemon's state as `Model` (link, sessions, panes from `Changes{Global}`), `Net` (drains `Client::events`, runs requests), tab labels and the status line. |
+| `src/app.rs` | The shell: nav bar, three resizable columns over a bottom terminal drawer (`--full-height`: the drawer alone), palette placeholder, key bindings, F6 focus cycle, the live tabs, bench driver (`bench` feature). |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
 | `src/ui.rs` | `win`, `tb`, `card`, `dialog`, `button`, `st` pill, `DotGrid` desk. |
-| `src/panels.rs` | Sidebar (lanes, sessions, accounts), right panel tabs, composer, palette dialog. |
+| `src/panels.rs` | Sidebar (lanes, sessions: mock or the daemon's, accounts), right panel tabs, composer, palette dialog. |
 | `src/terminal/runs.rs` | Pure: `RowPatch` to background runs and same-style text runs, palette resolve. |
 | `src/terminal/element.rs` | `TerminalElement`: batches every row, paints all backgrounds then all text (shaped every frame), keeps the bottom rows and the cursor when the pane is shorter than the grid. |
-| `src/terminal/pane.rs` | `TerminalPane` view: owns a `femme_term::client::RowCache`, applies and acks the frames that arrived when it is drawn, re-opens the stream when one does not apply, requests resizes; side-runtime source plumbing. |
+| `src/terminal/pane.rs` | `TerminalPane` view: owns a `femme_term::client::RowCache`, applies and acks the frames that arrived when it is drawn, re-opens the stream when one does not apply (resets the cache when the holder's epoch changed), takes keys, paste, the wheel (scrollback, `GetRows`) and focus, requests resizes; side-runtime source plumbing. |
+| `src/terminal/bridge.rs` | The pump between a pane and the client's `Term` (acks, resync re-opens, refused input counted), so a daemon pane looks like a synthetic one. |
+| `src/terminal/input.rs` | Pure: gpui keystroke to `femme_proto::term::Key`, paste chord, wheel steps, pointer to cell. |
 | `src/terminal/synth.rs` | Synthetic holders: `Holder` speaks the wire protocol (silent until `Open`, at most 8 unacked frames, merges while blocked) over `Fire` (60 Hz full redraw), `ShellScroll` (one new line per frame) and its `cat` mode (a screenful of new text per frame). |
 | `src/transcript/model.rs` | Row types, 50k fake rows, bursty word stream. |
 | `src/transcript/pacer.rs` | Token pacer: bursts in, 12-20 words/s out. |
@@ -285,8 +336,12 @@ terminal element paints all backgrounds in one layer and all glyphs (`paint_glyp
 
 ## Known gaps
 
-- Terminal panes are display only: no keys, no mouse, no selection, no scrollback browsing (the cache
-  holds whatever history the synthetic holder keeps, 10 000 rows); the sources are synthetic.
+- Terminal panes have no selection or copy, send no mouse press or motion (only the wheel), ignore the bell, and
+  hide the cursor while scrolled back. `femme-proto` has no `KeyCode` for Menu, PrintScreen, Pause or ScrollLock, so those are
+  dropped (a TODO in `terminal/input.rs`), and `ctrl+shift+c` (copy) is not sent.
+- With a daemon only the first pane is chosen by a sidebar click and there is no way to open a second pane
+  of a session from the UI (`PaneOpen`); the drawer draws one tab at a time.
+- The lanes, accounts, transcript, composer and right panel are mock even with a daemon.
 - Block and box-drawing glyphs come from the font and can seam by a pixel; double/dotted/dashed underlines draw as single lines;
   combining marks on a base char drift (`force_width` is per glyph).
 - The composer input is a toy (append/backspace), transcript bodies are plain text, the palette is a placeholder.
