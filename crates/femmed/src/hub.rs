@@ -1,16 +1,21 @@
 //! Live state fan-out to connected clients (plan §6 "State sync"). Rows committed to the store are
 //! `publish`ed here; subscribed clients get them as `S2C::Changes` per scope with t3code's rhythm:
 //! the first change goes out at once, then changes are coalesced for 50 ms keeping the latest row
-//! per entity. Streaming text (`S2C::Delta`) is batched for 16 ms per item. A client whose channel
-//! is full is marked lagged and, once it drains, re-fetched from the rev it last got (no replay log).
+//! per entity. Streaming text (`S2C::Delta`) is batched for 16 ms per item.
 //!
-//! Subscribe registers for live rows *before* fetching the backlog, so nothing is lost in between;
-//! a row may then arrive twice (backlog + live) and the client keeps the higher rev — harmless.
+//! A subscription starts *lagged*: while a catch-up reads the store (the backlog from the client's
+//! cursor, sent in messages of about [`CHUNK_BYTES`]) live rows are not sent to it, and a publish
+//! skipped that way marks it *missed*, so the catch-up looks again before it lets go. It clears
+//! `lagged` under the lock that finds nothing missed: a row committed at any moment is in a catch-up
+//! or goes out live, and nothing goes out ahead of the backlog. A client whose channel is full is
+//! lagged the same way and re-fetched from the rev it last got (no replay log). A row may arrive
+//! twice (a catch-up and the publish of the same commit): the client keeps the higher rev.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use femme_proto::codec;
 use femme_proto::rpc::{Scope, S2C};
 use femme_proto::state::{Entity, Row};
 use femme_proto::Sid;
@@ -18,8 +23,9 @@ use tokio::sync::mpsc;
 
 pub const COALESCE: Duration = Duration::from_millis(50);
 pub const DELTA_COALESCE: Duration = Duration::from_millis(16);
-/// Rows per `Changes` message when sending a backlog (≈ keeps each message well under 1 MiB).
-pub const BACKLOG_CHUNK: usize = 256;
+/// Wire size (postcard) of the rows in one backlog or resync message: plan §6's "≤ 1 MiB inline". A
+/// row is never split, so one bigger than this travels alone.
+pub const CHUNK_BYTES: usize = 1 << 20;
 
 /// What the store returns for "rows of `scope` after `rev`".
 pub struct Backlog {
@@ -35,7 +41,25 @@ pub type ClientId = u64;
 
 struct Sub {
     rev_sent: u64,
+    /// Which `subscribe` made it: a catch-up that finds another number (the client unsubscribed and
+    /// subscribed again) is stale and stops.
+    gen: u64,
+    /// A catch-up is reading the store for this subscription: live rows are not sent to it.
     lagged: bool,
+    /// A publish was skipped because of `lagged`: the catch-up has to look again before it ends.
+    missed: bool,
+}
+
+/// Why a subscription could not be served.
+#[derive(Debug, thiserror::Error)]
+pub enum SubscribeError {
+    /// The client is gone, or its events stream is: there is nobody to send to.
+    #[error("the connection is gone")]
+    ClientGone,
+    /// The scope could not be read (a session purged since the client last heard of it, or the
+    /// database failing). The subscription is dropped.
+    #[error("{0}")]
+    Scope(String),
 }
 
 struct Client {
@@ -62,6 +86,7 @@ struct Inner {
     pending: HashMap<Scope, Pending>,
     deltas: HashMap<Sid, DeltaPending>,
     next_id: ClientId,
+    next_gen: u64,
 }
 
 #[derive(Clone)]
@@ -106,6 +131,7 @@ impl Hub {
                 pending: HashMap::new(),
                 deltas: HashMap::new(),
                 next_id: 1,
+                next_gen: 1,
             })),
             fetch,
         }
@@ -130,6 +156,11 @@ impl Hub {
         self.inner.lock().unwrap().clients.remove(&id);
     }
 
+    /// How many clients are registered: a connection that ends takes its client with it.
+    pub fn clients(&self) -> usize {
+        self.inner.lock().unwrap().clients.len()
+    }
+
     /// Subscribe `client` to `scope` from `after` (None = everything / the newest page for a session).
     /// Sends the backlog in chunks, then live changes. Returns the rev the client is now at.
     pub async fn subscribe(
@@ -137,68 +168,101 @@ impl Hub {
         client: ClientId,
         scope: Scope,
         after: Option<u64>,
-    ) -> Result<u64, String> {
-        {
+    ) -> Result<u64, SubscribeError> {
+        let gen = {
             let mut g = self.inner.lock().unwrap();
-            let Some(c) = g.clients.get_mut(&client) else {
-                return Err("no such client".into());
-            };
+            let gen = g.next_gen;
+            g.next_gen += 1;
+            let c = g
+                .clients
+                .get_mut(&client)
+                .ok_or(SubscribeError::ClientGone)?;
             c.subs.insert(
                 scope,
                 Sub {
                     rev_sent: after.unwrap_or(0),
-                    lagged: false,
+                    gen,
+                    lagged: true,
+                    missed: false,
                 },
             );
-        }
-        let tx = {
-            let g = self.inner.lock().unwrap();
-            g.clients
-                .get(&client)
-                .map(|c| c.tx.clone())
-                .ok_or("no such client")?
+            gen
         };
-        let fetch = self.fetch.clone();
-        let backlog = tokio::task::spawn_blocking(move || fetch(scope, after))
-            .await
-            .map_err(|e| e.to_string())??;
-        let rev = backlog.rev;
-        // ponytail: a reset is just a full backlog; the client drops its scope state when it sees
-        // rows whose revs predate what it holds (or we add a flag to Changes later).
-        let mut rows = backlog.rows;
-        if rows.is_empty() {
-            let _ = tx
-                .send(S2C::Changes {
-                    scope,
-                    rev,
-                    rows: vec![],
-                    reset: false,
-                })
-                .await;
-        }
-        while !rows.is_empty() {
-            let rest = rows.split_off(rows.len().min(BACKLOG_CHUNK));
-            let chunk_rev = rows.iter().map(Row::rev).max().unwrap_or(rev);
-            let msg = S2C::Changes {
-                scope,
-                rev: if rest.is_empty() { rev } else { chunk_rev },
-                rows,
-                reset: false,
+        self.catch_up(client, scope, gen, after).await
+    }
+
+    /// Sends `client` what `scope` holds after `after` (None: the full set), then, pass by pass,
+    /// what was committed while that went out; the pass that finds nothing was missed ends `lagged`
+    /// and live rows flow. Stops quietly, with the rev it got to, when the subscription is dropped
+    /// or replaced meanwhile. The first pass always sends a message, an empty one if need be: a
+    /// subscriber is waiting for it, and a client that stalled is told it is current again.
+    // ponytail: a pass reads the whole backlog into memory before the first chunk goes out, and a
+    // lagged client's is read before its channel has room; page the fetch into the sender when a
+    // backlog outgrows memory (plan §6 sends a big one as `SnapshotOnBulk`, which nothing does yet).
+    // The cursor is `rev_sent`: a row published out of rev order (two writers) while the client is
+    // lagged can be passed over; it comes back with the next reset or reconnect.
+    async fn catch_up(
+        &self,
+        client: ClientId,
+        scope: Scope,
+        gen: u64,
+        mut after: Option<u64>,
+    ) -> Result<u64, SubscribeError> {
+        let mut first = true;
+        let mut sent = after.unwrap_or(0);
+        loop {
+            let tx = {
+                let mut g = self.inner.lock().unwrap();
+                let c = g
+                    .clients
+                    .get_mut(&client)
+                    .ok_or(SubscribeError::ClientGone)?;
+                let Some(sub) = c.subs.get_mut(&scope).filter(|s| s.gen == gen) else {
+                    return Ok(sent);
+                };
+                sub.missed = false;
+                c.tx.clone()
             };
-            if tx.send(msg).await.is_err() {
-                return Err("client gone".into());
+            let fetch = self.fetch.clone();
+            let fetched = tokio::task::spawn_blocking(move || fetch(scope, after))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            let backlog = match fetched {
+                Ok(b) => b,
+                Err(why) => {
+                    let mut g = self.inner.lock().unwrap();
+                    if let Some(c) = g.clients.get_mut(&client) {
+                        if c.subs.get(&scope).is_some_and(|s| s.gen == gen) {
+                            c.subs.remove(&scope);
+                        }
+                    }
+                    return Err(SubscribeError::Scope(why));
+                }
+            };
+            let (rev, reset) = (backlog.rev, backlog.reset);
+            for msg in messages(scope, backlog.rows, rev, reset, first) {
+                tx.send(msg).await.map_err(|_| SubscribeError::ClientGone)?;
             }
-            rows = rest;
+            first = false;
+            // A reset's cursor is the database's, however low that is next to the one it replaces.
+            sent = if reset { rev } else { sent.max(rev) };
+            let mut g = self.inner.lock().unwrap();
+            let Some(sub) = g
+                .clients
+                .get_mut(&client)
+                .and_then(|c| c.subs.get_mut(&scope))
+                .filter(|s| s.gen == gen)
+            else {
+                return Ok(sent);
+            };
+            sub.rev_sent = sent;
+            if !sub.missed {
+                sub.lagged = false;
+                return Ok(sent);
+            }
+            after = Some(sent);
         }
-        let mut g = self.inner.lock().unwrap();
-        if let Some(s) = g
-            .clients
-            .get_mut(&client)
-            .and_then(|c| c.subs.get_mut(&scope))
-        {
-            s.rev_sent = s.rev_sent.max(rev);
-        }
-        Ok(rev)
     }
 
     pub fn unsubscribe(&self, client: ClientId, scope: Scope) {
@@ -255,9 +319,11 @@ impl Hub {
         }
     }
 
+    // ponytail: a live batch is one message however big (rows committed in 50 ms, so a few MiB at
+    // worst with requests capped at 1 MiB); chunk it like a backlog if a writer ever commits more.
     fn send_changes(&self, scope: Scope, rows: Vec<Row>) {
         let rev = rows.iter().map(Row::rev).max().unwrap_or(0);
-        let mut resync: Vec<ClientId> = vec![];
+        let mut resync: Vec<(ClientId, u64, u64)> = vec![];
         {
             let mut g = self.inner.lock().unwrap();
             for (id, c) in g.clients.iter_mut() {
@@ -265,6 +331,7 @@ impl Hub {
                     continue;
                 };
                 if sub.lagged {
+                    sub.missed = true;
                     continue;
                 }
                 match c.tx.try_send(S2C::Changes {
@@ -274,52 +341,27 @@ impl Hub {
                     reset: false,
                 }) {
                     Ok(()) => sub.rev_sent = sub.rev_sent.max(rev),
+                    // Full: this batch is in the store, so the resync from `rev_sent` has it.
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         sub.lagged = true;
-                        resync.push(*id);
+                        resync.push((*id, sub.gen, sub.rev_sent));
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {}
                 }
             }
         }
-        for id in resync {
+        for (id, gen, after) in resync {
             let hub = self.clone();
-            tokio::spawn(async move { hub.resync(id, scope).await });
-        }
-    }
-
-    /// The client's channel was full: wait for room, then send everything since its last rev.
-    async fn resync(&self, client: ClientId, scope: Scope) {
-        let (tx, after) = {
-            let g = self.inner.lock().unwrap();
-            let Some(c) = g.clients.get(&client) else {
-                return;
-            };
-            let Some(s) = c.subs.get(&scope) else { return };
-            (c.tx.clone(), s.rev_sent)
-        };
-        let Ok(permit) = tx.reserve().await else {
-            return;
-        };
-        let fetch = self.fetch.clone();
-        let Ok(Ok(b)) = tokio::task::spawn_blocking(move || fetch(scope, Some(after))).await else {
-            return;
-        };
-        let rev = b.rev.max(after);
-        permit.send(S2C::Changes {
-            scope,
-            rev,
-            rows: b.rows,
-            reset: false,
-        });
-        let mut g = self.inner.lock().unwrap();
-        if let Some(s) = g
-            .clients
-            .get_mut(&client)
-            .and_then(|c| c.subs.get_mut(&scope))
-        {
-            s.rev_sent = s.rev_sent.max(rev);
-            s.lagged = false;
+            tokio::spawn(async move {
+                if let Err(SubscribeError::Scope(e)) =
+                    hub.catch_up(id, scope, gen, Some(after)).await
+                {
+                    tracing::warn!(
+                        ?scope,
+                        "resync of a lagging client failed, subscription dropped: {e}"
+                    );
+                }
+            });
         }
     }
 
@@ -373,6 +415,44 @@ impl Hub {
     }
 }
 
+/// One fetch as messages: its rows by rev, in chunks of about [`CHUNK_BYTES`], each chunk's `rev`
+/// the highest inside it (the last chunk's the fetch's own, which also counts revs spent on other
+/// scopes) so a client that stops after any chunk holds everything up to that rev. `reset` goes on
+/// the first only: the client drops its copy of the scope once, then applies every chunk. An empty
+/// fetch is one empty message when `first` (a subscriber waiting) or `reset`, else nothing.
+fn messages(scope: Scope, mut rows: Vec<Row>, rev: u64, reset: bool, first: bool) -> Vec<S2C> {
+    if rows.is_empty() && !first && !reset {
+        return vec![];
+    }
+    // A session's full set comes by seq, not by rev.
+    rows.sort_by_key(Row::rev);
+    let mut chunks: Vec<Vec<Row>> = vec![vec![]];
+    let mut used = 0;
+    for row in rows {
+        let size = codec::encode(&row).map_or(0, |b| b.len());
+        if used > 0 && used + size > CHUNK_BYTES {
+            chunks.push(vec![]);
+            used = 0;
+        }
+        used += size;
+        chunks.last_mut().expect("always one chunk").push(row);
+    }
+    let n = chunks.len();
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, rows)| {
+            let top = rows.iter().map(Row::rev).max().unwrap_or(0);
+            S2C::Changes {
+                scope,
+                rev: if i + 1 == n { top.max(rev) } else { top },
+                rows,
+                reset: reset && i == 0,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +498,45 @@ mod tests {
             })
         }));
         (hub, calls)
+    }
+
+    /// An issue whose body makes it about `n` bytes on the wire.
+    fn fat(id: u64, rev: u64, n: usize) -> Row {
+        let Row::Issue(mut i) = issue(id, rev) else {
+            unreachable!()
+        };
+        i.body = "x".repeat(n);
+        Row::Issue(i)
+    }
+
+    /// A hub over rows the test can add to.
+    fn hub_over(rows: Arc<Mutex<Vec<Row>>>) -> Hub {
+        Hub::new(Arc::new(move |_scope, after| {
+            let after = after.unwrap_or(0);
+            let rows: Vec<Row> = rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.rev() > after)
+                .cloned()
+                .collect();
+            let rev = rows.iter().map(Row::rev).max().unwrap_or(after);
+            Ok(Backlog {
+                rows,
+                rev,
+                reset: false,
+            })
+        }))
+    }
+
+    /// A message as `(rev, revs of its rows, reset)`.
+    fn shape(m: &S2C) -> (u64, Vec<u64>, bool) {
+        match m {
+            S2C::Changes {
+                rev, rows, reset, ..
+            } => (*rev, rows.iter().map(Row::rev).collect(), *reset),
+            m => panic!("{m:?}"),
+        }
     }
 
     #[tokio::test]
@@ -505,5 +624,120 @@ mod tests {
         }
         assert_eq!(got.len(), 2);
         assert!(got.iter().any(|m| matches!(m, S2C::Delta { item_id, offset: 0, text, .. } if item_id == "a" && text == "hello")));
+    }
+
+    #[tokio::test]
+    async fn a_backlog_goes_out_in_chunks_by_size_and_rev() {
+        // The fetch is out of rev order (a session's full set is by seq), and one row is over the
+        // budget: it travels alone, the rest pack up to the budget.
+        let kib = 1 << 10;
+        let rows = vec![
+            fat(3, 3, 400 * kib),
+            fat(1, 1, 400 * kib),
+            fat(5, 5, 100 * kib),
+            fat(2, 2, 400 * kib),
+            fat(4, 4, 1500 * kib),
+            fat(6, 6, 100 * kib),
+        ];
+        let hub = Hub::new(Arc::new(move |_, _| {
+            Ok(Backlog {
+                rows: rows.clone(),
+                rev: 9,
+                reset: false,
+            })
+        }));
+        let (tx, mut rx) = mpsc::channel(16);
+        let id = hub.add_client(tx);
+        assert_eq!(hub.subscribe(id, Scope::Global, None).await.unwrap(), 9);
+        let mut got = vec![];
+        while let Ok(m) = rx.try_recv() {
+            got.push(m);
+        }
+        let shapes: Vec<_> = got.iter().map(shape).collect();
+        // Each chunk's rev is the highest inside it, the last one the fetch's own.
+        assert_eq!(
+            shapes,
+            vec![
+                (2, vec![1, 2], false),
+                (3, vec![3], false),
+                (4, vec![4], false),
+                (9, vec![5, 6], false),
+            ]
+        );
+        for m in &got {
+            let S2C::Changes { rows, .. } = m else {
+                unreachable!()
+            };
+            let bytes: usize = rows.iter().map(|r| codec::encode(r).unwrap().len()).sum();
+            assert!(rows.len() == 1 || bytes <= CHUNK_BYTES, "{bytes} bytes");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reset_backlog_marks_only_its_first_message_and_sets_the_cursor() {
+        let rows = vec![fat(1, 1, 600 << 10), fat(2, 2, 600 << 10)];
+        let seen = Arc::new(Mutex::new(vec![]));
+        let hub = Hub::new(Arc::new({
+            let seen = seen.clone();
+            move |_, after| {
+                seen.lock().unwrap().push(after);
+                let reset = after == Some(99); // the client's cursor is above the database's
+                Ok(Backlog {
+                    rows: if reset { rows.clone() } else { vec![] },
+                    rev: 2,
+                    reset,
+                })
+            }
+        }));
+        let (tx, mut rx) = mpsc::channel(2);
+        let id = hub.add_client(tx);
+        hub.subscribe(id, Scope::Global, Some(99)).await.unwrap(); // two chunks fill the channel
+        hub.publish(vec![issue(3, 3)]); // so this one finds it full: lagged, resynced
+        let resynced = async {
+            while seen.lock().unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), resynced)
+            .await
+            .unwrap();
+        // From the database's rev, not from the 99 the client claimed.
+        assert_eq!(*seen.lock().unwrap(), [Some(99), Some(2)]);
+        assert_eq!(shape(&rx.recv().await.unwrap()), (1, vec![1], true));
+        assert_eq!(shape(&rx.recv().await.unwrap()), (2, vec![2], false));
+    }
+
+    #[tokio::test]
+    async fn a_lagging_clients_resync_is_chunked_too() {
+        let rows = Arc::new(Mutex::new(vec![issue(1, 1)]));
+        let hub = hub_over(rows.clone());
+        let (tx, mut rx) = mpsc::channel(1);
+        let id = hub.add_client(tx);
+        hub.subscribe(id, Scope::Global, None).await.unwrap(); // fills the one slot
+        {
+            let mut r = rows.lock().unwrap();
+            r.extend((2..=4).map(|i| fat(i, i, 600 << 10)));
+        }
+        hub.publish(vec![issue(2, 2)]); // the channel is full: lagged, resynced from rev 1
+        assert_eq!(shape(&rx.recv().await.unwrap()), (1, vec![1], false));
+        for rev in 2..=4 {
+            assert_eq!(shape(&rx.recv().await.unwrap()), (rev, vec![rev], false));
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_tells_a_scope_that_cannot_be_read_from_a_client_that_is_gone() {
+        let hub = Hub::new(Arc::new(|_, _| Err("no such session".into())));
+        let (tx, _rx) = mpsc::channel(16);
+        let id = hub.add_client(tx);
+        let e = hub
+            .subscribe(id, Scope::Session(femme_proto::Id(5)), None)
+            .await;
+        assert!(matches!(e, Err(SubscribeError::Scope(m)) if m == "no such session"));
+        assert_eq!(hub.clients(), 1);
+        hub.remove_client(id);
+        assert_eq!(hub.clients(), 0);
+        let e = hub.subscribe(id, Scope::Global, None).await;
+        assert!(matches!(e, Err(SubscribeError::ClientGone)));
     }
 }

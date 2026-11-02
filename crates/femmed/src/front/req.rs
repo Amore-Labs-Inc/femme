@@ -59,7 +59,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             .subscribe(ctx.client, scope, after)
             .await
             .map(|_| Resp::Ok)
-            .map_err(|e| err(ErrCode::NotFound, e)),
+            .map_err(|e| err(ErrCode::NotFound, e.to_string())),
         Req::Unsubscribe { scope } => {
             d.hub.unsubscribe(ctx.client, scope);
             Ok(Resp::Ok)

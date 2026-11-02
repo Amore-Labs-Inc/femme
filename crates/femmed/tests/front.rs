@@ -224,7 +224,9 @@ impl Desktop {
             .await
             .expect("events stream")
         {
-            Some(S2C::Changes { scope, rev, rows, .. }) => (scope, rev, rows),
+            Some(S2C::Changes {
+                scope, rev, rows, ..
+            }) => (scope, rev, rows),
             other => panic!("expected changes, got {other:?}"),
         }
     }
@@ -638,6 +640,157 @@ async fn transcript_pages_come_newest_first_and_a_blob_comes_whole() {
     );
     let gone = c.call(Req::BlobGet { hash: [7; 32] }).await;
     assert_eq!(gone.unwrap_err().code, ErrCode::NotFound);
+}
+
+/// A message of the events stream as `(rev, revs of its rows, reset)`.
+fn shape(m: &S2C) -> (u64, Vec<u64>, bool) {
+    match m {
+        S2C::Changes {
+            rev, rows, reset, ..
+        } => (*rev, rows.iter().map(Row::rev).collect(), *reset),
+        other => panic!("expected changes, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_from_a_cursor_the_database_has_not_reached_is_told_to_reset() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let s = rig.shell().await;
+    let epoch = rig.d.store.epoch();
+    let now = rig.d.store.rev().unwrap();
+
+    // A cursor that holds: the rows after it, none here, and no reset.
+    let cursor = Cursors {
+        epoch,
+        global_rev: Some(now),
+        sessions: vec![],
+    };
+    let mut c = rig.desktop(&dev, cursor).await;
+    let got = within("the resume", c.events.recv_msg::<S2C>()).await;
+    let (_, rows, reset) = shape(&got.unwrap().unwrap());
+    assert!(rows.is_empty() && !reset, "{rows:?} {reset}");
+    c.conn.close();
+    drop(c);
+
+    // One the database is behind (a restored backup): the full set, marked, to drop what it holds.
+    let cursor = Cursors {
+        epoch,
+        global_rev: Some(now + 1_000),
+        sessions: vec![],
+    };
+    let mut c = rig.desktop(&dev, cursor).await;
+    let got = within("the resume", c.events.recv_msg::<S2C>()).await;
+    let Some(S2C::Changes {
+        scope: Scope::Global,
+        rev,
+        rows,
+        reset: true,
+    }) = got.unwrap()
+    else {
+        panic!("expected a reset of the global scope")
+    };
+    assert!(session_ids(&rows).contains(&s.sid), "{rows:?}");
+    assert_eq!(
+        rev,
+        rig.d.store.rev().unwrap(),
+        "the cursor is the database's"
+    );
+}
+
+/// A live change committed while a subscription's backlog is being read (a long query) is sent
+/// after the backlog, not ahead of it with a higher rev: a client that takes `rev` as its cursor
+/// and drops there would resume past rows it never got.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_change_during_the_backlog_fetch_does_not_overtake_it() {
+    use femme_proto::state::{Issue, IssueStatus};
+    use femmed::hub::{Backlog, Hub};
+    let issue = |id: u64, rev: u64| {
+        Row::Issue(Issue {
+            id,
+            rev,
+            repo: "o/r".into(),
+            title: format!("t{rev}"),
+            body: String::new(),
+            status: IssueStatus::Open,
+            pr_url: None,
+            note: None,
+            session: None,
+            resume_at: None,
+            created: 0,
+            updated: 0,
+        })
+    };
+    let rows = Arc::new(std::sync::Mutex::new(vec![issue(11, 11), issue(12, 12)]));
+    let hub = Hub::new(Arc::new({
+        let rows = rows.clone();
+        move |_scope, after| {
+            let after = after.unwrap_or(0);
+            // The snapshot is taken first, then the query takes its time: what is committed
+            // meanwhile is not in it.
+            let got: Vec<Row> = rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.rev() > after)
+                .cloned()
+                .collect();
+            std::thread::sleep(Duration::from_millis(300));
+            let rev = got.iter().map(Row::rev).max().unwrap_or(after);
+            Ok(Backlog {
+                rows: got,
+                rev,
+                reset: false,
+            })
+        }
+    }));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let id = hub.add_client(tx);
+    let h = hub.clone();
+    let sub = tokio::spawn(async move { h.subscribe(id, Scope::Global, Some(10)).await });
+    tokio::time::sleep(Duration::from_millis(100)).await; // inside the query
+    rows.lock().unwrap().push(issue(13, 13));
+    hub.publish(vec![issue(13, 13)]);
+    let first = within("the backlog", rx.recv()).await.unwrap();
+    let second = within("the change", rx.recv()).await.unwrap();
+    assert_eq!(shape(&first), (12, vec![11, 12], false));
+    assert_eq!(shape(&second), (13, vec![13], false));
+    assert_eq!(sub.await.unwrap().unwrap(), 13);
+    // Caught up, so the next change goes out live.
+    hub.publish(vec![issue(14, 14)]);
+    let third = within("the live change", rx.recv()).await.unwrap();
+    assert_eq!(shape(&third), (14, vec![14], false));
+}
+
+/// Two issues too big for one frame between them (each is under the 1 MiB the board took; these
+/// came by import): the backlog goes in messages by size, so the global scope still subscribes.
+/// As one message it passed the frame limit, the connection died, and every reconnect did again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_issues_too_big_for_one_frame_do_not_lock_the_desktop_out_of_the_global_scope() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let body = "x".repeat(9 << 20);
+    for _ in 0..2 {
+        rig.d.issue_create("o/r", "t", &body).await.unwrap();
+    }
+    for _ in 0..2 {
+        let mut c = rig.desktop(&dev, Cursors::default()).await;
+        let all = Req::Subscribe {
+            scope: Scope::Global,
+            after: None,
+        };
+        // The events are read before the answer: 18 MiB the desktop is not reading yet must not
+        // be what the answer waits behind.
+        let op = OpId::new();
+        c.send(op, all).await;
+        let mut issues = 0;
+        while issues < 2 {
+            let (_, _, rows) = c.changes().await;
+            issues += rows.iter().filter(|r| matches!(r, Row::Issue(_))).count();
+        }
+        assert_eq!(c.next_answer().await, (op, Ok(Resp::Ok)));
+        c.conn.close();
+    }
 }
 
 // ---- terminals --------------------------------------------------------------------------------

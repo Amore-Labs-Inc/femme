@@ -167,6 +167,8 @@ impl Daemon {
 }
 
 /// A subscriber's catch-up: every page the byte budget split.
+// ponytail: all pages are read into memory, then the hub chunks them; page them straight into the
+// hub's sender (or `SnapshotOnBulk`) when a first subscribe outgrows memory.
 fn backlog(store: &Store, scope: Scope, after: Option<u64>) -> femme_store::Result<Backlog> {
     let first = store.changes_since(scope, after, BACKLOG_BYTES)?;
     let (reset, mut rows, mut rev, mut more) = (first.reset, first.rows, first.rev, first.more);
