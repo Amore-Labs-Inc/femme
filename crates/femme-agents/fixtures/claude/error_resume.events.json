@@ -1,0 +1,12 @@
+[
+  {
+    "ItemCompleted": {
+      "id": "5ed2de15-b197-4db3-b7c2-acaf6eaedd15",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "text": "claude failed before it ran a turn: No conversation found with session ID: 00000000-0000-4000-8000-000000000000"
+      }
+    }
+  }
+]

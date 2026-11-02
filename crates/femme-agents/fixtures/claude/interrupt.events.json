@@ -1,0 +1,562 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "cf0f5aee-2e27-4230-b37d-8c66f19427a2",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Write the numbers from 1 to 400, one per line, nothing else."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "1"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n2\n3\n4\n5"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n6\n7\n8\n9"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n10\n11\n12\n13"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n14\n15\n16\n17"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n18\n19\n20\n21"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n22\n23\n24\n25"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n26\n27\n28\n29"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n30\n31\n32\n33"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n34\n35\n36\n37"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n38\n39\n40\n41"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n42\n43\n44\n45"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n46\n47\n48\n49"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n50\n51\n52\n53"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n54\n55\n56\n57"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n58\n59\n60\n61"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n62\n63\n64\n65"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n66\n67\n68\n69"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n70\n71\n72\n73"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n74\n75\n76\n77"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n78\n79\n80\n81"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n82\n83\n84\n85"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n86\n87\n88\n89"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n90\n91\n92\n93"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n94\n95\n96\n97"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n98\n99\n100\n101"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n102\n103\n104\n105"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n106\n107\n108\n109"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n110\n111\n112\n113"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n114\n115\n116\n117"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n118\n119\n120\n121"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n122\n123\n124\n125"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n126\n127\n128\n129"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n130\n131\n132\n133"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n134\n135\n136\n137"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n138\n139\n140\n141"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n142\n143\n144\n145"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n146\n147\n148\n149"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n150\n151\n152\n153"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n154\n155\n156\n157"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n158\n159\n160\n161"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n162\n163\n164\n165"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n166\n167\n168\n169"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n170\n171\n172\n173"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n174\n175\n176\n177"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n178\n179\n180\n181"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n182\n183\n184\n185"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n186\n187\n188\n189"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n190\n191\n192\n193"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n194\n195\n196\n197"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n198\n199\n200\n201"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n202\n203\n204\n205"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n206\n207\n208\n209"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n210\n211\n212\n213"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n214\n215\n216\n217"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n218\n219\n220\n221"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n222\n223\n224\n225"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n226\n227\n228\n229"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n230\n231\n232\n233"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n234\n235\n236\n237"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n238\n239\n240\n241"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n242\n243\n244\n245"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n246\n247\n248\n249"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n250\n251\n252\n253"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n254\n255\n256\n257"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n258\n259\n260\n261"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n262\n263\n264\n265"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n266\n267\n268\n269"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n270\n271\n272\n273"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n274\n275\n276\n277"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n278\n279\n280\n281"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n282\n283\n284\n285"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n286\n287\n288\n289"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "text": "\n290\n291\n292\n293"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "84a4ea0f-dbb3-43db-96f2-d00673dbe919",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "text": "[Request interrupted by user]"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n151\n152\n153\n154\n155\n156\n157\n158\n159\n160\n161\n162\n163\n164\n165\n166\n167\n168\n169\n170\n171\n172\n173\n174\n175\n176\n177\n178\n179\n180\n181\n182\n183\n184\n185\n186\n187\n188\n189\n190\n191\n192\n193\n194\n195\n196\n197\n198\n199\n200\n201\n202\n203\n204\n205\n206\n207\n208\n209\n210\n211\n212\n213\n214\n215\n216\n217\n218\n219\n220\n221\n222\n223\n224\n225\n226\n227\n228\n229\n230\n231\n232\n233\n234\n235\n236\n237\n238\n239\n240\n241\n242\n243\n244\n245\n246\n247\n248\n249\n250\n251\n252\n253\n254\n255\n256\n257\n258\n259\n260\n261\n262\n263\n264\n265\n266\n267\n268\n269\n270\n271\n272\n273\n274\n275\n276\n277\n278\n279\n280\n281\n282\n283\n284\n285\n286\n287\n288\n289\n290\n291\n292\n293"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "Interrupted",
+      "usage": null,
+      "duration_ms": 3272
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "ItemCompleted": {
+      "id": "00000002-0000-4000-8000-000000000002",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvGxNbo1ENopbiAVS3h:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvGxNbo1ENopbiAVS3h:0",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvGxNbo1ENopbiAVS3h:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 33.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 2,
+        "output": 4,
+        "cache_read": 38021,
+        "cache_write": 4458
+      },
+      "duration_ms": 1008
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

@@ -1,0 +1,99 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "e1c6055e-f33c-4d9d-9099-a9624ad3e8dd",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Use the AskUserQuestion tool to ask me whether I prefer A or B (two options, labels A and B), then wait for my answer and tell me what I chose."
+      }
+    }
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "toolu_01DrRvd98DbGjurDMoPaJpsx",
+      "q": {
+        "request_id": "8bf442a2-935a-4d3d-9006-19732f351a71",
+        "prompt": "Do you prefer A or B?",
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "multi": false,
+        "free_text": true
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 33.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "8bf442a2-935a-4d3d-9006-19732f351a71"
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01DrRvd98DbGjurDMoPaJpsx",
+      "kind": "Question",
+      "status": "Failed",
+      "body": {
+        "answered": null,
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "prompt": "Do you prefer A or B?",
+        "reason": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+        "request_id": "8bf442a2-935a-4d3d-9006-19732f351a71"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "b8d89b53-e6b0-472f-b130-85284f56cf00",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "text": "[Request interrupted by user for tool use]"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "Interrupted",
+      "usage": {
+        "input": 2,
+        "output": 130,
+        "cache_read": 38050,
+        "cache_write": 0
+      },
+      "duration_ms": 2633
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

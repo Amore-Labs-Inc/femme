@@ -1,0 +1,44 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "a4977733-f160-48b4-b791-68be6f7c5335",
+      "model": "claude-nonexistent-9"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "d0e5fbe6-4b94-44af-b3a4-c6f95ef6edd3:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it. Run --model to pick a different model."
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": {
+        "Error": "There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it. Run --model to pick a different model."
+      },
+      "usage": null,
+      "duration_ms": 1211
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]
