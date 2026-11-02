@@ -591,3 +591,44 @@ pub fn palette(on_close: impl Fn(&mut Window, &mut App) + Clone + 'static) -> im
                 ),
         )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use femme_proto::state::{Agent, Mode};
+    use femme_proto::Id;
+
+    fn dot_of(status: SessionStatus, attention: Attention) -> Rgba {
+        status_color(&Wire {
+            id: Id(1),
+            handle: "h".into(),
+            rev: 1,
+            name: None,
+            owner: "board".into(),
+            agent: Agent::Shell,
+            mode: Mode::Tui,
+            cwd: "/".into(),
+            label: None,
+            agent_sid: None,
+            model: None,
+            status,
+            attention,
+            created: 1,
+            closed: None,
+        })
+    }
+
+    #[test]
+    fn the_dot_says_what_the_session_is_doing_or_waits_for() {
+        use SessionStatus::*;
+        assert_eq!(dot_of(Working, Attention::None), WORK);
+        assert_eq!(dot_of(Blocked, Attention::None), PAUSE);
+        assert_eq!(dot_of(Idle, Attention::Blocked), PAUSE);
+        assert_eq!(dot_of(Idle, Attention::None), QUEUE);
+        assert_eq!(dot_of(Starting, Attention::None), QUEUE);
+        for s in [Interrupted, Paused, Crashed, Failed] {
+            assert_eq!(dot_of(s, Attention::None), BAD, "{s:?}");
+        }
+        assert_eq!(dot_of(Closed, Attention::None), DONE);
+    }
+}
