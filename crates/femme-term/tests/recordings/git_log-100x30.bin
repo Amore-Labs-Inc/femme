@@ -1,0 +1,440 @@
+[33mcommit ea86f0aaa6722aec35fb2a38607b7519f5005c23[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: Jane Doe <jane@example.com>  
+Date:   Fri Oct 30 18:59:12 2026 +0300
+
+    install.sh: say when it is checking the sudo account, and fail fast when unreachable
+    
+    The ssh check ran silently for up to 20 s, which looked like a hang; an unreachable
+    host also went on to ssh-copy-id. Now it prints what it checks, says why it failed,
+    and only offers the password route when ssh got as far as Permission denied.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+[1mdiff --git a/install.sh b/install.sh[m
+[1mindex cdf3ca7..cea1670 100755[m
+[1m--- a/install.sh[m
+[1m+++ b/install.sh[m
+[36m@@ -66,7 +66,13 @@[m [mis_emails() {  # comma-separated; also catches keyboard escapes (Option+Q for @[m
+ is_admin() {  # user@address, and this laptop's key logs in there[m
+   case $1 in *@?*) ;; *) warn "  as user@address, e.g. ubuntu@203.0.113.7"; return 1 ;; esac[m
+   case ${1#*@} in 203.0.113.*) warn "  that is the example address: use your server's"; return 1 ;; esac[m
+[31m-  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$1" true 2>/dev/null && return[m
+[32m+[m[32m  local err[m
+[32m+[m[32m  printf '  checking %s over ssh…\n' "$1" >&2[m
+[32m+[m[32m  err=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$1" true 2>&1 | tr -d '\r' | tail -n 1; exit "${PIPESTATUS[0]}") && return[m
+[32m+[m[32m  case $err in[m
+[32m+[m[32m    *"Permission denied"*) ;;[m
+[32m+[m[32m    *) warn "  could not reach ${1#*@} over ssh (${err##*: }): check the address"; return 1 ;;[m
+[32m+[m[32m  esac[m
+   # Many VPSs start with a password: put the key there once, so every later step logs in without one.[m
+   warn "  ~/.ssh/id_ed25519 does not log in to $1 yet; if it takes a password, enter it once to add the key"[m
+   ssh-copy-id -i ~/.ssh/id_ed25519.pub -o ConnectTimeout=10 "$1" >/dev/null 2>&1 </dev/tty \[m
+
+[33mcommit 7c001a31ee1ae8587370fd080e8cae30ee32f35a[m
+Author: Jane Doe <jane@example.com>  
+Date:   Fri Oct 30 18:56:36 2026 +0300
+
+    install.sh: read Option+Q as @ when the terminal sends it as Esc q
+    
+    On Turkish and other layouts @ is Option+Q; with Terminal's "Use Option as Meta key"
+    on, that arrives as Esc q and no email address could be typed.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+[1mdiff --git a/install.sh b/install.sh[m
+[1mindex 9917046..cdf3ca7 100755[m
+[1m--- a/install.sh[m
+[1m+++ b/install.sh[m
+[36m@@ -41,6 +41,8 @@[m [mask() {  # KEY "question" [secret] [check]: keeps the current value on Enter; as[m
+       read -r -p "$2 [${cur}]: " v[m
+     fi[m
+     v=${v:-$cur}[m
+[32m+[m[32m    # Option+Q is @ on Turkish and other layouts; with "Use Option as Meta key" the terminal sends Esc q.[m
+[32m+[m[32m    v=${v//$'\x1b'q/@}[m
+     [ -z "${4:-}" ] || "$4" "$v" || continue[m
+     break[m
+   done[m
+
+[33mcommit 32b15a83b067013005eafff2d6fe1c14aa6a85b8[m
+Author: Jane Doe <jane@example.com>  
+Date:   Fri Oct 30 18:51:35 2026 +0300
+
+    install.sh: keep the menu one line per option so it redraws in place
+    
+    An option longer than the terminal wrapped onto a second line, and each arrow key
+    redrew the menu one line lower. Shorter option texts, and cut to the width.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+[1mdiff --git a/install.sh b/install.sh[m
+[1mindex 5efbd2f..9917046 100755[m
+[1m--- a/install.sh[m
+[1m+++ b/install.sh[m
+[36m@@ -74,9 +74,9 @@[m [mis_admin() {  # user@address, and this laptop's key logs in there[m
+ }[m
+ [m
+ choose where "Where will FEMME run?  (↑/↓, Enter)" \[m
+[31m-  "A new AWS instance (needs the AWS CLI signed in; it costs money)" \[m
+[31m-  "An Ubuntu 24.04 server you already have (any VPS or a home server, reachable over ssh)" \[m
+[31m-  "This machine (Linux only; agents stop when it sleeps)"[m
+[32m+[m[32m  "A new AWS instance (AWS CLI signed in; costs money)" \[m
+[32m+[m[32m  "An Ubuntu 24.04 server you have (a VPS, a home server)" \[m
+[32m+[m[32m  "This machine (Linux only; stops when it sleeps)"[m
+ if [ "$where" = 3 ]; then[m
+   [ "$(uname -s)" = Linux ] || die "this machine as the server needs Linux with systemd"[m
+   setenv HOST localhost; HOST=localhost[m
+[1mdiff --git a/laptop/lib.sh b/laptop/lib.sh[m
+[1mindex abb4323..b92305b 100644[m
+[1m--- a/laptop/lib.sh[m
+[1m+++ b/laptop/lib.sh[m
+[36m@@ -61,11 +61,14 @@[m [mchoose() {[m
+     [ "$cur" -ge 1 ] && [ "$cur" -le $n ] || die "pick a number from 1 to $n"[m
+     eval "$var=\$cur"; return[m
+   fi[m
+[32m+[m[32m  # One screen line per option, or redrawing in place drifts: cut what the terminal is too narrow for.[m
+[32m+[m[32m  local w; w=$(( $(tput cols 2>/dev/null || echo 80) - 6 ))[m
+   printf '\033[?25l' >&2[m
+   while :; do[m
+     i=0[m
+     for o in "$@"; do[m
+       i=$((i + 1))[m
+[32m+[m[32m      [ ${#o} -le $w ] || o="${o:0:$((w - 1))}…"[m
+       if [ $i = "$cur" ]; then printf '\r\033[K  \033[36m❯ %s\033[0m\n' "$o" >&2; else printf '\r\033[K    \033[2m%s\033[0m\n' "$o" >&2; fi[m
+     done[m
+     IFS= read -rsn1 key[m
+
+[33mcommit 16f2d7c3c30136af08bbd40839a4578c6181d109[m
+Author: Jane Doe <jane@example.com>  
+Date:   Fri Oct 30 18:49:46 2026 +0300
+
+    install.sh: arrow-key menu, checked answers, a summary, quiet steps; fix host-init key
+    
+    host-init.sh passed the public key to the remote script unquoted, so ssh split it at
+    its spaces: authorized_keys got only "ssh-ed25519", the hostname became the key, and
+    the new user could never log in. Every install on your own server failed there.
+    
+    install.sh now:
+    - picks where FEMME runs with the arrow keys (numbers when not on a terminal);
+    - asks for the sudo account up front, defaults it from IP, saves it as ADMIN, and
+      checks it logs in (ssh-copy-id once for password-only VPSs);
+    - rejects malformed aliases and email addresses (a keyboard escape slipped into one);
+    - finds the latest herdr release instead of asking;
+    - defaults the board email to git's user.email;
+    - shows what it is about to set up and asks before touching a server;
+    - runs the long steps behind a spinner, the output in a log printed on failure;
+    - tells you to run ./install.sh update after signing in to Claude, so cswap
+      (the board's accounts window) gets set up.
+    
+    host-init.sh says it could not log in, instead of blaming the OS, when ssh fails.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+[1mdiff --git a/.env.example b/.env.example[m
+[1mindex f81f6e6..7a9b5e6 100644[m
+[1m--- a/.env.example[m
+[1m+++ b/.env.example[m
+[36m@@ -6,6 +6,8 @@[m
+ HOST=agentbox[m
+ # Filled by provision.sh (AWS). For your own server, its public IP or leave empty.[m
+ IP=[m
+[32m+[m[32m# Your own server only: the account install.sh prepares it with (one that can sudo), as user@address.[m
+[32m+[m[32mADMIN=[m
+ # 1: a terminal on your phone (Moshi, Blink): the server gets mosh, provision.sh opens UDP 60000-61000 on AWS.[m
+ MOSH=0[m
+ [m
+[1mdiff --git a/install.sh b/install.sh[m
+[1mindex 0077572..5efbd2f 100755[m
+[1m--- a/install.sh[m
+[1m+++ b/install.sh[m
+[36m@@ -7,6 +7,7 @@[m
+ set -euo pipefail[m
+ cd "$(dirname "$0")"[m
+ . ./laptop/lib.sh[m
+[32m+[m[32mtrap 'printf "\033[?25h" >&2' EXIT  # the menu hides the cursor; never leave it hidden[m
+ [m
+ if [ "${1:-}" = update ]; then[m
+   [ -f .env ] || die "no .env: run ./install.sh first"[m
+[36m@@ -31,38 +32,71 @@[m [msay "2/5 settings (.env, readable only by you)"[m
+ [ -f .env ] || cp .env.example .env[m
+ chmod 600 .env[m
+ . ./.env[m
+[31m-ask() {  # KEY "question" [secret]: keeps the current value on Enter[m
+[32m+[m[32mask() {  # KEY "question" [secret] [check]: keeps the current value on Enter; asks again until check passes[m
+   local cur=${!1:-} v[m
+[31m-  if [ "${3:-}" = secret ]; then[m
+[31m-    read -r -s -p "$2 [${cur:+keep current}]: " v; echo[m
+[31m-  else[m
+[31m-    read -r -p "$2 [${cur}]: " v[m
+[31m-  fi[m
+[31m-  v=${v:-$cur}[m
+[32m+[m[32m  while :; do[m
+[32m+[m[32m    if [ "${3:-}" = secret ]; then[m
+[32m+[m[32m      read -r -s -p "$2 [${cur:+keep current}]: " v; echo[m
+[32m+[m[32m    else[m
+[32m+[m[32m      read -r -p "$2 [${cur}]: " v[m
+[32m+[m[32m    fi[m
+[32m+[m[32m    v=${v:-$cur}[m
+[32m+[m[32m    [ -z "${4:-}" ] || "$4" "$v" || continue[m
+[32m+[m[32m    break[m
+[32m+[m[32m  done[m
+   setenv "$1" "$v"; eval "$1=\$v"[m
+ }[m
+ flag() {  # KEY "question": 1 or 0[m
+   local d=n; [ "${!1:-0}" = 1 ] && d=y[m
+   if ask_yes "$2" $d; then setenv "$1" 1; eval "$1=1"; else setenv "$1" 0; eval "$1=0"; fi[m
+ }[m
+[32m+[m[32m# Checks for ask: print why and fail, so ask asks again.[m
+[32m+[m[32mis_alias() { case $1 in ''|*[!A-Za-z0-9._-]*) warn "  letters, digits, dot, dash or underscore only"; return 1 ;; esac; }[m
+[32m+[m[32mis_emails() {  # comma-separated; also catches keyboard escapes (Option+Q for @ on some layouts)[m
+[32m+[m[32m  local e rest=$1,[m
+[32m+[m[32m  [ -n "$1" ] || { warn "  at least one address"; return 1; }[m
+[32m+[m[32m  while [ -n "$rest" ]; do[m
+[32m+[m[32m    e=${rest%%,*}; rest=${rest#*,}; e=$(printf '%s' "$e" | tr -d ' ')[m
+[32m+[m[32m    printf '%s' "$e" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' \[m
+[32m+[m[32m      || { warn "  \"$e\" is not an email address"; return 1; }[m
+[32m+[m[32m  done[m
+[32m+[m[32m}[m
+[32m+[m[32mis_admin() {  # user@address, and this laptop's key logs in there[m
+[32m+[m[32m  case $1 in *@?*) ;; *) warn "  as user@address, e.g. ubuntu@203.0.113.7"; return 1 ;; esac[m
+[32m+[m[32m  case ${1#*@} in 203.0.113.*) warn "  that is the example address: use your server's"; return 1 ;; esac[m
+[32m+[m[32m  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$1" true 2>/dev/null && return[m
+[32m+[m[32m  # Many VPSs start with a password: put the key there once, so every later step logs in without one.[m
+[32m+[m[32m  warn "  ~/.ssh/id_ed25519 does not log in to $1 yet; if it takes a password, enter it once to add the key"[m
+[32m+[m[32m  ssh-copy-id -i ~/.ssh/id_ed25519.pub -o ConnectTimeout=10 "$1" >/dev/null 2>&1 </dev/tty \[m
+[32m+[m[32m    && ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" true 2>/dev/null && return[m
+[32m+[m[32m  warn "  could not log in to $1 over ssh: check the address and the account"[m
+[32m+[m[32m  return 1[m
+[32m+[m[32m}[m
+ [m
+[31m-echo "Where will FEMME run?"[m
+[31m-echo "  1) a new AWS instance (needs the AWS CLI signed in; it costs money)"[m
+[31m-echo "  2) an Ubuntu 24.04 server you already have (any VPS or a home server, reachable over ssh)"[m
+[31m-echo "  3) this machine (Linux only; agents stop when it sleeps)"[m
+[31m-read -r -p "1, 2 or 3: " where[m
+[31m-case $where in 1|2|3) ;; *) die "pick 1, 2 or 3" ;; esac[m
+[32m+[m[32mchoose where "Where will FEMME run?  (↑/↓, Enter)" \[m
+[32m+[m[32m  "A new AWS instance (needs the AWS CLI signed in; it costs money)" \[m
+[32m+[m[32m  "An Ubuntu 24.04 server you already have (any VPS or a home server, reachable over ssh)" \[m
+[32m+[m[32m  "This machine (Linux only; agents stop when it sleeps)"[m
+ if [ "$where" = 3 ]; then[m
+   [ "$(uname -s)" = Linux ] || die "this machine as the server needs Linux with systemd"[m
+   setenv HOST localhost; HOST=localhost[m
+ else[m
+[31m-  ask HOST "Short name for the server (ssh alias)"[m
+[32m+[m[32m  ask HOST "Short name for the server (ssh alias)" "" is_alias[m
+[32m+[m[32mfi[m
+[32m+[m[32mif [ "$where" = 2 ]; then[m
+[32m+[m[32m  [ -n "${ADMIN:-}" ] || [ -z "${IP:-}" ] || ADMIN=root@$IP[m
+[32m+[m[32m  ask ADMIN "An account on the server that can sudo, as user@address" "" is_admin[m
+[32m+[m[32mfi[m
+[32m+[m[32mif [ -z "${HERDR_VERSION:-}" ] && ! command -v herdr >/dev/null; then[m
+[32m+[m[32m  v=$(curl -fsSL https://api.github.com/repos/herdrdev/herdr/releases/latest 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')[m
+[32m+[m[32m  if [ -n "$v" ]; then setenv HERDR_VERSION "$v"; HERDR_VERSION=$v[m
+[32m+[m[32m  else ask HERDR_VERSION "herdr version for the server (see https://herdr.dev, e.g. 0.9.5)"; fi[m
+ fi[m
+[31m-[ -z "${HERDR_VERSION:-}" ] && ! command -v herdr >/dev/null && ask HERDR_VERSION "herdr version for the server (see https://herdr.dev, e.g. 0.9.0)"[m
+ [ -n "${NTFY_TOPIC:-}" ] || setenv NTFY_TOPIC "femme-$(openssl rand -hex 16)"[m
+ [m
+ if ask_yes "Use the board (web panel, issue queue, API for other agents)?" y; then[m
+[31m-  ask BOARD_EMAIL "Email address(es) allowed to sign in, comma-separated"[m
+[32m+[m[32m  [ -n "${BOARD_EMAIL:-}" ] || BOARD_EMAIL=$(git config user.email 2>/dev/null || true)[m
+[32m+[m[32m  ask BOARD_EMAIL "Email address(es) allowed to sign in, comma-separated" "" is_emails[m
+   flag BOARD_PUBLIC "Must another machine reach the board over the internet (for example a chat bot calling the API)?"[m
+   if [ "$BOARD_PUBLIC" = 1 ]; then[m
+     ask BOARD_URL "Board address, https://<your domain>"[m
+[36m@@ -78,24 +112,39 @@[m [melse[m
+ fi[m
+ flag AUTODEPLOY "Should the server update itself when main changes on GitHub? (Anyone who can merge can then run code on it.)"[m
+ [ "$where" = 3 ] || flag MOSH "A terminal on your phone too (Moshi or Blink, over mosh)?"[m
+[31m-[ "$where" != 1 ] || flag_aws=1[m
+[31m-if [ "${flag_aws:-}" = 1 ]; then[m
+[32m+[m[32mif [ "$where" = 1 ]; then[m
+   if ask_yes "May agents on the server launch small AWS instances (AWS_ROLE=spawn)?" n; then setenv AWS_ROLE spawn; else setenv AWS_ROLE none; fi[m
+ fi[m
+ . ./.env[m
+ [m
+[32m+[m[32monoff() { [ "${1:-0}" = 1 ] && echo on || echo off; }[m
+[32m+[m[32mcase $where in[m
+[32m+[m[32m  1) server="new AWS instance, $INSTANCE_TYPE in $REGION" ;;[m
+[32m+[m[32m  2) server=$ADMIN ;;[m
+[32m+[m[32m  3) server="this machine" ;;[m
+[32m+[m[32mesac[m
+[32m+[m[32mprintf '\n\033[1mAbout to set up\033[0m\n' >&2[m
+[32m+[m[32mprintf '  %-14s %s\n' server "$server" "ssh alias" "$HOST" herdr "${HERDR_VERSION:-same as this laptop}" \[m
+[32m+[m[32m  board "$( [ -n "${BOARD_URL:-}" ] && echo "$BOARD_URL, sign-in for $BOARD_EMAIL" || echo off)" \[m
+[32m+[m[32m  "auto-deploy" "$(onoff "${AUTODEPLOY:-}")" mosh "$(onoff "${MOSH:-}")" >&2[m
+[32m+[m[32m[ "$where" != 1 ] || printf '  %-14s %s\n' "AWS role" "${AWS_ROLE:-none}" >&2[m
+[32m+[m[32mask_yes "Go ahead?" y || die "Nothing was changed on a server. Your answers are kept in .env: run ./install.sh again to change them."[m
+[32m+[m
+[32m+[m[32mLOG=${TMPDIR:-/tmp}/femme-install-$(date +%Y%m%d-%H%M%S).log[m
+[32m+[m[32m: > "$LOG"; chmod 600 "$LOG"[m
+ say "3/5 the server"[m
+ case $where in[m
+   1)[m
+     command -v aws >/dev/null || die "install the AWS CLI and sign in (aws configure, or aws login), then rerun"[m
+[31m-    ./laptop/provision.sh[m
+[31m-    say "waiting for the first boot to finish"[m
+[31m-    for _ in $(seq 30); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$HOST" true 2>/dev/null && break; sleep 10; done[m
+[31m-    ssh "$HOST" cloud-init status --wait >/dev/null[m
+[32m+[m[32m    step "creating the AWS instance" ./laptop/provision.sh[m
+[32m+[m[32m    wait_boot() {[m
+[32m+[m[32m      for _ in $(seq 30); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$HOST" true 2>/dev/null && break; sleep 10; done[m
+[32m+[m[32m      ssh "$HOST" cloud-init status --wait[m
+[32m+[m[32m    }[m
+[32m+[m[32m    step "waiting for the first boot to finish" wait_boot[m
+     ;;[m
+   2)[m
+[31m-    read -r -p "An account on the server that can sudo, as user@address (e.g. root@203.0.113.7): " admin[m
+[31m-    ./laptop/host-init.sh "$admin"[m
+[32m+[m[32m    step "preparing $ADMIN (user, key-only ssh, swap, packages)" ./laptop/host-init.sh "$ADMIN"[m
+     ;;[m
+   3)[m
+     ssh -o BatchMode=yes localhost true 2>/dev/null \[m
+[36m@@ -103,8 +152,8 @@[m [mcase $where in[m
+     ;;[m
+ esac[m
+ [m
+[31m-say "4/5 installing on $HOST (a few minutes the first time)"[m
+[31m-./laptop/sync.sh[m
+[32m+[m[32msay "4/5 installing on $HOST"[m
+[32m+[m[32mstep "herdr, the agents, the board and the services (a few minutes the first time)" ./laptop/sync.sh[m
+ [m
+ say "5/5 checking"[m
+ ./doctor.sh || true[m
+[36m@@ -116,7 +165,7 @@[m [mWhat is left for you (FEMME never copies your credentials):[m
+        claude                      then /login and follow the link[m
+        gh auth login && gh auth setup-git[m
+        codex login --device-auth   (only if you use Codex)[m
+[31m-     Then ./doctor.sh again.[m
+[32m+[m[32m     Then, back here: ./install.sh update   (sets up the board's accounts window now that Claude is signed in)[m
+ EOF[m
+ [ -z "${BOARD_URL:-}" ] || if [ "${BOARD_PUBLIC:-0}" = 1 ]; then cat <<EOF[m
+   2. Point a DNS A record for ${BOARD_URL#https://} at ${IP:-the server address} (DNS only, no proxy),[m
+[36m@@ -132,4 +181,5 @@[m [mcat <<EOF[m
+   4. Optional: notifications on your phone, the ntfy app subscribed to the NTFY_TOPIC in .env; a terminal[m
+      on the phone with MOSH=1 (both in docs/notifications.md).[m
+      To hand FEMME tasks from a chat bot (e.g. Instinct on WhatsApp), see docs/api.md.[m
+[32m+[m[32mThe full install log: $LOG[m
+ EOF[m
+[1mdiff --git a/laptop/host-init.sh b/laptop/host-init.sh[m
+[1mindex c448729..e642b2f 100755[m
+[1m--- a/laptop/host-init.sh[m
+[1m+++ b/laptop/host-init.sh[m
+[36m@@ -15,12 +15,15 @@[m [mpub=~/.ssh/id_ed25519.pub[m
+ [ -f "$pub" ] || die "no $pub: make one with ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519"[m
+ [m
+ say "checking $server"[m
+[32m+[m[32mssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$admin" true \[m
+[32m+[m[32m  || die "could not log in to $admin over ssh: check the address, and that this laptop's key is on that account"[m
+ ssh -o ConnectTimeout=10 "$admin" 'grep -q "^VERSION_ID=\"24.04\"" /etc/os-release && case $(uname -m) in x86_64|aarch64) ;; *) exit 1 ;; esac' \[m
+   || die "$server must run Ubuntu 24.04 on x86_64 or arm64 (aarch64)"[m
+ [m
+ say "preparing $server for user $USER"[m
+[31m-# The script goes over stdin; user, key and host name as arguments.[m
+[31m-ssh "$admin" sudo bash -s -- "$USER" "$(cat "$pub")" "$HOST" <<'REMOTE'[m
+[32m+[m[32m# The script goes over stdin; user, key and host name as arguments, quoted: ssh joins them into one[m
+[32m+[m[32m# command line, and the key has spaces in it.[m
+[32m+[m[32mssh "$admin" "sudo bash -s -- $(printf '%q ' "$USER" "$(cat "$pub")" "$HOST")" <<'REMOTE'[m
+ set -euo pipefail[m
+ user=$1 key=$2 host=$3[m
+ export DEBIAN_FRONTEND=noninteractive[m
+[1mdiff --git a/laptop/lib.sh b/laptop/lib.sh[m
+[1mindex 61322e7..abb4323 100644[m
+[1m--- a/laptop/lib.sh[m
+[1m+++ b/laptop/lib.sh[m
+[36m@@ -47,3 +47,61 @@[m [mask_yes() {[m
+   a=${a:-$2}[m
+   case $a in [Yy]*) return 0 ;; *) return 1 ;; esac[m
+ }[m
+[32m+[m
+[32m+[m[32m# Pick one of several options with the arrow keys (or j/k, or its number) and Enter.[m
+[32m+[m[32m# Usage: choose VAR "question" "option 1" "option 2" ...   VAR gets the number picked, from 1.[m
+[32m+[m[32m# Without a terminal (piped answers) it reads the number instead.[m
+[32m+[m[32mchoose() {[m
+[32m+[m[32m  local var=$1 q=$2 cur=1 key rest i n; shift 2; n=$#[m
+[32m+[m[32m  printf '%s\n' "$q" >&2[m
+[32m+[m[32m  if [ ! -t 0 ] || [ ! -t 2 ]; then[m
+[32m+[m[32m    i=0; for o in "$@"; do i=$((i + 1)); printf '  %d) %s\n' $i "$o" >&2; done[m
+[32m+[m[32m    read -r -p "1-$n: " cur[m
+[32m+[m[32m    case $cur in ''|*[!0-9]*) die "pick a number from 1 to $n" ;; esac[m
+[32m+[m[32m    [ "$cur" -ge 1 ] && [ "$cur" -le $n ] || die "pick a number from 1 to $n"[m
+[32m+[m[32m    eval "$var=\$cur"; return[m
+[32m+[m[32m  fi[m
+[32m+[m[32m  printf '\033[?25l' >&2[m
+[32m+[m[32m  while :; do[m
+[32m+[m[32m    i=0[m
+[32m+[m[32m    for o in "$@"; do[m
+[32m+[m[32m      i=$((i + 1))[m
+[32m+[m[32m      if [ $i = "$cur" ]; then printf '\r\033[K  \033[36m❯ %s\033[0m\n' "$o" >&2; else printf '\r\033[K    \033[2m%s\033[0m\n' "$o" >&2; fi[m
+[32m+[m[32m    done[m
+[32m+[m[32m    IFS= read -rsn1 key[m
+[32m+[m[32m    case $key in[m
+[32m+[m[32m      $'\x1b') read -rsn2 rest; case $rest in '[A') key=k ;; '[B') key=j ;; esac ;;[m
+[32m+[m[32m    esac[m
+[32m+[m[32m    case $key in[m
+[32m+[m[32m      k) [ "$cur" -gt 1 ] && cur=$((cur - 1)) ;;[m
+[32m+[m[32m      j) [ "$cur" -lt $n ] && cur=$((cur + 1)) ;;[m
+[32m+[m[32m      [1-9]) [ "$key" -le $n ] && cur=$key ;;[m
+[32m+[m[32m      '') break ;;[m
+[32m+[m[32m    esac[m
+[32m+[m[32m    printf '\033[%dA' $n >&2[m
+[32m+[m[32m  done[m
+[32m+[m[32m  printf '\033[?25h' >&2[m
+[32m+[m[32m  eval "$var=\$cur"[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m# Run a long step quietly: its output goes to $LOG, a spinner and the time show meanwhile, and a[m
+[32m+[m[32m# failure prints the end of the log. Usage: step "what it does" command args...[m
+[32m+[m[32mstep() {[m
+[32m+[m[32m  local msg=$1 pid t0=$SECONDS i=0 s='|/-\'; shift[m
+[32m+[m[32m  printf '\n== %s\n' "$msg" >> "$LOG"[m
+[32m+[m[32m  "$@" >> "$LOG" 2>&1 < /dev/null &[m
+[32m+[m[32m  pid=$![m
+[32m+[m[32m  if [ -t 2 ]; then[m
+[32m+[m[32m    while kill -0 $pid 2>/dev/null; do[m
+[32m+[m[32m      printf '\r\033[K  %s %s \033[2m%ds\033[0m' "${s:$((i % 4)):1}" "$msg" $((SECONDS - t0)) >&2[m
+[32m+[m[32m      i=$((i + 1)); sleep 1[m
+[32m+[m[32m    done[m
+[32m+[m[32m  fi[m
+[32m+[m[32m  if wait $pid; then[m
+[32m+[m[32m    printf '\r\033[K  \033[32m✓\033[0m %s \033[2m%ds\033[0m\n' "$msg" $((SECONDS - t0)) >&2[m
+[32m+[m[32m  else[m
+[32m+[m[32m    printf '\r\033[K  \033[31m✗\033[0m %s\n' "$msg" >&2[m
+[32m+[m[32m    tail -n 30 "$LOG" >&2[m
+[32m+[m[32m    die "That step failed; the whole log is in $LOG"[m
+[32m+[m[32m  fi[m
+[32m+[m[32m}[m
+
+[33mcommit 43ecf49a822c6e372447e15864797e1be88eedd1[m
+Author: Jane Doe <jane@example.com>  
+Date:   Fri Oct 30 18:27:16 2026 +0300
+
+    bootstrap: work on a fresh box without herdr config or python3-venv
+    
+    Create ~/.config/herdr before writing config.toml (absent when the laptop has
+    no herdr config to sync), and install python3-venv when ensurepip is missing,
+    so cswap's venv builds on a stock Ubuntu 24.04.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+[1mdiff --git a/server/bootstrap.sh b/server/bootstrap.sh[m
+[1mindex 862271c..5262565 100755[m
+[1m--- a/server/bootstrap.sh[m
+[1m+++ b/server/bootstrap.sh[m
+[36m@@ -40,6 +40,7 @@[m [msudo ln -sf ~/.local/bin/herdr /usr/local/bin/herdr[m
+ mkdir -p ~/.codex ~/.pi/agent ~/.config/opencode[m
+ for a in claude codex pi opencode; do herdr integration install "$a" || echo "WARN: $a integration failed" >&2; done[m
+ [m
+[32m+[m[32mmkdir -p ~/.config/herdr  # absent when the laptop has no herdr config to sync[m
+ grep -q '^\[experimental\]' ~/.config/herdr/config.toml 2>/dev/null \[m
+   || printf '\n[experimental]\n# single-user box: keep screen history across reboots\npane_history = true\n' >> ~/.config/herdr/config.toml[m
+ [m
+[36m@@ -112,6 +113,8 @@[m [mif [ -n "${BOARD_URL:-}" ]; then[m
+   cp board/target/release/femme-board ~/.local/bin/femme-board.new[m
+   mv ~/.local/bin/femme-board.new ~/.local/bin/femme-board[m
+   # cswap: the board's accounts window and femme-cswap's auto-rotation. Its own venv, pinned.[m
+[32m+[m[32m  # Ubuntu ships python3 without venv's ensurepip.[m
+[32m+[m[32m  python3 -c 'import ensurepip' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-venv; }[m
+   ~/.local/share/cswap/bin/cswap --version >/dev/null 2>&1 \[m
+     || { python3 -m venv --clear ~/.local/share/cswap && ~/.local/share/cswap/bin/pip install -q claude-swap==0.27.2; }[m
+   ln -sf ~/.local/share/cswap/bin/cswap ~/.local/bin/cswap[m

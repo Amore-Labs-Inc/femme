@@ -1,0 +1,262 @@
+[?1049h[22;0;0t[?1h=# Network services, Internet style[m
+#[m
+# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-number[m s.xhtml .[m
+#[m
+# New ports will be added on request if they have been officially assigned[m
+# by IANA and used in the real-world or are needed by a debian package.[m
+# If you need a huge list of used numbers please install the nmap package.[m
+[m
+tcpmux          1/tcp                           # TCP port service multiplexer[m
+echo            7/tcp[m
+echo            7/udp[m
+discard         9/tcp           sink null[m
+discard         9/udp           sink null[m
+systat          11/tcp          users[m
+daytime         13/tcp[m
+daytime         13/udp[m
+netstat         15/tcp[m
+qotd            17/tcp          quote[m
+chargen         19/tcp          ttytst source[m
+chargen         19/udp          ttytst source[m
+ftp-data        20/tcp[m
+ftp             21/tcp[m
+fsp             21/udp          fspd[m
+ssh             22/tcp                          # SSH Remote Login Protocol[m
+telnet          23/tcp[m
+smtp            25/tcp          mail[m
+time            37/tcp          timserver[m
+time            37/udp          timserver[m
+[7m/etc/services[27m[K[Kwhois           43/tcp          nicname[m
+tacacs          49/tcp                          # Login Host Protocol (TACACS)[m
+tacacs          49/udp[m
+domain          53/tcp                          # Domain Name Server[m
+domain          53/udp[m
+bootps          67/udp[m
+bootpc          68/udp[m
+tftp            69/udp[m
+gopher          70/tcp                          # Internet Gopher[m
+finger          79/tcp[m
+http            80/tcp          www             # WorldWideWeb HTTP[m
+kerberos        88/tcp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+kerberos        88/udp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+iso-tsap        102/tcp         tsap            # part of ISODE[m
+acr-nema        104/tcp         dicom           # Digital Imag. & Comm. 300[m
+pop3            110/tcp         pop-3           # POP version 3[m
+sunrpc          111/tcp         portmapper      # RPC 4.0 portmapper[m
+sunrpc          111/udp         portmapper[m
+auth            113/tcp         authentication tap ident[m
+nntp            119/tcp         readnews untp   # USENET News Transfer Protocol[m
+ntp             123/udp                         # Network Time Protocol[m
+epmap           135/tcp         loc-srv         # DCE endpoint resolution[m
+netbios-ns      137/udp                         # NETBIOS Name Service[m
+netbios-dgm     138/udp                         # NETBIOS Datagram Service[m
+netbios-ssn     139/tcp                         # NETBIOS session service[m
+imap2           143/tcp         imap            # Interim Mail Access P 2 and 4[m
+snmp            161/tcp                         # Simple Net Mgmt Protocol[m
+snmp            161/udp[m
+snmp-trap       162/tcp         snmptrap        # Traps for SNMP[m
+:[K[Ksnmp-trap       162/udp         snmptrap[m
+cmip-man        163/tcp                         # ISO mgmt over IP (CMOT)[m
+cmip-man        163/udp[m
+cmip-agent      164/tcp[m
+cmip-agent      164/udp[m
+mailq           174/tcp                 # Mailer transport queue for Zmailer[m
+xdmcp           177/udp                 # X Display Manager Control Protocol[m
+bgp             179/tcp                         # Border Gateway Protocol[m
+smux            199/tcp                         # SNMP Unix Multiplexer[m
+qmtp            209/tcp                         # Quick Mail Transfer Protocol[m
+z3950           210/tcp         wais            # NISO Z39.50 database[m
+ipx             213/udp                         # IPX [RFC1234][m
+ptp-event       319/udp[m
+ptp-general     320/udp[m
+pawserv         345/tcp                         # Perf Analysis Workbench[m
+zserv           346/tcp                         # Zebra server[m
+rpc2portmap     369/tcp[m
+rpc2portmap     369/udp                         # Coda portmapper[m
+codaauth2       370/tcp[m
+codaauth2       370/udp                         # Coda authentication server[m
+clearcase       371/udp         Clearcase[m
+ldap            389/tcp                 # Lightweight Directory Access Protocol[m
+ldap            389/udp[m
+svrloc          427/tcp                         # Server Location[m
+svrloc          427/udp[m
+https           443/tcp                         # http protocol over TLS/SSL[m
+https           443/udp                         # HTTP/3[m
+snpp            444/tcp                         # Simple Network Paging Protocol[m
+microsoft-ds    445/tcp                         # Microsoft Naked CIFS[m
+:[K[K[HMsnmp-trap       162/tcp         snmptrap        # Traps for SNMP[m
+[HMsnmp            161/udp[m
+[HMsnmp            161/tcp                         # Simple Net Mgmt Protocol[m
+[HMimap2           143/tcp         imap            # Interim Mail Access P 2 and 4[m
+[HMnetbios-ssn     139/tcp                         # NETBIOS session service[m
+[HMnetbios-dgm     138/udp                         # NETBIOS Datagram Service[m
+[HMnetbios-ns      137/udp                         # NETBIOS Name Service[m
+[HMepmap           135/tcp         loc-srv         # DCE endpoint resolution[m
+[HMntp             123/udp                         # Network Time Protocol[m
+[HMnntp            119/tcp         readnews untp   # USENET News Transfer Protocol[m
+[HMauth            113/tcp         authentication tap ident[m
+[HMsunrpc          111/udp         portmapper[m
+[HMsunrpc          111/tcp         portmapper      # RPC 4.0 portmapper[m
+[HMpop3            110/tcp         pop-3           # POP version 3[m
+[HMacr-nema        104/tcp         dicom           # Digital Imag. & Comm. 300[m
+[HMiso-tsap        102/tcp         tsap            # part of ISODE[m
+[HMkerberos        88/udp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+[HMkerberos        88/tcp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+[HMhttp            80/tcp          www             # WorldWideWeb HTTP[m
+[HMfinger          79/tcp[m
+[HMgopher          70/tcp                          # Internet Gopher[m
+[HMtftp            69/udp[m
+[HMbootpc          68/udp[m
+[HMbootps          67/udp[m
+[HMdomain          53/udp[m
+[HMdomain          53/tcp                          # Domain Name Server[m
+[HMtacacs          49/udp[m
+[HMtacacs          49/tcp                          # Login Host Protocol (TACACS)[m
+[HMwhois           43/tcp          nicname[m
+[30;1H[K:[K[K...skipping...
+nsca            5667/tcp                        # Nagios Agent - NSCA[m
+canna           5680/tcp                        # cannaserver[m
+syslog-tls      6514/tcp                        # Syslog over TLS [RFC5425][m
+sane-port       6566/tcp        sane saned      # SANE network scanner daemon[m
+ircd            6667/tcp                        # Internet Relay Chat[m
+zope-ftp        8021/tcp                        # zope management by ftp[m
+tproxy          8081/tcp                        # Transparent Proxy[m
+omniorb         8088/tcp                        # OmniORB[m
+clc-build-daemon 8990/tcp                       # Common lisp build daemon[m
+xinetd          9098/tcp[m
+git             9418/tcp                        # Git Version Control System[m
+zope            9673/tcp                        # zope server[m
+webmin          10000/tcp[m
+kamanda         10081/tcp                       # amanda backup services (Kerberos)[m
+amandaidx       10082/tcp                       # amanda backup services[m
+amidxtape       10083/tcp                       # amanda backup services[m
+sgi-cmsd        17001/udp               # Cluster membership services daemon[m
+sgi-crsd        17002/udp[m
+sgi-gcd         17003/udp                       # SGI Group membership daemon[m
+sgi-cad         17004/tcp                       # Cluster Admin daemon[m
+binkp           24554/tcp                       # binkp fidonet protocol[m
+asp             27374/tcp                       # Address Search Protocol[m
+asp             27374/udp[m
+csync2          30865/tcp                       # cluster synchronization tool[m
+dircproxy       57000/tcp                       # Detachable IRC Proxy[m
+tfido           60177/tcp                       # fidonet EMSI over telnet[m
+fido            60179/tcp                       # fidonet EMSI over TCP[m
+[m
+# Local services[m
+[7m(END)[27m[K[K[H[2J[HMtime            37/udp          timserver[m
+[HMtime            37/tcp          timserver[m
+[HMsmtp            25/tcp          mail[m
+[HMtelnet          23/tcp[m
+[HMssh             22/tcp                          # SSH Remote Login Protocol[m
+[HMfsp             21/udp          fspd[m
+[HMftp             21/tcp[m
+[HMftp-data        20/tcp[m
+[HMchargen         19/udp          ttytst source[m
+[HMchargen         19/tcp          ttytst source[m
+[HMqotd            17/tcp          quote[m
+[HMnetstat         15/tcp[m
+[HMdaytime         13/udp[m
+[HMdaytime         13/tcp[m
+[HMsystat          11/tcp          users[m
+[HMdiscard         9/udp           sink null[m
+[HMdiscard         9/tcp           sink null[m
+[HMecho            7/udp[m
+[HMecho            7/tcp[m
+[HMtcpmux          1/tcp                           # TCP port service multiplexer[m
+[HM[m
+[HM# If you need a huge list of used numbers please install the nmap package.[m
+[HM# by IANA and used in the real-world or are needed by a debian package.[m
+[HM# New ports will be added on request if they have been officially assigned[m
+[HM#[m
+[HMs.xhtml .[m
+[HM# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-number[m[HM#[m
+[HM# Network services, Internet style[m
+[30;1H[K:[K[K/[Khh[Ktt[Ktt[Kpp[K[1;1H# Network services, Internet style[m
+[2;1H#[m
+[3;1H# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-number[m [4;1Hs.xhtml .[m
+[5;1H#[m
+[6;1H# New ports will be added on request if they have been officially assigned[m
+[7;1H# by IANA and used in the real-world or are needed by a debian package.[m
+[8;1H# If you need a huge list of used numbers please install the nmap package.[m
+[9;1H[m
+[10;1Htcpmux          1/tcp                           # TCP port service multiplexer[m
+[11;1Hecho            7/tcp[m
+[12;1Hecho            7/udp[m
+[13;1Hdiscard         9/tcp           sink null[m
+[14;1Hdiscard         9/udp           sink null[m
+[15;1Hsystat          11/tcp          users[m
+[16;1Hdaytime         13/tcp[m
+[17;1Hdaytime         13/udp[m
+[18;1Hnetstat         15/tcp[m
+[19;1Hqotd            17/tcp          quote[m
+[20;1Hchargen         19/tcp          ttytst source[m
+[21;1Hchargen         19/udp          ttytst source[m
+[22;1Hftp-data        20/tcp[m
+[23;1Hftp             21/tcp[m
+[24;1Hfsp             21/udp          fspd[m
+[25;1Hssh             22/tcp                          # SSH Remote Login Protocol[m
+[26;1Htelnet          23/tcp[m
+[27;1Hsmtp            25/tcp          mail[m
+[28;1Htime            37/tcp          timserver[m
+[29;1Htime            37/udp          timserver[m
+[30;1H[1;1H# Network services, Internet style[m
+[2;1H#[m
+[3;1H# Updated from [7mhttp[27ms://www.iana.org/assignments/service-names-port-numbers/service-names-port-number[m [4;1Hs.xhtml .[m
+[5;1H#[m
+[6;1H# New ports will be added on request if they have been officially assigned[m
+[7;1H# by IANA and used in the real-world or are needed by a debian package.[m
+[8;1H# If you need a huge list of used numbers please install the nmap package.[m
+[9;1H[m
+[10;1Htcpmux          1/tcp                           # TCP port service multiplexer[m
+[11;1Hecho            7/tcp[m
+[12;1Hecho            7/udp[m
+[13;1Hdiscard         9/tcp           sink null[m
+[14;1Hdiscard         9/udp           sink null[m
+[15;1Hsystat          11/tcp          users[m
+[16;1Hdaytime         13/tcp[m
+[17;1Hdaytime         13/udp[m
+[18;1Hnetstat         15/tcp[m
+[19;1Hqotd            17/tcp          quote[m
+[20;1Hchargen         19/tcp          ttytst source[m
+[21;1Hchargen         19/udp          ttytst source[m
+[22;1Hftp-data        20/tcp[m
+[23;1Hftp             21/tcp[m
+[24;1Hfsp             21/udp          fspd[m
+[25;1Hssh             22/tcp                          # SSH Remote Login Protocol[m
+[26;1Htelnet          23/tcp[m
+[27;1Hsmtp            25/tcp          mail[m
+[28;1Htime            37/tcp          timserver[m
+[29;1Htime            37/udp          timserver[m
+[30;1Hwhois           43/tcp          nicname[m
+tacacs          49/tcp                          # Login Host Protocol (TACACS)[m
+:[K[K/[K...skipping...
+[7mhttp[27m            80/tcp          www             # WorldWideWeb HTTP[m
+kerberos        88/tcp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+kerberos        88/udp          kerberos5 krb5 kerberos-sec     # Kerberos v5[m
+iso-tsap        102/tcp         tsap            # part of ISODE[m
+acr-nema        104/tcp         dicom           # Digital Imag. & Comm. 300[m
+pop3            110/tcp         pop-3           # POP version 3[m
+sunrpc          111/tcp         portmapper      # RPC 4.0 portmapper[m
+sunrpc          111/udp         portmapper[m
+auth            113/tcp         authentication tap ident[m
+nntp            119/tcp         readnews untp   # USENET News Transfer Protocol[m
+ntp             123/udp                         # Network Time Protocol[m
+epmap           135/tcp         loc-srv         # DCE endpoint resolution[m
+netbios-ns      137/udp                         # NETBIOS Name Service[m
+netbios-dgm     138/udp                         # NETBIOS Datagram Service[m
+netbios-ssn     139/tcp                         # NETBIOS session service[m
+imap2           143/tcp         imap            # Interim Mail Access P 2 and 4[m
+snmp            161/tcp                         # Simple Net Mgmt Protocol[m
+snmp            161/udp[m
+snmp-trap       162/tcp         snmptrap        # Traps for SNMP[m
+snmp-trap       162/udp         snmptrap[m
+cmip-man        163/tcp                         # ISO mgmt over IP (CMOT)[m
+cmip-man        163/udp[m
+cmip-agent      164/tcp[m
+cmip-agent      164/udp[m
+mailq           174/tcp                 # Mailer transport queue for Zmailer[m
+xdmcp           177/udp                 # X Display Manager Control Protocol[m
+bgp             179/tcp                         # Border Gateway Protocol[m
+smux            199/tcp                         # SNMP Unix Multiplexer[m
+qmtp            209/tcp                         # Quick Mail Transfer Protocol[m
+:[K[K[?1l>[?1049l[23;0;0t

@@ -1,0 +1,141 @@
+[?1049h[22;0;0t[>4;2m[?1h=[?2004h[?1004h[1;30r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[30;1H"/etc/services" [readonly] 361L, 12813B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]10;?]11;?[1;1H# Network services, Internet style
+#[2;2H[K[3;1H# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numberr[4;1Hs.xhtml .
+#
+# New ports will be added on request if they have been officially assigned
+# by IANA and used in the real-world or are needed by a debian package.
+# If you need a huge list of used numbers please install the nmap package.
+
+tcpmux[10C1/tcp[27C# TCP port service multiplexer
+echo[12C7/tcp
+echo[12C7/udp
+discard[9C9/tcp[11Csink null
+discard[9C9/udp[11Csink null
+systat[10C11/tcp[10Cusers
+daytime[9C13/tcp
+daytime[9C13/udp
+netstat[9C15/tcp
+qotd[12C17/tcp[10Cquote
+chargen[9C19/tcp[10Cttytst source
+chargen[9C19/udp[10Cttytst source
+ftp-data[8C20/tcp
+ftp[13C21/tcp
+fsp[13C21/udp[10Cfspd
+ssh[13C22/tcp[26C# SSH Remote Login Protocol
+telnet[10C23/tcp
+smtp[12C25/tcp[10Cmail
+time[12C37/tcp[10Ctimserver
+time[12C37/udp[10Ctimserver[1;1H[?25h[?4m[?25lnsca            5667/tcp          [14C# Nagios Agent - NSCA
+canna[11C5680/tcp[24C# cannaserver
+syslog-tls      6514/tcp                        # Syslog over TLS [RFC5425][3;76H[K[4;2Hane-port[7C6566/tcp[8Csane saned      # SANE network scanner daemon
+ircd[12C6667/tcp[24C# Internet Relay Chat
+zope-ftp        8021/tcp                        # zope management by ftp[6;73H[K[7;1Htproxy          8081/tcp                        # Transparent Proxy[7;68H[K[8;1Homniorb         8088/tcp                        # OmniORB[8;58H[K[9;1Hclc-build-daemon 8990/tcp[23C# Common lisp build daemon
+xinetd[10C9098/tcp[10;49H[K[11;1Hgit [12C9418/tcp[24C# Git Version Control System
+zope[12C9673/tcp[24C# zope server
+webmin [9C10000/tcp[13;33H[K[14;1Hkamanda[9C10081/tcp[7C         [7C# amanda backup services (Kerberos)
+amandaidx[8C0082/tcp[7C     [11C# amanda backup services
+amidxtape[8C0083/tcp[23C# amanda backup services
+sgi-cmsd[9C7001/udp[15C# Cluster membership services daemon
+sgi-crsd[9C7002/udp
+sgi-gcd[11C003/udp[7C     [11C# SGI Group membership daemon
+sgi-cad[10C7004/tcp[7C                # Cluster Admin daemon
+binkp  [9C24554/tcp[7C                # binkp fidonet protocol
+asp     [9C7374/tcp[23C# Address Search Protocol
+as[15C7374/udp
+csync2[10C30865/tcp[7C    [12C# cluster synchronization tool
+dircproxy[7C57000/tcp[25CDetachable IRC Proxy[25;71H[K[26;2Hfido [10C60177/tcp[23C# fidonet EMSI over telnet
+fido[12C60179/tcp[7C    [12C# fidonet EMSI over TCP[28;1H[K[29;1H# Local services[29;17H[K[29;1H[?25h[?25l[1;1H# Network services, Internet style[1;49H[K[2;1H#[2;2H[K[3;1H# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numberr[4;1Hs.xhtml .[4;17H[K[5;1H#[5;2H[K[6;1H# New ports will be added on request if they have been officially assigned
+# by IANA and used in the real-world or are needed by a debian package.
+# If you need a huge list of used numbers please install the nmap package.[9;1H[K[10;1Htcpmux[10C1/tcp   [24C# TCP port service multiplexer
+echo[12C7/tcp[11;22H[K[12;1Hecho[12C7/udp[12;22H[K[13;1Hdiscard[9C9/tcp    [7Csink null
+discard[9C9/udp    [7Csink null[14;49H[K[15;1Hsystat   [8C1/tcp   [7Cusers[15;49H[K[16;1Hdaytime  [8C3/tcp[16;23H[K[17;1Hdaytime [9C3/udp[17;23H[K[18;1Hnetstat [9C5/tcp[18;23H[K[19;1Hqotd   [11C/tcp   [7Cquote[19;49H[K[20;1Hchargen[10C9/tcp   [7Cttytst source[20;49H[K[21;1Hchargen[9C19/udp   [7Cttytst source[21;49H[K[22;1Hftp-data[9C0/tcp[22;23H[K[23;1Hft[15C1/tcp[23;23H[K[24;1Hfsp   [10C21/udp   [7Cfspd[24;49H[K[25;1Hssh      [7C22/tcp   [25CSSH Remote Login Protocol
+telnet[10C23/tcp[26;23H[K[27;1Hsmtp[12C25/tcp   [7Cmail[27;49H[K[28;1Htime[12C37/tcp[10Ctimserver
+time            37/udp[10Ctimserver[1;1H[?25h[?25l[30;1H[K[30;1H/ssh[25;1H[?25h[?25l[30;1H[31msearch hit BOTTOM, continuing at TOP[25;1H[?25h[?25l[m[30;1H/ssh [30;6H[K[30;1H[31msearch hit BOTTOM, continuing at TOP[25;1H[?25h[?25l[m[30;1H[K[30;1H:set nu[1;1H[38;5;130m  1 [m# Network services, Internet style
+[38;5;130m  2 [m#
+[38;5;130m  3 [m# Updated from https://www.iana.org/assignments/service-names-port-numbers/service-names-port-nuu[4;1H[38;5;130m    [mmbers.xhtml .
+[38;5;130m  4 [m#
+[38;5;130m  5 [m# New ports will be added on request if they have been officially assigned
+[38;5;130m  6 [m# by IANA and used in the real-world or are needed by a debian package.
+[38;5;130m  7 [m# If you need a huge list of used numbers please install the nmap package.
+[38;5;130m  8 
+  9 [mtcpmux          1/tcp[23C    # TCP port service multiplexer
+[38;5;130m 10 [mecho[8C    7/tcp
+[38;5;130m 11 [mecho[8C    7/udp
+[38;5;130m 12 [mdiscard         9/tcp[7C    sink null
+[38;5;130m 13 [mdiscard         9/udp[7C    sink null
+[38;5;130m 14 [msystat          11/tcp          users
+[38;5;130m 15 [mdaytime         13/tcp
+[38;5;130m 16 [mdaytime         13/udp
+[38;5;130m 17 [mnetstat         15/tcp
+[38;5;130m 18 [mqotd[8C    17/tcp          quote
+[38;5;130m 19 [mchargen         19/tcp          ttytst source
+[38;5;130m 20 [mchargen         19/udp          ttytst source
+[38;5;130m 21 [mftp-data        20/tcp
+[38;5;130m 22 [mftp[9C    21/tcp
+[38;5;130m 23 [mfsp[9C    21/udp          fspd
+[38;5;130m 24 [mssh[9C    22/tcp[22C    # SSH Remote Login Protocol
+[38;5;130m 25 [mtelnet          23/tcp
+[38;5;130m 26 [msmtp[8C    25/tcp          mail
+[38;5;130m 27 [mtime[8C    37/tcp          timserver
+[38;5;130m 28 [mtime[8C    37/udp          timserver[25;5H[?25h[?25l[27m[23m[29m[m[H[2J[1;1H[38;5;130m 27 [mtime[12C37/tcp[10Ctimserver
+[38;5;130m 28 [mtime[12C37/udp[10Ctimserver
+[38;5;130m 29 [mwhois[11C43/tcp[10Cnicname
+[38;5;130m 30 [mtacacs[10C49/tcp[26C# Login Host Protocol (TACACS)
+[38;5;130m 31 [mtacacs[10C49/udp
+[38;5;130m 32 [mdomain[10C53/tcp[26C# Domain Name Server
+[38;5;130m 33 [mdomain[10C53/udp
+[38;5;130m 34 [mbootps[10C67/udp
+[38;5;130m 35 [mbootpc[10C68/udp
+[38;5;130m 36 [mtftp[12C69/udp
+[38;5;130m 37 [mgopher[10C70/tcp[26C# Internet Gopher
+[38;5;130m 38 [mfinger[10C79/tcp
+[38;5;130m 39 [mhttp[12C80/tcp[10Cwww[13C# WorldWideWeb HTTP
+[38;5;130m 40 [mkerberos[8C88/tcp[10Ckerberos5 krb5 kerberos-sec     # Kerberos v5
+[38;5;130m 41 [mkerberos[8C88/udp[10Ckerberos5 krb5 kerberos-sec     # Kerberos v5
+[38;5;130m 42 [miso-tsap[8C102/tcp[9Ctsap[12C# part of ISODE
+[38;5;130m 43 [macr-nema[8C104/tcp[9Cdicom[11C# Digital Imag. & Comm. 300
+[38;5;130m 44 [mpop3[12C110/tcp[9Cpop-3[11C# POP version 3
+[38;5;130m 45 [msunrpc[10C111/tcp[9Cportmapper      # RPC 4.0 portmapper
+[38;5;130m 46 [msunrpc[10C111/udp[9Cportmapper
+[38;5;130m 47 [mauth[12C113/tcp[9Cauthentication tap ident
+[38;5;130m 48 [mnntp[12C119/tcp[9Creadnews untp   # USENET News Transfer Protocol
+[38;5;130m 49 [mntp[13C123/udp[25C# Network Time Protocol
+[38;5;130m 50 [mepmap[11C135/tcp[9Cloc-srv[9C# DCE endpoint resolution
+[38;5;130m 51 [mnetbios-ns      137/udp[25C# NETBIOS Name Service
+[38;5;130m 52 [mnetbios-dgm     138/udp[25C# NETBIOS Datagram Service
+[38;5;130m 53 [mnetbios-ssn     139/tcp[25C# NETBIOS session service
+[38;5;130m 54 [mimap2[11C143/tcp[9Cimap[12C# Interim Mail Access P 2 and 4
+[38;5;130m 55 [msnmp[12C161/tcp[25C# Simple Net Mgmt Protocol[1;5H[?25h[?25l[27m[23m[29m[m[H[2J[1;1H[38;5;130m 54 [mimap2[11C143/tcp[9Cimap[12C# Interim Mail Access P 2 and 4
+[38;5;130m 55 [msnmp[12C161/tcp[25C# Simple Net Mgmt Protocol
+[38;5;130m 56 [msnmp[12C161/udp
+[38;5;130m 57 [msnmp-trap[7C162/tcp[9Csnmptrap[8C# Traps for SNMP
+[38;5;130m 58 [msnmp-trap[7C162/udp[9Csnmptrap
+[38;5;130m 59 [mcmip-man[8C163/tcp[25C# ISO mgmt over IP (CMOT)
+[38;5;130m 60 [mcmip-man[8C163/udp
+[38;5;130m 61 [mcmip-agent      164/tcp
+[38;5;130m 62 [mcmip-agent      164/udp
+[38;5;130m 63 [mmailq[11C174/tcp[17C# Mailer transport queue for Zmailer
+[38;5;130m 64 [mxdmcp[11C177/udp[17C# X Display Manager Control Protocol
+[38;5;130m 65 [mbgp[13C179/tcp[25C# Border Gateway Protocol
+[38;5;130m 66 [msmux[12C199/tcp[25C# SNMP Unix Multiplexer
+[38;5;130m 67 [mqmtp[12C209/tcp[25C# Quick Mail Transfer Protocol
+[38;5;130m 68 [mz3950[11C210/tcp[9Cwais[12C# NISO Z39.50 database
+[38;5;130m 69 [mipx[13C213/udp[25C# IPX [RFC1234]
+[38;5;130m 70 [mptp-event[7C319/udp
+[38;5;130m 71 [mptp-general     320/udp
+[38;5;130m 72 [mpawserv[9C345/tcp[25C# Perf Analysis Workbench
+[38;5;130m 73 [mzserv[11C346/tcp[25C# Zebra server
+[38;5;130m 74 [mrpc2portmap     369/tcp
+[38;5;130m 75 [mrpc2portmap     369/udp[25C# Coda portmapper
+[38;5;130m 76 [mcodaauth2[7C370/tcp
+[38;5;130m 77 [mcodaauth2[7C370/udp[25C# Coda authentication server
+[38;5;130m 78 [mclearcase[7C371/udp[9CClearcase
+[38;5;130m 79 [mldap[12C389/tcp[17C# Lightweight Directory Access Protocol
+[38;5;130m 80 [mldap[12C389/udp
+[38;5;130m 81 [msvrloc[10C427/tcp[25C# Server Location
+[38;5;130m 82 [msvrloc[10C427/udp[1;5H[?25h[?25l[1;2H[38;5;130m27[m[1Ctime [11C37/tcp [9Ctimserver[1;53H[K[2;2H[38;5;130m28[m[1Ctime[12C37/udp [9Ctimserver[2;53H[K[3;2H[38;5;130m29[m[1Cwhois[11C43/tcp [9Cnicname[4;2H[38;5;130m30[m[1Ctacacs   [7C49/tcp [9C        [10CLogin Host Protocol (TACACS)[5;2H[38;5;130m31[m[1Ctacacs   [7C49/udp[5;27H[K[6;2H[38;5;130m32[m[1Cdomain  [8C53/tcp [27CDomain Name Server[6;73H[K[7;2H[38;5;130m33[m[1Cdomain  [8C53/udp[7;27H[K[8;2H[38;5;130m34[m[1Cbootps          67/udp[8;27H[K[9;2H[38;5;130m35[m[1Cbootpc          68/udp[9;27H[K[10;2H[38;5;130m36[m[1Ctftp [11C69/udp[10;27H[K[11;2H[38;5;130m37[m[1Cgopher[10C70/tcp [17C        # Internet Gophe[11;70H[K[12;2H[38;5;130m38[m[1Cfinger[10C79/tcp[12;27H[K[13;2H[38;5;130m39[m[1Chttp[12C80/tcp [9Cwww[15CWorldWideWeb HTTP[13;72H[K[14;2H[38;5;130m40[m[1Ckerberos[8C88/tcp [9Ckerberos5 krb5 kerberos-sec     # Kerberos v5[14;82H[K[15;2H[38;5;130m41[m[1Ckerberos[8C88/udp [9Ckerberos5 krb5 kerberos-sec     # Kerberos v5[16;2H[38;5;130m42[m[2Cso-tsap[8C102/tc[10Ctsap[14Cpart of ISODE[17;2H[38;5;130m43[m[1Cacr-nema [7C104/tc[10Cdicom[11C# Digital Imag. & Comm. 300[18;2H[38;5;130m44[m[2Cop3            110/tc[10Cpop-3[11C# POP version 3[19;2H[38;5;130m45[m[1Csunrpc [9C111[13Cportmapper[8CRPC 4.0 portmapper[19;73H[K[20;2H[38;5;130m46[m[1Csunrpc[10C111/ud[10Cportmapper[20;53H[K[21;2H[38;5;130m47[m[1Cauth            113[13Cauthentication tap ident[22;2H[38;5;130m48[m[1Cnntp            119/tc[10Creadnews untp   # USENET News Transfer Protocol[23;2H[38;5;130m49[m[1Cntp      [7C123/ud[26C# Network Time Protocol[24;2H[38;5;130m50[m[1Cepmap    [7C135/tc[10Cloc-srv[11CDCE endpoint resolution[24;78H[K[25;2H[38;5;130m51[m[1Cnetbios-ns      137[13C         [7C# NETBIOS Name Service[26;2H[38;5;130m52[m[1Cnetbios-dgm     138/ud[18C        # NETBIOS Datagram Service[26;79H[K[27;2H[38;5;130m53[m[1Cnetbios-ssn     139/tc[26C# NETBIOS session service[28;2H[38;5;130m54[m[1Cimap2 [10C143[13Cimap[14CInterim Mail Access P 2 and 4[29;2H[38;5;130m55[m[2Cnmp  [10C161/tc[26C# Simple Net Mgmt Protocol[29;5H[?25h[?25l[1;29r[1;1H[5M[1;30r[25;1H[38;5;130m 56 [msnmp[12C161/udp
+[38;5;130m 57 [msnmp-trap[7C162/tcp[9Csnmptrap[8C# Traps for SNMP
+[38;5;130m 58 [msnmp-trap[7C162/udp[9Csnmptrap
+[38;5;130m 59 [mcmip-man[8C163/tcp[25C# ISO mgmt over IP (CMOT)
+[38;5;130m 60 [mcmip-man[8C163/udp[29;5H[?25h[?25l
+[31mW10: Warning: Changing a readonly file[m[29;10Hagent[8C4/tc[29;5H[?25h[?25l
+1 more line; before #1  0 seconds ago[30;38H[K[29;10Hman  [8C3/ud[29;5H[?25h[?25l[30;1H[K[30;1H:q![?2004l[>4;m[23;2t[23;1t[30;1H[K[30;1H[?1004l[?2004l[?1l>[?1049l[23;0;0t[?25h[>4;m

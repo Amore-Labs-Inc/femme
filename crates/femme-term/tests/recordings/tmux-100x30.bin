@@ -1,0 +1,94 @@
+[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;30r[c[>c[>q]10;?\]11;?\[16;52H[?25l[15;1H──────────────────────────────────────────────────[32m┬─────────────────────────────────────────────────[16;51H│[17;51H│[18;51H│[19;51H│[20;51H│[21;51H│[22;51H│[23;51H│[24;51H│[25;51H│[26;51H│[27;51H│[28;51H│[29;51H│(B[m[Hdrwxr-xr-x  13 root root  4096 Oct 25 07:44 [34m[1m.(B[m[K
+drwxr-xr-x  22 root root  4096 Oct 30 14:14 [34m[1m..(B[m[K
+drwxr-xr-x   2 root root 36864 Oct 27 07:08 [34m[1mbin(B[m[K
+drwxr-xr-x   2 root root  4096 Apr 22  2024 [34m[1mgames(B[m[K
+drwxr-xr-x  41 root root  4096 Oct 25 07:44 [34m[1minclude(B[m[K
+drwxr-xr-x  93 root root  4096 Oct 26 11:58 [34m[1mlib(B[m[K
+drwxr-xr-x   3 root root  4096 Oct 25 07:44 [34m[1mlib32(B[m[K
+drwxr-xr-x   2 root root  4096 Oct 17 10:03 [34m[1mlib64(B[m[K
+drwxr-xr-x  14 root root  4096 Oct 26 11:58 [34m[1mlibexec(B[m[K
+drwxr-xr-x  10 root root  4096 Oct 17 10:02 [34m[1mlocal(B[m[K
+drwxr-xr-x   2 root root 20480 Oct 26 11:58 [34m[1msbin(B[m[K
+drwxr-xr-x 159 root root  4096 Oct 27 07:08 [34m[1mshare(B[m[K
+drwxr-xr-x   4 root root  4096 Oct 17 10:08 [34m[1msrc(B[m[K
+[K[16;50H[1K188[17;50H[1K189[18;50H[1K190[19;50H[1K191[20;50H[1K192[21;50H[1K193[22;50H[1K194[23;50H[1K195[24;50H[1K196[25;50H[1K197[26;50H[1K198[27;50H[1K199[28;50H[1K200[29;50H[1K[16;52H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[0] 0:bash*                                                               "agentbox" 10:17 02-Nov-26(B[m[?12l[?25h[16;52H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;30r[?25l[15;1H──────────────────────────────────────────────────[32m┬─────────────────────────────────────────────────[16;51H│[17;51H│[18;51H│[19;51H│[20;51H│[21;51H│[22;51H│[23;51H│[24;51H│[25;51H│[26;51H│[27;51H│[28;51H│[29;51H│(B[m[Hdrwxr-xr-x  13 root root  4096 Oct 25 07:44 [34m[1m.(B[m[K
+drwxr-xr-x  22 root root  4096 Oct 30 14:14 [34m[1m..(B[m[K
+drwxr-xr-x   2 root root 36864 Oct 27 07:08 [34m[1mbin(B[m[K
+drwxr-xr-x   2 root root  4096 Apr 22  2024 [34m[1mgames(B[m[K
+drwxr-xr-x  41 root root  4096 Oct 25 07:44 [34m[1minclude(B[m[K
+drwxr-xr-x  93 root root  4096 Oct 26 11:58 [34m[1mlib(B[m[K
+drwxr-xr-x   3 root root  4096 Oct 25 07:44 [34m[1mlib32(B[m[K
+drwxr-xr-x   2 root root  4096 Oct 17 10:03 [34m[1mlib64(B[m[K
+drwxr-xr-x  14 root root  4096 Oct 26 11:58 [34m[1mlibexec(B[m[K
+drwxr-xr-x  10 root root  4096 Oct 17 10:02 [34m[1mlocal(B[m[K
+drwxr-xr-x   2 root root 20480 Oct 26 11:58 [34m[1msbin(B[m[K
+drwxr-xr-x 159 root root  4096 Oct 27 07:08 [34m[1mshare(B[m[K
+drwxr-xr-x   4 root root  4096 Oct 17 10:08 [34m[1msrc(B[m[K
+[K[16;50H[1K188[17;50H[1K189[18;50H[1K190[19;50H[1K191[20;50H[1K192[21;50H[1K193[22;50H[1K194[23;50H[1K195[24;50H[1K196[25;50H[1K197[26;50H[1K198[27;50H[1K199[28;50H[1K200[29;50H[1K[16;52H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[0] 0:bash*                                                               "agentbox" 10:17 02-Nov-26(B[m[?12l[?25h[16;52H[?25l          Print version info and exit[K[17;52H      --list[K[18;52H          List installed commands[K[19;52H      --explain <CODE>[K[20;52H          Provide a detailed explanation of a[K[21;52H          rustc error message[K[22;52H  -v, --verbose...[K[23;52H          Use verbose output (-vv very[K[24;52H          verbose/build.rs output)[K[25;52H  -q, --quiet[K[26;52H          Do not print cargo log messages[K[27;52H      --color <WHEN>[K[28;52H          Coloring [possible values: auto,[K[29;52H[K[?12l[?25h[?25l[1;51H│[2;51H│[3;51H│[4;51H│[5;51H│[6;51H│[7;51H│[8;51H│[9;51H│[10;51H│[11;51H│[12;51H│[13;51H│[14;51H│[15;51H│[16;51H[32m│[17;51H│[18;51H│[19;51H│[20;51H│[21;51H│[22;51H│[23;51H│[24;51H│[25;51H│[26;51H│[27;51H│[28;51H│[29;51H│(B[m[1;50H[1K[H173[2;50H[1K174[3;50H[1K175[4;50H[1K176[5;50H[1K177[6;50H[1K178[7;50H[1K179[8;50H[1K180[9;50H[1K181[10;50H[1K182[11;50H[1K183[12;50H[1K184[13;50H[1K185[14;50H[1K186[15;50H[1K187[16;50H[1K188[17;50H[1K189[18;50H[1K190[19;50H[1K191[20;50H[1K192[21;50H[1K193[22;50H[1K194[23;50H[1K195[24;50H[1K196[25;50H[1K197[26;50H[1K198[27;50H[1K199[28;50H[1K200[29;50H[1K[1;52HRust's package manager[K[2;52H[K
+Usage: cargo [+toolchain] [OPTIONS] [COMMAND][K[4;52H       cargo [+toolchain] [OPTIONS] -Zscript <MAN[5;52HIFEST_RS> [ARGS]...[K[6;52H[K
+Options:[K[8;52H  -V, --version[K[9;52H          Print version info and exit[K[10;52H      --list[K[11;52H          List installed commands[K[12;52H      --explain <CODE>[K[13;52H          Provide a detailed explanation of a[K[14;52H          rustc error message[K[15;52H  -v, --verbose...[K[16;52H          Use verbose output (-vv very[K[17;52H          verbose/build.rs output)[K[18;52H  -q, --quiet[K[19;52H          Do not print cargo log messages[K[20;52H      --color <WHEN>[K[21;52H          Coloring [possible values: auto,[K[22;52H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[0] 0:sleep*                                                              "agentbox" 10:17 02-Nov-26(B[m[?12l[?25h[22;52H[?25l[HRust's package manager[K
+[K
+Usage: cargo [+toolchain] [OPTIONS] [COMMAND][K
+       cargo [+toolchain] [OPTIONS] -Zscript <MANIFEST_RS> [ARGS]...[K
+[K
+Options:[K
+  -V, --version[K
+          Print version info and exit[K
+      --list[K
+          List installed commands[K
+      --explain <CODE>[K
+          Provide a detailed explanation of a[K
+          rustc error message[K
+  -v, --verbose...[K
+          Use verbose output (-vv very[K
+          verbose/build.rs output)[K
+  -q, --quiet[K
+          Do not print cargo log messages[K
+      --color <WHEN>[K
+          Coloring [possible values: auto,[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[0] 0:sleep*                                                              "agentbox" 10:17 02-Nov-26(B[m[?12l[?25h[21;1H[1;30r(B[m[?1l>[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004l[?7727l[?1004l[?1049l[23;0;0t[exited]
