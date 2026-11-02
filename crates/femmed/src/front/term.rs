@@ -1,6 +1,7 @@
 //! One terminal stream, relayed: the desktop's `TermUp` into a holder view, the view's `TermDown`
 //! back, each as it comes. The relay adds no timers and no batching; what it does add is measured
-//! per hop ([`Hops`]) so the plan's "the daemon adds under 3 ms" is a number, not a belief.
+//! ([`Hops`]) so the plan's "the daemon adds under 3 ms" is a number, not a belief: per hop, and
+//! from a key read off the desktop's stream to the frame that echoes it written back to it.
 
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -60,11 +61,19 @@ pub(crate) async fn relay(
     let Some((up, mut down)) = view else {
         return exited(&mut tx, -1).await;
     };
+    // The last key read off the stream and not yet echoed: its seq, and when it was read.
+    // ponytail: one key at a time. Keys typed faster than their echoes come back are not all
+    // counted, and one the holder never echoes is counted when a later frame carries its seq,
+    // whenever that is: p50 and p99 are the honest numbers of a log, the max is not.
+    let keyed: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
     // Two directions, each awaited in its own future: a send that waits on the other side's full
     // queue must not stop the other direction (Tx::send is only ever awaited in its own branch).
     let upward = async {
         while let Ok(Some(m)) = rx.recv_msg::<TermUp>().await {
             let t = Instant::now();
+            if let TermUp::Key { seq, .. } = &m {
+                *keyed.lock().unwrap_or_else(PoisonError::into_inner) = Some((*seq, t));
+            }
             if up.send(m).await.is_err() {
                 // The view ended; `downward` drains what it left (its `Exited`) and finishes.
                 return std::future::pending().await;
@@ -81,6 +90,15 @@ pub(crate) async fn relay(
                 return true; // the desktop is gone: nobody to tell
             }
             hops.note(Hop::Down, t);
+            if let TermDown::Frame(f) = &m {
+                let mut keyed = keyed.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some((seq, read)) = *keyed {
+                    if f.echo_seq >= seq {
+                        hops.note(Hop::Key, read);
+                        *keyed = None;
+                    }
+                }
+            }
         }
         exited
     };
@@ -106,6 +124,8 @@ enum Hop {
     Up,
     /// A `TermDown` out of the holder view's channel → handed to the QUIC (or mux) stream.
     Down,
+    /// A `Key` decoded off the desktop's stream → the frame that echoes it handed to the stream.
+    Key,
 }
 
 /// What one hop took, over everything relayed so far.
@@ -126,6 +146,12 @@ pub struct Stats {
     pub up: Quantiles,
     /// `TermDown` received from the holder view → written to the stream.
     pub down: Quantiles,
+    /// A `Key` read off the desktop's stream → the frame that echoes it written to it: both of the
+    /// daemon's edges with the whole way between them, the holder socket's two legs, the holder
+    /// and the shell included. The legs run in the task `Holder::attach` spawns, which stamps
+    /// nothing, so what part of this is the daemon's own cannot be told from here: it over-states
+    /// it. Not in it: the network, and the desktop.
+    pub key: Quantiles,
 }
 
 impl fmt::Display for Quantiles {
@@ -147,8 +173,9 @@ impl fmt::Display for Stats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "term up (read -> holder channel): {}\nterm down (holder channel -> stream): {}",
-            self.up, self.down
+            "term up (read -> holder channel): {}\nterm down (holder channel -> stream): {}\n\
+             key echo (key read -> echo frame written): {}",
+            self.up, self.down, self.key
         )
     }
 }
@@ -157,6 +184,7 @@ impl fmt::Display for Stats {
 pub struct Hops {
     up: Mutex<Histogram<u64>>,
     down: Mutex<Histogram<u64>>,
+    key: Mutex<Histogram<u64>>,
 }
 
 /// Everything every front in this process relayed (a daemon has one; tests have several).
@@ -170,6 +198,7 @@ impl Hops {
         Hops {
             up: histogram(),
             down: histogram(),
+            key: histogram(),
         }
     }
 
@@ -177,6 +206,7 @@ impl Hops {
         let h = match hop {
             Hop::Up => &self.up,
             Hop::Down => &self.down,
+            Hop::Key => &self.key,
         };
         h.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -205,6 +235,7 @@ impl Hops {
         Stats {
             up: read(&self.up),
             down: read(&self.down),
+            key: read(&self.key),
         }
     }
 }

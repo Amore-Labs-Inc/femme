@@ -1567,6 +1567,17 @@ async fn the_ssh_fallback_speaks_the_same_protocol_over_the_unix_socket() {
 
 // ---- how long the daemon holds a keystroke ------------------------------------------------------
 
+/// The plan's "the daemon adds under 3 ms to a keystroke", as far as it can be measured from here.
+/// The daemon has two edges, the desktop's QUIC stream and the holder's socket. The first is
+/// stamped where the bytes arrive and leave; the second is not reachable: the socket's legs run in
+/// the task `Holder::attach` spawns (holder_client.rs), which stamps nothing, so `up` and `down`
+/// stop at its channels. `key` runs from a key read off the stream to the frame that echoes it
+/// written back to it, so the holder's socket, the holder, the shell and the scheduler are all
+/// inside it: it over-states what the daemon adds. Its median is held to 3 ms (a delay the daemon
+/// added to every key would show there); its p99 and max are printed, not asserted: on a 4-core
+/// box with builds running the p99 reached 5 ms over a median of 0.65 ms, which is the machine's
+/// noise, not the daemon's. Not in any of them: the network (loopback here) and the desktop's own
+/// time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keystroke_relay_adds_under_three_milliseconds_in_the_daemon() {
     let rig = Rig::new(true, Waits::default()).await;
@@ -1595,15 +1606,20 @@ async fn keystroke_relay_adds_under_three_milliseconds_in_the_daemon() {
     }
 
     let s = rig.front.stats();
+    // p50, p99, p99.9 and max of each, in microseconds.
     println!("daemon hops over 500 keys on loopback QUIC:\n{s}");
     println!(
         "everything this process relayed:\n{}",
         femmed::front::stats()
     );
-    assert!(s.up.n >= 500 && s.down.n >= 500, "{s}");
+    assert!(s.up.n >= 500 && s.down.n >= 500 && s.key.n >= 500, "{s}");
     let limit = Duration::from_millis(3);
     assert!(s.up.p99 < limit, "keys into the holder: {s}");
     assert!(s.down.p99 < limit, "frames out to the desktop: {s}");
+    assert!(
+        s.key.p50 < limit,
+        "a key to its echo, holder and shell included: {s}"
+    );
 }
 
 // ---- the command line ---------------------------------------------------------------------------

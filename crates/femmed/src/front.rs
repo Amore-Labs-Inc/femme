@@ -16,8 +16,8 @@
 //! retry after a dropped connection gets the recorded answer instead of running the op again. The
 //! op id belongs to the request it came with: another request under it is refused.
 //!
-//! [`stats`] is the terminal relay's latency, measured per hop, because the plan says the daemon
-//! adds under 3 ms to a keystroke and that wants a number.
+//! [`stats`] is the terminal relay's latency, measured per hop and from a key to its echo, because
+//! the plan says the daemon adds under 3 ms to a keystroke and that wants a number.
 
 pub(crate) mod admin;
 mod panes;
@@ -316,7 +316,7 @@ async fn report(hops: Arc<Hops>) {
         let s = hops.stats();
         if s.up.n + s.down.n != seen {
             seen = s.up.n + s.down.n;
-            tracing::info!(up = %s.up, down = %s.down, "terminal relay latency");
+            tracing::info!(up = %s.up, down = %s.down, key = %s.key, "terminal relay latency");
         }
     }
 }
