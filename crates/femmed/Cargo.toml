@@ -1,0 +1,47 @@
+[package]
+name = "femmed"
+description = "The FEMME daemon: QUIC + HTTP front, state, agent drivers, scheduler, compat API."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "femmed"
+path = "src/lib.rs"
+
+[[bin]]
+name = "femmed"
+path = "src/main.rs"
+
+[features]
+# FakeCore (src/core_fake.rs) for integration tests outside this crate; unit tests here always have it.
+test-util = []
+
+[dependencies]
+femme-proto.workspace = true
+femme-store.workspace = true
+femme-agents.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-journald.workspace = true
+futures.workspace = true
+sd-notify.workspace = true
+hdrhistogram.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+sha2 = "0.10"
+base64 = "0.22"
+async-trait = "0.1"
+thiserror.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
