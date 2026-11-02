@@ -302,6 +302,10 @@ impl Holder {
             .args(["--sid", &sid.to_string()])
             .args(["--runtime-dir", &dirs.runtime.to_string_lossy()])
             .args(["--state-dir", &dirs.state.to_string_lossy()])
+            // Under systemd the daemon's NOTIFY_SOCKET would be inherited, and systemd-run reports
+            // to it as if it were the daemon: the journal gets a "reception only permitted for main
+            // PID" line per session. The holder's unit gives it a socket of its own.
+            .env_remove("NOTIFY_SOCKET")
             .output()
             .await?;
         if !out.status.success() {
