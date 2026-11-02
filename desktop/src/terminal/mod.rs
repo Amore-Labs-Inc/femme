@@ -2,6 +2,7 @@
 //! is `femme_term::client::RowCache`).
 
 pub mod element;
+pub mod input;
 pub mod pane;
 pub mod runs;
 pub mod synth;
