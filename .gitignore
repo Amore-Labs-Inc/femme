@@ -1,2 +1,7 @@
 .env
 .env.tmp
+
+/target
+/desktop/target
+
+/.claude/settings.local.json

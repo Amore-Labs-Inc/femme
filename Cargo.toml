@@ -1,0 +1,63 @@
+# FEMME daemon-side workspace. The desktop app (desktop/) is its own workspace: it needs a GPU
+# toolchain and builds on the laptop, not on the server. board/ is the old web board, built by
+# bootstrap.sh until femmed replaces it.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["board", "desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Amore-Labs-Inc/femme"
+
+[workspace.dependencies]
+femme-proto = { path = "crates/femme-proto" }
+femme-transport = { path = "crates/femme-transport" }
+femme-term = { path = "crates/femme-term" }
+femme-store = { path = "crates/femme-store" }
+femme-agents = { path = "crates/femme-agents" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1.1", features = ["use-std"] }
+bytes = "1"
+ulid = "3"
+bitflags = { version = "2", features = ["serde"] }
+zstd = "0.14"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1.54", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-journald = "0.3"
+quinn = "0.11"
+rustls = "0.23"
+rcgen = "0.14"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+pty-process = { version = "0.5", features = ["async"] }
+alacritty_terminal = "0.26"
+hdrhistogram = "7"
+rustix = { version = "1", features = ["net", "process", "fs", "termios"] }
+sd-notify = "0.5"
+proptest = "1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
+
+[profile.dev.package.alacritty_terminal]
+opt-level = 3
+[profile.dev.package.vte]
+opt-level = 3
