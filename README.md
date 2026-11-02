@@ -68,6 +68,30 @@ Afterwards: `./doctor.sh` checks everything, `./install.sh update` updates, `./u
 
 Agents on the server run without permission prompts, and anything running as your user there can use what the server can reach. The parts that widen that (public board, AWS role, auto-deploy, account rotation) are off until you turn them on. Read [SECURITY.md](SECURITY.md) before you do.
 
+## Thanks
+
+FEMME exists because other people wrote the hard parts and gave them away. Every line below is a project we lean on, and we are grateful to the people who maintain it. If one of them makes your life better too, go star it, sponsor it, or send a fix upstream.
+
+**Agents.** [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex) and [Pi](https://github.com/badlogic/pi-mono) are the whole point; their headless protocols are what let FEMME drive them.
+
+**Running on the server.** [systemd](https://systemd.io), [Caddy](https://caddyserver.com), [ntfy](https://ntfy.sh), [Mutagen](https://mutagen.io), [rsync](https://rsync.samba.org), [mosh](https://mosh.org) (whose state-sync model the terminal protocol copies) and [gh](https://cli.github.com).
+
+**The desktop app and daemon** (the all-Rust client and `femmed`, in progress) stand on:
+
+- UI: [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [gpui-component](https://github.com/longbridge/gpui-component). The [Zed](https://zed.dev) team built a GPU text engine good enough to ship an editor on and licensed it so others could too.
+- Network: [quinn](https://github.com/quinn-rs/quinn), [rustls](https://github.com/rustls/rustls), [aws-lc-rs](https://github.com/aws/aws-lc-rs), [rcgen](https://github.com/rustls/rcgen), [postcard](https://github.com/jamesmunns/postcard), [zstd](https://github.com/gyscos/zstd-rs) (and [Zstandard](https://facebook.github.io/zstd/) under it), [reqwest](https://github.com/seanmonstar/reqwest), [axum](https://github.com/tokio-rs/axum).
+- Runtime: [tokio](https://tokio.rs), [tracing](https://github.com/tokio-rs/tracing), [serde](https://serde.rs), [clap](https://github.com/clap-rs/clap), [rustix](https://github.com/bytecodealliance/rustix), [mimalloc](https://github.com/microsoft/mimalloc).
+- Terminals: [alacritty_terminal](https://github.com/alacritty/alacritty), [pty-process](https://github.com/doy/pty-process), with [WezTerm](https://wezterm.org)'s mux and predictive echo as the reference design.
+- Storage: [SQLite](https://sqlite.org) through [rusqlite](https://github.com/rusqlite/rusqlite), [redb](https://github.com/cberner/redb).
+- Text: [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark), [syntect](https://github.com/trishume/syntect), [two-face](https://github.com/CosmicHorrorDev/two-face), [tree-sitter](https://tree-sitter.github.io), [imara-diff](https://github.com/pascalkuthe/imara-diff), [similar](https://github.com/mitsuhiko/similar).
+- Agent plumbing: the [Model Context Protocol Rust SDK](https://github.com/modelcontextprotocol/rust-sdk), the [Agent Client Protocol](https://agentclientprotocol.com).
+- Measuring: [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram_rust), [Tracy](https://github.com/wolfpld/tracy).
+- Fonts: [VT323](https://fonts.google.com/specimen/VT323), [JetBrains Mono](https://www.jetbrains.com/lp/mono/), [Schibsted Grotesk](https://fonts.google.com/specimen/Schibsted+Grotesk), [Kaushan Script](https://fonts.google.com/specimen/Kaushan+Script), all under the SIL Open Font License.
+
+**The board today** runs on [tiny_http](https://github.com/tiny-http/tiny-http), [ureq](https://github.com/algesten/ureq), [serde](https://serde.rs) and [xterm.js](https://xtermjs.org).
+
+**Ideas we borrowed** (and say so in the code): [t3code](https://github.com/pingdotgg/t3code) for how a session should feel, [VS Code](https://github.com/microsoft/vscode) for its reconnecting terminal and type-ahead, [Zed](https://github.com/zed-industries/zed) for remote editing over a flaky link. FEMME also owes its start to [herdr](https://herdr.dev), which ran the agents before the daemon did.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE). FEMME builds on [herdr](https://herdr.dev) and other tools it installs but does not include; see [NOTICE](NOTICE). The Exposure name and logos are trademarks of Exposure and are not covered by the license.
