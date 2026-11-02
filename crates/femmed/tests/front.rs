@@ -14,7 +14,9 @@ use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use common::Box_;
-use femme_proto::rpc::{Cursors, Err as WireErr, ErrCode, Req, Resp, Scope, StreamKind, C2S, S2C};
+use femme_proto::rpc::{
+    Cursors, Err as WireErr, ErrCode, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
+};
 use femme_proto::state::{Agent, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
 use femme_proto::{Id, OpId, PaneId, Sid, PROTO_VERSION};
@@ -541,6 +543,157 @@ async fn a_request_over_one_mebibyte_is_refused_and_the_global_scope_stays_subsc
         );
         c.conn.close();
     }
+}
+
+/// The board refuses, before anything reaches the store or the scheduler, what would end up on a
+/// command line or under an agent's name (`compat::util`). The front says no to the same things,
+/// and keeps what it takes the way the board keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_front_checks_repos_titles_names_and_folders_the_way_the_board_does() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let mut tried: Vec<(String, Result<Resp, WireErr>)> = Vec::new();
+
+    for (repo, title) in [
+        ("--upload-pack=x/y", "t"),
+        ("o/r", ""),
+        ("o/r", "  "),
+        ("", ""),
+    ] {
+        let r = c
+            .call(Req::IssueCreate {
+                repo: repo.into(),
+                title: title.into(),
+                body: String::new(),
+            })
+            .await;
+        tried.push((format!("IssueCreate repo={repo:?} title={title:?}"), r));
+    }
+    let Ok(Resp::Issue(id)) = c
+        .call(Req::IssueCreate {
+            repo: "o/r".into(),
+            title: "  t ".into(),
+            body: " b\n".into(),
+        })
+        .await
+    else {
+        panic!("IssueCreate o/r failed")
+    };
+    let issue = || async {
+        let all = rig.d.issues().await.unwrap();
+        all.into_iter().find(|i| i.id == id).unwrap()
+    };
+    let made = issue().await;
+    assert_eq!((made.title.as_str(), made.body.as_str()), ("t", "b"));
+
+    // One bad field refuses the whole patch: the title that came with it is not applied.
+    for (what, field) in [
+        ("a repo with a space", IssueField::Repo("a b/c".into())),
+        (
+            "a repo that is an option",
+            IssueField::Repo("--upload-pack=x/y".into()),
+        ),
+        ("a session link", IssueField::Session(Some(Id::new()))),
+        ("an unlinked session", IssueField::Session(None)),
+        ("resume_at before 1970", IssueField::ResumeAt(Some(-1))),
+        (
+            "resume_at past the year 9999",
+            IssueField::ResumeAt(Some(253_402_300_800_000)),
+        ),
+    ] {
+        let patch = Req::IssuePatch {
+            id,
+            base_rev: 0,
+            fields: vec![IssueField::Title("changed".into()), field],
+        };
+        tried.push((format!("IssuePatch with {what}"), c.call(patch).await));
+    }
+    assert_eq!(issue().await, made, "a refused patch changed the issue");
+    let kept = Req::IssuePatch {
+        id,
+        base_rev: 0,
+        fields: vec![
+            IssueField::Title(" new ".into()),
+            IssueField::Note(Some("  ".into())),
+            IssueField::PrUrl(Some(" https://x ".into())),
+            IssueField::ResumeAt(Some(1_700_000_000_000)),
+        ],
+    };
+    assert_eq!(c.call(kept).await, Ok(Resp::Issue(id)));
+    let patched = issue().await;
+    assert_eq!(
+        (
+            patched.title.as_str(),
+            patched.note.as_deref(),
+            patched.pr_url.as_deref(),
+            patched.resume_at
+        ),
+        ("new", None, Some("https://x"), Some(1_700_000_000_000))
+    );
+
+    // A shell under an agent's name: /api/agents/bob would type the agent's text into it.
+    let session = |cwd: &str, agent, label: Option<&str>, name: Option<&str>| Req::SessionCreate {
+        cwd: cwd.into(),
+        agent,
+        mode: Mode::Tui,
+        label: label.map(Into::into),
+        name: name.map(Into::into),
+        prompt: None,
+    };
+    let home = rig.home().display().to_string();
+    for (what, req) in [
+        (
+            "a shell named bob",
+            session(&home, Agent::Shell, None, Some("bob")),
+        ),
+        (
+            "a name with capitals",
+            session(&home, Agent::Claude, None, Some("Bob")),
+        ),
+        (
+            "a name that is an option",
+            session(&home, Agent::Claude, None, Some("-x")),
+        ),
+        (
+            "a name of 33 characters",
+            session(&home, Agent::Claude, None, Some(&"a".repeat(33))),
+        ),
+        // Relative: it would be the daemon's own working directory.
+        ("the folder .", session(".", Agent::Shell, None, None)),
+        (
+            "a relative folder",
+            session("some/where", Agent::Shell, None, None),
+        ),
+    ] {
+        tried.push((format!("SessionCreate {what}"), c.call(req).await));
+    }
+    let accepted: Vec<_> = tried
+        .iter()
+        .filter(|(_, r)| !matches!(r, Err(e) if e.code == ErrCode::Bad))
+        .collect();
+    assert!(accepted.is_empty(), "{accepted:#?}");
+    assert!(
+        rig.d.terminals().await.unwrap().is_empty(),
+        "a refused session was made"
+    );
+
+    // The label is trimmed and bounded the way the board's terminals do it.
+    let wide = format!("  {}  ", "é".repeat(80));
+    let Ok(Resp::Session(sid)) = c
+        .call(session(&home, Agent::Shell, Some(&wide), None))
+        .await
+    else {
+        panic!("SessionCreate with a long label failed")
+    };
+    let label = rig
+        .d
+        .store
+        .read(|c| sessions::get_session(c, sid))
+        .unwrap()
+        .unwrap()
+        .label;
+    assert_eq!(label, Some("é".repeat(60)));
 }
 
 // ---- who may open a terminal ------------------------------------------------------------------
