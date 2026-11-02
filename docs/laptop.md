@@ -6,7 +6,7 @@ Optional. The server works on its own; this is for moving agents between your la
 ./laptop/laptop-setup.sh
 ```
 
-On Linux (systemd) or macOS (launchd): adds the server as a herdr machine, links `plugin/` as the `femme` plugin, adds its two keys to `~/.config/herdr/config.toml`, and starts Mutagen and `femme-link` (this laptop's terminals on the board). Needs herdr; Mutagen only for forking and sync. macOS support is new: report what does not work. Run `./laptop/sync.sh` afterwards so the server gets the keys too.
+On Linux (systemd) or macOS (launchd): adds the server as a herdr machine, links `plugin/` as the `femme` plugin, adds its three keys to `~/.config/herdr/config.toml`, and starts Mutagen and `femme-link` (this laptop's terminals on the board). Needs herdr; Mutagen only for forking and sync. macOS support is new: report what does not work. Run `./laptop/sync.sh` afterwards so the server gets the keys too.
 
 The keys it adds are below. A `[[keys.command]]` binding belongs to the machine selected in herdr, not to the client: the fork key is used on Local panes, so the laptop's own copy serves it (`herdr server reload-config` is enough), but the drop box key is pressed on agentbox panes, so it must be in the VPS's `config.toml` too, which `sync.sh` copies over and reloads (herdr issue #5183). `prefix+?` lists the selected machine's keys.
 
@@ -22,7 +22,15 @@ key = "prefix+u"
 type = "plugin_action"
 command = "femme.files"
 description = "drop box: files into the agent's folder"
+
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "femme.tui"
+description = "FEMME: all agents"
 ```
+
+`prefix+f` opens [the agent view](tui.md) as an overlay: every agent on the selected machine and the ones linked to it, the selected one's screen, a prompt box. On a VPS pane it runs the VPS's copy (built by `sync.sh`); on a Local pane it needs a local build, which `laptop-setup.sh` makes when cargo is installed.
 
 Local and VPS workspaces show side by side. Local ones die when the laptop sleeps; `prefix+shift+v` on a local agent forks it to the VPS and leaves the local one running:
 

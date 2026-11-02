@@ -5,6 +5,7 @@ Thanks for helping. One rule shapes everything here: **FEMME stays small.** It i
 ## Before you open a PR
 
 - **Board (Rust):** `cargo test --manifest-path board/Cargo.toml`. The board has five dependencies; adding one needs a good reason.
+- **TUI (Rust):** `cargo test --manifest-path tui/Cargo.toml` (the layouts render headless in the tests), `cargo run --manifest-path tui/Cargo.toml -- --demo` to look at it without herdr. Five dependencies too.
 - **Shell scripts:** `bash -n <file>` and `shellcheck <file>`. CI fails on shellcheck errors.
 - **Laptop-side scripts** (`install.sh`, `doctor.sh`, `uninstall.sh` and everything in `laptop/`) must run under **bash 3.2** (what macOS ships) and with **BSD tools**: no `sed -i` without a suffix, no `readarray`, no `${var,,}`. Scripts in `server/` can assume Ubuntu 24.04. Every script `cd`s to the checkout root first, so paths inside read the same from anywhere.
 - **Anything that changes the install:** run it on a fresh Ubuntu 24.04 server (`./install.sh`, then `./doctor.sh` all green, then `./uninstall.sh server`), and say so in the PR.
@@ -47,6 +48,7 @@ Three commands sit at the top: `install.sh`, `doctor.sh`, `uninstall.sh`. The re
 | `plugin/fork-remote.sh` | laptop | The herdr plugin action: fork to the VPS. |
 | `plugin/herdr-plugin.toml` | laptop and VPS | The herdr plugin: fork to the server, the drop box. `laptop-setup.sh` and `bootstrap.sh` link `plugin/`. |
 | `board/` | VPS | The issues board server (Rust). |
+| `tui/` | VPS, laptop | `femme-tui`: every agent, one screen, a prompt box, over herdr's socket API (Rust). |
 
 ## Security issues
 

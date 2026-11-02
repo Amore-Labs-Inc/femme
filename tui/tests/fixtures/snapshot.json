@@ -1,0 +1,34 @@
+{
+  "id": "snapshot",
+  "result": {
+    "type": "session_snapshot",
+    "snapshot": {
+      "version": "0.9.5",
+      "protocol": 3,
+      "focused_workspace_id": "w1",
+      "focused_tab_id": "w1:t1",
+      "focused_pane_id": "w1:p1",
+      "workspaces": [
+        {"workspace_id": "w1", "number": 1, "label": "#14 add csv export", "focused": true, "pane_count": 1, "tab_count": 1, "active_tab_id": "w1:t1", "agent_status": "working"},
+        {"workspace_id": "w2", "number": 2, "label": "#15 fix login redirect", "focused": false, "pane_count": 2, "tab_count": 1, "active_tab_id": "w2:t1", "agent_status": "blocked"},
+        {"workspace_id": "w3", "number": 3, "label": "#12 upgrade to node 22", "focused": false, "pane_count": 1, "tab_count": 1, "active_tab_id": "w3:t1", "agent_status": "done"},
+        {"workspace_id": "w4", "number": 4, "label": "scratch", "focused": false, "pane_count": 1, "tab_count": 1, "active_tab_id": "w4:t1", "agent_status": "unknown"}
+      ],
+      "tabs": [
+        {"tab_id": "w1:t1", "workspace_id": "w1", "label": "agents", "focused": true, "pane_count": 1},
+        {"tab_id": "w2:t1", "workspace_id": "w2", "label": "agents", "focused": false, "pane_count": 2},
+        {"tab_id": "w3:t1", "workspace_id": "w3", "label": "agents", "focused": false, "pane_count": 1},
+        {"tab_id": "w4:t1", "workspace_id": "w4", "label": "agents", "focused": false, "pane_count": 1}
+      ],
+      "panes": [
+        {"pane_id": "w1:p1", "terminal_id": "t1", "workspace_id": "w1", "tab_id": "w1:t1", "focused": true, "cwd": "/home/dora/femme-work/shop", "foreground_cwd": "/home/dora/femme-work/shop", "agent": "claude", "terminal_title_stripped": "add csv export", "agent_status": "working", "revision": 12},
+        {"pane_id": "w2:p1", "terminal_id": "t2", "workspace_id": "w2", "tab_id": "w2:t1", "focused": false, "cwd": "/home/dora/femme-work/api", "agent": "codex", "terminal_title_stripped": "codex", "agent_status": "blocked", "revision": 7},
+        {"pane_id": "w2:p2", "terminal_id": "t3", "workspace_id": "w2", "tab_id": "w2:t1", "focused": false, "cwd": "/home/dora/femme-work/api", "terminal_title_stripped": "Files · drop box", "agent_status": "unknown", "revision": 2},
+        {"pane_id": "w3:p1", "terminal_id": "t4", "workspace_id": "w3", "tab_id": "w3:t1", "focused": false, "cwd": "/home/dora/femme-work/web", "foreground_cwd": "/home/dora/femme-work/web", "agent": "claude", "terminal_title_stripped": "upgrade to node 22", "agent_status": "done", "revision": 40},
+        {"pane_id": "w4:p1", "terminal_id": "t5", "workspace_id": "w4", "tab_id": "w4:t1", "focused": false, "cwd": "/home/dora", "terminal_title_stripped": "bash", "agent_status": "unknown", "revision": 1}
+      ],
+      "layouts": [],
+      "agents": []
+    }
+  }
+}

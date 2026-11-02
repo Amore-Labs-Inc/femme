@@ -26,6 +26,7 @@ FEMME keeps your coding agents running on a server you own. Start Claude Code, C
 - **Agents that talk to each other.** Through the same API one agent can read another's screen or hand it a task.
 - **Issues in, pull requests out.** Write an issue on the board; an agent clones the repo, does the work and opens a PR.
 - **A board in the browser.** Live terminals, sessions and the issue queue, made to work on a phone too.
+- **All your agents in one terminal.** `ssh <server> femme-tui`, or one key in herdr: every agent on every linked machine on the left, the selected one's screen in the middle, a prompt box underneath. Works over mosh on a phone. See [TUI](docs/tui.md).
 - **Move an agent to the server.** One key in herdr forks a local agent, with its conversation and folder, onto the server. The folder stays in two-way sync.
 - **A push when you are needed.** A notification on your phone when an agent is waiting for you or done.
 - **Yours, and closed by default.** Shell scripts, systemd user services and one small Rust server. Nothing is open to the internet unless you turn it on.

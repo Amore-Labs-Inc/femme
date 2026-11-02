@@ -35,6 +35,7 @@ on "${AUTODEPLOY:-}" && units="$units femme-deploy.timer"
 facts=$(ssh "$HOST" "PATH=\$HOME/.local/bin:\$HOME/.local/share/mise/shims:\$PATH; units='$units'"'
   for u in $units; do printf "unit\t%s\t%s\n" "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"; done
   printf "herdr\t%s\n" "$(herdr --version 2>/dev/null | cut -d" " -f2)"
+  printf "tui\t%s\n" "$(femme-tui --version 2>/dev/null | cut -d" " -f2)"
   printf "claude\t%s\n" "$(command -v claude >/dev/null && { [ -s ~/.claude/.credentials.json ] && echo in || echo out; } || echo missing)"
   printf "gh\t%s\n" "$(gh auth status >/dev/null 2>&1 && echo in || echo out)"
   printf "board\t%s\n" "$(curl -s -o /dev/null -m 5 -w "%{http_code}" http://127.0.0.1:8787/api/ping)"
@@ -51,6 +52,7 @@ v=$(fact herdr); lv=$(herdr --version 2>/dev/null | cut -d' ' -f2)
 if [ -z "$v" ]; then no "herdr is not installed on the server" "./laptop/sync.sh"
 elif [ -n "$lv" ] && [ "$v" != "$lv" ]; then no "herdr $v on the server, $lv here" "./laptop/sync.sh (the server follows the laptop's version)"
 else ok "herdr $v"; fi
+v=$(fact tui); [ -n "$v" ] && ok "femme-tui $v (ssh $HOST femme-tui, or prefix+f in herdr)" || no "femme-tui is not built on the server" "./laptop/sync.sh"
 case $(fact claude) in
   in) ok "Claude Code signed in" ;;
   out) no "Claude Code is not signed in on the server" "ssh $HOST, run claude, then /login" ;;

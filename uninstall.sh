@@ -16,7 +16,8 @@ server() {
     cd ~/.config/systemd/user 2>/dev/null && for u in femme-deploy.timer femme-deploy.service femme-board femme-worker femme-cswap femme-fable-cap herdr-notify herdr-instinct herdr-server; do
       systemctl --user disable --now "$u" 2>/dev/null; rm -f "$u" "$u.service"; done
     systemctl --user daemon-reload
-    rm -f ~/.local/bin/femme-board ~/.local/bin/pc ~/.claude/rules/femme-pc.md
+    rm -f ~/.local/bin/femme-board ~/.local/bin/femme-tui ~/.local/bin/pc ~/.claude/rules/femme-pc.md
+    sudo rm -f /usr/local/bin/femme-tui
     herdr plugin unlink femme >/dev/null 2>&1
     sed -i "/^<!-- femme pc start -->$/,/^<!-- femme pc end -->$/d" ~/.codex/AGENTS.md 2>/dev/null
     sed -i "/^# femme pc start$/,/^# femme pc end$/d" ~/.ssh/config 2>/dev/null

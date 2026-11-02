@@ -25,3 +25,18 @@ id = "files"
 title = "Files · drop box"
 placement = "split"
 command = ["bash", "files-pane.sh"]
+
+# FEMME's own view of every agent (tui/): the list, one agent's screen, a prompt box. The action
+# opens the pane as an overlay over the current layout; q closes it. Also runs on its own: femme-tui.
+[[actions]]
+id = "tui"
+title = "FEMME · agents"
+description = "Every agent on this machine and the linked ones, the selected one's screen, and a prompt box"
+contexts = ["pane", "workspace"]
+command = ["sh", "tui.sh", "open"]
+
+[[panes]]
+id = "tui"
+title = "FEMME · agents"
+placement = "overlay"
+command = ["sh", "tui.sh"]

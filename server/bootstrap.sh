@@ -105,9 +105,24 @@ ${BOARD_URL#https://} {
 EOF
   sudo systemctl reload-or-restart caddy
 fi
+# femme-tui (tui/): every agent, one screen, a prompt box; a herdr overlay (prefix+f) and `ssh <host> femme-tui`.
+# Built here like the board (a few minutes the first time), whether or not the board is on.
+[ -x ~/.cargo/bin/cargo ] || curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path
+~/.cargo/bin/cargo build -q --release --manifest-path tui/Cargo.toml
+cp tui/target/release/femme-tui ~/.local/bin/femme-tui.new && mv ~/.local/bin/femme-tui.new ~/.local/bin/femme-tui
+sudo ln -sf ~/.local/bin/femme-tui /usr/local/bin/femme-tui  # `ssh agentbox femme-tui` has no ~/.local/bin on PATH
+grep -q 'femme.tui' ~/.config/herdr/config.toml 2>/dev/null || cat >> ~/.config/herdr/config.toml <<'EOF'
+
+# femme: every agent, the selected one's screen, a prompt box (tui/)
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "femme.tui"
+description = "FEMME: all agents"
+EOF
+
 if [ -n "${BOARD_URL:-}" ]; then
   # Built here, not on the laptop, so a merge to main can deploy itself (deploy.sh).
-  [ -x ~/.cargo/bin/cargo ] || curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path
   ~/.cargo/bin/cargo build -q --release --manifest-path board/Cargo.toml
   # Copy then rename: the running binary can't be written over.
   cp board/target/release/femme-board ~/.local/bin/femme-board.new

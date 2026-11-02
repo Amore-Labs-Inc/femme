@@ -1,0 +1,16 @@
+[package]
+name = "femme-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Every agent on every linked machine, the selected one's screen, and a prompt box: T3 Code's shape over herdr's socket API."
+license = "Apache-2.0"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+ansi-to-tui = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true

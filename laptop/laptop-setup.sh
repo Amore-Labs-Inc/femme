@@ -28,7 +28,26 @@ type = "plugin_action"
 command = "femme.files"
 description = "drop box: files into the agent's folder"
 EOF
+# The third key, added on its own so installs made before it get it too.
+grep -q 'femme.tui' "$cfg" 2>/dev/null || cat >> "$cfg" <<'EOF'
+
+# femme: every agent, the selected one's screen, a prompt box (tui/)
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "femme.tui"
+description = "FEMME: all agents"
+EOF
 herdr server reload-config >/dev/null 2>&1 || true
+# The key pressed on a server pane runs the server's copy. On this laptop's own panes it needs a
+# local binary, which only cargo can make; without cargo the key still works on $HOST panes.
+if command -v cargo >/dev/null; then
+  say "building femme-tui for this laptop"
+  cargo build -q --release --manifest-path tui/Cargo.toml && mkdir -p ~/.local/bin && install -m 755 tui/target/release/femme-tui ~/.local/bin/femme-tui \
+    || warn "femme-tui did not build; prefix+f works on $HOST panes only"
+else
+  warn "no cargo here: prefix+f works on $HOST panes only (rustup.rs, then rerun, for local panes too)"
+fi
 
 case $(uname -s) in
   Linux)

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."  # the checkout root: .env and every path below are rela
 . ./.env
 r() { rsync -az --mkpath "$@"; }
 
-r --delete --exclude=board/target ./ "$HOST:femme/"  # bootstrap.sh builds the board there
+r --delete --exclude=board/target --exclude=tui/target ./ "$HOST:femme/"  # bootstrap.sh builds the board and the TUI there
 
 cd ~
 r -R --ignore-missing-args \
