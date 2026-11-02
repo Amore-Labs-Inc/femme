@@ -1,0 +1,11 @@
+#!/bin/bash
+# Screenshot the hidden special:femme workspace: show it, grim, hide it again.  femme-shot out.png
+set -euo pipefail
+. "$HOME/.femme-wayland.env"
+out=${1:-$HOME/shots/femme-special.png}
+hyprctl dispatch 'hl.dsp.workspace.toggle_special("femme")' >/dev/null
+sleep "${FEMME_SHOT_DELAY:-2}"
+hyprctl monitors | grep -E "special workspace" || true
+grim "$out"
+hyprctl dispatch 'hl.dsp.workspace.toggle_special("femme")' >/dev/null
+echo "$out"

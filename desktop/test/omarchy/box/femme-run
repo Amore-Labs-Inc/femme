@@ -1,0 +1,14 @@
+#!/bin/bash
+# Launch femme-desktop inside the running Hyprland on its hidden special workspace (desktop/README.md,
+# "Benchmarking where nobody is looking"), logging to ~/femme.log. Args go to femme-desktop.
+#   femme-run --mode fire,shell --panes 2
+set -euo pipefail
+. "$HOME/.femme-wayland.env"
+BIN=${FEMME_BIN:-$HOME/femme-desktop}
+out=$(hyprctl eval "hl.window_rule({match={class='^femme-desktop\$'}, workspace='special:femme silent', monitor='Virtual-1 silent', no_initial_focus=true, float=true, size={1100,700}, render_unfocused=true})")
+echo "window rule: $out"
+printf '#!/bin/sh\nexec %q' "$BIN" > "$HOME/.femme-launch"
+for a in "$@"; do printf ' %q' "$a" >> "$HOME/.femme-launch"; done
+printf ' >%q 2>&1\n' "$HOME/femme.log" >> "$HOME/.femme-launch"
+chmod +x "$HOME/.femme-launch"
+hyprctl dispatch "hl.dsp.exec_cmd(\"[workspace special:femme silent] $HOME/.femme-launch\")"
