@@ -9,7 +9,8 @@
 //! carrying the revs the desktop holds, which subscribes it to those scopes from there (another
 //! epoch: from scratch). A `Hello` without cursors subscribes to nothing until the desktop asks.
 //! A connection that has not said `Hello` within [`HELLO_WAIT`] is closed, and no terminal is
-//! served before the `Welcome`.
+//! served before the `Welcome`. A device revoked while connected loses its connections within
+//! [`RECHECK`].
 //!
 //! A request that changes something is remembered by `(device, op)` for 24 h ([`Ctx::run`]): a
 //! retry after a dropped connection gets the recorded answer instead of running the op again.
@@ -64,6 +65,9 @@ const LINGER: Duration = Duration::from_secs(5);
 const REPORT_EVERY: Duration = Duration::from_secs(60);
 /// How long a connection may take to open its ctrl stream and say `Hello`.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
+/// How often a connection's device is checked to be still enrolled: how long a revoked device's
+/// open connections last.
+const RECHECK: Duration = Duration::from_secs(30);
 
 /// The device behind the SSH fallback: whoever logged in as our user. No row in `devices`.
 const SSH: DeviceId = Id(0);
@@ -80,11 +84,16 @@ pub struct Waits {
     /// How long a connection may take to say `Hello`, and a terminal stream to be allowed (it waits
     /// for the `Welcome`).
     pub hello: Duration,
+    /// How often a connection checks that its device is still enrolled and not revoked.
+    pub recheck: Duration,
 }
 
 impl Default for Waits {
     fn default() -> Waits {
-        Waits { hello: HELLO_WAIT }
+        Waits {
+            hello: HELLO_WAIT,
+            recheck: RECHECK,
+        }
     }
 }
 
@@ -326,6 +335,8 @@ async fn serve_conn(front: Arc<Front>, device: DeviceId, conn: Arc<dyn Conn>) {
     let welcome_sent = Arc::new(welcome_sent);
     let hello_by = tokio::time::sleep(front.waits.hello);
     tokio::pin!(hello_by);
+    let mut recheck = tokio::time::interval(front.waits.recheck);
+    recheck.tick().await; // the first tick is immediate
     loop {
         tokio::select! {
             accepted = conn.accept() => match accepted {
@@ -352,11 +363,31 @@ async fn serve_conn(front: Arc<Front>, device: DeviceId, conn: Arc<dyn Conn>) {
             _ = conn.closed() => break,
             // No ctrl stream in time: nobody is going to say Hello.
             () = &mut hello_by, if !ctrl => break,
+            // The handshake checked the device once; a revoke since then ends its connections.
+            _ = recheck.tick(), if !device.is_nil() => {
+                if !allowed(&daemon, device) {
+                    tracing::info!(%device, "device revoked, connection closed");
+                    break;
+                }
+            }
             Some(_) = tasks.join_next() => {}
         }
     }
     conn.close();
     tracing::info!(%device, "desktop gone");
+}
+
+/// Whether `device` is still enrolled and not revoked.
+// ponytail: lists every device (a handful) on the connection's task, once per `RECHECK`; an indexed
+// lookup by id if devices ever number in the hundreds. A failed read leaves the connection be.
+fn allowed(daemon: &Daemon, device: DeviceId) -> bool {
+    match daemon.store.read(auth::list_devices) {
+        Ok(all) => all.iter().any(|d| d.id == device && d.revoked.is_none()),
+        Err(e) => {
+            tracing::warn!(%device, %e, "device recheck failed; the connection stays");
+            true
+        }
+    }
 }
 
 /// The connection's place in the hub, given back however the connection ends.

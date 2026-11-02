@@ -567,6 +567,7 @@ fn open(pane: PaneId) -> TermUp {
 async fn a_terminal_stream_on_a_connection_that_never_said_hello_gets_no_terminal() {
     let waits = Waits {
         hello: Duration::from_millis(300),
+        ..Waits::default()
     };
     let rig = Rig::new(false, waits).await;
     let dev = rig.enroll("laptop");
@@ -582,6 +583,7 @@ async fn a_terminal_stream_on_a_connection_that_never_said_hello_gets_no_termina
 async fn a_terminal_stream_after_a_refused_hello_is_reset_while_the_refusal_is_read() {
     let waits = Waits {
         hello: Duration::from_millis(300),
+        ..Waits::default()
     };
     let rig = Rig::new(false, waits).await;
     let dev = rig.enroll("laptop");
@@ -613,6 +615,7 @@ async fn a_terminal_stream_after_a_refused_hello_is_reset_while_the_refusal_is_r
 async fn a_connection_that_does_not_say_hello_in_time_is_closed() {
     let waits = Waits {
         hello: Duration::from_millis(300),
+        ..Waits::default()
     };
     let rig = Rig::new(false, waits).await;
     let dev = rig.enroll("laptop");
@@ -1206,6 +1209,27 @@ async fn a_holder_that_does_not_answer_stalls_no_other_sessions_terminals() {
         waited < Duration::from_secs(2),
         "a healthy pane waited {waited:?} behind a holder that does not answer"
     );
+}
+
+/// The handshake checks a device once; a revoke after that has to reach the connections it
+/// already has, not only the next one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_revoked_while_connected_is_disconnected_at_the_next_check() {
+    let waits = Waits {
+        recheck: Duration::from_millis(200),
+        ..Waits::default()
+    };
+    let rig = Rig::new(false, waits).await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    // Enrolled, several checks go by and it is served.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let blob = c.call(Req::BlobGet { hash: [0; 32] }).await;
+    assert_eq!(blob.unwrap_err().code, ErrCode::NotFound);
+
+    let id = rig.d.store.read(auth::list_devices).unwrap()[0].id;
+    rig.d.store.write(|tx| tx.revoke_device(id)).unwrap();
+    within("the connection to close", c.conn.closed()).await;
 }
 
 // ---- the SSH fallback ---------------------------------------------------------------------------

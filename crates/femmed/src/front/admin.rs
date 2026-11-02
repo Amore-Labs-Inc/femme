@@ -63,17 +63,17 @@ pub(crate) fn devices(cfg: &Config) -> anyhow::Result<String> {
 
 /// Revokes the device with this id, or this name when it is the only one called that. It is
 /// refused on its next connection (TLS 1.3 lets a client think it connected for a round trip,
-/// then the daemon says no).
-// ponytail: connections already open stay open until they end: the CLI is another process, and
-// the daemon would have to watch the table. Poll `device_by_spki` per connection if that matters.
+/// then the daemon says no), and the daemon closes the ones it has open at its next check.
 pub(crate) fn revoke(cfg: &Config, device: &str) -> anyhow::Result<String> {
     let store = store(cfg)?;
     let all = store.read(auth::list_devices)?;
     let target = pick(&all, device)?;
     store.write(|tx| tx.revoke_device(target.id))?;
     Ok(format!(
-        "revoked {} ({}); connections it already has stay open until they end",
-        target.name, target.id
+        "revoked {} ({}); a running femmed closes its connections within {}s",
+        target.name,
+        target.id,
+        super::RECHECK.as_secs()
     ))
 }
 
