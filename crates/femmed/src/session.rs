@@ -345,6 +345,15 @@ async fn follow(
         tokio::select! {
             ev = events.recv() => match ev {
                 Ok(HolderEvent::ChildExited { target: Target::Pane(MAIN), status }) => break Exit::Pane(status),
+                // A shell pane the desktop opened ended, on its own or hung up by `close_pane`: its
+                // row goes, and the desktop hears it as any other change. `NotFound` is
+                // `close_pane` having been first.
+                // ponytail: a shell that ends before `open_pane` has written its row leaves the
+                // row; the desktop's close removes it.
+                Ok(HolderEvent::ChildExited { target: Target::Pane(no), .. }) => {
+                    let Some(d) = daemon.upgrade() else { return };
+                    let _ = d.write(|tx, _| tx.delete_pane(PaneId { sid, no }));
+                }
                 Ok(HolderEvent::Title { pane: MAIN, title }) => {
                     let Some(d) = daemon.upgrade() else { return };
                     let id = PaneId { sid, no: MAIN };

@@ -176,6 +176,8 @@ pub(crate) fn identity(cfg: &Config) -> anyhow::Result<ServerIdentity> {
 
 /// [`serve_front_on`] at `0.0.0.0:<QUIC_PORT>`.
 pub async fn serve_front(daemon: Arc<Daemon>) -> anyhow::Result<FrontHandle> {
+    // ponytail: IPv4 only, so a desktop on an IPv6-only network cannot connect. Bind `[::]` (dual
+    // stack) instead, or a second endpoint beside this one, when one has to.
     let bind = SocketAddr::from(([0, 0, 0, 0], daemon.cfg.quic_port));
     serve_front_on(daemon, bind).await
 }
@@ -274,7 +276,14 @@ async fn quic_loop(front: Arc<Front>, listener: Listener) {
                 Ok((device, conn)) => {
                     conns.spawn(serve_conn(front.clone(), device, conn));
                 }
-                Err(e) => return tracing::error!("QUIC listener stopped: {e}"),
+                // `accept` fails only when the endpoint is closed. The daemon would go on without its
+                // way in and look well to systemd; out is one line, and `Restart=always` brings a
+                // new one up in a second without touching the sessions (the holders are units of
+                // their own). Binding the endpoint again here would be more code for the same.
+                Err(e) => {
+                    tracing::error!("QUIC listener stopped: {e}; exiting for a restart");
+                    std::process::exit(1);
+                }
             },
             // Reaped as they end, so a long-lived daemon does not collect results.
             Some(_) = conns.join_next() => {}
@@ -588,6 +597,10 @@ async fn answered(
     drop(permit);
 }
 
+// ponytail: the store calls made for a request (the op row's lookup and record here, the core's
+// writes below) are synchronous SQLite on the runtime's workers: microseconds on indexed tables,
+// but a stalled disk stalls the worker with them. `spawn_blocking` them, as the transcript page
+// and the blob read already are, if a write-heavy hour ever shows up as relay latency.
 impl Ctx {
     /// The answer to `req`. A request that changes something runs once per `(device, op)`: the
     /// first attempt's answer is recorded (and shared with a retry that arrives while it runs), and

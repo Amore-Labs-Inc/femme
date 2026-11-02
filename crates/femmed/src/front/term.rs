@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use femme_proto::term::{TermDown, TermUp};
 use femme_proto::PaneId;
-use femme_transport::{Rx, Tx};
+use femme_transport::{Error, Rx, Tx};
 use hdrhistogram::Histogram;
 use tokio::sync::watch;
 
@@ -68,6 +68,9 @@ pub(crate) async fn relay(
     let keyed: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
     // Two directions, each awaited in its own future: a send that waits on the other side's full
     // queue must not stop the other direction (Tx::send is only ever awaited in its own branch).
+    // ponytail: every `Resize` goes through, so two desktops on one pane resize it back and forth:
+    // the pane is the size of whoever resized last. The holder would need a resize owner (the
+    // view that has the focus) to settle it.
     let upward = async {
         while let Ok(Some(m)) = rx.recv_msg::<TermUp>().await {
             let t = Instant::now();
@@ -86,8 +89,16 @@ pub(crate) async fn relay(
         while let Some(m) = down.recv().await {
             exited |= matches!(m, TermDown::Exited { .. });
             let t = Instant::now();
-            if tx.send(&m).await.is_err() {
-                return true; // the desktop is gone: nobody to tell
+            match tx.send(&m).await {
+                Ok(()) => {}
+                // Too big to frame (a view of a huge scrollback): nothing was written, the pane
+                // lives on and the desktop is told by a reset, not by a stream that ends as if
+                // all were well. It asks again.
+                Err(Error::Proto(_)) => {
+                    tx.reset();
+                    return true;
+                }
+                Err(_) => return true, // the desktop is gone: nobody to tell
             }
             hops.note(Hop::Down, t);
             if let TermDown::Frame(f) = &m {

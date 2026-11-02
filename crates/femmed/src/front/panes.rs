@@ -122,6 +122,10 @@ impl Daemon {
             Ok(()) | Err(HolderError::Holder(_)) => {}
             Err(e) => return Err(holder_err(e)),
         }
-        self.write(|tx, _| tx.delete_pane(pane))
+        // The holder's `ChildExited` makes `follow` delete the row too, and it may get there first.
+        match self.write(|tx, _| tx.delete_pane(pane)) {
+            Err(CoreError::NotFound) => Ok(()),
+            done => done,
+        }
     }
 }

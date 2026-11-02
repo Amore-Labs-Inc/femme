@@ -17,7 +17,7 @@ use common::Box_;
 use femme_proto::rpc::{
     Cursors, Err as WireErr, ErrCode, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
 };
-use femme_proto::state::{Agent, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
+use femme_proto::state::{Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
 use femme_proto::{Id, OpId, PaneId, Sid, PROTO_VERSION};
 use femme_store::{auth, sessions};
@@ -1503,6 +1503,54 @@ async fn a_device_revoked_while_connected_is_disconnected_at_the_next_check() {
     let id = rig.d.store.read(auth::list_devices).unwrap()[0].id;
     rig.d.store.write(|tx| tx.revoke_device(id)).unwrap();
     within("the connection to close", c.conn.closed()).await;
+}
+
+/// A shell the desktop opened ends when its user types `exit`: its row goes too, and the desktop is
+/// told, instead of a pane that is dead but listed for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_pane_that_exits_on_its_own_loses_its_row_and_the_desktop_hears_of_it() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let Ok(Resp::Pane(pane)) = c.call(Req::PaneOpen { sid }).await else {
+        panic!("PaneOpen failed")
+    };
+    let all = Req::Subscribe {
+        scope: Scope::Global,
+        after: None,
+    };
+    assert_eq!(c.call(all).await, Ok(Resp::Ok));
+    let (_, _, rows) = c.changes().await;
+    assert!(rows
+        .iter()
+        .any(|r| matches!(r, Row::Pane(p) if p.id == pane)));
+
+    let mut t = c.term(pane, RowCache::new()).await;
+    t.until("a first frame", |s| s.rev > 0).await;
+    t.bytes("exit\r").await;
+    within("the pane's tombstone", async {
+        loop {
+            let (_, _, rows) = c.changes().await;
+            if rows.iter().any(|r| {
+                matches!(
+                    r,
+                    Row::Tombstone {
+                        entity: Entity::Pane,
+                        ..
+                    }
+                )
+            }) {
+                break;
+            }
+        }
+    })
+    .await;
+    let panes = rig.d.store.read(|c| sessions::panes(c, sid)).unwrap();
+    assert_eq!(panes.iter().map(|p| p.id.no).collect::<Vec<_>>(), [1]);
+    // It is a pane that is not there now, like any other.
+    let closed = c.call(Req::PaneClose { pane }).await;
+    assert_eq!(closed.unwrap_err().code, ErrCode::NotFound);
 }
 
 // ---- the SSH fallback ---------------------------------------------------------------------------
