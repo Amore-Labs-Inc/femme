@@ -3,6 +3,7 @@
 //! `impl Daemon`, so `session.rs` stays as it is.
 
 use std::io::ErrorKind;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use femme_proto::state::{Pane, PaneKind};
@@ -22,9 +23,21 @@ impl Daemon {
     /// its socket open until the holder exits, so a connect per terminal stream would pile them up.
     /// `NotFound` when the session has no holder (it ended, or the box restarted).
     pub(crate) async fn holder(&self, sid: Sid) -> Result<Holder, CoreError> {
-        // Held across the connect: three panes opened at once on a reconnect make one connection.
-        let mut kept = self.holders.lock().await;
-        if let Some(h) = kept.get(&sid).filter(|h| h.is_alive()) {
+        let slot = {
+            let mut slots = self.holders.lock().unwrap_or_else(PoisonError::into_inner);
+            // Slots nobody is using and that hold no live holder go as new ones come.
+            slots.retain(|_, s| {
+                Arc::strong_count(s) > 1
+                    || s.try_lock()
+                        .is_ok_and(|h| h.as_ref().is_some_and(Holder::is_alive))
+            });
+            slots.entry(sid).or_default().clone()
+        };
+        // Held across the connect, so three panes opened at once on a reconnect make one
+        // connection; it is this session's alone, so a holder that does not answer holds up its
+        // own callers (for `HOLDER_WAIT`) and nobody else's.
+        let mut kept = slot.lock().await;
+        if let Some(h) = kept.as_ref().filter(|h| h.is_alive()) {
             return Ok(h.clone());
         }
         let h = match tokio::time::timeout(HOLDER_WAIT, Holder::connect(&self.sessions.dirs, sid))
@@ -39,8 +52,7 @@ impl Daemon {
             Ok(Err(e)) => return Err(holder_err(e)),
             Err(_) => return Err(CoreError::Internal("holder: no answer".into())),
         };
-        kept.retain(|_, h| h.is_alive());
-        kept.insert(sid, h.clone());
+        *kept = Some(h.clone());
         Ok(h)
     }
 

@@ -1156,6 +1156,58 @@ async fn a_pane_opens_next_to_the_agents_and_closes_again() {
     assert_eq!(again.next().await, TermDown::Exited { status: -1 });
 }
 
+/// Connecting to a holder takes up to 5 s when it does not answer. That wait is its own session's:
+/// every other session's terminals open as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_holder_that_does_not_answer_stalls_no_other_sessions_terminals() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let healthy = c.session(&rig.home()).await;
+    // Warm: the healthy holder's connection is already kept.
+    let mut warm = c
+        .term(
+            PaneId {
+                sid: healthy,
+                no: 1,
+            },
+            RowCache::new(),
+        )
+        .await;
+    warm.until("a first frame", |s| s.rev > 0).await;
+
+    // A holder that accepts and never answers Hello.
+    let stuck = Id::new();
+    let path = rig.b.socket(stuck);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let _hold = tokio::spawn(async move {
+        let mut keep = vec![];
+        while let Ok((s, _)) = listener.accept().await {
+            keep.push(s);
+        }
+    });
+    let _stuck_term = c.term(PaneId { sid: stuck, no: 1 }, RowCache::new()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // its connect is under way
+
+    let t0 = std::time::Instant::now();
+    let mut t = c
+        .term(
+            PaneId {
+                sid: healthy,
+                no: 1,
+            },
+            RowCache::new(),
+        )
+        .await;
+    t.until("a first frame", |s| s.rev > 0).await;
+    let waited = t0.elapsed();
+    assert!(
+        waited < Duration::from_secs(2),
+        "a healthy pane waited {waited:?} behind a holder that does not answer"
+    );
+}
+
 // ---- the SSH fallback ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

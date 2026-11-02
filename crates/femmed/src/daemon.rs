@@ -39,8 +39,9 @@ pub struct Daemon {
     /// Rung when a session row changes: the scheduler plans again ([`crate::worker`]).
     pub sched_wake: Arc<Notify>,
     /// Control connections to holders, one per session, for the desktop front (`crate::front`):
-    /// every `Holder::connect` leaves a socket open until its holder exits, so they are kept.
-    pub(crate) holders: tokio::sync::Mutex<HashMap<Sid, Holder>>,
+    /// every `Holder::connect` leaves a socket open until its holder exits, so they are kept. A
+    /// slot per session, so connecting to one holder holds up only that session's callers.
+    pub(crate) holders: Mutex<HashMap<Sid, Arc<tokio::sync::Mutex<Option<Holder>>>>>,
     /// Ourselves, for the tasks that follow holders (they must not keep the daemon alive).
     pub(crate) me: Weak<Daemon>,
 }
