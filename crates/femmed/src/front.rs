@@ -8,6 +8,8 @@
 //! attached pane ([`term`]). There is no session layer: resume is a new connection and a `Hello`
 //! carrying the revs the desktop holds, which subscribes it to those scopes from there (another
 //! epoch: from scratch). A `Hello` without cursors subscribes to nothing until the desktop asks.
+//! A connection that has not said `Hello` within [`HELLO_WAIT`] is closed, and no terminal is
+//! served before the `Welcome`.
 //!
 //! A request that changes something is remembered by `(device, op)` for 24 h ([`Ctx::run`]): a
 //! retry after a dropped connection gets the recorded answer instead of running the op again.
@@ -36,7 +38,7 @@ use femme_store::auth;
 use femme_transport::quic::Allow;
 use femme_transport::{fp_to_hex, listen, mux_server, Conn, Listener, ServerIdentity, Tx};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, OnceCell, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, watch, OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 pub use term::{stats, Quantiles, Stats};
@@ -60,6 +62,8 @@ const BODY_MAX: usize = 1 << 20;
 const LINGER: Duration = Duration::from_secs(5);
 /// How often the terminal relay's latency is logged (when it has changed).
 const REPORT_EVERY: Duration = Duration::from_secs(60);
+/// How long a connection may take to open its ctrl stream and say `Hello`.
+const HELLO_WAIT: Duration = Duration::from_secs(10);
 
 /// The device behind the SSH fallback: whoever logged in as our user. No row in `devices`.
 const SSH: DeviceId = Id(0);
@@ -70,10 +74,25 @@ type Outcome = Result<Resp, WireErr>;
 /// Mutating requests being run, by `(device, op)`.
 type Inflight = Mutex<HashMap<(DeviceId, OpId), Arc<OnceCell<Outcome>>>>;
 
+/// The front's clocks; tests shorten them.
+#[derive(Clone, Copy)]
+pub struct Waits {
+    /// How long a connection may take to say `Hello`, and a terminal stream to be allowed (it waits
+    /// for the `Welcome`).
+    pub hello: Duration,
+}
+
+impl Default for Waits {
+    fn default() -> Waits {
+        Waits { hello: HELLO_WAIT }
+    }
+}
+
 /// What every connection of one front shares.
 struct Front {
     /// Weak: the accept loops live as long as the [`FrontHandle`], not as long as the daemon.
     daemon: Weak<Daemon>,
+    waits: Waits,
     hops: Arc<Hops>,
     /// A retry that arrives on a new connection while the old connection's attempt still runs
     /// joins that attempt instead of running the op a second time.
@@ -144,10 +163,19 @@ pub async fn serve_front(daemon: Arc<Daemon>) -> anyhow::Result<FrontHandle> {
     serve_front_on(daemon, bind).await
 }
 
+/// [`serve_front_with`] on the real clocks.
+pub async fn serve_front_on(daemon: Arc<Daemon>, quic: SocketAddr) -> anyhow::Result<FrontHandle> {
+    serve_front_with(daemon, quic, Waits::default()).await
+}
+
 /// Starts the front: QUIC on `quic` (port 0 picks one; see [`FrontHandle::quic_addr`]) and the
 /// SSH fallback on `<runtime>/femme/femmed.sock`, the path `femmed proxy` connects to. Fails
 /// with a "cannot bind" message when either is taken.
-pub async fn serve_front_on(daemon: Arc<Daemon>, quic: SocketAddr) -> anyhow::Result<FrontHandle> {
+pub async fn serve_front_with(
+    daemon: Arc<Daemon>,
+    quic: SocketAddr,
+    waits: Waits,
+) -> anyhow::Result<FrontHandle> {
     let identity = identity(&daemon.cfg)?;
     let fingerprint = identity.fingerprint();
     let allow: Allow = {
@@ -174,6 +202,7 @@ pub async fn serve_front_on(daemon: Arc<Daemon>, quic: SocketAddr) -> anyhow::Re
     let hops = Arc::new(Hops::new());
     let front = Arc::new(Front {
         daemon: Arc::downgrade(&daemon),
+        waits,
         hops: hops.clone(),
         inflight: Mutex::default(),
     });
@@ -292,20 +321,27 @@ async fn serve_conn(front: Arc<Front>, device: DeviceId, conn: Arc<dyn Conn>) {
     tracing::info!(%device, quic = conn.is_quic(), "desktop connected");
     let mut tasks = JoinSet::new();
     let mut ctrl = false;
+    // Set once the ctrl stream has sent `Welcome`: terminals are served from then on.
+    let (welcome_sent, welcomed) = watch::channel(false);
+    let welcome_sent = Arc::new(welcome_sent);
+    let hello_by = tokio::time::sleep(front.waits.hello);
+    tokio::pin!(hello_by);
     loop {
         tokio::select! {
             accepted = conn.accept() => match accepted {
                 Ok((StreamKind::Ctrl, tx, rx)) if !ctrl => {
                     ctrl = true;
                     let (front, daemon, conn) = (front.clone(), daemon.clone(), conn.clone());
+                    let welcome_sent = welcome_sent.clone();
                     tasks.spawn(async move {
-                        run_ctrl(front, daemon, device, conn.clone(), tx, rx).await;
+                        run_ctrl(front, daemon, device, conn.clone(), tx, rx, welcome_sent).await;
                         // The connection is this stream's: when it ends, so does the connection.
                         conn.close();
                     });
                 }
                 Ok((StreamKind::Term(pane), tx, rx)) => {
-                    tasks.spawn(term::relay(daemon.clone(), front.hops.clone(), pane, tx, rx));
+                    let (hops, wait) = (front.hops.clone(), front.waits.hello);
+                    tasks.spawn(term::relay(daemon.clone(), hops, pane, tx, rx, welcomed.clone(), wait));
                 }
                 Ok((kind, mut tx, _)) => {
                     tracing::debug!(?kind, "stream refused");
@@ -314,6 +350,8 @@ async fn serve_conn(front: Arc<Front>, device: DeviceId, conn: Arc<dyn Conn>) {
                 Err(_) => break,
             },
             _ = conn.closed() => break,
+            // No ctrl stream in time: nobody is going to say Hello.
+            () = &mut hello_by, if !ctrl => break,
             Some(_) = tasks.join_next() => {}
         }
     }
@@ -342,11 +380,14 @@ async fn run_ctrl(
     conn: Arc<dyn Conn>,
     mut tx: Tx,
     mut rx: femme_transport::Rx,
+    welcome_sent: Arc<watch::Sender<bool>>,
 ) {
-    let Ok(Some(C2S::Hello { proto, cursors, .. })) = rx.recv_msg::<C2S>().await else {
-        return tx.reset(); // a ctrl stream starts with Hello
+    let hello = tokio::time::timeout(front.waits.hello, rx.recv_msg::<C2S>()).await;
+    let Ok(Ok(Some(C2S::Hello { proto, cursors, .. }))) = hello else {
+        return tx.reset(); // a ctrl stream starts with Hello, soon
     };
-    if proto != PROTO_VERSION && PROTO_VERSION.checked_sub(1) != Some(proto) {
+    // This protocol, or the one before it (there is none before 1: 0 is not a protocol).
+    if proto != PROTO_VERSION && PROTO_VERSION.checked_sub(1).filter(|v| *v > 0) != Some(proto) {
         // `S2C` has no error before `Welcome`: a `Resp` for the nil op carries it.
         let why = format!(
             "protocol {proto} is not supported (this is femmed {} speaking {PROTO_VERSION})",
@@ -372,6 +413,7 @@ async fn run_ctrl(
     if tx.send(&welcome).await.is_err() {
         return;
     }
+    welcome_sent.send_replace(true);
     let Ok((events, _unused)) = conn.open_kind(StreamKind::Events).await else {
         return;
     };

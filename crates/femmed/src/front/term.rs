@@ -10,10 +10,13 @@ use femme_proto::term::{TermDown, TermUp};
 use femme_proto::PaneId;
 use femme_transport::{Rx, Tx};
 use hdrhistogram::Histogram;
+use tokio::sync::watch;
 
 use crate::daemon::Daemon;
 
-/// Serves one `Term(pane)` stream until either side ends it. The first message must be
+/// Serves one `Term(pane)` stream until either side ends it. Terminals are for a connection that
+/// has said `Hello` and been welcomed (it speaks a protocol we do): a stream that arrives first
+/// waits for that up to `wait`, and is reset if it does not come. The first message must be
 /// `TermUp::Open`: it attaches a view of the pane in its holder (the holder answers with a
 /// snapshot, or a delta from `have_rev`); every later `TermUp` goes to the view as it is, a second
 /// `Open` included (that is the resync request). A pane that is not there, or a holder that ends
@@ -24,7 +27,15 @@ pub(crate) async fn relay(
     pane: PaneId,
     mut tx: Tx,
     mut rx: Rx,
+    mut welcomed: watch::Receiver<bool>,
+    wait: Duration,
 ) {
+    if !matches!(
+        tokio::time::timeout(wait, welcomed.wait_for(|w| *w)).await,
+        Ok(Ok(_))
+    ) {
+        return tx.reset();
+    }
     let Ok(Some(TermUp::Open {
         pane: opened,
         epoch,

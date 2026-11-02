@@ -25,7 +25,7 @@ use femme_transport::{
 };
 use femmed::core::{Core, CreateSession};
 use femmed::daemon::Daemon;
-use femmed::front::{serve_front_on, FrontHandle};
+use femmed::front::{serve_front_with, FrontHandle, Waits};
 use tokio::sync::RwLock;
 
 /// The longest any one wait on the daemon may take.
@@ -60,11 +60,11 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    Rig::new(false).await
+    Rig::new(false, Waits::default()).await
 }
 
 impl Rig {
-    async fn new(alone: bool) -> Rig {
+    async fn new(alone: bool, waits: Waits) -> Rig {
         pin_shell();
         let quiet: Box<dyn Send> = if alone {
             Box::new(QUIET.write().await)
@@ -73,7 +73,7 @@ impl Rig {
         };
         let b = Box_::new();
         let (d, stop) = b.start(None).await;
-        let front = serve_front_on(d.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
+        let front = serve_front_with(d.clone(), SocketAddr::from(([127, 0, 0, 1], 0)), waits)
             .await
             .expect("the front starts");
         Rig {
@@ -405,36 +405,44 @@ async fn requests_are_answered_by_op_id_and_a_repeated_op_is_not_run_twice() {
     assert_eq!(got[&fast].as_ref().unwrap_err().code, ErrCode::NotFound);
     assert_eq!(sessions().await, 3);
 
-    // The current and the previous protocol are welcome; any other is told so, and the
+    // A protocol that is not this one (0 is none: there is nothing before 1) is told so, and the
     // connection ends.
-    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
-    let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
     let hello = |proto| C2S::Hello {
         proto,
         client_instance: INSTANCE,
         cursors: Cursors::default(),
     };
-    tx.send(&hello(PROTO_VERSION + 1)).await.unwrap();
-    let told = within("the refusal", rx.recv_msg::<S2C>()).await;
-    let Ok(Some(S2C::Resp {
-        result: Err(refusal),
-        ..
-    })) = told
-    else {
-        panic!("expected an Unsupported error, got {told:?}")
-    };
-    assert_eq!(refusal.code, ErrCode::Unsupported, "{refusal:?}");
-    assert!(matches!(rx.recv_msg::<S2C>().await, Ok(None)));
-    conn.close();
-    let previous = PROTO_VERSION - 1;
-    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
-    let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
-    tx.send(&hello(previous)).await.unwrap();
-    let welcome = within("Welcome", rx.recv_msg::<S2C>()).await;
-    assert!(
-        matches!(welcome, Ok(Some(S2C::Welcome { proto, .. })) if proto == previous),
-        "{welcome:?}"
-    );
+    for proto in [0, PROTO_VERSION + 1] {
+        let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+        let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
+        tx.send(&hello(proto)).await.unwrap();
+        let told = within("the refusal", rx.recv_msg::<S2C>()).await;
+        let Ok(Some(S2C::Resp {
+            result: Err(refusal),
+            ..
+        })) = told
+        else {
+            panic!("protocol {proto}: expected an Unsupported error, got {told:?}")
+        };
+        assert_eq!(
+            refusal.code,
+            ErrCode::Unsupported,
+            "protocol {proto}: {refusal:?}"
+        );
+        assert!(matches!(rx.recv_msg::<S2C>().await, Ok(None)));
+        conn.close();
+    }
+    // The one before this is welcome, once there is one.
+    if let Some(previous) = PROTO_VERSION.checked_sub(1).filter(|v| *v > 0) {
+        let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+        let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
+        tx.send(&hello(previous)).await.unwrap();
+        let welcome = within("Welcome", rx.recv_msg::<S2C>()).await;
+        assert!(
+            matches!(welcome, Ok(Some(S2C::Welcome { proto, .. })) if proto == previous),
+            "{welcome:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -532,6 +540,89 @@ async fn a_request_over_one_mebibyte_is_refused_and_the_global_scope_stays_subsc
             1
         );
         c.conn.close();
+    }
+}
+
+// ---- who may open a terminal ------------------------------------------------------------------
+
+/// The Term stream of a connection that is not welcomed ends without a frame.
+async fn assert_no_terminal(rx: &mut Rx) {
+    let got = within("the stream's end", rx.recv_msg::<TermDown>()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a terminal was served to a connection that is not welcomed: {got:?}"
+    );
+}
+
+fn open(pane: PaneId) -> TermUp {
+    TermUp::Open {
+        pane,
+        epoch: 0,
+        have_rev: 0,
+        client_instance: INSTANCE,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_stream_on_a_connection_that_never_said_hello_gets_no_terminal() {
+    let waits = Waits {
+        hello: Duration::from_millis(300),
+    };
+    let rig = Rig::new(false, waits).await;
+    let dev = rig.enroll("laptop");
+    let s = rig.shell().await;
+    let pane = PaneId { sid: s.sid, no: 1 };
+    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+    let (mut tx, mut rx) = conn.open_kind(StreamKind::Term(pane)).await.unwrap();
+    tx.send(&open(pane)).await.unwrap();
+    assert_no_terminal(&mut rx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_stream_after_a_refused_hello_is_reset_while_the_refusal_is_read() {
+    let waits = Waits {
+        hello: Duration::from_millis(300),
+    };
+    let rig = Rig::new(false, waits).await;
+    let dev = rig.enroll("laptop");
+    let s = rig.shell().await;
+    let pane = PaneId { sid: s.sid, no: 1 };
+    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+    let (mut ctx, mut crx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
+    let hello = C2S::Hello {
+        proto: PROTO_VERSION + 7,
+        client_instance: INSTANCE,
+        cursors: Cursors::default(),
+    };
+    ctx.send(&hello).await.unwrap();
+    let told = within("the refusal", crx.recv_msg::<S2C>()).await;
+    assert!(
+        matches!(told, Ok(Some(S2C::Resp { result: Err(_), .. }))),
+        "{told:?}"
+    );
+    // The connection lingers for the client to read why (the ctrl stream is still open), and in
+    // that time the terminal is refused by the stream itself.
+    let (mut tx, mut rx) = conn.open_kind(StreamKind::Term(pane)).await.unwrap();
+    tx.send(&open(pane)).await.unwrap();
+    assert_no_terminal(&mut rx).await;
+    let open_still = tokio::time::timeout(Duration::from_millis(50), conn.closed()).await;
+    assert!(open_still.is_err(), "the connection closed with the stream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_that_does_not_say_hello_in_time_is_closed() {
+    let waits = Waits {
+        hello: Duration::from_millis(300),
+    };
+    let rig = Rig::new(false, waits).await;
+    let dev = rig.enroll("laptop");
+    // Not even a ctrl stream.
+    let idle = within("the connection", rig.connect(&dev)).await.unwrap();
+    // A ctrl stream that stays silent.
+    let silent = within("the connection", rig.connect(&dev)).await.unwrap();
+    let (_tx, _rx) = silent.open_kind(StreamKind::Ctrl).await.unwrap();
+    for conn in [&idle, &silent] {
+        within("the connection to be closed", conn.closed()).await;
     }
 }
 
@@ -1096,7 +1187,7 @@ async fn the_ssh_fallback_speaks_the_same_protocol_over_the_unix_socket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keystroke_relay_adds_under_three_milliseconds_in_the_daemon() {
-    let rig = Rig::new(true).await;
+    let rig = Rig::new(true, Waits::default()).await;
     let dev = rig.enroll("laptop");
     let mut c = rig.desktop(&dev, Cursors::default()).await;
     let sid = c.session(&rig.home()).await;
