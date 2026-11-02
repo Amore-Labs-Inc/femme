@@ -1,0 +1,4 @@
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"femme","title":"FEMME","version":"0.1.0"},"capabilities":{"optOutNotificationMethods":["turn/moderationMetadata","turn/diff/updated","thread/readState/changed","mcpServer/startupStatus/updated","remoteControl/status/changed","account/updated","item/commandExecution/outputDelta","item/fileChange/outputDelta","item/fileChange/patchUpdated","hook/started","hook/completed"]}}}
+{"method":"initialized"}
+{"id":2,"method":"thread/resume","params":{"cwd":"/work/repo","approvalPolicy":"never","sandbox":"danger-full-access","model":"gpt-6-luna","threadId":"01a19bba-f448-7503-b55c-6d29979a0ac3"}}
+{"id":3,"method":"turn/start","params":{"threadId":"01a19bba-f448-7503-b55c-6d29979a0ac3","input":[{"type":"text","text":"What single word did you reply with in your previous message? Reply with just that word."}]}}

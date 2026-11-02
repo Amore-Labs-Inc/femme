@@ -1,0 +1,5 @@
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"femme","title":"FEMME","version":"0.1.0"},"capabilities":{"optOutNotificationMethods":["turn/moderationMetadata","turn/diff/updated","thread/readState/changed","mcpServer/startupStatus/updated","remoteControl/status/changed","account/updated","item/commandExecution/outputDelta","item/fileChange/outputDelta","item/fileChange/patchUpdated","hook/started","hook/completed"]}}}
+{"method":"initialized"}
+{"id":2,"method":"thread/start","params":{"cwd":"/work/repo","approvalPolicy":"never","sandbox":"danger-full-access","model":"gpt-6-luna"}}
+{"id":3,"method":"turn/start","params":{"threadId":"01a19bbf-51d1-7a90-9775-ed1f2cd5da44","input":[{"type":"text","text":"Run `sleep 4; echo hi` with your shell tool, then reply with the single word ok."}]}}
+{"id":4,"method":"turn/steer","params":{"threadId":"01a19bbf-51d1-7a90-9775-ed1f2cd5da44","input":[{"type":"text","text":"After the command, reply with the word blue instead of ok."}],"expectedTurnId":"01a19bbf-5232-74f2-99cb-5a4e826992d8"}}

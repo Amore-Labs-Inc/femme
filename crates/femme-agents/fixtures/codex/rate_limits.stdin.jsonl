@@ -1,0 +1,4 @@
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"femme","title":"FEMME","version":"0.1.0"},"capabilities":{"optOutNotificationMethods":["turn/moderationMetadata","turn/diff/updated","thread/readState/changed","mcpServer/startupStatus/updated","remoteControl/status/changed","account/updated","item/commandExecution/outputDelta","item/fileChange/outputDelta","item/fileChange/patchUpdated","hook/started","hook/completed"]}}}
+{"method":"initialized"}
+{"id":2,"method":"thread/start","params":{"cwd":"/work/repo","approvalPolicy":"never","sandbox":"danger-full-access","model":"gpt-6-luna"}}
+{"id":3,"method":"account/rateLimits/read"}
