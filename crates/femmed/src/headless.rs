@@ -1,0 +1,2080 @@
+//! Headless sessions (M3): the agent runs with piped stdio in its session's holder, and one actor
+//! task per session drives it through the sans-IO driver of `femme-agents`. The actor owns the
+//! driver: commands (prompt, interrupt, answer, model, takeover, close) arrive on a channel, the
+//! agent's stdout arrives from the holder's spool, and after EVERY driver call what the driver
+//! wants written goes to the agent's stdin. What the driver reports lands in the store (transcript
+//! items, the session's status) and on the hub, and the spool offset that covers it is committed in
+//! the same transaction, then told to the holder.
+//!
+//! A daemon restart leaves the agent running in its holder: [`Daemon::reconcile`] calls
+//! [`reattach`], which builds a fresh driver, `attach`es it with what was persisted (`agent_state`)
+//! and replays the spool from `spool_committed`. A replay writes nothing that is already there
+//! ([`put`]), so the transcript after a restart is the one an uninterrupted run would have made.
+//!
+//! The takeover machine ([`crate::takeover`]) runs in the actor too: it moves a session between its
+//! headless agent and the agent's own TUI in pane 1, never with two agent processes at once.
+
+use std::collections::HashMap;
+use std::sync::Weak;
+use std::time::Duration;
+
+use bytes::Bytes;
+use femme_agents::hooks::HookEvent;
+use femme_agents::items::{body, Event, QuestionItem, TurnEnd};
+use femme_agents::{
+    driver_for, AgentEvent, AgentStatus, Attach, Driver, DropReason, Error as DriverError,
+    HeldPrompt, Launch, Out, StopReason,
+};
+use femme_proto::holder::{HolderEvent, Target};
+use femme_proto::rpc::{Answer, PromptHow};
+use femme_proto::state::{
+    Agent, Attention, Item, ItemKind, ItemStatus, Mode, Question, Session, SessionStatus,
+};
+use femme_proto::{Id, Sid};
+use femme_store::{items as store_items, sessions, Store, Tx};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::time::Instant;
+
+use crate::core::CoreError;
+use crate::daemon::{core_err, now_ms, Daemon};
+use crate::holder_client::{Holder, SpoolLines};
+use crate::scheduler::UsageSnapshot;
+use crate::session::{agent_label, find_on_path, gone, holder_err, label, COLS, MAIN, ROWS};
+use crate::takeover::{Act, Ev, Phase, Takeover};
+
+/// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
+/// when their TUIs are wired.
+const EXIT_CMD: &str = "/exit\r";
+/// From an unrequested exit to the restart.
+const RESTART_DELAY: Duration = Duration::from_secs(2);
+/// A second unrequested exit this soon after a restart fails the session.
+const FAIL_WINDOW: Duration = Duration::from_secs(30);
+/// How long, after an exit, the actor waits for the spool bytes the agent wrote before it died.
+const DRAIN: Duration = Duration::from_secs(2);
+/// The takeover machine's clock.
+const TICK: Duration = Duration::from_millis(100);
+/// Items on a headless session's `/screen`, and the most of one item shown.
+// ponytail: the last 50 items, each cut at 4000 bytes, no paging; the desktop reads the store's
+// pages, add a cursor to `/screen` if a client wants the rest.
+const SCREEN_ITEMS: usize = 50;
+const SCREEN_ITEM_MAX: usize = 4000;
+/// The most of the agent's stderr that goes into an `Event` item.
+const STDERR_MAX: usize = 4096;
+
+// ---- what the driver keeps that the spool does not hold -----------------------------------------
+
+/// `agent_state.json`: [`Driver::pending_answers`] and the prompts that wait for the agent
+/// ([`Driver::held_prompts`], and the ones waiting for the next process), written whenever they
+/// change.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Saved {
+    answers: Vec<(String, Answer)>,
+    held: Vec<HeldPrompt>,
+}
+
+impl Saved {
+    pub(crate) fn json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+// ---- the handle ---------------------------------------------------------------------------------
+
+type Reply = oneshot::Sender<Result<(), CoreError>>;
+
+enum Cmd {
+    Prompt {
+        text: String,
+        reply: Reply,
+    },
+    Interrupt {
+        reply: Reply,
+    },
+    Answer {
+        request_id: String,
+        answer: Answer,
+        reply: Reply,
+    },
+    SetModel {
+        model: String,
+        reply: Reply,
+    },
+    Takeover {
+        to: Mode,
+        reply: Reply,
+    },
+    /// Stop everything: the holder and its children go.
+    Close {
+        done: oneshot::Sender<()>,
+    },
+    /// A hook of the agent's TUI (takeover phases that wait for a turn to end).
+    Hook(HookEvent),
+}
+
+/// The way into a session's actor. Dropping the last one stops the actor and leaves the agent be.
+#[derive(Clone)]
+pub(crate) struct Head {
+    tx: mpsc::Sender<Cmd>,
+}
+
+impl Head {
+    async fn call(&self, cmd: impl FnOnce(Reply) -> Cmd) -> Result<(), CoreError> {
+        let (reply, answer) = oneshot::channel();
+        self.tx.send(cmd(reply)).await.map_err(|_| gone())?;
+        answer.await.map_err(|_| gone())?
+    }
+
+    pub(crate) async fn prompt(&self, text: &str) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Prompt {
+            text: text.into(),
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn interrupt(&self) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Interrupt { reply }).await
+    }
+
+    pub(crate) async fn answer(&self, request_id: &str, answer: Answer) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Answer {
+            request_id: request_id.into(),
+            answer,
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn set_model(&self, model: &str) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::SetModel {
+            model: model.into(),
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn takeover(&self, to: Mode) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Takeover { to, reply }).await
+    }
+
+    pub(crate) async fn close(&self) {
+        let (done, wait) = oneshot::channel();
+        if self.tx.send(Cmd::Close { done }).await.is_ok() {
+            let _ = wait.await;
+        }
+    }
+
+    /// Passes a TUI hook on (fire and forget: the hook route must not wait for the actor).
+    pub(crate) fn hook(&self, ev: HookEvent) {
+        let _ = self.tx.try_send(Cmd::Hook(ev));
+    }
+}
+
+fn driver_err(e: DriverError) -> CoreError {
+    match e {
+        DriverError::State(_) => CoreError::Busy,
+        DriverError::UnknownRequest(_) => CoreError::Conflict(e.to_string()),
+        DriverError::Unsupported(_) | DriverError::Bad(_) => CoreError::Bad(e.to_string()),
+    }
+}
+
+// ---- entry points -------------------------------------------------------------------------------
+
+/// Starts the agent of a new session in its holder and the actor that drives it. On failure the
+/// holder is stopped (the caller deletes the session).
+pub(crate) async fn start(d: &Daemon, s: &Session, holder: Holder) -> Result<(), String> {
+    let mut a = Actor::new(d, s, holder.clone(), 0, 0, Saved::default());
+    let events = holder.subscribe();
+    let up = async {
+        a.spool = Some(holder.spool_read(0).await.map_err(|e| e.to_string())?);
+        a.spawn_process(d, None).await
+    };
+    if let Err(e) = up.await {
+        let _ = holder.shutdown().await;
+        return Err(e);
+    }
+    a.launch(d, events);
+    Ok(())
+}
+
+/// Takes over the actor of a session whose holder outlived the daemon. A headless session gets a
+/// fresh driver, `attach`ed, and the spool replayed from `spool_committed`; one taken over by its
+/// TUI gets the machine back in its TUI phase (and resumes headless if the TUI ended meanwhile).
+pub(crate) async fn reattach(d: &Daemon, s: &Session, holder: Holder) -> Result<(), CoreError> {
+    let info = holder.info().await.map_err(holder_err)?;
+    let (committed, state) = d
+        .store
+        .read(|c| {
+            Ok((
+                sessions::spool_committed(c, s.id)?,
+                sessions::agent_state(c, s.id)?,
+            ))
+        })
+        .map_err(core_err)?;
+    let (epoch, saved) = state.map_or((0, Saved::default()), |(epoch, json)| {
+        (epoch, serde_json::from_str(&json).unwrap_or_default())
+    });
+    let (hi, alive, exit) = info.agent.as_ref().map_or((0, false, -1), |a| {
+        (a.spool_hi, a.alive, a.exit.unwrap_or(-1))
+    });
+    let mut a = Actor::new(d, s, holder.clone(), committed, epoch + 1, saved.clone());
+    let events = holder.subscribe();
+    if s.mode == Mode::Tui {
+        // ponytail: what the headless agent wrote while the daemon was away, if anything, is not read
+        a.committed = committed.max(hi);
+        a.lines = SpoolLines::new(a.committed);
+        a.recv_end = a.committed;
+        a.spool = Some(holder.spool_read(a.committed).await.map_err(holder_err)?);
+        if info.panes.iter().any(|p| p.no == MAIN && p.alive) {
+            d.view(&holder, s.id).await?;
+        } else {
+            a.boot_acts = a.machine.step(Ev::PaneExited);
+        }
+    } else {
+        let from = committed.min(hi);
+        a.committed = from;
+        a.lines = SpoolLines::new(from);
+        a.recv_end = from;
+        let path = d.sessions.path(&d.cfg);
+        let launch = Launch {
+            cwd: s.cwd.clone(),
+            model: s.model.clone(),
+            resume: s.agent_sid.clone(),
+            extra_env: d.sessions.child_env(&d.cfg, &path),
+            hooks_path: None,
+        };
+        let attach = Attach {
+            resume_offset: from,
+            agent_sid: s.agent_sid.clone(),
+            model: s.model.clone(),
+            answers: saved.answers.clone(),
+            epoch: u32::try_from(a.epoch).unwrap_or(u32::MAX),
+        };
+        a.driver.attach(&launch, &attach, &mut a.out);
+        d.write(|tx, _| tx.set_agent_state(s.id, a.epoch, &saved.json()))?;
+        a.flush().await;
+        a.spool = Some(holder.spool_read(from).await.map_err(holder_err)?);
+        a.replay_until = Some(hi);
+        a.live = alive;
+        if !alive {
+            a.dead_at_attach = Some(exit);
+        }
+        a.resend = saved.held;
+    }
+    a.launch(d, events);
+    Ok(())
+}
+
+// ---- the actor ----------------------------------------------------------------------------------
+
+struct Actor {
+    /// The daemon, weakly: dropping it stops the actor (upgraded while handling one event).
+    d: Weak<Daemon>,
+    sid: Sid,
+    agent: Agent,
+    holder: Holder,
+    driver: Box<dyn Driver>,
+    out: Out,
+    machine: Takeover,
+    t0: Instant,
+    /// An agent process runs: spawned or found, its exit not seen yet.
+    live: bool,
+    /// Nothing of this process has been read yet: its first line makes a `Starting` session ready.
+    starting: bool,
+    spool: Option<mpsc::Receiver<(u64, Bytes)>>,
+    lines: SpoolLines,
+    /// End of the spool bytes received so far.
+    recv_end: u64,
+    /// The spool offset the transcript is stored up to (the store's `spool_committed`).
+    committed: u64,
+    epoch: u64,
+    /// What `agent_state` holds.
+    saved: Saved,
+    /// Replaying the spool of an agent that outlived the daemon, up to where it stood at attach.
+    replay_until: Option<u64>,
+    /// The agent was already dead at attach: its exit is handled when the replay is through.
+    dead_at_attach: Option<i32>,
+    /// Takeover steps to run first (the TUI ended while the daemon was away).
+    boot_acts: Vec<Act>,
+    fold: FoldState,
+    /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
+    resend: Vec<HeldPrompt>,
+    restart_at: Option<Instant>,
+    restarted_at: Option<Instant>,
+    tick_at: Option<Instant>,
+    /// The agent's stderr tail from its last exit.
+    stderr: String,
+    takeover_reply: Option<Reply>,
+    /// The agent died twice or would not start: nothing runs until the session is closed.
+    failed: bool,
+    stop: bool,
+}
+
+/// Why a batch of events is being applied.
+#[derive(Clone, Copy)]
+enum Src {
+    /// The agent's stdout line at this spool offset.
+    Line(u64),
+    /// The process exited ([`Driver::on_exit`]).
+    Exit,
+}
+
+impl Actor {
+    fn new(
+        d: &Daemon,
+        s: &Session,
+        holder: Holder,
+        committed: u64,
+        epoch: u64,
+        saved: Saved,
+    ) -> Actor {
+        Actor {
+            d: d.me.clone(),
+            sid: s.id,
+            agent: s.agent,
+            holder,
+            driver: driver_for(s.agent),
+            out: Out::default(),
+            machine: Takeover::new(s.mode, EXIT_CMD),
+            t0: Instant::now(),
+            live: false,
+            starting: false,
+            spool: None,
+            lines: SpoolLines::new(committed),
+            recv_end: committed,
+            committed,
+            epoch,
+            saved,
+            replay_until: None,
+            dead_at_attach: None,
+            boot_acts: Vec::new(),
+            fold: FoldState::default(),
+            resend: Vec::new(),
+            restart_at: None,
+            restarted_at: None,
+            tick_at: None,
+            stderr: String::new(),
+            takeover_reply: None,
+            failed: false,
+            stop: false,
+        }
+    }
+
+    /// Registers the actor's handle and runs it.
+    fn launch(self, d: &Daemon, events: broadcast::Receiver<HolderEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        d.sessions.set_head(self.sid, Head { tx });
+        tokio::spawn(self.run(rx, events));
+    }
+
+    fn ms(&self) -> u64 {
+        u64::try_from(self.t0.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    async fn run(
+        mut self,
+        mut rx: mpsc::Receiver<Cmd>,
+        mut events: broadcast::Receiver<HolderEvent>,
+    ) {
+        if let Some(d) = self.d.upgrade() {
+            self.begin(&d).await;
+        }
+        while !self.stop {
+            let wake = [self.restart_at, self.tick_at].into_iter().flatten().min();
+            tokio::select! {
+                cmd = rx.recv() => {
+                    let Some(cmd) = cmd else { break };
+                    let Some(d) = self.d.upgrade() else { break };
+                    self.on_cmd(&d, cmd).await;
+                }
+                chunk = next_chunk(&mut self.spool) => match chunk {
+                    Some((offset, data)) => {
+                        let Some(d) = self.d.upgrade() else { break };
+                        self.on_chunk(&d, offset, data).await;
+                    }
+                    None => {
+                        // ponytail: a stream that ends alone (holder error, bad frame) is not
+                        // reopened; read again from `recv_end` if that is ever seen.
+                        tracing::warn!(sid = %self.sid, "agent spool stream ended");
+                        self.spool = None;
+                    }
+                },
+                ev = events.recv() => {
+                    let Some(d) = self.d.upgrade() else { break };
+                    self.on_holder(&d, ev).await;
+                }
+                () = self.holder.closed() => {
+                    if let Some(d) = self.d.upgrade() {
+                        self.holder_gone(&d);
+                    }
+                    break;
+                }
+                () = sleep_until_opt(wake) => {
+                    let Some(d) = self.d.upgrade() else { break };
+                    self.on_timer(&d).await;
+                }
+            }
+        }
+    }
+
+    /// What is left to do after attaching: a replay with nothing in it, a TUI that ended.
+    async fn begin(&mut self, d: &Daemon) {
+        self.replay_check(d).await;
+        let acts = std::mem::take(&mut self.boot_acts);
+        if !acts.is_empty() {
+            self.run_acts(d, acts).await;
+        }
+    }
+
+    // ---- commands -------------------------------------------------------------------------------
+
+    async fn on_cmd(&mut self, d: &Daemon, cmd: Cmd) {
+        match cmd {
+            Cmd::Prompt { text, reply } => {
+                let r = self.prompt(d, &text).await;
+                let _ = reply.send(r);
+            }
+            Cmd::Interrupt { reply } => {
+                let r = self.interrupt().await;
+                let _ = reply.send(r);
+            }
+            Cmd::Answer {
+                request_id,
+                answer,
+                reply,
+            } => {
+                let r = self.answer(d, &request_id, &answer).await;
+                let _ = reply.send(r);
+            }
+            Cmd::SetModel { model, reply } => {
+                let r = self.set_model(&model).await;
+                let _ = reply.send(r);
+            }
+            Cmd::Takeover { to, reply } => self.takeover(d, to, reply).await,
+            Cmd::Close { done } => {
+                let _ = self.holder.shutdown().await;
+                self.stop = true;
+                let _ = done.send(());
+            }
+            Cmd::Hook(ev) => {
+                let acts = match ev {
+                    HookEvent::Working => self.machine.step(Ev::TurnStarted),
+                    HookEvent::Idle => self.machine.step(Ev::TurnEnded { now: self.ms() }),
+                    _ => return,
+                };
+                self.run_acts(d, acts).await;
+            }
+        }
+    }
+
+    /// The driver takes calls: headless, not replaying, not failed, no takeover under way.
+    fn ready(&self) -> Result<(), CoreError> {
+        if self.failed || self.replay_until.is_some() || self.machine.phase != Phase::Headless {
+            return Err(CoreError::Busy);
+        }
+        Ok(())
+    }
+
+    async fn prompt(&mut self, d: &Daemon, text: &str) -> Result<(), CoreError> {
+        self.ready()?;
+        let row = d.session(self.sid)?;
+        let takes = matches!(
+            row.status,
+            SessionStatus::Starting
+                | SessionStatus::Idle
+                | SessionStatus::Working
+                | SessionStatus::Paused
+        );
+        if !takes || row.attention == Attention::Blocked {
+            return Err(CoreError::Busy);
+        }
+        self.driver
+            .prompt(text, PromptHow::Queue, &mut self.out)
+            .map_err(driver_err)?;
+        self.flush().await;
+        // The agent's own turn starts a moment later: say `working` first, so a reader never takes
+        // the last task as finished in between.
+        self.update(d, None, |s| {
+            s.status = SessionStatus::Working;
+            s.attention = Attention::None;
+        });
+        self.commit(d, Vec::new()).await;
+        Ok(())
+    }
+
+    async fn interrupt(&mut self) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver.interrupt(&mut self.out).map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
+    async fn answer(&mut self, d: &Daemon, request_id: &str, a: &Answer) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver
+            .answer(request_id, a, &mut self.out)
+            .map_err(driver_err)?;
+        self.flush().await;
+        // the answers and the resume offset go together (the driver's contract)
+        self.commit(d, Vec::new()).await;
+        Ok(())
+    }
+
+    async fn set_model(&mut self, model: &str) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver
+            .set_model(model, &mut self.out)
+            .map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
+    async fn takeover(&mut self, d: &Daemon, to: Mode, reply: Reply) {
+        if self.takeover_reply.is_some()
+            || self.machine.in_transition()
+            || self.replay_until.is_some()
+            || self.failed
+        {
+            let _ = reply.send(Err(CoreError::Busy));
+            return;
+        }
+        let mut acts = self.machine.step(Ev::Takeover { to, now: self.ms() });
+        if !self.live && matches!(self.machine.phase, Phase::StoppingAgent { .. }) {
+            // no process to stop (it died and its restart is pending): its exit is behind us
+            self.restart_at = None;
+            acts = self.machine.step(Ev::AgentExited);
+        }
+        if acts == [Act::Noop] {
+            let _ = reply.send(Ok(()));
+            return;
+        }
+        self.takeover_reply = Some(reply);
+        self.run_acts(d, acts).await;
+    }
+
+    // ---- the holder -----------------------------------------------------------------------------
+
+    async fn on_holder(
+        &mut self,
+        d: &Daemon,
+        ev: Result<HolderEvent, broadcast::error::RecvError>,
+    ) {
+        use broadcast::error::RecvError;
+        match ev {
+            Ok(HolderEvent::AgentStderr(tail)) => self.stderr = tail,
+            Ok(HolderEvent::ChildExited {
+                target: Target::Agent,
+                status,
+            }) => self.agent_exited(d, status).await,
+            Ok(HolderEvent::ChildExited {
+                target: Target::Pane(MAIN),
+                ..
+            }) => {
+                let acts = self.machine.step(Ev::PaneExited);
+                self.run_acts(d, acts).await;
+            }
+            // ponytail: a TUI's title is not followed (the PTY path shows it), add when a client wants it
+            Ok(_) => {}
+            Err(RecvError::Lagged(n)) => {
+                tracing::warn!(sid = %self.sid, n, "holder events were missed");
+            }
+            Err(RecvError::Closed) => {
+                self.holder_gone(d);
+            }
+        }
+    }
+
+    /// The holder itself is gone: nothing can run any more.
+    fn holder_gone(&mut self, d: &Daemon) {
+        self.stop = true;
+        d.sessions.unhead(self.sid);
+        d.sessions.forget(self.sid);
+        let r = d.write(|tx, _| {
+            tx.update_session(self.sid, |s| {
+                if s.closed.is_none() {
+                    s.status = SessionStatus::Crashed;
+                    s.attention = Attention::None;
+                }
+            })
+        });
+        match r {
+            Ok(s) if s.closed.is_none() => {
+                tracing::warn!(sid = %self.sid, "holder gone; session crashed");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(sid = %self.sid, %e, "holder gone; session not marked"),
+        }
+    }
+
+    async fn on_timer(&mut self, d: &Daemon) {
+        let now = Instant::now();
+        if self.restart_at.is_some_and(|t| t <= now) {
+            self.restart_at = None;
+            self.restart(d).await;
+        }
+        if self.tick_at.is_some_and(|t| t <= now) {
+            self.tick_at = Some(now + TICK);
+            let acts = self.machine.step(Ev::Tick { now: self.ms() });
+            self.run_acts(d, acts).await;
+        }
+    }
+
+    // ---- the spool ------------------------------------------------------------------------------
+
+    async fn on_chunk(&mut self, d: &Daemon, offset: u64, data: Bytes) {
+        self.ingest(d, offset, data).await;
+        self.replay_check(d).await;
+    }
+
+    /// Feeds the driver the complete lines of a chunk.
+    async fn ingest(&mut self, d: &Daemon, offset: u64, data: Bytes) {
+        self.lines.push(offset, &data);
+        self.recv_end = self.recv_end.max(offset + data.len() as u64);
+        while let Some((at, line)) = self.lines.next_line() {
+            let events = self.driver.on_line(at, &line, &mut self.out);
+            self.flush().await;
+            self.apply(d, Src::Line(at), events).await;
+        }
+    }
+
+    async fn replay_check(&mut self, d: &Daemon) {
+        if self.replay_until.is_some_and(|end| self.recv_end >= end) {
+            self.end_replay(d).await;
+        }
+    }
+
+    /// Every driver call is followed by this: what it wants written goes to the agent.
+    async fn flush(&mut self) {
+        if self.out.stdin.is_empty() {
+            return;
+        }
+        let bytes = self.out.take();
+        if let Err(e) = self.holder.agent_write(bytes).await {
+            // the exit event follows and says what happened
+            tracing::debug!(sid = %self.sid, %e, "agent stdin not written");
+        }
+    }
+
+    /// The replay is through: the driver knows where the agent stands. Catch the clients up and
+    /// the session row, and give the agent the prompts that were waiting.
+    async fn end_replay(&mut self, d: &Daemon) {
+        self.replay_until = None;
+        self.fold.done = false;
+        for (id, text) in &self.fold.streams {
+            if !text.is_empty() {
+                d.hub.publish_delta(self.sid, id.clone(), 0, text.clone());
+            }
+        }
+        if let Some(code) = self.dead_at_attach.take() {
+            self.live = true;
+            self.agent_exited(d, code).await;
+            return;
+        }
+        let asked = match self.driver.status() {
+            AgentStatus::Blocked => d
+                .pending_question(self.sid)
+                .ok()
+                .flatten()
+                .map(|q| q.prompt),
+            _ => None,
+        };
+        let ds = self.driver.status();
+        self.update(d, asked.as_deref(), |s| match ds {
+            AgentStatus::Working => {
+                s.status = SessionStatus::Working;
+                s.attention = Attention::None;
+            }
+            AgentStatus::Blocked => {
+                s.status = SessionStatus::Blocked;
+                s.attention = Attention::Blocked;
+            }
+            AgentStatus::Idle => {
+                // a turn that ended while the daemon was away is `done` until someone looks
+                let done = s.status == SessionStatus::Working || s.attention == Attention::Done;
+                s.status = SessionStatus::Idle;
+                s.attention = if done {
+                    Attention::Done
+                } else {
+                    Attention::None
+                };
+            }
+        });
+        self.send_held(d).await;
+        self.commit(d, Vec::new()).await;
+    }
+
+    /// Hands the agent the prompts that are waiting for a process (saved before a restart, dropped
+    /// by the last process).
+    async fn send_held(&mut self, d: &Daemon) {
+        if !self.live || self.resend.is_empty() {
+            return;
+        }
+        for h in std::mem::take(&mut self.resend) {
+            if let Err(e) = self.driver.prompt(&h.text, h.how, &mut self.out) {
+                tracing::warn!(sid = %self.sid, %e, "a held prompt was not sent again");
+            }
+        }
+        self.flush().await;
+        self.update(d, None, |s| {
+            if matches!(s.status, SessionStatus::Idle | SessionStatus::Starting) {
+                s.status = SessionStatus::Working;
+                s.attention = Attention::None;
+            }
+        });
+        self.commit(d, Vec::new()).await;
+    }
+
+    // ---- what the driver reports ----------------------------------------------------------------
+
+    /// Stores and publishes what the driver reported. The session row goes first when the agent is
+    /// starting work or asking (a client sees `working` before the first item of the turn), last
+    /// when it is done (a client that hears `done` finds the whole answer).
+    async fn apply(&mut self, d: &Daemon, src: Src, events: Vec<AgentEvent>) {
+        let replay = self.replay_until.is_some();
+        let live_line = !replay && matches!(src, Src::Line(_));
+        let base = match src {
+            Src::Line(at) => format!("d{at}"),
+            Src::Exit => format!("x{}", Id::new()),
+        };
+        let f = fold(&mut self.fold, self.sid, &base, events, now_ms());
+        if !replay {
+            for (id, offset, text) in f.deltas {
+                d.hub.publish_delta(self.sid, id, offset, text);
+            }
+        }
+        if live_line {
+            if let Some(u) = f.usage {
+                *d.usage.lock().unwrap_or_else(|e| e.into_inner()) = Some(u);
+            }
+        }
+        if !replay {
+            self.resend.extend(f.dropped);
+        }
+        if f.turn_started {
+            let _ = self.machine.step(Ev::TurnStarted);
+        }
+        if f.turn_ended {
+            let _ = self.machine.step(Ev::TurnEnded { now: self.ms() });
+        }
+        let row = RowFx {
+            agent_sid: f.agent_sid,
+            model: f.model,
+            state: if live_line { f.state } else { None },
+            ready: live_line && std::mem::take(&mut self.starting),
+            driver: self.driver.status(),
+            asked: f.asked.filter(|_| live_line),
+        };
+        let first = row_first(row.state);
+        if first {
+            self.row(d, &row);
+        }
+        self.commit(d, f.puts).await;
+        if !first {
+            self.row(d, &row);
+        }
+    }
+
+    fn row(&self, d: &Daemon, fx: &RowFx) {
+        if fx.agent_sid.is_none() && fx.model.is_none() && fx.state.is_none() && !fx.ready {
+            return;
+        }
+        self.update(d, fx.asked.as_deref(), |s| {
+            if let Some(a) = &fx.agent_sid {
+                s.agent_sid = Some(a.clone());
+            }
+            if let Some(m) = &fx.model {
+                s.model = Some(m.clone());
+            }
+            if fx.ready && s.status == SessionStatus::Starting {
+                s.status = match fx.driver {
+                    AgentStatus::Working => SessionStatus::Working,
+                    AgentStatus::Blocked => SessionStatus::Blocked,
+                    AgentStatus::Idle => SessionStatus::Idle,
+                };
+            }
+            if let Some((status, attention)) = fx.state {
+                s.status = status;
+                s.attention = attention;
+            }
+        });
+    }
+
+    /// Updates the session row, and tells the notifier when its attention changed (`asked` is what
+    /// a blocked agent asks, for the push).
+    fn update(&self, d: &Daemon, asked: Option<&str>, f: impl FnOnce(&mut Session)) {
+        let mut before = Attention::None;
+        match d.update(self.sid, |s| {
+            before = s.attention;
+            f(s);
+        }) {
+            Ok(after) if after.attention != before => {
+                let who = match asked {
+                    Some(q) => format!("{}: {q}", label(&after)),
+                    None => label(&after),
+                };
+                d.notifier.attention(self.sid, &who, after.attention);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(sid = %self.sid, %e, "session row not updated"),
+        }
+    }
+
+    /// One transaction: the items, the spool offset they complete, and the attach state when it
+    /// changed. Then the holder hears the offset.
+    async fn commit(&mut self, d: &Daemon, puts: Vec<Put>) {
+        let committed = self.committed.max(self.driver.resume_offset());
+        let saved = Saved {
+            answers: self.driver.pending_answers(),
+            held: self
+                .driver
+                .held_prompts()
+                .into_iter()
+                .chain(self.resend.iter().cloned())
+                .collect(),
+        };
+        // not while replaying: the driver has not seen the questions it holds answers for yet
+        let state = (self.replay_until.is_none() && saved != self.saved).then(|| saved.json());
+        let before = self.committed;
+        if puts.is_empty() && committed == before && state.is_none() {
+            return;
+        }
+        let (sid, epoch) = (self.sid, self.epoch);
+        let r = d.write_items(|tx, _, published| {
+            for p in puts {
+                put(tx, sid, p, published)?;
+            }
+            if committed != before {
+                tx.set_spool_committed(sid, committed)?;
+            }
+            if let Some(json) = &state {
+                tx.set_agent_state(sid, epoch, json)?;
+            }
+            Ok(())
+        });
+        match r {
+            Ok(()) => {
+                self.committed = committed;
+                self.saved = saved;
+                // ponytail: at-least-once, a daemon that dies between writing a held prompt to the
+                // agent and saving this state sends that prompt again after its restart
+                if committed != before {
+                    if let Err(e) = self.holder.spool_commit(committed).await {
+                        tracing::debug!(sid = %self.sid, %e, "spool commit not sent");
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(sid = %self.sid, %e, "transcript not stored"),
+        }
+    }
+
+    /// An `Event` item of the daemon's own (a restart, a failure).
+    fn event(&self, d: &Daemon, text: &str) {
+        let item = event_item(self.sid, format!("x{}", Id::new()), text, now_ms());
+        if let Err(e) =
+            d.write_items(|tx, _, published| put(tx, self.sid, Put::Done(item), published))
+        {
+            tracing::warn!(sid = %self.sid, %e, "event not stored");
+        }
+    }
+
+    // ---- processes ------------------------------------------------------------------------------
+
+    /// A fresh driver and a new agent process (`resume`: the agent's session to continue).
+    async fn spawn_process(&mut self, d: &Daemon, resume: Option<String>) -> Result<(), String> {
+        let s = d.session(self.sid).map_err(|e| e.to_string())?;
+        let path = d.sessions.path(&d.cfg);
+        let launch = Launch {
+            cwd: s.cwd,
+            model: s.model,
+            resume,
+            extra_env: d.sessions.child_env(&d.cfg, &path),
+            // the stream is the status here; the hooks are for the TUI
+            hooks_path: None,
+        };
+        self.driver = driver_for(self.agent);
+        let mut sp = self.driver.spawn(&launch);
+        let prog = sp.cmd.first().cloned().ok_or("empty command")?;
+        sp.cmd[0] =
+            find_on_path(&prog, &path).ok_or_else(|| format!("{prog}: not found on PATH"))?;
+        self.holder
+            .spawn_agent(sp.cmd, sp.cwd, sp.env)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.driver.on_start(&launch, &mut self.out);
+        self.flush().await;
+        self.live = true;
+        self.starting = true;
+        self.stderr.clear();
+        Ok(())
+    }
+
+    /// The agent's TUI in pane 1, on the same conversation.
+    async fn spawn_tui(&mut self, d: &Daemon) -> Result<(), String> {
+        let s = d.session(self.sid).map_err(|e| e.to_string())?;
+        let path = d.sessions.path(&d.cfg);
+        let launch = Launch {
+            cwd: s.cwd,
+            model: s.model,
+            resume: s.agent_sid,
+            extra_env: d.sessions.child_env(&d.cfg, &path),
+            hooks_path: d.sessions.hooks_path(self.agent),
+        };
+        let mut sp = self
+            .driver
+            .tui(&launch)
+            .ok_or_else(|| format!("{} has no TUI", agent_label(self.agent)))?;
+        let prog = sp.cmd.first().cloned().ok_or("empty command")?;
+        sp.cmd[0] =
+            find_on_path(&prog, &path).ok_or_else(|| format!("{prog}: not found on PATH"))?;
+        self.holder
+            .spawn_pty(MAIN, sp.cmd, sp.cwd, sp.env, COLS, ROWS)
+            .await
+            .map_err(|e| e.to_string())?;
+        d.view(&self.holder, self.sid)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// The agent exited. Its last output is read first, then the driver closes what was open; the
+    /// takeover machine says whether we asked for it, and if not the restart policy decides.
+    async fn agent_exited(&mut self, d: &Daemon, code: i32) {
+        if !self.live {
+            return;
+        }
+        self.live = false;
+        // The holder announces the exit once the agent's pipes are empty, but our spool stream is
+        // another connection: take what it still carries.
+        if let Some(hi) = self
+            .holder
+            .info()
+            .await
+            .ok()
+            .and_then(|i| i.agent)
+            .map(|a| a.spool_hi)
+        {
+            self.drain(d, hi).await;
+        }
+        // ponytail: a line the agent died in the middle of is lost (the driver takes whole lines
+        // only); the turn it belonged to ends Interrupted through `on_exit`.
+        self.lines = SpoolLines::new(self.recv_end);
+        self.replay_until = None;
+        let events = self.driver.on_exit(Some(code));
+        self.apply(d, Src::Exit, events).await;
+        self.fold.streams.clear();
+        let acts = self.machine.step(Ev::AgentExited);
+        if !acts.is_empty() {
+            self.run_acts(d, acts).await;
+            return;
+        }
+        let tail = tail_of(&std::mem::take(&mut self.stderr), STDERR_MAX);
+        let what = format!("{} exited ({})", agent_label(self.agent), status_text(code));
+        let note = if tail.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", tail.trim_end())
+        };
+        if self.restarted_at.is_some_and(|t| t.elapsed() < FAIL_WINDOW) {
+            let text = format!("{what} again right after a restart: not started again.{note}");
+            self.fail(d, &text).await;
+        } else {
+            self.event(d, &format!("{what}; starting it again in 2 s.{note}"));
+            self.update(d, None, |s| {
+                s.status = SessionStatus::Starting;
+                s.attention = Attention::None;
+            });
+            self.restart_at = Some(Instant::now() + RESTART_DELAY);
+        }
+    }
+
+    /// Reads the spool up to `hi`, which an exited agent had written.
+    async fn drain(&mut self, d: &Daemon, hi: u64) {
+        let deadline = Instant::now() + DRAIN;
+        while self.recv_end < hi {
+            let Some(rx) = self.spool.as_mut() else { break };
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some((offset, data))) => self.ingest(d, offset, data).await,
+                _ => break,
+            }
+        }
+    }
+
+    /// The restart after an exit nobody asked for: the same conversation, the prompts that were
+    /// dropped sent again.
+    async fn restart(&mut self, d: &Daemon) {
+        let resume = d.session(self.sid).ok().and_then(|s| s.agent_sid);
+        self.restarted_at = Some(Instant::now());
+        match self.spawn_process(d, resume).await {
+            Ok(()) => self.send_held(d).await,
+            Err(e) => {
+                let text = format!("{} did not start again: {e}", agent_label(self.agent));
+                self.fail(d, &text).await;
+            }
+        }
+    }
+
+    /// Gives up: the session is `Failed` and says why; closing it is the user's.
+    async fn fail(&mut self, d: &Daemon, text: &str) {
+        self.failed = true;
+        self.restart_at = None;
+        self.event(d, text);
+        self.update(d, None, |s| {
+            s.status = SessionStatus::Failed;
+            s.attention = Attention::None;
+        });
+        if let Some(r) = self.takeover_reply.take() {
+            let _ = r.send(Err(CoreError::Internal(text.into())));
+        }
+    }
+
+    // ---- takeover -------------------------------------------------------------------------------
+
+    async fn run_acts(&mut self, d: &Daemon, acts: Vec<Act>) {
+        // the row's mode first: a hook of the new side must find it
+        if let Some(m) = acts.iter().find_map(|a| match a {
+            Act::Mode(m) => Some(*m),
+            _ => None,
+        }) {
+            self.update(d, None, |s| {
+                s.mode = m;
+                s.status = SessionStatus::Starting;
+                s.attention = Attention::None;
+            });
+        }
+        for act in acts {
+            let critical = matches!(act, Act::SpawnTui | Act::SpawnHeadless { .. });
+            let r: Result<(), String> = match act {
+                Act::Mode(_) | Act::Noop => Ok(()),
+                Act::AgentCloseStdin => self
+                    .holder
+                    .agent_close_stdin()
+                    .await
+                    .map_err(|e| e.to_string()),
+                Act::SignalAgent(sig) => self
+                    .holder
+                    .signal(Target::Agent, sig)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Act::SignalPane(sig) => self
+                    .holder
+                    .signal(Target::Pane(MAIN), sig)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Act::SendPaneText(t) => d
+                    .type_into(self.sid, t.trim_end_matches('\r'))
+                    .await
+                    .map_err(|e| e.to_string()),
+                Act::SpawnTui => self.spawn_tui(d).await,
+                Act::ClosePane => {
+                    let r = self.holder.close_pane(MAIN).await;
+                    d.sessions.forget(self.sid);
+                    r.map_err(|e| e.to_string())
+                }
+                // ponytail: M4 reads what happened in the TUI from the agent's own transcript
+                Act::Backfill => Ok(()),
+                Act::SpawnHeadless { resume } => {
+                    let id = if resume {
+                        d.session(self.sid).ok().and_then(|s| s.agent_sid)
+                    } else {
+                        None
+                    };
+                    self.spawn_process(d, id).await
+                }
+            };
+            if let Err(e) = r {
+                if critical {
+                    let text = format!("{} did not start: {e}", agent_label(self.agent));
+                    self.fail(d, &text).await;
+                } else {
+                    tracing::debug!(sid = %self.sid, %e, "takeover step failed");
+                }
+            }
+        }
+        self.settle();
+    }
+
+    /// A takeover that reached a stable phase is answered; one under way is clocked.
+    fn settle(&mut self) {
+        if self.machine.in_transition() {
+            self.tick_at.get_or_insert_with(|| Instant::now() + TICK);
+        } else {
+            self.tick_at = None;
+            if let Some(r) = self.takeover_reply.take() {
+                let _ = r.send(Ok(()));
+            }
+        }
+    }
+}
+
+async fn next_chunk(spool: &mut Option<mpsc::Receiver<(u64, Bytes)>>) -> Option<(u64, Bytes)> {
+    match spool {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn sleep_until_opt(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The session row goes out before the items of a batch when it says the agent is working or
+/// asking, after them when it says idle: a client sees `working` before the turn's first item, and
+/// never `done` before the turn's last.
+fn row_first(state: Option<(SessionStatus, Attention)>) -> bool {
+    matches!(
+        state,
+        Some((SessionStatus::Working | SessionStatus::Blocked, _))
+    )
+}
+
+fn status_text(code: i32) -> String {
+    if code < 0 {
+        format!("killed by signal {}", -code)
+    } else {
+        format!("status {code}")
+    }
+}
+
+/// The last `max` bytes of `s`, from a character boundary.
+fn tail_of(s: &str, max: usize) -> String {
+    let mut from = s.len().saturating_sub(max);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    s[from..].to_string()
+}
+
+fn cut(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+// ---- events to rows (pure) ----------------------------------------------------------------------
+
+/// What the driver's events leave behind between batches.
+#[derive(Default)]
+struct FoldState {
+    /// The text streamed so far of the items still open: the offsets of the next delta, and what a
+    /// client that missed it (a replay) is caught up with.
+    streams: HashMap<String, String>,
+    /// A turn ended (not interrupted) since the agent was last working: its idle is `done`.
+    done: bool,
+}
+
+/// One write to the transcript.
+enum Put {
+    /// An item opens: never written over an item that is already there (a replay).
+    Start(Item),
+    /// An item is final (or a daemon-made one): not written again when it is the same.
+    Done(Item),
+    /// An open item's body changes.
+    Update(String, Value),
+}
+
+#[derive(Default)]
+struct Folded {
+    puts: Vec<Put>,
+    /// `(item id, offset, text)` of streamed text, for the hub only.
+    deltas: Vec<(String, u32, String)>,
+    /// The session's status after the batch, if it said.
+    state: Option<(SessionStatus, Attention)>,
+    /// What a question asked, for the push.
+    asked: Option<String>,
+    agent_sid: Option<String>,
+    model: Option<String>,
+    usage: Option<UsageSnapshot>,
+    /// Prompts the process dropped without running them: sent again to the next one.
+    dropped: Vec<HeldPrompt>,
+    turn_started: bool,
+    turn_ended: bool,
+}
+
+/// The session row's share of a batch.
+struct RowFx {
+    agent_sid: Option<String>,
+    model: Option<String>,
+    state: Option<(SessionStatus, Attention)>,
+    /// The first line of a new process: `Starting` is over.
+    ready: bool,
+    driver: AgentStatus,
+    asked: Option<String>,
+}
+
+fn new_item(
+    sid: Sid,
+    id: String,
+    kind: ItemKind,
+    status: ItemStatus,
+    b: Option<&Value>,
+    now: i64,
+) -> Item {
+    Item {
+        sid,
+        item_id: id,
+        seq: 0,
+        rev: 0,
+        kind,
+        status,
+        preview: b.map(|b| preview_of(kind, b)).unwrap_or_default(),
+        body: b.map(Value::to_string),
+        blob_hash: None,
+        ts: now,
+    }
+}
+
+fn event_item(sid: Sid, id: String, text: &str, now: i64) -> Item {
+    new_item(
+        sid,
+        id,
+        ItemKind::Event,
+        ItemStatus::Completed,
+        Some(&body(&Event { text: text.into() })),
+        now,
+    )
+}
+
+/// Turns the driver's events of one line (or one exit) into writes and effects. `base` names the
+/// items the daemon makes itself (`<base>-<n>`): the same spool line always gives the same ids.
+fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: i64) -> Folded {
+    let mut f = Folded::default();
+    let mut own = 0;
+    let mut next_id = || {
+        own += 1;
+        format!("{base}-{own}")
+    };
+    for ev in events {
+        match ev {
+            AgentEvent::Started { agent_sid, model } => {
+                f.agent_sid = Some(agent_sid);
+                if model.is_some() {
+                    f.model = model;
+                }
+            }
+            AgentEvent::TurnStarted => {
+                st.done = false;
+                f.turn_started = true;
+                f.state = Some((SessionStatus::Working, Attention::None));
+            }
+            AgentEvent::TurnEnded {
+                stop,
+                usage,
+                duration_ms,
+            } => {
+                st.done = stop != StopReason::Interrupted;
+                f.turn_ended = true;
+                let b = body(&TurnEnd {
+                    stop,
+                    usage,
+                    duration_ms,
+                });
+                f.puts.push(Put::Done(new_item(
+                    sid,
+                    next_id(),
+                    ItemKind::TurnEnd,
+                    ItemStatus::Completed,
+                    Some(&b),
+                    now,
+                )));
+            }
+            AgentEvent::ItemStarted { id, kind, preview } => {
+                let mut item = new_item(sid, id, kind, ItemStatus::InProgress, None, now);
+                item.preview = preview;
+                f.puts.push(Put::Start(item));
+            }
+            AgentEvent::ItemDelta { id, text } => {
+                let acc = st.streams.entry(id.clone()).or_default();
+                let offset = u32::try_from(acc.len()).unwrap_or(u32::MAX);
+                acc.push_str(&text);
+                f.deltas.push((id, offset, text));
+            }
+            AgentEvent::ItemUpdated { id, body } => f.puts.push(Put::Update(id, body)),
+            AgentEvent::ItemCompleted {
+                id,
+                kind,
+                status,
+                body,
+            } => {
+                st.streams.remove(&id);
+                f.puts
+                    .push(Put::Done(new_item(sid, id, kind, status, Some(&body), now)));
+            }
+            AgentEvent::QuestionAsked { item_id, q } => {
+                f.asked = Some(q.prompt.clone());
+                let b = body(&QuestionItem {
+                    q,
+                    answered: None,
+                    reason: None,
+                });
+                f.puts.push(Put::Start(new_item(
+                    sid,
+                    item_id,
+                    ItemKind::Question,
+                    ItemStatus::Pending,
+                    Some(&b),
+                    now,
+                )));
+                f.state = Some((SessionStatus::Blocked, Attention::Blocked));
+            }
+            // the question's item is completed by its own event, the status follows from `Status`
+            AgentEvent::QuestionResolved { .. } => {}
+            AgentEvent::PromptDropped { text, how, reason } => {
+                let why = match &reason {
+                    DropReason::Exited => "the agent exited first".to_string(),
+                    DropReason::Refused(r) => r.clone(),
+                };
+                let line = format!("A message was not run ({why}): {}", cut(&text, 300));
+                f.puts
+                    .push(Put::Done(event_item(sid, next_id(), &line, now)));
+                if reason == DropReason::Exited {
+                    f.dropped.push(HeldPrompt {
+                        text,
+                        how,
+                        queued_at_ms: u64::try_from(now).unwrap_or(0),
+                    });
+                }
+            }
+            AgentEvent::RateLimit {
+                kind,
+                percent,
+                resets_at,
+            } => {
+                if kind == "session" {
+                    f.usage = Some(UsageSnapshot {
+                        percent: f64::from(percent),
+                        resets_at: resets_at.map(|s| s * 1000),
+                    });
+                }
+            }
+            AgentEvent::ModelChanged(m) => f.model = Some(m),
+            AgentEvent::Status(AgentStatus::Working) => {
+                st.done = false;
+                f.state = Some((SessionStatus::Working, Attention::None));
+            }
+            AgentEvent::Status(AgentStatus::Blocked) => {
+                f.state = Some((SessionStatus::Blocked, Attention::Blocked));
+            }
+            AgentEvent::Status(AgentStatus::Idle) => {
+                let attention = if st.done {
+                    Attention::Done
+                } else {
+                    Attention::None
+                };
+                st.done = false;
+                f.state = Some((SessionStatus::Idle, attention));
+            }
+            AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
+        }
+    }
+    f
+}
+
+fn is_final(s: ItemStatus) -> bool {
+    matches!(
+        s,
+        ItemStatus::Completed | ItemStatus::Failed | ItemStatus::Answered
+    )
+}
+
+// ponytail: the store cuts a body at 1 MiB, so a longer one never equals what it stored and is
+// written again (rev bumped) on a replay; compare against the cut body if that ever shows.
+fn same(old: &Item, new: &Item) -> bool {
+    old.kind == new.kind
+        && old.status == new.status
+        && match (&old.body, old.blob_hash, &new.body) {
+            (Some(a), _, Some(b)) => a == b,
+            (None, Some(h), Some(b)) => femme_store::sha256(b.as_bytes()) == h,
+            (None, None, None) => true,
+            _ => false,
+        }
+}
+
+/// Applies one write inside the transaction; the items it stores go into `published`.
+fn put(tx: &mut Tx<'_>, sid: Sid, p: Put, published: &mut Vec<Item>) -> femme_store::Result<()> {
+    match p {
+        Put::Start(item) => {
+            if store_items::get_item(tx, sid, &item.item_id)?.is_none() {
+                published.push(tx.put_item(&item)?);
+            }
+        }
+        Put::Done(mut item) => {
+            if let Some(old) = store_items::get_item(tx, sid, &item.item_id)? {
+                if same(&old, &item) {
+                    return Ok(());
+                }
+                item.ts = old.ts;
+            }
+            published.push(tx.put_item(&item)?);
+        }
+        Put::Update(id, b) => {
+            let Some(mut item) = store_items::get_item(tx, sid, &id)? else {
+                return Ok(());
+            };
+            if is_final(item.status) {
+                return Ok(());
+            }
+            let preview = preview_of(item.kind, &b);
+            if !preview.is_empty() {
+                item.preview = preview;
+            }
+            item.body = Some(b.to_string());
+            item.blob_hash = None;
+            published.push(tx.put_item(&item)?);
+        }
+    }
+    Ok(())
+}
+
+/// The first line of an item for list rows (the store cuts it to 512 bytes).
+fn preview_of(kind: ItemKind, b: &Value) -> String {
+    let s = |k: &str| b[k].as_str().unwrap_or("");
+    let first = |t: &str| t.lines().next().unwrap_or("").to_string();
+    match kind {
+        ItemKind::UserMessage
+        | ItemKind::AssistantMessage
+        | ItemKind::Thinking
+        | ItemKind::Plan
+        | ItemKind::Event => s("text").to_string(),
+        ItemKind::ToolCall => {
+            let hint = [
+                "command",
+                "file_path",
+                "path",
+                "pattern",
+                "url",
+                "query",
+                "description",
+            ]
+            .iter()
+            .find_map(|k| b["input"][k].as_str())
+            .unwrap_or("");
+            first(format!("{} {hint}", s("name")).trim())
+        }
+        ItemKind::ToolResult => first(s("output")),
+        ItemKind::Question => s("prompt").to_string(),
+        ItemKind::TurnStart | ItemKind::TurnEnd => String::new(),
+    }
+}
+
+// ---- the screen and raw input -------------------------------------------------------------------
+
+/// The text of a headless session's `/screen`: the items, oldest first, one block each; a pending
+/// question lists its options with numbers (`input` answers with the number).
+fn render(items: &[(Item, Value)]) -> String {
+    let mut out = String::new();
+    for (item, b) in items {
+        let text = |k: &str| b[k].as_str().unwrap_or(&item.preview).to_string();
+        let line = match item.kind {
+            ItemKind::UserMessage => format!("> {}", text("text")),
+            ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
+            ItemKind::ToolCall => format!("* {}", item.preview),
+            ItemKind::ToolResult => format!("  {}", item.preview),
+            ItemKind::Event => format!("- {}", text("text")),
+            ItemKind::Question => question_lines(item, b),
+            ItemKind::Thinking | ItemKind::TurnStart | ItemKind::TurnEnd => continue,
+        };
+        out.push_str(cut(&line, SCREEN_ITEM_MAX));
+        out.push('\n');
+    }
+    out
+}
+
+fn question_lines(item: &Item, b: &Value) -> String {
+    let Ok(q) = serde_json::from_value::<QuestionItem>(b.clone()) else {
+        return format!("? {}", item.preview);
+    };
+    let mut s = format!("? {}", q.q.prompt);
+    if item.status == ItemStatus::Pending {
+        for (n, o) in q.q.options.iter().enumerate() {
+            s += &format!("\n  {}. {o}", n + 1);
+        }
+    } else if let Some(a) = &q.answered {
+        s += &format!(" -> {}", answer_text(a, &q.q.options));
+    } else if let Some(r) = &q.reason {
+        s += &format!(" (not answered: {r})");
+    }
+    s
+}
+
+fn answer_text(a: &Answer, options: &[String]) -> String {
+    let label = |i: &u16| {
+        options
+            .get(usize::from(*i))
+            .cloned()
+            .unwrap_or_else(|| format!("#{i}"))
+    };
+    match a {
+        Answer::Option(i) => label(i),
+        Answer::Options(v) => v.iter().map(label).collect::<Vec<_>>().join(", "),
+        Answer::Text(t) => t.clone(),
+        Answer::Cancel => "cancelled".into(),
+    }
+}
+
+/// What raw input answers a question with: Esc cancels, a number picks that option (`Options` for a
+/// multiple-choice question), `y` is the first option and `n` the second (Allow/Deny, Approve/Keep
+/// planning). Anything else answers nothing.
+pub(crate) fn answer_from_input(bytes: &[u8], q: &Question) -> Option<Answer> {
+    if bytes == b"\x1b" {
+        return Some(Answer::Cancel);
+    }
+    let s = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_matches(|c| matches!(c, '\r' | '\n' | ' '));
+    let pick = |i: usize| {
+        let n = u16::try_from(i).ok().filter(|_| i < q.options.len())?;
+        Some(if q.multi {
+            Answer::Options(vec![n])
+        } else {
+            Answer::Option(n)
+        })
+    };
+    match s {
+        "y" | "Y" => pick(0),
+        "n" | "N" => pick(1),
+        _ => s
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .and_then(|n| pick(n - 1)),
+    }
+}
+
+/// An item's body as JSON (`Null` when it has none, or it is gone).
+fn body_value(store: &Store, i: &Item) -> Value {
+    let text = match (&i.body, i.blob_hash) {
+        (Some(b), _) => Some(b.clone()),
+        (None, Some(h)) => store
+            .get_blob(&h)
+            .ok()
+            .flatten()
+            .and_then(|b| String::from_utf8(b).ok()),
+        (None, None) => None,
+    };
+    text.and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null)
+}
+
+// ---- the daemon's side of it --------------------------------------------------------------------
+
+impl Daemon {
+    /// The oldest open question of a headless session.
+    pub(crate) fn pending_question(&self, sid: Sid) -> Result<Option<Question>, CoreError> {
+        let items = self
+            .store
+            .read(|c| store_items::page_items(c, sid, None, 200))
+            .map_err(core_err)?;
+        Ok(items
+            .into_iter()
+            .rev()
+            .find(|i| i.kind == ItemKind::Question && i.status == ItemStatus::Pending)
+            .and_then(|i| serde_json::from_value::<QuestionItem>(body_value(&self.store, &i)).ok())
+            .map(|q| q.q))
+    }
+
+    /// The text a headless session shows as its screen.
+    pub(crate) fn headless_screen(&self, sid: Sid) -> Result<String, CoreError> {
+        let mut items = self
+            .store
+            .read(|c| store_items::page_items(c, sid, None, SCREEN_ITEMS))
+            .map_err(core_err)?;
+        items.reverse();
+        let items: Vec<(Item, Value)> = items
+            .into_iter()
+            .map(|i| {
+                let b = body_value(&self.store, &i);
+                (i, b)
+            })
+            .collect();
+        Ok(render(&items))
+    }
+
+    /// Raw input to a headless session: it answers the question the session waits on, or it is
+    /// `Busy`.
+    pub(crate) async fn headless_input(&self, sid: Sid, bytes: &[u8]) -> Result<(), CoreError> {
+        let head = self.sessions.head(sid).ok_or_else(gone)?;
+        let q = self.pending_question(sid)?.ok_or(CoreError::Busy)?;
+        let a = answer_from_input(bytes, &q).ok_or(CoreError::Busy)?;
+        head.answer(&q.request_id, a).await
+    }
+
+    pub(crate) async fn interrupt_session(&self, sid: Sid) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.agent == Agent::Shell {
+            return Err(CoreError::Busy);
+        }
+        if s.mode == Mode::Tui {
+            return self.send_bytes(sid, b"\x1b").await;
+        }
+        self.sessions
+            .head(sid)
+            .ok_or(CoreError::Busy)?
+            .interrupt()
+            .await
+    }
+
+    pub(crate) async fn answer_question(
+        &self,
+        sid: Sid,
+        request_id: &str,
+        answer: Answer,
+    ) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.mode != Mode::Headless {
+            return Err(CoreError::Bad(
+                "only a headless session has questions to answer".into(),
+            ));
+        }
+        self.sessions
+            .head(sid)
+            .ok_or_else(gone)?
+            .answer(request_id, answer)
+            .await
+    }
+
+    pub(crate) async fn switch_model(&self, sid: Sid, model: &str) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.mode != Mode::Headless {
+            return Err(CoreError::Bad(
+                "the model of a PTY session is the TUI's to change".into(),
+            ));
+        }
+        self.sessions
+            .head(sid)
+            .ok_or_else(gone)?
+            .set_model(model)
+            .await
+    }
+
+    pub(crate) async fn switch_mode(&self, sid: Sid, to: Mode) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.agent == Agent::Shell {
+            return Err(CoreError::Bad("a shell has no headless mode".into()));
+        }
+        let head = self.sessions.head(sid).ok_or_else(|| {
+            CoreError::Bad(
+                "this session was not started headless, there is nothing to switch".into(),
+            )
+        })?;
+        head.takeover(to).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const SID: Sid = Id(7);
+
+    fn question() -> Question {
+        Question {
+            request_id: "r1".into(),
+            prompt: "Which?".into(),
+            options: vec!["a".into(), "b".into()],
+            multi: false,
+            free_text: false,
+        }
+    }
+
+    fn turn(stop: StopReason) -> Vec<AgentEvent> {
+        vec![
+            AgentEvent::TurnStarted,
+            AgentEvent::ItemCompleted {
+                id: "m1".into(),
+                kind: ItemKind::AssistantMessage,
+                status: ItemStatus::Completed,
+                body: json!({"text": "hi"}),
+            },
+            AgentEvent::TurnEnded {
+                stop,
+                usage: None,
+                duration_ms: Some(5),
+            },
+            AgentEvent::Status(AgentStatus::Idle),
+        ]
+    }
+
+    fn item(kind: ItemKind, status: ItemStatus, preview: &str) -> Item {
+        Item {
+            sid: SID,
+            item_id: "i".into(),
+            seq: 1,
+            rev: 1,
+            kind,
+            status,
+            preview: preview.into(),
+            body: None,
+            blob_hash: None,
+            ts: 0,
+        }
+    }
+
+    /// A store with one session, and a way to apply writes to it: what each one published.
+    fn store_with_session() -> (Store, Sid) {
+        let store = Store::open_memory().unwrap();
+        let sid = store
+            .write(|tx| {
+                Ok(tx
+                    .insert_session(&Session {
+                        id: Id(0),
+                        handle: String::new(),
+                        rev: 0,
+                        name: None,
+                        owner: "board".into(),
+                        agent: Agent::Claude,
+                        mode: Mode::Headless,
+                        cwd: "/".into(),
+                        label: None,
+                        agent_sid: None,
+                        model: None,
+                        status: SessionStatus::Starting,
+                        attention: Attention::None,
+                        created: 0,
+                        closed: None,
+                    })?
+                    .id)
+            })
+            .unwrap();
+        (store, sid)
+    }
+
+    fn apply_puts(store: &Store, sid: Sid, puts: Vec<Put>) -> Vec<Item> {
+        let mut published = Vec::new();
+        store
+            .write(|tx| {
+                for p in puts {
+                    put(tx, sid, p, &mut published)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        published
+    }
+
+    #[test]
+    fn a_finished_turn_ends_done_and_an_interrupted_one_ends_quiet() {
+        let mut st = FoldState::default();
+        let f = fold(&mut st, SID, "d0", turn(StopReason::EndTurn), 1);
+        assert_eq!(f.state, Some((SessionStatus::Idle, Attention::Done)));
+        assert!(f.turn_started && f.turn_ended);
+        assert_eq!(f.puts.len(), 2, "the message and the end of the turn");
+        let f = fold(&mut st, SID, "d9", turn(StopReason::Interrupted), 1);
+        assert_eq!(f.state, Some((SessionStatus::Idle, Attention::None)));
+    }
+
+    #[test]
+    fn working_and_blocked_rows_go_out_before_the_items_and_idle_after_them() {
+        let f = fold(
+            &mut FoldState::default(),
+            SID,
+            "d0",
+            turn(StopReason::EndTurn),
+            1,
+        );
+        assert!(!row_first(f.state), "idle (done) follows the final message");
+        let f = fold(
+            &mut FoldState::default(),
+            SID,
+            "d0",
+            vec![AgentEvent::TurnStarted],
+            1,
+        );
+        assert!(row_first(f.state), "working precedes the first item");
+        let ev = AgentEvent::QuestionAsked {
+            item_id: "q1".into(),
+            q: question(),
+        };
+        let f = fold(&mut FoldState::default(), SID, "d0", vec![ev], 1);
+        assert!(row_first(f.state), "blocked precedes the question item");
+        assert!(!row_first(None));
+    }
+
+    #[test]
+    fn a_question_blocks_the_session_and_says_what_it_asks() {
+        let mut st = FoldState::default();
+        let ev = AgentEvent::QuestionAsked {
+            item_id: "q1".into(),
+            q: question(),
+        };
+        let f = fold(&mut st, SID, "d0", vec![ev], 1);
+        assert_eq!(f.state, Some((SessionStatus::Blocked, Attention::Blocked)));
+        assert_eq!(f.asked.as_deref(), Some("Which?"));
+        match &f.puts[..] {
+            [Put::Start(i)] => assert_eq!(
+                (i.kind, i.status),
+                (ItemKind::Question, ItemStatus::Pending)
+            ),
+            _ => panic!("one pending question item"),
+        }
+    }
+
+    #[test]
+    fn a_prompt_the_exit_dropped_is_kept_for_the_next_process_and_a_refused_one_is_not() {
+        let drop = |text: &str, reason| AgentEvent::PromptDropped {
+            text: text.into(),
+            how: PromptHow::Queue,
+            reason,
+        };
+        let evs = vec![
+            drop("a", DropReason::Exited),
+            drop("b", DropReason::Refused("no".into())),
+        ];
+        let f = fold(&mut FoldState::default(), SID, "x1", evs, 5);
+        let kept: Vec<_> = f.dropped.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(kept, ["a"]);
+        let ids: Vec<_> = f
+            .puts
+            .iter()
+            .map(|p| match p {
+                Put::Done(i) => i.item_id.as_str(),
+                _ => panic!("events are final"),
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            ["x1-1", "x1-2"],
+            "each leaves an event, ids of their own"
+        );
+    }
+
+    #[test]
+    fn streamed_text_is_numbered_by_the_bytes_before_it() {
+        let mut st = FoldState::default();
+        let delta = |text: &str| AgentEvent::ItemDelta {
+            id: "m1".into(),
+            text: text.into(),
+        };
+        let f = fold(&mut st, SID, "d0", vec![delta("ab"), delta("cd")], 1);
+        let got: Vec<_> = f
+            .deltas
+            .iter()
+            .map(|(_, at, t)| (*at, t.as_str()))
+            .collect();
+        assert_eq!(got, [(0, "ab"), (2, "cd")]);
+        assert_eq!(
+            st.streams["m1"], "abcd",
+            "kept for a client that missed them"
+        );
+        fold(&mut st, SID, "d1", turn(StopReason::EndTurn), 1);
+        assert!(
+            st.streams.is_empty(),
+            "the completed item holds the text now"
+        );
+    }
+
+    #[test]
+    fn only_the_session_window_is_the_usage_and_its_reset_is_in_milliseconds() {
+        let limit = |kind: &str| AgentEvent::RateLimit {
+            kind: kind.into(),
+            percent: 31.0,
+            resets_at: Some(1000),
+        };
+        let f = fold(
+            &mut FoldState::default(),
+            SID,
+            "d0",
+            vec![limit("session")],
+            1,
+        );
+        assert_eq!(
+            f.usage,
+            Some(UsageSnapshot {
+                percent: 31.0,
+                resets_at: Some(1_000_000)
+            })
+        );
+        let f = fold(
+            &mut FoldState::default(),
+            SID,
+            "d0",
+            vec![limit("weekly")],
+            1,
+        );
+        assert_eq!(f.usage, None);
+    }
+
+    #[test]
+    fn a_replayed_write_changes_nothing_that_is_stored() {
+        let (store, sid) = store_with_session();
+        let open = || {
+            vec![Put::Start(new_item(
+                sid,
+                "m1".into(),
+                ItemKind::AssistantMessage,
+                ItemStatus::InProgress,
+                None,
+                1,
+            ))]
+        };
+        let close = || {
+            vec![Put::Done(new_item(
+                sid,
+                "m1".into(),
+                ItemKind::AssistantMessage,
+                ItemStatus::Completed,
+                Some(&json!({"text": "hi"})),
+                2,
+            ))]
+        };
+        assert_eq!(apply_puts(&store, sid, open()).len(), 1);
+        let done = apply_puts(&store, sid, close());
+        assert_eq!(done.len(), 1);
+        // the same lines again, as a restart replays them
+        assert!(apply_puts(&store, sid, open()).is_empty());
+        assert!(apply_puts(&store, sid, close()).is_empty());
+        let late = vec![Put::Update("m1".into(), json!({"text": "h"}))];
+        assert!(
+            apply_puts(&store, sid, late).is_empty(),
+            "never over a final item"
+        );
+        let stored = store
+            .read(|c| store_items::get_item(c, sid, "m1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (stored.rev, stored.ts),
+            (done[0].rev, 1),
+            "the item's rev and its first timestamp are the original's"
+        );
+    }
+
+    #[test]
+    fn a_big_body_goes_to_a_blob_with_a_short_preview_and_is_not_written_twice() {
+        let (store, sid) = store_with_session();
+        let big = json!({"text": "x".repeat(5000)});
+        let close = || {
+            vec![Put::Done(new_item(
+                sid,
+                "m1".into(),
+                ItemKind::AssistantMessage,
+                ItemStatus::Completed,
+                Some(&big),
+                2,
+            ))]
+        };
+        let stored = apply_puts(&store, sid, close());
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].blob_hash.is_some() && stored[0].body.is_none());
+        assert!(
+            stored[0].preview.len() <= 512,
+            "{}",
+            stored[0].preview.len()
+        );
+        assert!(apply_puts(&store, sid, close()).is_empty());
+    }
+
+    #[test]
+    fn the_attach_state_roundtrips_through_its_json() {
+        let s = Saved {
+            answers: vec![("r1".into(), Answer::Option(1))],
+            held: vec![HeldPrompt {
+                text: "x".into(),
+                how: PromptHow::Queue,
+                queued_at_ms: 5,
+            }],
+        };
+        assert_eq!(serde_json::from_str::<Saved>(&s.json()).unwrap(), s);
+        let empty = Saved::default();
+        assert_eq!(serde_json::from_str::<Saved>(&empty.json()).unwrap(), empty);
+    }
+
+    #[test]
+    fn raw_input_answers_a_question_by_number_y_n_or_escape() {
+        let q = question();
+        assert_eq!(answer_from_input(b"1\n", &q), Some(Answer::Option(0)));
+        assert_eq!(answer_from_input(b"2\r", &q), Some(Answer::Option(1)));
+        assert_eq!(answer_from_input(b"y", &q), Some(Answer::Option(0)));
+        assert_eq!(answer_from_input(b"N\r", &q), Some(Answer::Option(1)));
+        assert_eq!(answer_from_input(b"\x1b", &q), Some(Answer::Cancel));
+        assert_eq!(
+            answer_from_input(b"3\n", &q),
+            None,
+            "there is no third option"
+        );
+        assert_eq!(answer_from_input(b"0", &q), None);
+        assert_eq!(answer_from_input(b"hello", &q), None);
+        let multi = Question { multi: true, ..q };
+        assert_eq!(
+            answer_from_input(b"2", &multi),
+            Some(Answer::Options(vec![1]))
+        );
+    }
+
+    #[test]
+    fn the_screen_numbers_the_options_of_a_pending_question() {
+        let asked = |status, answered| {
+            let b = serde_json::to_value(QuestionItem {
+                q: question(),
+                answered,
+                reason: None,
+            })
+            .unwrap();
+            vec![
+                (
+                    item(ItemKind::UserMessage, ItemStatus::Completed, "hi"),
+                    json!({"text": "hi"}),
+                ),
+                (
+                    item(
+                        ItemKind::AssistantMessage,
+                        ItemStatus::Completed,
+                        "echo: hi",
+                    ),
+                    json!({"text": "echo: hi"}),
+                ),
+                (item(ItemKind::Question, status, "Which?"), b),
+                (
+                    item(ItemKind::TurnEnd, ItemStatus::Completed, ""),
+                    json!({}),
+                ),
+            ]
+        };
+        assert_eq!(
+            render(&asked(ItemStatus::Pending, None)),
+            "> hi\necho: hi\n? Which?\n  1. a\n  2. b\n"
+        );
+        assert_eq!(
+            render(&asked(ItemStatus::Answered, Some(Answer::Option(1)))),
+            "> hi\necho: hi\n? Which? -> b\n"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_previews_as_its_name_and_first_line_of_what_it_runs() {
+        let b = json!({"name": "Bash", "input": {"command": "ls -la\nmore"}, "call_id": "c"});
+        assert_eq!(preview_of(ItemKind::ToolCall, &b), "Bash ls -la");
+        let r = json!({"call_id": "c", "output": "one\ntwo", "is_error": false});
+        assert_eq!(preview_of(ItemKind::ToolResult, &r), "one");
+    }
+
+    #[test]
+    fn driver_refusals_map_to_busy_conflict_and_bad() {
+        assert_eq!(driver_err(DriverError::State("starting")), CoreError::Busy);
+        assert!(matches!(
+            driver_err(DriverError::UnknownRequest("r".into())),
+            CoreError::Conflict(_)
+        ));
+        assert!(matches!(
+            driver_err(DriverError::Bad("b".into())),
+            CoreError::Bad(_)
+        ));
+        assert!(matches!(
+            driver_err(DriverError::Unsupported("u")),
+            CoreError::Bad(_)
+        ));
+    }
+
+    #[test]
+    fn cuts_land_on_character_boundaries() {
+        assert_eq!(cut("héllo", 2), "h");
+        assert_eq!(tail_of("éa", 2), "a");
+        assert_eq!(tail_of("abc", 10), "abc");
+    }
+}
