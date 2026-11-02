@@ -1,0 +1,22 @@
+[package]
+name = "femme-proto"
+description = "FEMME wire types and codec. No tokio, no IO: every peer (daemon, holder, desktop) shares this."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["zstd"]
+zstd = ["dep:zstd"]
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+bytes.workspace = true
+ulid.workspace = true
+bitflags.workspace = true
+thiserror.workspace = true
+zstd = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
