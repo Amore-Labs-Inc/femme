@@ -55,6 +55,8 @@ pub struct Shared {
     /// End of the spool file; followers wait on changes.
     pub spool_hi: watch::Sender<u64>,
     pub spool_committed: std::sync::atomic::AtomicU64,
+    /// Below this offset the spool is a hole: the daemon stored it, `punch_spool` freed it.
+    pub spool_lo: AtomicU64,
     /// Next pane epoch (starts at the holder epoch, so a re-spawned pane never reuses one).
     pub next_epoch: AtomicU64,
     pub next_id: AtomicU64,
@@ -107,7 +109,28 @@ impl Shared {
         let a = lock(&self.agent).clone()?;
         let mut info = lock(&a.info).clone();
         info.spool_hi = *self.spool_hi.borrow();
+        info.spool_lo = self.spool_lo.load(Relaxed);
         Some(info)
+    }
+
+    /// Frees the spool below `upto`, which the daemon has stored, a megabyte at a time: a hole is
+    /// punched, so offsets stay absolute and a long-lived agent's spool stays near its unread part.
+    /// ponytail: `spool_lo` is not persisted; a restarted holder starts it at 0 and the daemon never
+    /// reads below what it committed, so the only cost is a reader of the hole getting zeros.
+    pub fn punch_spool(&self, upto: u64) {
+        const STEP: u64 = 1 << 20;
+        let lo = self.spool_lo.load(Relaxed);
+        if upto < lo + STEP {
+            return;
+        }
+        let r = std::fs::File::options().write(true).open(&self.spool_path).and_then(|f| {
+            use rustix::fs::FallocateFlags as F;
+            rustix::fs::fallocate(&f, F::PUNCH_HOLE | F::KEEP_SIZE, 0, upto).map_err(std::io::Error::from)
+        });
+        match r {
+            Ok(()) => self.spool_lo.store(upto, Relaxed),
+            Err(e) => tracing::warn!(%e, upto, "spool not freed"),
+        }
     }
 
     pub fn info(&self) -> HolderInfo {

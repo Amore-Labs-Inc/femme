@@ -190,8 +190,8 @@ async fn handle(sh: &Arc<Shared>, req: HolderReq) -> HolderResp {
         HolderReq::AgentWrite(bytes) => agent::stdin(sh, StdinCmd::Write(bytes)),
         HolderReq::AgentCloseStdin => agent::stdin(sh, StdinCmd::Close),
         HolderReq::SpoolCommit { offset } => {
-            // ponytail: no truncation; the daemon deletes the spool with the session; rotate when a session's spool passes 1 GiB
             sh.spool_committed.fetch_max(offset, Relaxed);
+            sh.punch_spool(offset); // a fallocate on the commit path: microseconds, and only once per MiB
             Ok(())
         }
         HolderReq::Signal { target, sig } => sh.signal(target, sig),
@@ -284,9 +284,9 @@ async fn view_loop(
 
 async fn spool(sh: &Arc<Shared>, rd: OwnedReadHalf, link: Link, from: u64) -> io::Result<()> {
     let hi_rx = sh.spool_hi.subscribe();
-    let end = *hi_rx.borrow();
-    if from > end {
-        link.send(&HolderResp::Err(format!("spool starts past its end: {from} > {end}"))).await;
+    let (lo, end) = (sh.spool_lo.load(Relaxed), *hi_rx.borrow());
+    if from > end || from < lo {
+        link.send(&HolderResp::Err(format!("spool read from {from} is outside its kept part {lo}..{end}"))).await;
         link.finish().await;
         return Ok(());
     }

@@ -848,6 +848,38 @@ fn reconnect_gets_a_delta_nothing_or_a_snapshot() {
 
 // ---- 6. the headless agent -----------------------------------------------------------------
 
+/// A long-lived agent's spool is freed below what the daemon committed (a hole, offsets stay
+/// absolute), a megabyte at a time; the kept part still reads and the hole is refused.
+#[test]
+fn agent_spool_is_freed_below_the_committed_offset() {
+    use std::os::unix::fs::MetadataExt;
+    let h = Holder::start();
+    let mut ctl = h.ctl();
+    assert_eq!(ctl.spawn_agent(&["sh", "-c", "head -c 3145728 /dev/zero | tr '\\0' x"]), HolderResp::Ok);
+    let path = paths::spool_path(&h.state_dir(), h.sid);
+    let t0 = Instant::now();
+    while ctl.info().agent.unwrap().spool_hi < 3 << 20 {
+        assert!(t0.elapsed() < LONG, "3 MiB never reached the spool");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let blocks = || std::fs::metadata(&path).unwrap().blocks() * 512;
+    let full = blocks();
+    assert!(full >= 3 << 20, "{full} bytes allocated");
+    ctl.ok(HolderReq::SpoolCommit { offset: 1000 });
+    assert_eq!(ctl.info().agent.unwrap().spool_lo, 0, "under a megabyte nothing is freed");
+    ctl.ok(HolderReq::SpoolCommit { offset: 2 << 20 });
+    let a = ctl.info().agent.unwrap();
+    assert_eq!((a.spool_lo, a.spool_hi), (2 << 20, 3 << 20));
+    let kept = blocks();
+    assert!(kept <= (1 << 20) + 8192, "{full} -> {kept} bytes allocated");
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 3 << 20, "the size is kept, offsets stay absolute");
+    let tail = h.spool(2 << 20);
+    assert!(tail.spool_bytes(2 << 20, 8).iter().all(|b| *b == b'x'), "the kept part reads from the hole's end");
+    let below = h.spool(0);
+    assert!(matches!(below.recv(LONG), Some((_, HolderResp::Err(e))) if e.contains("outside its kept part")));
+    assert!(below.closed_within(LONG));
+}
+
 #[test]
 fn agent_spool_follow_and_exit() {
     let h = Holder::start();
@@ -876,7 +908,7 @@ fn agent_spool_follow_and_exit() {
     assert!(past.closed_within(LONG));
     let _ = &mut past;
     ctl.ok(HolderReq::SpoolCommit { offset: 16 });
-    assert_eq!(ctl.info().agent.unwrap().spool_lo, 0, "the spool is never truncated");
+    assert_eq!(ctl.info().agent.unwrap().spool_lo, 0, "under a megabyte nothing is freed");
 
     // Closing stdin ends cat; every control connection hears about it.
     ctl.ok(HolderReq::AgentCloseStdin);

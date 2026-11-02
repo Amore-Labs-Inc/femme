@@ -86,6 +86,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
         controls: Mutex::new(Vec::new()),
         spool_hi: watch::channel(spool_len).0,
         spool_committed: AtomicU64::new(0),
+        spool_lo: AtomicU64::new(0),
         next_epoch: AtomicU64::new(epoch),
         next_id: AtomicU64::new(1),
         conns: AtomicUsize::new(0),
