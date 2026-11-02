@@ -1,0 +1,63 @@
+[package]
+name = "femme-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "FEMME desktop client: gpui app with FEMME-skinned panes, transcript and terminal drawer."
+publish = false
+
+# Own workspace: the server workspace (../Cargo.toml) must never resolve gpui, which needs a GPU
+# toolchain and builds on the laptop only.
+[workspace]
+
+[features]
+# `--bench` needs gpui's frame profiler, which stamps every frame; ordinary builds leave it out.
+bench = ["gpui/profiler"]
+
+[dependencies]
+# gpui-component 0.8.1 depends on the crates.io snapshot `gpui-pre =0.3.10` (not a Zed git rev), so we
+# take exactly that one: a second gpui in the graph would make every gpui type mismatch.
+gpui = { version = "=0.3.10", package = "gpui-pre" }
+# The platform backend (windowing + renderer + text) is a separate crate in this gpui snapshot; same version as gpui.
+gpui_platform = { version = "=0.3.10", package = "gpui-pre-platform", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+gpui-component = "0.8.1"
+femme-proto = { path = "../crates/femme-proto" }
+femme-term = { path = "../crates/femme-term", default-features = false }
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time", "macros"] }
+mimalloc = "0.1"
+hdrhistogram = "7"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+unicode-width = "0.2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
+
+# Hot crates stay optimised in dev builds: gpui (scene/element tree), taffy (layout) and the Linux
+# text stack (cosmic-text shaping on rustybuzz, swash rasterising).
+[profile.dev.package.gpui-pre]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.cosmic-text]
+opt-level = 3
+[profile.dev.package.rustybuzz]
+opt-level = 3
+[profile.dev.package.swash]
+opt-level = 3
+
+# Faster optimised builds while iterating (no LTO, parallel codegen); numbers in the README use `release`.
+[profile.quick]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true
+strip = false
