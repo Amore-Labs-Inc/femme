@@ -1,0 +1,30 @@
+[package]
+name = "femme-transport"
+description = "Conn trait over QUIC (quinn, mutual TLS pinned by fingerprint) and an SSH stdio mux; enrollment certs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+femme-proto.workspace = true
+# aws-lc-rs only: the workspace entries' defaults would also pull ring and the platform verifier.
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+rustls.workspace = true
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+# Only to read the SubjectPublicKeyInfo out of a certificate (`EndEntityCert::subject_public_key_info`).
+rustls-webpki = { version = "0.103", default-features = false, features = ["alloc"] }
+# PEM for the identity files (already in the tree through rcgen).
+pem = "4"
+tokio.workspace = true
+bytes.workspace = true
+serde.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Paused-clock tests (stream kind timeout, dead-peer detection) would otherwise take 30 s.
+tokio = { workspace = true, features = ["test-util"] }
+hdrhistogram = { version = "7", default-features = false }
+proptest.workspace = true
+tempfile = "3"
