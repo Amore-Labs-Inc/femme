@@ -1,0 +1,760 @@
+//! `femmed`'s command line: `serve` (the daemon), `proxy` (the SSH fallback transport) and `hook`
+//! (agent status from PTY mode).
+//!
+//! - `femmed proxy`: `ssh -T host femmed proxy` turns the SSH channel into a byte pipe to the
+//!   daemon's unix socket ([`config::sock_path`]); the client speaks the same frames over it as
+//!   over QUIC.
+//! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
+//!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
+//!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
+//!   `/internal/hook` ([`post_hook`]). It always exits 0: a Claude hook that exits 2 blocks the
+//!   tool call and feeds its stderr to the model.
+//!
+//! stdout is `proxy`'s data channel: diagnostics go to stderr.
+
+use std::io::{self, IsTerminal};
+use std::path::Path;
+use std::process::ExitCode;
+use std::time::Duration;
+
+use clap::builder::NonEmptyStringValueParser;
+use clap::{Parser, Subcommand};
+use serde_json::{Map, Value};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UnixStream};
+
+use crate::config::{self, Config};
+
+/// How long `femmed hook` waits for the agent to write its JSON and close stdin.
+const STDIN_WAIT: Duration = Duration::from_secs(2);
+/// How long `femmed hook` waits for the daemon to accept the connection.
+const CONNECT_WAIT: Duration = Duration::from_secs(2);
+/// The whole of `femmed hook`, stdin included: a hook must never hang its agent.
+const HOOK_BUDGET: Duration = Duration::from_secs(5);
+/// How long a hook keeps trying a daemon that refuses connections: a restart (every deploy) is a
+/// second or two, and a status lost in that gap would leave the session stale until the next hook.
+const RETRY_WINDOW: Duration = Duration::from_secs(3);
+
+/// `femmed`'s command line.
+#[derive(Debug, Parser)]
+#[command(
+    name = "femmed",
+    version,
+    about = "The FEMME daemon",
+    propagate_version = true
+)]
+pub struct Cli {
+    /// The subcommand to run.
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// `femmed`'s subcommands.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run the daemon.
+    Serve,
+    /// Relay stdin and stdout to the daemon's local socket (the SSH fallback: `ssh -T host femmed proxy`).
+    Proxy,
+    /// Report a PTY-mode agent's status to the daemon (Claude hooks, Codex notify, the pi extension).
+    Hook {
+        /// The agent reporting.
+        #[arg(value_parser = ["claude", "codex", "pi"])]
+        agent: String,
+        /// The event, as the agent's config names it (`Stop`, `PreToolUse`, `agent-turn-complete`, ...).
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        event: String,
+        /// The event's JSON when the agent passes it as the last argument (Codex `notify`); stdin is then not read.
+        payload: Option<String>,
+    },
+}
+
+/// `femmed serve` until the daemon's wiring exists: this crate cannot build a real
+/// [`crate::core::Core`]. The wiring replaces this with building its `Core` and calling
+/// [`crate::serve`]. Exits 2.
+/// `femmed serve`: logs to the journal (under systemd) or stderr, opens the store, imports the old
+/// board's files once when `FEMMED=1`, and serves until SIGTERM. Exits 1 with the reason otherwise.
+async fn serve_daemon() -> anyhow::Result<()> {
+    use tracing_subscriber::prelude::*;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let registry = tracing_subscriber::registry().with(filter);
+    match tracing_journald::layer() {
+        Ok(journald) if std::env::var_os("JOURNAL_STREAM").is_some() => {
+            registry.with(journald).init()
+        }
+        _ => registry
+            .with(tracing_subscriber::fmt::layer().with_writer(io::stderr))
+            .init(),
+    }
+    let cfg = Config::load();
+    let daemon = crate::daemon::Daemon::open(cfg.clone())?;
+    if cfg.femmed {
+        let report = daemon.import_board()?;
+        tracing::info!(?report, "old board files");
+    }
+    daemon.reconcile().await;
+    tokio::spawn(crate::worker::run(std::sync::Arc::downgrade(&daemon)));
+    tokio::spawn(crate::daemon::Daemon::retain_daily(
+        std::sync::Arc::downgrade(&daemon),
+    ));
+    crate::serve(daemon, cfg).await
+}
+
+/// The SSH fallback transport: connects to the daemon's socket `sock`, copies `input` to it and
+/// it to `output`, byte for byte. EOF on `input` only closes our sending side (the daemon's answer
+/// to `printf req | ssh host femmed proxy` still arrives); the copy ends when the daemon hangs up
+/// or on an I/O error, then `output` is flushed. A connect error names the socket and keeps its
+/// kind (`NotFound`: no daemon; `ConnectionRefused`: a stale socket file).
+pub async fn proxy<R, W>(sock: &Path, mut input: R, mut output: W) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut stream = UnixStream::connect(sock).await.map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("cannot connect to {}: {e}", sock.display()),
+        )
+    })?;
+    let (mut rd, mut wr) = stream.split();
+    let ended = {
+        let mut from_daemon = std::pin::pin!(tokio::io::copy(&mut rd, &mut output));
+        let to_daemon = std::pin::pin!(async {
+            tokio::io::copy(&mut input, &mut wr).await?;
+            wr.shutdown().await // our EOF reaches the daemon; its answer still comes
+        });
+        tokio::select! {
+            r = &mut from_daemon => r.map(drop),
+            r = to_daemon => match r {
+                Ok(()) => (&mut from_daemon).await.map(drop),
+                Err(e) => Err(e),
+            },
+        }
+    };
+    let flushed = output.flush().await;
+    ended.and(flushed)
+}
+
+/// The JSON `femmed hook` posts: the agent's own JSON object (its `session_id`,
+/// `hook_event_name`, `transcript_path`, ... untouched) with `agent`, `event` and `sid` set,
+/// overwriting the agent's fields of those names. A payload that is not a JSON object becomes
+/// `{"text": <payload, trailing whitespace trimmed>}`; an empty one gives just our three fields.
+pub fn hook_envelope(agent: &str, event: &str, sid: &str, payload: &str) -> Value {
+    let mut base = match serde_json::from_str::<Value>(payload) {
+        Ok(Value::Object(map)) => map,
+        _ if payload.trim().is_empty() => Map::new(),
+        _ => Map::from_iter([("text".to_owned(), Value::from(payload.trim_end()))]),
+    };
+    for (key, value) in [("agent", agent), ("event", event), ("sid", sid)] {
+        base.insert(key.to_owned(), Value::from(value));
+    }
+    Value::Object(base)
+}
+
+/// POSTs `body` to `http://<addr>/internal/hook` and returns the response's status code. Only
+/// `Host`, `Content-Type`, `Content-Length` and `Connection: close` are sent: the route is
+/// loopback-only and refuses anything that looks proxied (`X-Forwarded-For`, `Forwarded`,
+/// `X-Real-IP`). Connecting gives up after 2 s; the caller bounds the rest.
+pub async fn post_hook(addr: &str, body: &Value) -> io::Result<u16> {
+    // ponytail: hand-written HTTP/1.1 for one loopback POST per tool call (no client setup to pay
+    // for); use hyper's client if this ever needs TLS, redirects or a response body.
+    let connect = tokio::time::timeout(CONNECT_WAIT, TcpStream::connect(addr));
+    let mut stream = connect
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"))??;
+    let body = body.to_string();
+    let request = format!(
+        "POST /internal/hook HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await?;
+    // The status line is all we need; the cap keeps a peer that is not HTTP from feeding us forever.
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .take(256)
+        .read_until(b'\n', &mut line)
+        .await?;
+    std::str::from_utf8(&line)
+        .ok()
+        .and_then(|l| l.strip_prefix("HTTP/1."))
+        .and_then(|l| l.split(' ').nth(1))
+        .and_then(|code| code.trim().parse().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("not an HTTP response: {:?}", String::from_utf8_lossy(&line)),
+            )
+        })
+}
+
+/// `femmed hook` without the process around it. Without a `sid` (unset or empty `FEMME_SID`: a
+/// human's shell, the old herdr setup) it does nothing. Otherwise the payload is `payload`, else
+/// `stdin` read until EOF for at most 2 s (then whatever was read so far), and the envelope goes to
+/// the daemon at `cfg.http_bind`, all within 5 s, trying again for [`RETRY_WINDOW`] while the
+/// daemon refuses connections (a restart). Never fails: a failure is one
+/// `femmed hook: ...` line on stderr; success prints nothing.
+pub async fn run_hook(
+    agent: &str,
+    event: &str,
+    payload: Option<&str>,
+    cfg: &Config,
+    sid: Option<&str>,
+    mut stdin: impl AsyncRead + Unpin,
+) {
+    let Some(sid) = sid.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let sent = tokio::time::timeout(HOOK_BUDGET, async {
+        let text = match payload {
+            Some(p) => p.to_owned(),
+            None => {
+                let mut buf = Vec::new();
+                // On timeout `buf` keeps what was read: an agent that never closes stdin still reports.
+                let _ = tokio::time::timeout(STDIN_WAIT, stdin.read_to_end(&mut buf)).await;
+                String::from_utf8_lossy(&buf).into_owned()
+            }
+        };
+        let (body, t0) = (
+            hook_envelope(agent, event, sid, &text),
+            tokio::time::Instant::now(),
+        );
+        loop {
+            match post_hook(&cfg.http_bind, &body).await {
+                Err(e)
+                    if e.kind() == io::ErrorKind::ConnectionRefused
+                        && t0.elapsed() < RETRY_WINDOW =>
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await
+                }
+                sent => break sent,
+            }
+        }
+    })
+    .await;
+    let url = format!("http://{}/internal/hook", cfg.http_bind);
+    match sent {
+        Ok(Ok(status)) if (200..300).contains(&status) => {}
+        Ok(Ok(status)) => eprintln!("femmed hook: {url} answered {status}"),
+        Ok(Err(e)) => eprintln!("femmed hook: cannot post to {url}: {e}"),
+        Err(_) => eprintln!("femmed hook: no answer from {url} within {HOOK_BUDGET:?}"),
+    }
+}
+
+/// Runs a parsed command line on the real stdin, stdout and environment (`FEMME_SID`,
+/// [`Config::load`], [`config::sock_path`]). tokio reads stdin on a blocking thread that cannot be
+/// cancelled, so the caller must not wait for the runtime's blocking threads once this returns
+/// (`main` uses `Runtime::shutdown_background`), or `proxy` and `hook` hang on a stdin that is
+/// still open.
+pub async fn run(cli: Cli) -> ExitCode {
+    match cli.command {
+        Command::Serve => match serve_daemon().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("femmed serve: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Proxy => match proxy(
+            &config::sock_path(),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        )
+        .await
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("femmed proxy: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Hook {
+            agent,
+            event,
+            payload,
+        } => {
+            let sid = std::env::var("FEMME_SID").ok();
+            // Agents pipe their JSON. A terminal on stdin is a person (or a misconfigured hook):
+            // reading it would eat their keystrokes for 2 s.
+            let stdin: Box<dyn AsyncRead + Unpin> = if io::stdin().is_terminal() {
+                Box::new(tokio::io::empty())
+            } else {
+                Box::new(tokio::io::stdin())
+            };
+            run_hook(
+                &agent,
+                &event,
+                payload.as_deref(),
+                &Config::load(),
+                sid.as_deref(),
+                stdin,
+            )
+            .await;
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use clap::CommandFactory;
+    use serde_json::json;
+    use tokio::io::{duplex, ReadBuf};
+    use tokio::net::{TcpListener, UnixListener};
+    use tokio::time::{timeout, Instant};
+
+    use super::*;
+
+    const OK: &str = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+
+    fn cfg(addr: &str) -> Config {
+        Config::from_vars([("HTTP_BIND".to_owned(), addr.to_owned())])
+    }
+
+    async fn listener() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        (listener, addr)
+    }
+
+    /// Accepts one connection, reads one whole request (head, then `Content-Length` bytes of
+    /// body), writes `answer` verbatim and hangs up. Returns (head, body).
+    async fn serve_one(listener: TcpListener, answer: &'static str) -> (String, Vec<u8>) {
+        let (conn, _) = listener.accept().await.unwrap();
+        let mut conn = BufReader::new(conn);
+        let mut head = String::new();
+        while !head.ends_with("\r\n\r\n") {
+            assert_ne!(
+                conn.read_line(&mut head).await.unwrap(),
+                0,
+                "EOF inside the head: {head:?}"
+            );
+        }
+        let len = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .expect("Content-Length")
+            .parse()
+            .unwrap();
+        let mut body = vec![0; len];
+        conn.read_exact(&mut body).await.unwrap();
+        conn.get_mut().write_all(answer.as_bytes()).await.unwrap();
+        (head, body)
+    }
+
+    /// A stdin that must never be read.
+    struct Untouchable;
+
+    impl AsyncRead for Untouchable {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            panic!("stdin must not be read")
+        }
+    }
+
+    // ---- command line ----------------------------------------------------------------------------
+
+    #[test]
+    fn command_line() {
+        Cli::command().debug_assert();
+        let cli = Cli::try_parse_from([
+            "femmed",
+            "hook",
+            "codex",
+            "agent-turn-complete",
+            r#"{"type":"agent-turn-complete"}"#,
+        ])
+        .unwrap();
+        let Command::Hook {
+            agent,
+            event,
+            payload,
+        } = cli.command
+        else {
+            panic!("{cli:?}")
+        };
+        assert_eq!(
+            (agent.as_str(), event.as_str(), payload.as_deref()),
+            (
+                "codex",
+                "agent-turn-complete",
+                Some(r#"{"type":"agent-turn-complete"}"#)
+            )
+        );
+        let cli = Cli::try_parse_from(["femmed", "hook", "claude", "Stop"]).unwrap();
+        assert!(matches!(cli.command, Command::Hook { payload: None, .. }));
+        assert!(matches!(
+            Cli::try_parse_from(["femmed", "proxy"]).unwrap().command,
+            Command::Proxy
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["femmed", "serve"]).unwrap().command,
+            Command::Serve
+        ));
+        for bad in [
+            &["femmed", "hook", "nosuchagent", "x"][..],
+            &["femmed", "hook", "pi", ""],
+            &["femmed", "hook", "claude"],
+            &["femmed"],
+        ] {
+            assert!(Cli::try_parse_from(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    // ---- hook_envelope ---------------------------------------------------------------------------
+
+    #[test]
+    fn envelope_keeps_the_agents_object_and_ours_win() {
+        let payload = r#"{"session_id":"abc","hook_event_name":"Stop","transcript_path":"/t.jsonl","agent":"spoofed","event":"x","sid":"other"}"#;
+        assert_eq!(
+            hook_envelope("claude", "Stop", "s1", payload),
+            json!({"session_id": "abc", "hook_event_name": "Stop", "transcript_path": "/t.jsonl", "agent": "claude", "event": "Stop", "sid": "s1"})
+        );
+    }
+
+    #[test]
+    fn envelope_wraps_anything_else_as_text() {
+        for (payload, text) in [
+            ("[1,2]\n", "[1,2]"),
+            ("\"x\"", "\"x\""),
+            ("7", "7"),
+            ("turn done \r\n", "turn done"),
+            ("{\"cut\":", "{\"cut\":"),
+        ] {
+            assert_eq!(
+                hook_envelope("codex", "e", "s", payload),
+                json!({"text": text, "agent": "codex", "event": "e", "sid": "s"}),
+                "{payload:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_of_nothing_is_just_ours() {
+        for payload in ["", " \n\t"] {
+            assert_eq!(
+                hook_envelope("pi", "agent_end", "s9", payload),
+                json!({"agent": "pi", "event": "agent_end", "sid": "s9"})
+            );
+        }
+    }
+
+    // ---- post_hook -------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn post_hook_sends_a_bare_request_and_returns_the_status() {
+        for (answer, code) in [
+            ("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 200),
+            (
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nforbidden",
+                403,
+            ),
+        ] {
+            let (listener, addr) = listener().await;
+            let server = tokio::spawn(serve_one(listener, answer));
+            // Non-ASCII, so a character count would be a wrong Content-Length.
+            let body = json!({"agent": "claude", "event": "Stop", "sid": "s1", "text": "é ü 😀"});
+            assert_eq!(post_hook(&addr, &body).await.unwrap(), code);
+            let (head, got) = server.await.unwrap();
+            let content_length = format!("Content-Length: {}", body.to_string().len());
+            let host = format!("Host: {addr}");
+            assert_eq!(
+                head.lines().collect::<Vec<_>>(),
+                [
+                    "POST /internal/hook HTTP/1.1",
+                    &host,
+                    "Content-Type: application/json",
+                    &content_length,
+                    "Connection: close",
+                    ""
+                ]
+            );
+            assert_eq!(serde_json::from_slice::<Value>(&got).unwrap(), body);
+        }
+    }
+
+    #[tokio::test]
+    async fn post_hook_refuses_what_is_not_http() {
+        for answer in ["SSH-2.0-OpenSSH_9.6\r\n", ""] {
+            let (listener, addr) = listener().await;
+            tokio::spawn(serve_one(listener, answer));
+            let err = post_hook(&addr, &json!({})).await.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        }
+    }
+
+    // ---- run_hook --------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn hook_without_a_sid_sends_nothing_and_reads_nothing() {
+        let (listener, addr) = listener().await;
+        for sid in [None, Some("")] {
+            run_hook("claude", "Stop", None, &cfg(&addr), sid, Untouchable).await;
+            run_hook(
+                "codex",
+                "agent-turn-complete",
+                Some("{}"),
+                &cfg(&addr),
+                sid,
+                Untouchable,
+            )
+            .await;
+        }
+        // run_hook has returned: a connection it made would already wait in the backlog.
+        assert!(
+            timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .is_err(),
+            "run_hook connected without a sid"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_payload_argument_is_posted_and_stdin_is_not_read() {
+        let (listener, addr) = listener().await;
+        let server = tokio::spawn(serve_one(listener, OK));
+        let payload = r#"{"type":"agent-turn-complete","turn-id":"t1"}"#;
+        run_hook(
+            "codex",
+            "agent-turn-complete",
+            Some(payload),
+            &cfg(&addr),
+            Some("s1"),
+            Untouchable,
+        )
+        .await;
+        let (head, body) = server.await.unwrap();
+        assert!(
+            head.starts_with("POST /internal/hook HTTP/1.1\r\n"),
+            "{head:?}"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"type": "agent-turn-complete", "turn-id": "t1", "agent": "codex", "event": "agent-turn-complete", "sid": "s1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_reads_stdin_to_eof() {
+        let (listener, addr) = listener().await;
+        let server = tokio::spawn(serve_one(listener, OK));
+        let (mut agent, stdin) = duplex(1024);
+        agent
+            .write_all(b"{\"session_id\":\"abc\"}\n")
+            .await
+            .unwrap();
+        drop(agent);
+        let start = Instant::now();
+        run_hook("claude", "Stop", None, &cfg(&addr), Some("s1"), stdin).await;
+        assert!(
+            start.elapsed() < STDIN_WAIT,
+            "waited for the stdin timeout although stdin was closed: {:?}",
+            start.elapsed()
+        );
+        let (_, body) = server.await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"session_id": "abc", "agent": "claude", "event": "Stop", "sid": "s1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_sends_what_it_read_when_stdin_never_closes() {
+        let (listener, addr) = listener().await;
+        let server = tokio::spawn(serve_one(listener, OK));
+        let (mut agent, stdin) = duplex(1024);
+        agent.write_all(br#"{"session_id":"abc"}"#).await.unwrap(); // and keeps stdin open
+        let start = Instant::now();
+        run_hook("claude", "Stop", None, &cfg(&addr), Some("s1"), stdin).await;
+        let took = start.elapsed();
+        assert!(
+            took >= STDIN_WAIT - Duration::from_millis(50) && took < HOOK_BUDGET,
+            "{took:?}"
+        );
+        let (_, body) = server.await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"session_id": "abc", "agent": "claude", "event": "Stop", "sid": "s1"})
+        );
+        drop(agent);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hook_with_the_daemon_down_keeps_trying_for_the_retry_window_then_returns() {
+        let dead = listener().await.1; // bound, then dropped: nothing listens there
+        let cfg = cfg(&dead);
+        let start = Instant::now();
+        run_hook("pi", "agent_end", Some("{}"), &cfg, Some("s1"), Untouchable).await;
+        let took = start.elapsed();
+        assert!(
+            took >= RETRY_WINDOW && took < RETRY_WINDOW + Duration::from_secs(1),
+            "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_reaches_a_daemon_that_comes_up_during_the_retry_window() {
+        let (listener, addr) = listener().await;
+        drop(listener); // down now; the hook starts, then the daemon binds the same port
+        let cfg = cfg(&addr);
+        let hook = tokio::spawn(async move {
+            run_hook("claude", "Stop", Some("{}"), &cfg, Some("s1"), Untouchable).await
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        let (mut conn, _) = listener.accept().await.unwrap();
+        let mut head = vec![0; 64];
+        let n = conn.read(&mut head).await.unwrap();
+        assert!(head[..n].starts_with(b"POST /internal/hook HTTP/1.1\r\n"));
+        conn.write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), hook)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hook_gives_up_on_a_daemon_that_never_answers() {
+        // The kernel completes the handshake and buffers the request; nobody ever answers. The
+        // paused clock jumps to the next timer as soon as the runtime idles.
+        let (listener, addr) = listener().await;
+        let start = Instant::now();
+        run_hook(
+            "claude",
+            "Stop",
+            Some("{}"),
+            &cfg(&addr),
+            Some("s1"),
+            Untouchable,
+        )
+        .await;
+        assert!(
+            start.elapsed() <= HOOK_BUDGET + Duration::from_millis(10),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(listener);
+    }
+
+    // ---- proxy -----------------------------------------------------------------------------------
+
+    /// A daemon stand-in on `<dir>/femmed.sock` that echoes every connection back.
+    fn echo_daemon(dir: &Path) -> PathBuf {
+        let sock = dir.join("femmed.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = conn.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        sock
+    }
+
+    #[tokio::test]
+    async fn proxy_round_trips_bytes_until_input_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = echo_daemon(dir.path());
+        let (mut client_in, proxy_in) = duplex(64 * 1024);
+        let (proxy_out, mut client_out) = duplex(64 * 1024);
+        let relay = tokio::spawn(async move { proxy(&sock, proxy_in, proxy_out).await });
+        let mut sent = b"\x00\xff\xfe not utf-8: \xc3\x28 and no newline".to_vec();
+        sent.extend((0..1u32 << 20).map(|i| (i % 251) as u8)); // and 1 MiB more
+        let writer = {
+            let sent = sent.clone();
+            tokio::spawn(async move {
+                client_in.write_all(&sent).await.unwrap();
+                client_in
+            })
+        };
+        let mut got = vec![0; sent.len()];
+        client_out.read_exact(&mut got).await.unwrap();
+        assert!(got == sent, "the bytes came back changed");
+        drop(writer.await.unwrap()); // EOF on the proxy's input
+        timeout(Duration::from_secs(5), relay)
+            .await
+            .expect("proxy must return on input EOF")
+            .unwrap()
+            .unwrap();
+        let mut rest = Vec::new();
+        client_out.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_delivers_the_answer_after_input_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("femmed.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut req = Vec::new();
+            conn.read_to_end(&mut req).await.unwrap(); // our EOF reached the daemon
+            assert_eq!(req, b"req");
+            conn.write_all(b"answer").await.unwrap();
+        });
+        let (mut client_in, proxy_in) = duplex(1024);
+        let (proxy_out, mut client_out) = duplex(1024);
+        client_in.write_all(b"req").await.unwrap();
+        drop(client_in); // `printf req | ssh host femmed proxy`
+        timeout(Duration::from_secs(5), proxy(&sock, proxy_in, proxy_out))
+            .await
+            .expect("proxy must return when the daemon hangs up")
+            .unwrap();
+        let mut got = Vec::new();
+        client_out.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"answer");
+    }
+
+    #[tokio::test]
+    async fn proxy_returns_when_the_daemon_hangs_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("femmed.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            conn.write_all(b"bye\xff").await.unwrap();
+        }); // `conn` dropped: the daemon hangs up
+        let (_client_in, proxy_in) = duplex(1024); // the client keeps its side open
+        let (proxy_out, mut client_out) = duplex(1024);
+        timeout(Duration::from_secs(5), proxy(&sock, proxy_in, proxy_out))
+            .await
+            .expect("proxy must return when the daemon hangs up")
+            .unwrap();
+        let mut got = Vec::new();
+        client_out.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"bye\xff");
+    }
+
+    #[tokio::test]
+    async fn proxy_without_a_daemon_names_the_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("femmed.sock");
+        let err = proxy(&sock, tokio::io::empty(), tokio::io::sink())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        assert!(
+            err.to_string()
+                .starts_with(&format!("cannot connect to {}: ", sock.display())),
+            "{err}"
+        );
+        // A stale socket file (the daemon died without unlinking it).
+        drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
+        let err = proxy(&sock, tokio::io::empty(), tokio::io::sink())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused, "{err}");
+    }
+}
