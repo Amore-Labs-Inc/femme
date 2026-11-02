@@ -1,0 +1,113 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "59f1ed4c-339c-4f61-974e-105bd8a87d1f",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Use the AskUserQuestion tool to ask me whether I prefer A or B (two options, labels A and B), then wait for my answer and tell me what I chose."
+      }
+    }
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "toolu_01EDYyY65rdNxroQBy5jYmAq",
+      "q": {
+        "request_id": "46a068a7-96d9-44f8-8cad-e2684256baac",
+        "prompt": "Do you prefer A or B?",
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "multi": false,
+        "free_text": true
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 31.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "46a068a7-96d9-44f8-8cad-e2684256baac"
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01EDYyY65rdNxroQBy5jYmAq",
+      "kind": "Question",
+      "status": "Answered",
+      "body": {
+        "answered": {
+          "Option": 1
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "prompt": "Do you prefer A or B?",
+        "request_id": "46a068a7-96d9-44f8-8cad-e2684256baac"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvEeJ6acw7n5hLRBVbf:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvEeJ6acw7n5hLRBVbf:0",
+      "text": "You chose **B**."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvEeJ6acw7n5hLRBVbf:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "You chose **B**."
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 4,
+        "output": 201,
+        "cache_read": 61032,
+        "cache_write": 20729
+      },
+      "duration_ms": 3255
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

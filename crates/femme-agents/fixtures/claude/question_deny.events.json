@@ -1,0 +1,153 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "05623659-7ce9-491f-b9eb-298cdf167ffe",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Use the AskUserQuestion tool to ask me whether I prefer A or B (two options, labels A and B), then wait for my answer and tell me what I chose."
+      }
+    }
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "toolu_01RJjnqMeDHQ9Mngo5dNyogE",
+      "q": {
+        "request_id": "e5e63aec-0791-4dcd-9dc3-c69f274b8683",
+        "prompt": "Do you prefer A or B?",
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "multi": false,
+        "free_text": true
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 32.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "e5e63aec-0791-4dcd-9dc3-c69f274b8683"
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01RJjnqMeDHQ9Mngo5dNyogE",
+      "kind": "Question",
+      "status": "Answered",
+      "body": {
+        "answered": "Cancel",
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "prompt": "Do you prefer A or B?",
+        "request_id": "e5e63aec-0791-4dcd-9dc3-c69f274b8683"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": "Declined."
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": " You"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": " didn't p"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": "ick A or B, so I have"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": " no choice to"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": " report. Re"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": "-ask wh"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "text": "enever you want."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvFqJAZnWdPG93NKk4K:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Declined. You didn't pick A or B, so I have no choice to report. Re-ask whenever you want."
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 4,
+        "output": 308,
+        "cache_read": 59351,
+        "cache_write": 20664
+      },
+      "duration_ms": 3408
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]
