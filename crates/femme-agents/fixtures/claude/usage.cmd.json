@@ -1,0 +1,13 @@
+{
+ "argv": [
+  "claude",
+  "-p",
+  "/usage",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--no-session-persistence"
+ ],
+ "env": {},
+ "exit": 0
+}

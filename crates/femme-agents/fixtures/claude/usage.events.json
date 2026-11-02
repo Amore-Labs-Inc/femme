@@ -1,0 +1,32 @@
+[
+  {
+    "Started": {
+      "agent_sid": "6fb7a0b9-f3c7-4450-9c92-ef3a644f0ee5",
+      "model": "claude-sonnet-5-5"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "40019fa2-6dc6-4a28-9d34-f523ed2d23f1:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Current session: 52% used · resets Nov 2, 11am (UTC)\nCurrent week (Fable): 1% used · resets Nov 8, 6:59am (UTC)"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": null,
+      "duration_ms": 10456
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

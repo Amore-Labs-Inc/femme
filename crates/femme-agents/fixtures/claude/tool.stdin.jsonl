@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run `echo hi` with your Bash tool and then reply with the single word done."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
