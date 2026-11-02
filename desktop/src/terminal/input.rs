@@ -2,7 +2,7 @@
 //! [`Key`] into bytes from the program's live modes, so nothing here knows about escape codes.
 
 use femme_proto::term::{Key, KeyCode, Modes, Mods};
-use gpui::{Keystroke, Pixels, Point};
+use gpui::{Keystroke, Modifiers, Pixels, Point};
 
 /// The key a keystroke stands for. `None` for what is not the program's: chords with the platform
 /// key (`cmd`, `super`) belong to the app, `ctrl+shift+c` is copy (there is no selection yet, so it
@@ -33,11 +33,20 @@ pub fn key(ks: &Keystroke) -> Option<Key> {
             _ => KeyCode::Char(typed(ks)?),
         },
     };
+    Some(Key {
+        code,
+        mods: mods(&m),
+    })
+}
+
+/// The proto's modifier flags for gpui's.
+pub fn mods(m: &Modifiers) -> Mods {
     let mut mods = Mods::empty();
     mods.set(Mods::SHIFT, m.shift);
     mods.set(Mods::ALT, m.alt);
     mods.set(Mods::CTRL, m.control);
-    Some(Key { code, mods })
+    mods.set(Mods::SUPER, m.platform);
+    mods
 }
 
 /// The character of a key that is not a named one: what was typed (shift and layout are already in
