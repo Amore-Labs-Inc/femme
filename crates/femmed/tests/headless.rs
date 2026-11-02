@@ -1,0 +1,588 @@
+//! Headless sessions end to end: the fake `claude -p` under a real `femme-holder`, its driver in
+//! the daemon, the transcript in the store, questions, restarts mid-turn (M3's exit criterion),
+//! the agent's death, and takeover round trips.
+
+mod common;
+
+use std::time::{Duration, Instant};
+
+use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
+use femme_proto::rpc::Answer;
+use femme_proto::state::{Attention, Item, ItemKind, ItemStatus, Mode, SessionStatus};
+use femme_proto::Sid;
+use femmed::core::{Core, CoreError};
+use femmed::daemon::Daemon;
+use serde_json::Value;
+
+/// The session's transcript, oldest first.
+fn items(d: &Daemon, sid: Sid) -> Vec<Item> {
+    let mut v = d
+        .store
+        .read(|c| femme_store::items::page_items(c, sid, None, 10_000))
+        .unwrap();
+    v.reverse();
+    v
+}
+
+/// What a transcript says, without the ids and times that differ between runs.
+fn shape(items: &[Item]) -> Vec<(ItemKind, ItemStatus, Value)> {
+    items
+        .iter()
+        .map(|i| {
+            let body = i
+                .body
+                .as_deref()
+                .map(|b| serde_json::from_str(b).unwrap())
+                .unwrap_or(Value::Null);
+            (i.kind, i.status, body)
+        })
+        .collect()
+}
+
+fn text_of(i: &Item) -> String {
+    let body: Value = i
+        .body
+        .as_deref()
+        .map(|b| serde_json::from_str(b).unwrap())
+        .unwrap_or(Value::Null);
+    body["text"].as_str().unwrap_or("").to_owned()
+}
+
+async fn wait_items(d: &Daemon, sid: Sid, what: &str, ok: impl Fn(&[Item]) -> bool) -> Vec<Item> {
+    let t0 = Instant::now();
+    loop {
+        let v = items(d, sid);
+        if ok(&v) {
+            return v;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "timeout waiting for {what}; transcript: {:#?}",
+            shape(&v)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn has_text(v: &[Item], kind: ItemKind, text: &str) -> bool {
+    v.iter().any(|i| i.kind == kind && text_of(i) == text)
+}
+
+/// Live `claude` processes of this box (the fake, headless or TUI), by their command line.
+fn claude_processes(b: &Box_) -> usize {
+    let needle = format!("{}/bin/claude", b.dir.path().display());
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        })
+        .filter(|e| {
+            let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+            let stat = std::fs::read_to_string(e.path().join("stat")).unwrap_or_default();
+            let zombie = stat.rsplit(") ").next().is_some_and(|s| s.starts_with('Z'));
+            String::from_utf8_lossy(&cmd).contains(&needle) && !zombie
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_headless_claude_session_streams_its_transcript_and_reports_status() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    assert_eq!(s.mode, Mode::Headless);
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle after the handshake", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(claude_processes(&b), 1, "one headless agent");
+
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    let s = wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await
+    .unwrap();
+    assert_eq!(s.agent_status(), Some("done"));
+    let v = wait_items(&d, sid, "the echo", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: hi")
+    })
+    .await;
+    assert!(
+        has_text(&v, ItemKind::UserMessage, "hi"),
+        "{:#?}",
+        shape(&v)
+    );
+    let a = v
+        .iter()
+        .find(|i| i.kind == ItemKind::AssistantMessage)
+        .unwrap();
+    assert_eq!(
+        (a.status, a.preview.as_str()),
+        (ItemStatus::Completed, "echo: hi")
+    );
+    assert!(
+        v.iter().all(|i| i.status != ItemStatus::InProgress),
+        "{:#?}",
+        shape(&v)
+    );
+
+    // the screen is the transcript; `done` shows once, as in a terminal
+    let screen = d.screen(&pane, false).await.unwrap();
+    assert!(screen.text.contains("echo: hi"), "{}", screen.text);
+    assert!(screen.text.contains("hi"), "{}", screen.text);
+    assert_eq!(screen.status.as_deref(), Some("done"));
+    assert_eq!(
+        d.screen(&pane, false).await.unwrap().status.as_deref(),
+        Some("idle")
+    );
+
+    // a second turn appends, nothing is lost or repeated
+    d.prompt(&pane, "again").await.unwrap();
+    let v = wait_items(&d, sid, "the second echo", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: again")
+    })
+    .await;
+    assert_eq!(
+        v.iter()
+            .filter(|i| i.kind == ItemKind::AssistantMessage)
+            .count(),
+        2,
+        "{:#?}",
+        shape(&v)
+    );
+    assert!(v.windows(2).all(|w| w[0].seq < w[1].seq), "seq ascends");
+
+    d.close_session(sid).await.unwrap();
+    wait_for(&d, sid, "closed", |s| s.is_none()).await;
+    let t0 = Instant::now();
+    while claude_processes(&b) > 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the agent is still running"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_blocks_the_session_until_an_answer_and_the_first_answer_wins() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+
+    d.prompt(&pane, "ask").await.unwrap();
+    let s = wait_for(&d, sid, "blocked", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Blocked && s.attention == Attention::Blocked)
+    })
+    .await
+    .unwrap();
+    assert_eq!(s.agent_status(), Some("blocked"));
+    let v = wait_items(&d, sid, "a pending question", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::Question && i.status == ItemStatus::Pending)
+    })
+    .await;
+    let q = v.iter().find(|i| i.kind == ItemKind::Question).unwrap();
+    let body: Value = serde_json::from_str(q.body.as_deref().unwrap()).unwrap();
+    let request_id = body["request_id"].as_str().unwrap().to_owned();
+    assert_eq!(body["prompt"], "Which?", "{body}");
+    assert_eq!(body["options"].as_array().unwrap().len(), 2, "{body}");
+    // the screen shows it with numbered options, and a prompt bounces as in a terminal
+    let screen = d.screen(&pane, false).await.unwrap();
+    assert!(screen.text.contains("Which?"), "{}", screen.text);
+    assert!(
+        screen.text.contains('1') && screen.text.contains('2'),
+        "{}",
+        screen.text
+    );
+    assert_eq!(screen.status.as_deref(), Some("blocked"));
+    assert_eq!(d.prompt(&pane, "more").await, Err(CoreError::Busy));
+
+    // raw input answers it the way the phone board does: the digit picks the option
+    d.input(&pane, b"1").await.unwrap();
+    wait_for(&d, sid, "answered and done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    let v = wait_items(&d, sid, "the choice", |v| {
+        has_text(v, ItemKind::AssistantMessage, "you chose: a")
+    })
+    .await;
+    let q = v.iter().find(|i| i.kind == ItemKind::Question).unwrap();
+    assert_eq!(q.status, ItemStatus::Answered, "{:#?}", shape(&v));
+    let body: Value = serde_json::from_str(q.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["answered"], serde_json::json!({"Option": 0}), "{body}");
+
+    // first answer wins: the same question answered again is a conflict, and so is a stray one
+    assert!(matches!(
+        d.answer(sid, &request_id, Answer::Option(1)).await,
+        Err(CoreError::Conflict(_))
+    ));
+    assert!(d.input(&pane, b"2").await.is_err(), "no question to answer");
+
+    // the driver's interrupt is `interrupt`, not Esc: a running turn ends `Interrupted`
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    d.interrupt(sid).await.unwrap();
+    wait_for(&d, sid, "idle after the interrupt", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let v = items(&d, sid);
+    let slow = v
+        .iter()
+        .rfind(|i| i.kind == ItemKind::AssistantMessage)
+        .unwrap();
+    assert!(
+        !text_of(slow).contains("tick 50"),
+        "the stream stopped early: {:#?}",
+        shape(&v)
+    );
+    d.close_session(sid).await.unwrap();
+}
+
+/// M3 exit criterion: a daemon restart in the middle of a streamed turn gives the same transcript
+/// as an uninterrupted run, and restarts no agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_restart_mid_turn_resumes_from_the_committed_offset_with_an_identical_transcript()
+{
+    let b = Box_::new();
+    let (mut d, mut stop) = b.start(None).await;
+    let port = port_of(&d);
+
+    // the reference: one `slow` turn, nothing in between
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    let reference = shape(&items(&d, sid));
+    assert!(
+        reference
+            .iter()
+            .any(|(k, _, body)| *k == ItemKind::AssistantMessage
+                && body["text"].as_str().unwrap().contains("tick 50")),
+        "{reference:#?}"
+    );
+    d.close_session(sid).await.unwrap();
+
+    // the same turn with the daemon restarted three times while it streams
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid = b.claude_pid();
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    for n in 1..=3 {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        drop(stop);
+        drop(d);
+        (d, stop) = b.start(Some(port)).await;
+        d.reconcile().await;
+        let listed = d.terminals().await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.sid == sid && s.status == SessionStatus::Working),
+            "restart {n}: {listed:?}"
+        );
+    }
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    assert_eq!(b.claude_pid(), pid, "the same agent process");
+    let got = shape(&items(&d, sid));
+    assert_eq!(got, reference);
+    assert!(
+        d.screen(&pane, false)
+            .await
+            .unwrap()
+            .text
+            .contains("tick 50"),
+        "the screen is the transcript"
+    );
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_prompt_survives_a_restart_and_runs_after_attach() {
+    let b = Box_::new();
+    let (mut d, mut stop) = b.start(None).await;
+    let port = port_of(&d);
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    // queued behind the running turn: the driver holds it, the daemon persists it
+    d.prompt(&pane, "second").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(stop);
+    drop(d);
+    (d, stop) = b.start(Some(port)).await;
+    d.reconcile().await;
+    let _stop = stop;
+    let v = wait_items(&d, sid, "the held prompt's turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: second")
+    })
+    .await;
+    assert_eq!(
+        v.iter()
+            .filter(|i| i.kind == ItemKind::UserMessage)
+            .map(text_of)
+            .collect::<Vec<_>>(),
+        ["slow", "second"],
+        "{:#?}",
+        shape(&v)
+    );
+    assert!(
+        v.iter()
+            .any(|i| i.kind == ItemKind::AssistantMessage && text_of(i).contains("tick 50")),
+        "the first turn finished first: {:#?}",
+        shape(&v)
+    );
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_that_dies_is_restarted_once_with_resume_and_fails_on_the_second_death() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid1 = b.claude_pid();
+
+    // first death: restarted with `--resume` after 2 s, the session goes on
+    d.prompt(&pane, "crash").await.unwrap();
+    let t0 = Instant::now();
+    loop {
+        let pid = b.claude_pid();
+        if pid != pid1 && claude_processes(&b) == 1 {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "no restart");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        t0.elapsed() >= Duration::from_millis(1500),
+        "restarted too soon: {:?}",
+        t0.elapsed()
+    );
+    wait_for(&d, sid, "idle again", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_items(&d, sid, "a turn after the restart", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: hi")
+    })
+    .await;
+
+    // second death within 30 s: the session fails, the stderr tail is on the transcript
+    d.prompt(&pane, "crash").await.unwrap();
+    let s = wait_for(&d, sid, "failed", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Failed)
+    })
+    .await
+    .unwrap();
+    assert_eq!(s.attention, Attention::None);
+    let v = wait_items(&d, sid, "the stderr tail", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::Event && text_of(i).contains("fake claude: crash"))
+    })
+    .await;
+    assert!(
+        v.iter().all(|i| i.status != ItemStatus::InProgress),
+        "{:#?}",
+        shape(&v)
+    );
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(claude_processes(&b), 0, "no third attempt");
+    assert!(
+        d.prompt(&pane, "hi").await.is_err(),
+        "a failed session takes no prompt"
+    );
+    d.close_session(sid).await.unwrap();
+}
+
+/// The daemon comes back to a headless session whose agent died while it was away: the restart
+/// policy applies from `reconcile`, with `--resume`, and the session goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_agent_found_at_reconcile_is_restarted_with_resume() {
+    let b = Box_::new();
+    let (d, stop) = b.start(None).await;
+    let port = port_of(&d);
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid1 = b.claude_pid();
+
+    drop(stop);
+    drop(d);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(std::process::Command::new("kill")
+        .args(["-9", &pid1])
+        .status()
+        .unwrap()
+        .success());
+    let t0 = Instant::now();
+    while claude_processes(&b) > 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "the killed agent lingers"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let (d, _stop) = b.start(Some(port)).await;
+    d.reconcile().await;
+    let t0 = Instant::now();
+    loop {
+        let pid = b.claude_pid();
+        if pid != pid1 && claude_processes(&b) == 1 {
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "no restart after reconcile"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    wait_for(&d, sid, "idle again", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_items(&d, sid, "a turn after the restart", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: hi")
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+/// P3's unrun criterion: twenty headless → TUI → headless round trips, never two agent processes,
+/// each switch under three seconds, and the conversation goes on afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn twenty_headless_tui_takeover_cycles_never_run_two_processes_and_each_takes_under_three_seconds(
+) {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+
+    let mut took = Vec::new();
+    for cycle in 1..=20 {
+        for to in [Mode::Tui, Mode::Headless] {
+            let t0 = Instant::now();
+            d.takeover(sid, to).await.unwrap();
+            loop {
+                let n = claude_processes(&b);
+                assert!(n <= 1, "cycle {cycle} → {to:?}: {n} agent processes");
+                let s = d
+                    .terminals()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.sid == sid)
+                    .unwrap_or_else(|| panic!("cycle {cycle}: session gone"));
+                if s.mode == to && s.status == SessionStatus::Idle {
+                    break;
+                }
+                assert!(
+                    t0.elapsed() < Duration::from_secs(10),
+                    "cycle {cycle} → {to:?}: stuck at {s:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            took.push(t0.elapsed());
+            assert_eq!(claude_processes(&b), 1, "cycle {cycle} → {to:?}");
+        }
+        // the conversation is live in both modes
+        if cycle % 5 == 0 {
+            d.prompt(&pane, &format!("round {cycle}")).await.unwrap();
+            wait_items(&d, sid, "the headless echo", |v| {
+                has_text(
+                    v,
+                    ItemKind::AssistantMessage,
+                    &format!("echo: round {cycle}"),
+                )
+            })
+            .await;
+        }
+    }
+    let max = took.iter().max().unwrap();
+    let avg = took.iter().sum::<Duration>() / took.len() as u32;
+    eprintln!("takeover: 40 switches, max {max:?}, avg {avg:?}");
+    assert!(*max < Duration::from_secs(3), "slowest switch {max:?}");
+
+    // and in the terminal: a prompt is a paste, the echo is on the screen
+    d.takeover(sid, Mode::Tui).await.unwrap();
+    wait_for(&d, sid, "tui idle", |s| {
+        s.is_some_and(|s| s.mode == Mode::Tui && s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "in the terminal").await.unwrap();
+    wait_screen(&d, &pane, "echo: in the terminal").await;
+    assert_eq!(claude_processes(&b), 1);
+    d.close_session(sid).await.unwrap();
+    wait_for(&d, sid, "closed", |s| s.is_none()).await;
+}
