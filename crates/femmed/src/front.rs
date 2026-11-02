@@ -45,7 +45,7 @@ pub use term::{stats, Quantiles, Stats};
 
 use crate::config::Config;
 use crate::daemon::{now_ms, Daemon};
-use crate::hub::ClientId;
+use crate::hub::{ClientId, SubscribeError};
 use term::Hops;
 
 /// Requests one connection may have running at once; the next gets `Busy`.
@@ -420,7 +420,7 @@ async fn run_ctrl(
     let (push, pushed) = mpsc::channel(EVENTS_QUEUE);
     let (answer, answers) = mpsc::channel(ANSWER_QUEUE);
     let registered = Registered {
-        id: daemon.hub.add_client(push),
+        id: daemon.hub.add_client(push.clone()),
         daemon: daemon.clone(),
     };
     let ctx = Arc::new(Ctx {
@@ -435,7 +435,8 @@ async fn run_ctrl(
     writers.spawn(pump(events, pushed));
     writers.spawn(pump(tx, answers));
     // Resume: the scopes the desktop holds, from where it holds them. One task, in order, because
-    // each subscribe waits for the events writer to drain its backlog.
+    // each subscribe waits for the events writer to drain its backlog. One scope that cannot be
+    // resumed does not stop the rest: only the connection going away does.
     let fresh = cursors.epoch != daemon.store.epoch();
     let held = cursors
         .global_rev
@@ -453,8 +454,24 @@ async fn run_ctrl(
         let ctx = ctx.clone();
         tokio::spawn(async move {
             for (scope, after) in held {
-                if let Err(e) = ctx.daemon.hub.subscribe(ctx.client, scope, after).await {
-                    return tracing::debug!(?scope, %e, "resume subscription ended");
+                match ctx.daemon.hub.subscribe(ctx.client, scope, after).await {
+                    Ok(_) => {}
+                    Err(SubscribeError::ClientGone) => return,
+                    Err(SubscribeError::Scope(e)) => {
+                        tracing::debug!(?scope, %e, "resume: scope not served");
+                        // A session the daemon no longer has (retention purged it): the desktop is
+                        // told to drop its copy. The global scope is never gone, a failure there is
+                        // the database's, and the desktop keeps what it has.
+                        let gone = S2C::Changes {
+                            scope,
+                            rev: 0,
+                            rows: vec![],
+                            reset: true,
+                        };
+                        if matches!(scope, Scope::Session(_)) && push.send(gone).await.is_err() {
+                            return;
+                        }
+                    }
                 }
             }
         });

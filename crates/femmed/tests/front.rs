@@ -954,6 +954,39 @@ async fn an_event_too_big_for_a_frame_is_skipped_and_the_connection_goes_on() {
     while !session_ids(&c.changes().await.2).contains(&sid) {}
 }
 
+/// One cursor for a session the daemon no longer has (retention purged it) must not stop the
+/// resume of the scopes after it; the desktop is told to drop the gone one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_goes_on_past_a_cursor_for_a_purged_session() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let s = rig.shell().await;
+    rig.d
+        .store
+        .write(|tx| tx.put_item(&item(s.sid, 1, "hello")))
+        .unwrap();
+    let epoch = rig.d.store.epoch();
+    let gone = Id::new();
+    let cursor = Cursors {
+        epoch,
+        global_rev: None,
+        sessions: vec![(gone, 0), (s.sid, 0)],
+    };
+    let mut c = rig.desktop(&dev, cursor).await;
+    let first = within("the gone scope", c.events.recv_msg::<S2C>())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&first, S2C::Changes { scope, .. } if *scope == Scope::Session(gone)),
+        "{first:?}"
+    );
+    assert_eq!(shape(&first), (0, vec![], true));
+    let (scope, _, rows) = c.changes().await;
+    assert_eq!(scope, Scope::Session(s.sid));
+    assert!(rows.iter().any(|r| matches!(r, Row::Item(_))), "{rows:?}");
+}
+
 // ---- terminals --------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
