@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FEMME</title>
+<link rel="icon" href="/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kaushan+Script&family=JetBrains+Mono:wght@400;700&family=Schibsted+Grotesk:wght@400;500&family=VT323&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<style>
+  /* Look of typesafe.ai: a Lisa-era desktop (pink, dot grid) with black-titled windows. Light only, as typesafe.ai is.
+     Laid out like the Claude app on a phone: lists on top, one composer at the bottom, sheets for the rest. */
+  :root { --desk: #F386A1; --paper: #FEFEFE; --panel: #E5E5E5; --ink: #1E1E1E; --muted: #5c5c5c; --hover: #D45BB6; --neon: #FF4FB4;
+          --work: #03AA5C; --pause: #F2B33D; --queue: #DEDEDE; --pr: #09AEA1; --bad: #D93036; --done: #858585;
+          --pixel: VT323, ui-monospace, monospace; --mono: "JetBrains Mono", ui-monospace, monospace; color-scheme: light;
+          --compose-h: 120px; --safe-b: env(safe-area-inset-bottom, 0px); }
+  * { box-sizing: border-box; }
+  ::selection { background: var(--hover); color: var(--ink); }
+  body { margin: 0; min-height: 100vh; color: var(--ink); font: 16px/1.4 "Schibsted Grotesk", system-ui, sans-serif; letter-spacing: .02em;
+         padding-bottom: calc(var(--compose-h) + 12px);
+         background: var(--desk) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Crect x='2' y='2' width='1' height='1' fill='%231e1e1e'/%3E%3C/svg%3E"); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 16px; }
+  .nav { background: var(--paper); border-bottom: 1.2px solid var(--ink); position: sticky; top: 0; z-index: 4; }
+  .nav .wrap { display: flex; align-items: center; gap: 12px; padding-block: 6px; }
+  /* The logo: a Vice City sunset and the wordmark in Kaushan Script, a free stand-in for Vice City's Rage Italic. */
+  h1 { flex: 1; margin: 0; display: flex; align-items: center; gap: 10px; font: 400 34px/1.1 "Kaushan Script", cursive;
+       color: var(--neon); text-shadow: 2px 2px 0 var(--ink); letter-spacing: .03em; }
+  h1 img { width: 36px; height: 36px; }
+  .win { display: block; border: 1.2px solid var(--ink); background: var(--desk); margin: 0 0 20px; }
+  .tb { display: flex; align-items: center; gap: 8px; margin: 0; padding: 3px 8px; background: var(--ink); color: var(--desk);
+        font: 22px/1 var(--pixel); font-weight: normal; letter-spacing: .01em; text-transform: lowercase; }
+  .tb b { width: 10px; height: 10px; flex: none; }
+  .frame { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; padding: 3px; }
+  .card { background: var(--paper); border: 1.2px solid var(--ink); padding: 10px 12px; }
+  .dialog { background: var(--panel); box-shadow: 3px 3px 0 rgba(0, 0, 0, .4); }
+  .dialog .tb { color: var(--paper); }
+  #accts { display: grid; gap: 3px; }
+  .acct { display: grid; gap: 6px; height: auto; padding: 8px 12px; text-align: left; font: 16px/1.4 "Schibsted Grotesk", system-ui, sans-serif; letter-spacing: .02em; }
+  .acct.on, .aws.on { box-shadow: inset 6px 0 0 var(--work); padding-left: 16px; }  /* the account in use; AWS when the CLI has an identity */
+  .acct .title { margin: 0; }
+  .mini { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font: 12px/1.4 var(--mono); letter-spacing: .05em; color: var(--muted); }
+  .mini .meter { height: 10px; margin: 0; }
+  .tb button { margin-left: auto; height: 22px; padding: 0 6px; font-size: 18px; background: transparent; color: inherit; border-color: currentColor; }
+  #deploy-msg { padding: 8px; font: 13px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .meter { height: 20px; border: 1.2px solid var(--ink); background: var(--paper); margin-top: 6px; }
+  .meter i { display: block; height: 100%; background: var(--ink); }
+  .form { display: grid; gap: 10px; }
+  input, textarea, button { font: inherit; border-radius: 0; }
+  input, textarea { width: 100%; border: 1.2px solid var(--ink); background: var(--paper); color: var(--ink); padding: 9px 10px; }
+  ::placeholder { color: #767676; }
+  textarea { min-height: 90px; resize: vertical; }
+  button { font: 20px/1 var(--pixel); height: 34px; padding: 0 10px; border: 1.2px solid var(--ink); background: var(--paper); color: var(--ink);
+           cursor: pointer; transition: background-color .2s; }
+  button:hover { background: var(--hover); }
+  button.dark { background: var(--ink); color: var(--paper); }
+  button.dark:hover { background: var(--hover); color: var(--ink); }
+  .form > button { height: 42px; font-size: 22px; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .meta { font: 12px/1.4 var(--mono); letter-spacing: .05em; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+  .title { font-size: 17px; font-weight: 500; margin: 4px 0 2px; overflow-wrap: anywhere; }
+  .body { white-space: pre-wrap; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; margin-top: 6px; padding-left: 10px; border-left: 1.2px dashed var(--ink); }
+  .note { font-size: 14px; margin-top: 6px; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  a { color: var(--ink); text-decoration-thickness: 1.2px; text-underline-offset: 4px; }
+  a:hover { text-decoration-thickness: 3px; text-decoration-color: var(--hover); }
+  .empty { font: 13px var(--mono); padding: 4px 6px; }
+  summary { cursor: pointer; }
+  .card summary { font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
+  .win > summary { list-style: none; }
+  .win > summary::-webkit-details-marker { display: none; }
+  .win > summary .tb::after { content: "[+]"; margin-left: auto; }
+  .win[open] > summary .tb::after { content: "[-]"; }
+  .err { color: var(--bad); font-size: 14px; }
+  .err:empty { display: none; }
+  .hidden { display: none !important; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 20px; }
+  .tabs button { flex: 1; height: 42px; font-size: 22px; }
+  .tabs button.on { background: var(--ink); color: var(--paper); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .term { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .term .grow { flex: 1; min-width: 0; }
+  .term .cwd { font: 12px/1.4 var(--mono); letter-spacing: .05em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 10px; height: 10px; border: 1.2px solid var(--ink); background: var(--paper); flex: none; }
+  .dot.working { background: var(--work); } .dot.blocked, .dot.done { background: var(--pause); } .dot.idle { background: var(--done); }
+  .st { font: 18px/1 var(--pixel); letter-spacing: .01em; padding: 1px 6px; border: 1.2px solid currentColor; }
+  .aws { display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
+  .aws .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  #keys, #newkey, #key-new { margin-top: 8px; }
+  #keys { align-items: center; }
+  .round { width: 40px; height: 40px; flex: none; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 24px; }
+  .round svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  /* A full-screen page over the lists: the accounts (me) page and a terminal. */
+  .page { position: fixed; inset: 0; z-index: 10; display: none; overflow: auto; background: var(--desk) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Crect x='2' y='2' width='1' height='1' fill='%231e1e1e'/%3E%3C/svg%3E"); }
+  .page.open { display: block; }
+  .page .tb button { margin-left: 0; }
+  .page .tb .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #me { padding-bottom: calc(var(--safe-b) + 16px); }
+  /* The terminal: a typesafe.ai window on the desk, the pane's screen on paper inside its double rule, the composer under it. */
+  #chat { display: none; padding: 8px 8px calc(var(--compose-h) + 8px); }
+  #chat.open { display: flex; }
+  #chat > .win { flex: 1; min-width: 0; display: flex; flex-direction: column; margin: 0; }
+  #chat .tb { min-width: 0; }
+  #chat .tb .st { font-size: 16px; flex: none; }
+  #chat .frame { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr) auto auto; }
+  #xterm-box { padding: 6px 4px 6px 8px; overflow: auto; }
+  #xterm { height: 100%; }
+  #xterm-box.drop { outline: 3px dashed var(--hover); outline-offset: -6px; }
+  .xterm .xterm-viewport { background: var(--paper) !important; }
+  .keys { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+  .keys button { min-width: 44px; flex: 1 0 auto; }
+  #chat-msg { font: 12px/1.4 var(--mono); padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chat-msg:empty { display: none; }
+  #chat-msg.bad { color: var(--bad); }
+  /* The composer: one box at the bottom, like the Claude app's. Text on top; below it the + (camera, photos,
+     files), where the message goes, which agent, the mic and send. Fixed, so it rides above the keyboard. */
+  #compose { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 6px 10px calc(8px + var(--safe-b)); }
+  #compose .box { max-width: 760px; margin: 0 auto; background: var(--paper); border: 1.2px solid var(--ink); border-radius: 22px;
+                  box-shadow: 3px 3px 0 rgba(0, 0, 0, .4); padding: 10px 10px 8px; }
+  #attach { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  #attach:empty { display: none; }
+  #attach .chip { padding-right: 4px; }
+  #attach .chip button { height: 26px; width: 26px; padding: 0; border: 0; background: transparent; font-size: 20px; }
+  #text { border: 0; padding: 4px 6px; min-height: 30px; max-height: 40vh; resize: none; font-size: 17px; line-height: 1.35; }
+  #text:focus-visible { outline: none; }
+  #compose .bar { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #compose .bar .grow { flex: 1; }
+  .chip { height: 36px; border-radius: 999px; padding: 0 12px; font: 15px/1 "Schibsted Grotesk", system-ui, sans-serif; letter-spacing: .02em;
+          background: var(--panel); border: 1.2px solid var(--ink); display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 42%;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; }
+  #go { background: var(--ink); color: var(--paper); }
+  #go:disabled { opacity: .35; cursor: default; }
+  #mic.on { background: var(--bad); color: var(--paper); border-color: var(--bad); }
+  #cerr { max-width: 760px; margin: 4px auto 0; padding: 0 12px; }
+  /* Bottom sheet: a list of big rows, as the app's "Add context". */
+  #sheet { position: fixed; inset: 0; z-index: 30; background: rgba(30, 30, 30, .4); }
+  #sheet .sheet { position: absolute; left: 0; right: 0; bottom: 0; max-width: 760px; margin: 0 auto; max-height: 80vh; overflow: auto; background: var(--paper);
+                  border: 1.2px solid var(--ink); border-bottom: 0; border-radius: 22px 22px 0 0; padding: 10px 14px calc(16px + var(--safe-b)); }
+  #sheet h3 { margin: 4px 0 8px; display: flex; align-items: center; gap: 8px; font: 24px/1 var(--pixel); font-weight: normal; }
+  #sheet h3 span { flex: 1; text-align: center; }
+  #sheet .item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; margin-top: 8px; padding: 6px 14px; text-align: left;
+                 font: 17px/1.3 "Schibsted Grotesk", system-ui, sans-serif; letter-spacing: .02em; border-radius: 14px; overflow-wrap: anywhere; }
+  #sheet .item.on { background: var(--ink); color: var(--paper); }
+  #sheet .item svg { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #sheet input { margin-top: 8px; border-radius: 14px; font-size: 17px; }
+  #sheet .hint { font: 12px/1.4 var(--mono); color: var(--muted); margin-top: 8px; }
+  @media (max-width: 700px) {
+    .wrap { padding: 10px; }
+    h1 { font-size: 28px; } h1 img { width: 30px; height: 30px; }
+    .win { margin-bottom: 12px; }
+    .tabs { margin-bottom: 12px; }
+    .actions button { flex: 1 1 auto; height: 40px; }
+    .card.term { min-height: 60px; }
+    #chat { padding: 0 0 calc(var(--compose-h)); }
+    #chat > .win { border-width: 0; }
+    .keys button { height: 32px; min-width: 40px; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <h1><img src="/logo.svg" alt="">FEMME</h1>
+    <button id="me-open" class="round" aria-label="Accounts" title="Accounts">⋯</button>
+  </div>
+</header>
+<main class="wrap">
+  <section class="win dialog hidden" id="deploy">
+    <h2 class="tb"><b id="deploy-dot"></b>deploy<button id="deploy-x" aria-label="Close">x</button></h2>
+    <div id="deploy-msg"></div>
+  </section>
+
+  <div class="tabs"><button id="tab-terms">Sessions</button><button id="tab-issues">Issues</button></div>
+
+  <section id="v-terms" class="hidden">
+    <section class="win">
+      <h2 class="tb">sessions</h2>
+      <div class="frame" id="terms"></div>
+    </section>
+  </section>
+
+  <section id="v-issues" class="hidden">
+    <div id="board"></div>
+  </section>
+</main>
+
+<!-- Me: accounts, AWS, API keys, sign out. A page of its own, off the ⋯ button. -->
+<div id="me" class="page" role="dialog" aria-label="Accounts">
+  <div class="wrap">
+    <section class="win dialog">
+      <h2 class="tb"><button id="me-close" aria-label="Back">‹</button><span class="grow">accounts</span><button id="acct-add">+ add</button></h2>
+      <div class="frame">
+        <div id="accts"><div class="empty">loading accounts</div></div>
+        <div class="card aws" id="aws"><span class="title">AWS</span><span class="meta" id="aws-who">checking</span></div>
+        <div class="card">
+          <div class="row"><span class="title">API keys</span><span class="meta">another agent's standing Claude · /api/openapi.json</span></div>
+          <div id="keys" class="meta"></div>
+          <form id="newkey" class="form">
+            <input id="key-name" placeholder="name, e.g. instinct" required pattern="[a-z0-9-]{1,32}" autocomplete="off">
+            <input id="key-token" type="password" placeholder="GitHub token (optional: or connect GitHub on the key after)" autocomplete="off">
+            <button class="dark">+ key</button>
+          </form>
+          <div id="key-new" class="hidden"><input id="key-val" readonly><div class="meta">shown once: copy it now</div></div>
+        </div>
+        <form id="login" class="card form hidden">
+          <a id="login-url" target="_blank" rel="noopener noreferrer"></a>
+          <input id="code" required autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <div class="row"><button class="dark" id="login-go" style="flex:1"></button><button type="button" id="login-x">Cancel</button></div>
+        </form>
+        <div class="err" id="acct-err" role="alert"></div>
+        <div class="empty" id="usage"></div>
+        <div class="card"><button id="out" class="dark" style="width:100%;height:42px">Sign out</button></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="chat" class="page" role="dialog" aria-label="Terminal">
+  <section class="win dialog">
+    <h2 class="tb"><button id="chat-close" aria-label="Back">‹</button><span class="grow" id="chat-title"></span><span class="st" id="chat-st"></span><button id="chat-kill">end</button></h2>
+    <div class="frame">
+      <div class="card" id="xterm-box"><div id="xterm"></div></div>
+      <div class="keys">
+        <button data-send="\x1b">Esc</button><button data-send="\t">Tab</button><button data-send="\x1b[A">↑</button><button data-send="\x1b[B">↓</button>
+        <button data-send="\x03">^C</button><button data-send="\r">Enter</button>
+      </div>
+      <div id="chat-msg" role="status"></div>
+    </div>
+  </section>
+</div>
+
+<form id="compose" autocomplete="off">
+  <div class="box">
+    <div id="attach"></div>
+    <textarea id="text" rows="1" placeholder="Describe a task or ask a question…"></textarea>
+    <div class="bar">
+      <button type="button" id="plus" class="round" aria-label="Add">+</button>
+      <button type="button" id="target" class="chip"><span></span></button>
+      <button type="button" id="kind" class="chip"><span></span></button>
+      <span class="grow"></span>
+      <button type="button" id="mic" class="round" aria-label="Dictate"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg></button>
+      <button id="go" class="round" aria-label="Send">↑</button>
+    </div>
+  </div>
+  <div id="cerr" class="err" role="alert"></div>
+  <input type="file" id="cam" accept="image/*" capture="environment" hidden>
+  <input type="file" id="pho" accept="image/*,video/*" multiple hidden>
+  <input type="file" id="file" multiple hidden>
+</form>
+
+<div id="sheet" class="hidden">
+  <div class="sheet"><h3><button type="button" id="sheet-x" class="round" aria-label="Close">×</button><span id="sheet-title"></span></h3><div id="sheet-body"></div></div>
+</div>
+<script>
+  const SECTIONS = [
+    ['waiting', 'Needs you', '--pause'], ['working', 'Working', '--work'], ['paused', 'Paused', '--queue'], ['open', 'Queue', '--queue'],
+    ['pr', 'PR ready', '--pr'], ['failed', 'Failed', '--bad'], ['done', 'Done', '--done'],
+  ];
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const api = async (url, opts = {}) => {
+    const r = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json' } });
+    if (r.status === 401) location.replace('/login');
+    return r;
+  };
+  const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
+
+  function card(i) {
+    const acts = [];
+    if (i.pane && ['working', 'waiting', 'paused', 'pr', 'failed'].includes(i.status)) acts.push(`<button data-id="${i.id}" data-pane="${esc(i.pane)}" data-chat="${esc(i.title)}">Chat</button>`);
+    if (['paused', 'failed', 'done'].includes(i.status)) acts.push(`<button data-id="${i.id}" data-set="open">Retry</button>`);
+    if (i.status === 'pr') acts.push(`<button data-id="${i.id}" data-set="done">Merged, done</button>`);
+    if (!['working', 'waiting'].includes(i.status)) acts.push(`<button data-id="${i.id}" data-del>Delete</button>`);
+    return `<div class="card">
+      <div class="meta"><span>#${i.id}</span><span>${esc(i.repo)}</span><span>${ago(i.updated || i.created)}</span></div>
+      <div class="title">${esc(i.title)}</div>
+      ${i.body ? `<details><summary>details</summary><div class="body">${esc(i.body)}</div></details>` : ''}
+      ${i.note ? `<div class="note">${esc(i.note)}</div>` : ''}
+      ${i.pr_url ? `<div class="note"><a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_url)}</a></div>` : ''}
+      ${acts.length ? `<div class="actions">${acts.join('')}</div>` : ''}
+    </div>`;
+  }
+
+  let repos = [], folders = [];
+  async function refresh() {
+    const [issues, meta, accts, keys] = await Promise.all(['/api/issues', '/api/meta', '/api/accounts', '/api/keys'].map(u => api(u).then(r => r.json())));
+    $('board').innerHTML = SECTIONS.map(([key, label, color]) => {
+      const rows = issues.filter(i => i.status === key).sort((a, b) => key === 'open' ? a.id - b.id : (b.updated || 0) - (a.updated || 0));
+      const bar = `<h2 class="tb"><b style="background:var(${color})"></b>${label}${rows.length ? ` (${rows.length})` : ''}</h2>`;
+      const cards = rows.length ? rows.map(card).join('') : '<div class="empty">nothing here</div>';
+      if (key === 'done' && rows.length) return `<details class="win"><summary>${bar}</summary><div class="frame">${cards}</div></details>`;
+      return `<section class="win">${bar}<div class="frame">${cards}</div></section>`;
+    }).join('');
+    showAccounts(accts);
+    showKeys(keys);
+    $('usage').textContent = `switches account at ${meta.cap ?? 60}% · agents pause when every account is past it${meta.state ? ' · ' + meta.state : ''}`;
+    repos = meta.repos || [];
+    if (!pref.repo && repos.length) { pref.repo = repos[0]; drawCompose(); }
+    const d = meta.deploy;  // deploy.sh's last result: ok is null while it runs
+    $('deploy').classList.toggle('hidden', !d);
+    if (d) {
+      $('deploy-dot').style.background = `var(${d.ok ? '--work' : d.ok === false ? '--bad' : '--pause'})`;
+      $('deploy-msg').textContent = `${d.at ? ago(d.at) + ' · ' : ''}${d.message}`;
+    }
+  }
+  // Accounts: cswap's Claude logins on the box. Click one to switch to it; + add signs in a new one.
+  const win = (label, w) => typeof w?.pct === 'number'
+    ? `<span>${label}</span><span class="meter"><i style="width:${Math.min(100, w.pct)}%"></i></span><span>${Math.round(w.pct)}%${w.countdown ? ' · ' + esc(w.countdown) : ''}</span>` : '';
+  const when = iso => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString([], { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }); };
+  const acct = a => `<button class="card acct${a.active ? ' on' : ''}" data-n="${a.number}"${a.active ? ' aria-current="true"' : ''}>
+      <span class="row"><span class="title">${a.number} · ${esc(a.alias || a.email)}</span>${a.active ? '<span class="st">active</span>' : ''}${a.disabled ? '<span class="st">disabled</span>' : ''}${(a.usage?.scoped || []).map(s => `<span class="st">${esc(s.name.toLowerCase())} ${Math.round(s.pct)}% · ${when(s.resetsAt)}</span>`).join('')}</span>
+      ${a.usage ? `<span class="mini">${win('5h', a.usage.fiveHour)}${win('7d', a.usage.sevenDay)}</span>` : `<span class="meta">${esc(a.usageError || 'usage unknown')}</span>`}
+    </button>`;
+  // A sign-in in progress shows its link and a box for the code the sign-in page gives you.
+  const SIGNIN = { claude: ['Sign in with the new account', 'claude.ai', 'Add account'] };
+  let loginKind = null;
+  function showAccounts(d) {
+    const c = d.cswap, a = d.aws, login = d.login || {};
+    $('accts').innerHTML = !c ? '<div class="empty">loading accounts</div>'
+      : c.error ? `<div class="empty err">${esc(c.error)}</div>`
+      : c.accounts?.length ? c.accounts.map(acct).join('') : '<div class="empty">no accounts yet: + add</div>';
+    $('aws-who').textContent = !a ? 'checking' : a.Arn ? `${a.Account} · ${a.Arn.split(':').pop()}` : 'no AWS access';
+    $('aws-who').title = a?.Arn || a?.error || '';
+    $('aws').classList.toggle('on', !!a?.Arn);
+    if (!login[loginKind]) loginKind = Object.keys(login)[0] || null;
+    $('login').classList.toggle('hidden', !loginKind);
+    if (!loginKind) return;
+    const [link, site, go] = SIGNIN[loginKind];
+    $('login-url').href = login[loginKind];
+    $('login-url').textContent = `1. ${link}`;
+    $('code').placeholder = `2. Paste the code ${site} shows`;
+    $('login-go').textContent = go;
+  }
+  async function accountCall(url, opts, busy) {
+    $('acct-err').textContent = '';
+    busy.disabled = true;
+    const r = await api(url, opts), d = await r.json();
+    busy.disabled = false;
+    if (!r.ok) { $('acct-err').textContent = d.error; return showAccounts(await api('/api/accounts').then(r => r.json())); }
+    showAccounts(d);
+    return d;
+  }
+  $('accts').onclick = e => {
+    const b = e.target.closest('.acct');
+    if (b && !b.classList.contains('on')) accountCall('/api/accounts/switch', { method: 'POST', body: JSON.stringify({ account: b.dataset.n }) }, b);
+  };
+  // The sign-in page opens straight away in a new tab; the tab is opened inside the click (then
+  // pointed at the link once the box has it), so browsers don't block it as a pop-up.
+  async function signIn(kind, btn) {
+    const tab = window.open('', '_blank');
+    loginKind = kind;
+    $('code').value = '';
+    const d = await accountCall(`/api/accounts/${kind}/login`, { method: 'POST', body: '{}' }, btn);
+    if (tab && d?.login?.[kind]) { tab.opener = null; tab.location = d.login[kind]; } else tab?.close();
+    if (d) $('code').focus();
+  }
+  $('acct-add').onclick = () => signIn('claude', $('acct-add'));
+  $('login').onsubmit = async e => {
+    e.preventDefault();
+    const d = await accountCall(`/api/accounts/${loginKind}/code`, { method: 'POST', body: JSON.stringify({ code: $('code').value.trim() }) }, e.submitter);
+    if (d) $('code').value = '';
+  };
+  $('login-x').onclick = () => accountCall(`/api/accounts/${loginKind}/login`, { method: 'DELETE' }, $('login-x'));
+  // Keys for other agents (Instinct): made here, shown once, revoked here. "connect GitHub" puts
+  // that person's account on the key: gh shows a code, they enter it at github.com/login/device.
+  const showKeys = ks => $('keys').innerHTML = ks.length
+    ? ks.map(k => `<span>${esc(k.name)} · …${esc(k.hint)} · pushes as ${esc(k.account)} · ${ago(k.created)}${k.error ? ` · <span class="err">${esc(k.error)}</span>` : ''}</span>`
+      + (k.github
+        ? `<span>the account that should push enters <b>${esc(k.github.code)}</b> at <a href="${esc(k.github.url)}" target="_blank" rel="noopener noreferrer">github.com/login/device</a></span><button data-gh-x="${esc(k.name)}">cancel</button>`
+        : `<button data-gh="${esc(k.name)}">connect GitHub</button>`)
+      + `<button data-revoke="${esc(k.name)}">revoke</button>`).join('')
+    : '<span>no keys yet</span>';
+  async function keyCall(url, opts, busy) {
+    $('acct-err').textContent = '';
+    busy.disabled = true;
+    const r = await api(url, opts), d = await r.json();
+    busy.disabled = false;
+    if (!r.ok) { $('acct-err').textContent = d.error; return; }
+    showKeys(d.keys || d);
+    return d;
+  }
+  $('newkey').onsubmit = async e => {
+    e.preventDefault();
+    const body = { name: $('key-name').value.trim(), github_token: $('key-token').value.trim() };
+    const d = await keyCall('/api/keys', { method: 'POST', body: JSON.stringify(body) }, e.submitter);
+    if (!d) return;
+    $('newkey').reset();
+    $('key-val').value = d.key;
+    $('key-new').classList.remove('hidden');
+    $('key-val').select();
+  };
+  $('keys').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.gh) keyCall(`/api/keys/${b.dataset.gh}/github`, { method: 'POST', body: '{}' }, b);
+    else if (b.dataset.ghX) keyCall(`/api/keys/${b.dataset.ghX}/github`, { method: 'DELETE' }, b);
+    else if (b.dataset.revoke && confirm(`Revoke key ${b.dataset.revoke}? Whatever uses it stops working.`)) keyCall(`/api/keys/${b.dataset.revoke}`, { method: 'DELETE' }, b);
+  };
+  // The me page: off the ⋯ button; the composer has nothing to say there.
+  $('me-open').onclick = () => { $('me').classList.add('open'); $('compose').classList.add('hidden'); refresh(); };
+  $('me-close').onclick = () => { $('me').classList.remove('open'); $('compose').classList.remove('hidden'); };
+
+  $('deploy-x').onclick = async () => { await api('/api/deploy', { method: 'DELETE' }); $('deploy').classList.add('hidden'); };
+
+  $('board').onclick = async e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.chat !== undefined) return openChat(b.dataset.pane, `#${b.dataset.id} ${b.dataset.chat}`);
+    if (b.dataset.del !== undefined) {
+      if (!confirm('Delete this issue?')) return;
+      await api(`/api/issues/${b.dataset.id}`, { method: 'DELETE' });
+    } else {
+      await api(`/api/issues/${b.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ status: b.dataset.set, note: '' }) });
+    }
+    refresh();
+  };
+
+  $('out').onclick = async () => { await api('/api/logout', { method: 'POST', body: '{}' }); location.replace('/login'); };
+
+  // Chat: a real terminal (xterm.js) on a herdr pane. herdr hands out the pane's screen, not a
+  // stream, so the screen is fetched a few times a second and redrawn when it changes; keys,
+  // pastes and dropped files go straight back to the pane.
+  // ponytail: polling, as herdr has no output stream to forward; the API's events.subscribe
+  // (pane_output_changed) could push redraws if this ever feels slow.
+  const THEME = {  // the board's palette, darkened where text sits on paper
+    background: '#FEFEFE', foreground: '#1E1E1E', cursor: '#FEFEFE', cursorAccent: '#FEFEFE', selectionBackground: '#F386A1',
+    black: '#1E1E1E', red: '#912138', green: '#2A8221', yellow: '#8A5A00', blue: '#26569B', magenta: '#A8327F', cyan: '#0A7D74', white: '#C8C8C8',
+    brightBlack: '#5C5C5C', brightRed: '#D93036', brightGreen: '#03AA5C', brightYellow: '#B8860B', brightBlue: '#3D7BD9', brightMagenta: '#D45BB6', brightCyan: '#09AEA1', brightWhite: '#FEFEFE',
+  };
+  let term, fit, chatPane = null, chatWs = null, chatTimer = null, cols = 80, last = '', agent = false, polling = false;
+  const width = s => Math.max(...s.replace(/\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '').split('\n').map(l => [...l.trimEnd()].length));
+  // The pane is as tall as the laptop's terminal was, the box is not: an agent pins its prompt to
+  // the bottom with the transcript at the top, and the rows between are blank. Drop blank rows from
+  // the longest gap until the screen fits, else the top scrolls out of view.
+  // ponytail: a row holding only escape codes counts as blank; fine for what agents draw.
+  const blank = l => !l.replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '').trim();
+  function squeeze(rows, max) {
+    while (rows.length > max) {
+      let best = -1, len = 0;
+      for (let i = 0, j; i < rows.length; i = j + 1) {
+        for (j = i; j < rows.length && blank(rows[j]); j++);
+        if (j - i > len) { len = j - i; best = i; }
+      }
+      if (best < 0) break;
+      rows.splice(best, 1);
+    }
+    return rows;
+  }
+  const say = (text, bad) => { $('chat-msg').textContent = text; $('chat-msg').className = bad ? 'bad' : ''; };
+
+  // The pane keeps its own width: the font shrinks until those columns fit (scrolls sideways
+  // below 8px, on phones), and the rows fill the window.
+  function layout() {
+    const box = $('xterm-box');
+    term.options.fontSize = Math.max(8, Math.min(15, Math.floor((box.clientWidth - 14) / (cols * 0.6))));
+    term.resize(cols, Math.max(5, fit.proposeDimensions()?.rows || 24));
+    last = '';  // redraw at the new size on the next poll
+  }
+  function makeTerm() {
+    term = new Terminal({ theme: THEME, fontFamily: '"JetBrains Mono", ui-monospace, monospace', fontSize: 13, lineHeight: 1.1,
+      scrollback: 500, cursorBlink: false, allowProposedApi: true });
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((e, url) => window.open(url, '_blank', 'noopener')));
+    term.open($('xterm'));
+    term.onData(send);
+    new ResizeObserver(() => chatPane && layout()).observe($('xterm-box'));
+  }
+
+  async function pullScreen() {
+    if (!chatPane || polling || document.hidden) return;
+    polling = true;
+    try {
+      const r = await api(`/api/terminals/${chatPane}/screen`), d = await r.json();
+      if (!r.ok) { $('chat-st').textContent = 'gone'; return say(d.error, true); }
+      $('chat-st').textContent = d.status || 'shell';
+      if (agent !== !!d.status) { agent = !!d.status; drawCompose(); }
+      const b = term.buffer.active;
+      if (d.screen === last || b.viewportY < b.baseY) return;  // unchanged, or you scrolled up to read
+      last = d.screen;
+      const w = width(d.screen);
+      if (w > cols) { cols = w; layout(); }
+      // Agents read pastes as one block (bracketed paste); a shell gets them as typed. The pane
+      // draws its own cursor, so xterm's stays hidden.
+      term.write(`\x1b[?25l\x1b[?2004${agent ? 'h' : 'l'}\x1b[H\x1b[2J\x1b[3J` + squeeze(d.screen.replace(/\s+$/, '').split(/\r?\n/), term.rows).join('\r\n'));
+    } finally { polling = false; }
+  }
+
+  // Keystrokes queue up and go out in order, one request at a time.
+  let queue = '', sending = false;
+  function send(data) { queue += data; flush(); }
+  async function flush() {
+    if (sending || !queue || !chatPane) return;
+    sending = true;
+    const data = queue.slice(0, 50000);
+    queue = queue.slice(data.length);
+    const r = await api(`/api/terminals/${chatPane}/input`, { method: 'POST', body: JSON.stringify({ data }) });
+    sending = false;
+    if (!r.ok) say((await r.json()).error, true);
+    setTimeout(pullScreen, 60);
+    flush();
+  }
+
+  // A file goes to the box; its path is what the terminal gets. Claude Code attaches a pasted image
+  // path as the image itself.
+  async function uploadOne(f) {
+    // ponytail: files land on the VPS, so a linked laptop's terminal can't open them (Instinct's
+    // session is tagged too, but runs here).
+    if (chatPane && chatPane.includes('~') && !chatPane.startsWith('instinct~')) throw new Error('files only reach VPS terminals');
+    if (f.size > 20 << 20) throw new Error(`${f.name}: files up to 20 MB`);
+    const data = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result.split(',')[1]); fr.onerror = no; fr.readAsDataURL(f); });
+    const r = await api('/api/terminals/upload', { method: 'POST', body: JSON.stringify({ name: f.name || 'paste.png', data }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    return d.path;
+  }
+  // Pasted or dropped on the terminal: uploaded now, the path typed in, and you go on typing.
+  async function upload(files) {
+    for (const f of files) {
+      try {
+        say(`uploading ${f.name || 'image'}…`);
+        const p = await uploadOne(f);
+        say(`${f.name || 'image'} uploaded`);
+        send(agent ? `\x1b[200~${p}\x1b[201~` : p + ' ');
+      } catch (e) { say(e.message, true); }
+    }
+    term.focus();
+  }
+  // Capture phase: files never reach xterm's own paste handling, text does.
+  $('xterm-box').addEventListener('paste', e => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) { e.preventDefault(); e.stopPropagation(); upload(files); }
+  }, true);
+  $('xterm-box').ondragover = e => { e.preventDefault(); $('xterm-box').classList.add('drop'); };
+  $('xterm-box').ondragleave = () => $('xterm-box').classList.remove('drop');
+  $('xterm-box').ondrop = e => { e.preventDefault(); $('xterm-box').classList.remove('drop'); upload([...e.dataTransfer.files]); };
+  // Key bar (phones): pointerdown keeps the focus, and with it the keyboard, in the terminal.
+  document.querySelector('.keys').onpointerdown = e => { if (e.target.dataset.send) e.preventDefault(); };
+  document.querySelector('.keys').onclick = e => {
+    const k = e.target.dataset.send;
+    if (k) send(k.replace(/\\x([0-9a-f]{2})|\\t|\\r/g, (m, h) => h ? String.fromCharCode(parseInt(h, 16)) : m === '\\t' ? '\t' : '\r'));
+  };
+
+  function openChat(pane, title) {
+    if (!term) makeTerm();
+    chatPane = pane;
+    chatWs = pane.split(':')[0];
+    cols = 80; last = ''; queue = ''; agent = false;
+    $('chat-title').textContent = title;
+    $('chat-st').textContent = '';
+    say('');
+    term.reset();
+    $('chat').classList.add('open');
+    setMode('chat');
+    layout();
+    pullScreen();
+    chatTimer = setInterval(pullScreen, 250);
+  }
+  function closeChat() { $('chat').classList.remove('open'); clearInterval(chatTimer); chatPane = null; setMode(tab); refresh(); refreshTerms(); }
+  $('chat-close').onclick = closeChat;
+  $('chat-kill').onclick = async () => {
+    if (!confirm('End this terminal? Whatever runs in it stops.')) return;
+    await api(`/api/terminals/${chatWs}`, { method: 'DELETE' });
+    closeChat();
+  };
+
+  // Sessions tab: every herdr workspace on the box.
+  async function refreshTerms() {
+    const r = await api('/api/terminals');
+    if (!r.ok) return $('terms').innerHTML = `<div class="err">${esc((await r.json()).error)}</div>`;
+    const d = await r.json();
+    folders = d.folders || [];
+    $('terms').innerHTML = d.workspaces.length ? d.workspaces.map(w => w.panes.map(p => `
+      <div class="card term" data-pane="${esc(p.pane_id)}" data-title="${esc((w.machine ? w.machine + ' · ' : '') + w.label + (p.title ? ' · ' + p.title : ''))}">
+        <span class="dot ${esc(p.status || '')}"></span>
+        <div class="grow"><div class="title">${esc(w.label)}${w.machine ? ` <span class="st">${esc(w.machine)}</span>` : ''}${w.panes.length > 1 ? ` <span class="st">${esc(p.pane_id.split('~').pop())}</span>` : ''}</div>
+          <div class="cwd">${esc(p.agent || 'shell')}${p.status && p.status !== 'unknown' ? ' · ' + esc(p.status) : ''}${p.title ? ' · ' + esc(p.title) : ''}</div>
+          <div class="cwd">${esc(p.cwd || '')}</div></div>
+      </div>`).join('')).join('') : '<div class="empty">no sessions: describe one below</div>';
+  }
+  $('terms').onclick = e => { const c = e.target.closest('.term'); if (c) openChat(c.dataset.pane, c.dataset.title); };
+
+  // The composer: one box for everything you say to the box, as in the Claude app. On Sessions it
+  // opens a terminal and hands the agent the text; on Issues it files one for the worker; in a
+  // terminal it messages the agent there (a shell gets it as a command line). Photos and files go
+  // with the message: uploaded to the box, their paths put in front of it.
+  const AGENTS = { claude: 'Claude', codex: 'Codex', pi: 'Pi', '': 'Shell' };
+  const ICON = {
+    camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+    photos: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-8 8M3 18l4-4 3 3"/></svg>',
+    files: '<svg viewBox="0 0 24 24"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M12 11v6M9 14l3-3 3 3"/></svg>',
+  };
+  const pref = { folder: '', agent: 'claude', repo: '', label: '' };
+  try { Object.assign(pref, JSON.parse(localStorage.getItem('femme-compose') || '{}')); } catch {}
+  const savePref = () => { try { localStorage.setItem('femme-compose', JSON.stringify(pref)); } catch {} };
+  let mode = 'terms', files = [];  // mode: the tab, or 'chat' inside a terminal; files: attachments waiting to go
+  function setMode(m) { mode = m; drawCompose(); }
+  function drawCompose() {
+    const chat = mode === 'chat', issues = mode === 'issues';
+    $('target').firstChild.textContent = issues ? (pref.repo || 'pick a repo') : (pref.folder ? pref.folder.replace(/^.*\//, '') : 'home');
+    $('target').title = issues ? pref.repo : (pref.folder || 'home');
+    $('target').classList.toggle('hidden', chat);
+    $('kind').firstChild.textContent = AGENTS[pref.agent];
+    $('kind').classList.toggle('hidden', mode !== 'terms');
+    $('text').placeholder = chat ? (agent ? 'Message the agent…' : 'Type a command…') : issues ? 'Describe the work for the queue…' : 'Describe a task or ask a question…';
+    $('attach').innerHTML = files.map((f, i) => `<span class="chip"><span>${esc(f.name || 'image')}</span><button type="button" data-rm="${i}" aria-label="Remove">×</button></span>`).join('');
+    $('go').disabled = !(mode === 'terms' || $('text').value.trim() || files.length);
+  }
+  $('attach').onclick = e => { const b = e.target.closest('button'); if (b) { files.splice(+b.dataset.rm, 1); drawCompose(); } };
+  $('text').oninput = () => { const t = $('text'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; drawCompose(); };
+  // Enter sends where there is a real keyboard; on a phone the return key makes a line and the arrow sends.
+  $('text').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && matchMedia('(pointer: fine)').matches) { e.preventDefault(); $('compose').requestSubmit(); } };
+  for (const id of ['cam', 'pho', 'file']) $(id).onchange = () => { files.push(...$(id).files); $(id).value = ''; drawCompose(); };
+
+  // Attachments first, their paths pasted in (Claude Code reads an image path as the image), then the
+  // message, handed to the agent as one submitted prompt; a shell gets a line and Enter.
+  async function deliver(pane, text, atts, toAgent) {
+    const type = data => api(`/api/terminals/${pane}/input`, { method: 'POST', body: JSON.stringify({ data }) });
+    for (const f of atts) { const p = await uploadOne(f); await type(toAgent ? `\x1b[200~${p}\x1b[201~` : p + ' '); }
+    if (!text) return;
+    if (toAgent && (await api(`/api/terminals/${pane}/prompt`, { method: 'POST', body: JSON.stringify({ text }) })).ok) return;
+    await type(toAgent ? `\x1b[200~${text}\x1b[201~\r` : text + '\r');  // the agent was busy: queued as its next message
+  }
+  $('compose').onsubmit = async e => {
+    e.preventDefault();
+    const text = $('text').value.trim(), atts = files;
+    $('cerr').textContent = '';
+    $('go').disabled = true;
+    $('go').textContent = '…';
+    try {
+      if (mode === 'issues') {
+        if (!pref.repo) throw new Error('pick a repo first');
+        const paths = [];
+        for (const f of atts) paths.push(await uploadOne(f));
+        const [title, ...rest] = text.split('\n');
+        const body = [...rest, ...paths.map(p => `attached: ${p}`)].join('\n').trim();
+        const r = await api('/api/issues', { method: 'POST', body: JSON.stringify({ repo: pref.repo, title, body }) });
+        if (!r.ok) throw new Error((await r.json()).error);
+        clearCompose();
+        refresh();
+      } else if (mode === 'terms') {
+        const r = await api('/api/terminals', { method: 'POST', body: JSON.stringify({ cwd: pref.folder, agent: pref.agent, label: pref.label }) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        clearCompose();
+        await refreshTerms();
+        openChat(d.pane_id, pref.label || pref.folder.split('/').pop() || 'home');
+        await deliver(d.pane_id, text, atts, !!pref.agent);
+      } else {
+        await deliver(chatPane, text, atts, agent);
+        clearCompose();
+        setTimeout(pullScreen, 60);
+      }
+    } catch (err) { (mode === 'chat' ? say : t => $('cerr').textContent = t)(err.message, true); }
+    $('go').textContent = '↑';
+    drawCompose();
+  };
+  function clearCompose() { $('text').value = ''; $('text').style.height = 'auto'; files = []; drawCompose(); }
+
+  // Dictation, where the browser has it (Safari and Chrome do): speech lands in the text box.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  if (!SR) $('mic').classList.add('hidden');
+  $('mic').onclick = () => {
+    if (rec) return rec.stop();
+    rec = new SR();
+    rec.lang = navigator.language; rec.interimResults = true; rec.continuous = true;
+    const base = $('text').value.trim();
+    let done = '';
+    rec.onresult = e => {
+      let live = '';
+      for (const r of e.results) r.isFinal ? (done += r[0].transcript + ' ') : (live += r[0].transcript);
+      $('text').value = [base, done + live].filter(Boolean).join(' ');
+      $('text').oninput();
+    };
+    rec.onerror = e => $('cerr').textContent = `dictation: ${e.error}`;
+    rec.onend = () => { rec = null; $('mic').classList.remove('on'); };
+    rec.start();
+    $('mic').classList.add('on');
+  };
+
+  // Sheets: +, the target (folder or repo) and the agent each open a list of big rows.
+  const openSheet = (title, html) => { $('sheet-title').textContent = title; $('sheet-body').innerHTML = html; $('sheet').classList.remove('hidden'); };
+  const closeSheet = () => $('sheet').classList.add('hidden');
+  const item = (attrs, label, on) => `<button type="button" class="item${on ? ' on' : ''}" ${attrs}>${label}</button>`;
+  $('plus').onclick = () => openSheet('Add', [
+    item('data-pick="cam"', ICON.camera + 'Camera'), item('data-pick="pho"', ICON.photos + 'Photos'), item('data-pick="file"', ICON.files + 'Files'),
+    mode === 'terms' ? `<input id="sheet-label" placeholder="Name for the session (optional)" value="${esc(pref.label)}"><div class="hint">a photo or file goes with your message: Claude sees an image, anything else by its path</div>` : '',
+  ].join(''));
+  $('target').onclick = () => {
+    const issues = mode === 'issues', cur = issues ? pref.repo : pref.folder, list = issues ? repos : folders;
+    openSheet(issues ? 'Repo' : 'Folder', `<input id="sheet-custom" placeholder="${issues ? 'owner/repo' : 'a folder under home'}" value="${esc(cur)}" autocapitalize="off" autocorrect="off" spellcheck="false">`
+      + (issues ? '' : item('data-val=""', 'home', !cur))
+      + list.map(v => item(`data-val="${esc(v)}"`, esc(issues ? v : v.replace(/^.*\/home\/[^/]+\//, '~/')), v === cur)).join(''));
+  };
+  $('kind').onclick = () => openSheet('Agent', Object.entries(AGENTS).map(([k, v]) => item(`data-agent="${k}"`, v, k === pref.agent)).join(''));
+  $('sheet-body').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.pick) { $(b.dataset.pick).click(); return closeSheet(); }
+    if (b.dataset.val !== undefined) mode === 'issues' ? pref.repo = b.dataset.val : pref.folder = b.dataset.val;
+    if (b.dataset.agent !== undefined) pref.agent = b.dataset.agent;
+    savePref(); drawCompose(); closeSheet();
+  };
+  $('sheet-body').oninput = e => {
+    if (e.target.id === 'sheet-custom') mode === 'issues' ? pref.repo = e.target.value.trim() : pref.folder = e.target.value.trim();
+    if (e.target.id === 'sheet-label') pref.label = e.target.value.trim();
+    savePref(); drawCompose();
+  };
+  $('sheet-body').onkeydown = e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); closeSheet(); } };
+  $('sheet-x').onclick = closeSheet;
+  $('sheet').onclick = e => { if (e.target === $('sheet')) closeSheet(); };
+  // The lists and the terminal leave room for the composer, which rides above the phone's keyboard.
+  new ResizeObserver(() => document.documentElement.style.setProperty('--compose-h', $('compose').offsetHeight + 'px')).observe($('compose'));
+  const vv = window.visualViewport;
+  if (vv) for (const ev of ['resize', 'scroll']) vv.addEventListener(ev, () => $('compose').style.bottom = Math.max(0, innerHeight - vv.height - vv.offsetTop) + 'px');
+
+  let tab = 'terms';
+  function show(t) {
+    tab = t;
+    $('v-terms').classList.toggle('hidden', t !== 'terms');
+    $('v-issues').classList.toggle('hidden', t !== 'issues');
+    $('tab-terms').classList.toggle('on', t === 'terms');
+    $('tab-issues').classList.toggle('on', t === 'issues');
+    setMode(t);
+    try { localStorage.setItem('femme-tab', t); } catch {}
+  }
+  $('tab-terms').onclick = () => { show('terms'); refreshTerms(); };
+  $('tab-issues').onclick = () => { show('issues'); refresh(); };
+  let saved = 'terms';
+  try { saved = localStorage.getItem('femme-tab') || 'terms'; } catch {}
+  show(saved);
+  refreshTerms();
+  setInterval(() => { if (!chatPane && !$('v-terms').classList.contains('hidden')) refreshTerms(); }, 10000);
+
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>
