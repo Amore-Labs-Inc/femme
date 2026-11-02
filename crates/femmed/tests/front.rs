@@ -54,7 +54,8 @@ fn pin_shell() {
 /// A daemon in a box with its front on loopback.
 struct Rig {
     // Field order is drop order: the front and daemon go before the box that holds their files.
-    front: FrontHandle,
+    /// `None` only inside `restart_front`, between the old front going and the new one coming.
+    front: Option<FrontHandle>,
     d: Arc<Daemon>,
     _stop: tokio::sync::oneshot::Sender<()>,
     b: Box_,
@@ -79,7 +80,7 @@ impl Rig {
             .await
             .expect("the front starts");
         Rig {
-            front,
+            front: Some(front),
             d,
             _stop: stop,
             b,
@@ -103,7 +104,20 @@ impl Rig {
     }
 
     async fn connect(&self, dev: &DeviceIdentity) -> Result<Arc<dyn Conn>, Error> {
-        connect(self.front.quic_addr(), self.front.fingerprint(), dev).await
+        connect(self.front().quic_addr(), self.front().fingerprint(), dev).await
+    }
+
+    fn front(&self) -> &FrontHandle {
+        self.front.as_ref().expect("the front is up")
+    }
+
+    /// The front stopped and started again on the same daemon, as a restart of the service would
+    /// (less the daemon's own state): the old one's connections, socket and port go first.
+    async fn restart_front(&mut self) {
+        drop(self.front.take());
+        let quic = SocketAddr::from(([127, 0, 0, 1], 0));
+        let front = serve_front_with(self.d.clone(), quic, Waits::default()).await;
+        self.front = Some(front.expect("the front starts again"));
     }
 
     /// A connection of `dev`, past `Hello`.
@@ -333,7 +347,7 @@ async fn a_device_enrolled_by_spki_connects_over_quic_says_hello_and_is_welcomed
 
     // The fingerprint the front presents is the one saved for `femmed enroll` to print.
     let saved = ServerIdentity::load(&rig.b.dir.path().join("state/quic")).expect("identity saved");
-    assert_eq!(saved.fingerprint(), rig.front.fingerprint());
+    assert_eq!(saved.fingerprint(), rig.front().fingerprint());
     // It noted the device was here.
     let devices = rig.d.store.read(auth::list_devices).unwrap();
     assert!(devices[0].last_seen.is_some(), "{devices:?}");
@@ -355,6 +369,110 @@ async fn a_device_enrolled_by_spki_connects_over_quic_says_hello_and_is_welcomed
         "a revoked device got {:?}",
         refused.map(|_| ())
     );
+}
+
+/// A connection has one request channel: another `ctrl` stream is refused, and the first goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_ctrl_stream_is_refused_and_the_first_one_goes_on() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let (mut tx, mut rx) = c
+        .conn
+        .open_kind(StreamKind::Ctrl)
+        .await
+        .expect("a stream opens");
+    let req = Req::BlobGet { hash: [0; 32] };
+    let _ = tx
+        .send(&C2S::Req {
+            op: OpId::new(),
+            req: req.clone(),
+        })
+        .await;
+    let got = within("the second stream's end", rx.recv_msg::<S2C>()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "the second ctrl stream was served: {got:?}"
+    );
+    assert_eq!(c.call(req).await.unwrap_err().code, ErrCode::NotFound);
+}
+
+/// The hub keeps a client for each connection that got as far as `Welcome`, and gives it up
+/// however the connection ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hub_forgets_a_client_however_its_connection_ends() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let hub = &rig.d.hub;
+    let clients = |n: usize| {
+        within("the hub's clients", async move {
+            while hub.clients() != n {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    };
+    assert_eq!(hub.clients(), 0);
+
+    // The desktop hangs up.
+    let c = rig.desktop(&dev, Cursors::default()).await;
+    clients(1).await;
+    c.conn.close();
+    clients(0).await;
+    // It ends its request stream.
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    clients(1).await;
+    c.tx.finish().await.unwrap();
+    clients(0).await;
+    // It breaks the protocol: on `ctrl`, after `Hello`, nothing but requests.
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    clients(1).await;
+    let again = C2S::Hello {
+        proto: PROTO_VERSION,
+        client_instance: INSTANCE,
+        cursors: Cursors::default(),
+    };
+    c.tx.send(&again).await.unwrap();
+    clients(0).await;
+}
+
+/// Stopping the front closes what it had open and frees its socket and port; a new one on the same
+/// daemon takes the desktop back, which resumes from the cursor it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_front_stopped_and_started_again_takes_the_desktop_back_from_its_cursor() {
+    let mut rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let all = Req::Subscribe {
+        scope: Scope::Global,
+        after: None,
+    };
+    assert_eq!(c.call(all).await, Ok(Resp::Ok));
+    let (_, held, _) = c.changes().await;
+    let epoch = c.epoch;
+    let sock = rig.front().sock_path().to_path_buf();
+
+    rig.restart_front().await;
+    within("the old connection to close", c.conn.closed()).await;
+    assert!(sock.exists(), "the new front has the socket back");
+    within("the hub to forget the old client", async {
+        while rig.d.hub.clients() != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // Something happens while no desktop is there; it comes back with what it held.
+    let s = rig.shell().await;
+    let cursors = Cursors {
+        epoch,
+        global_rev: Some(held),
+        sessions: vec![],
+    };
+    let mut again = rig.desktop(&dev, cursors).await;
+    let (scope, _, rows) = again.changes().await;
+    assert_eq!(scope, Scope::Global);
+    assert!(rows.iter().all(|r| r.rev() > held), "{rows:?}");
+    assert!(session_ids(&rows).contains(&s.sid));
 }
 
 // ---- requests ---------------------------------------------------------------------------------
@@ -1263,6 +1381,40 @@ async fn a_resume_goes_on_past_a_cursor_for_a_purged_session() {
     assert!(rows.iter().any(|r| matches!(r, Row::Item(_))), "{rows:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn after_an_unsubscribe_a_scope_sends_nothing_until_it_is_subscribed_again() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let all = |after| Req::Subscribe {
+        scope: Scope::Global,
+        after,
+    };
+    assert_eq!(c.call(all(None)).await, Ok(Resp::Ok));
+    let (_, held, _) = c.changes().await;
+    let off = Req::Unsubscribe {
+        scope: Scope::Global,
+    };
+    assert_eq!(c.call(off).await, Ok(Resp::Ok));
+
+    // A change the desktop must not hear of. The hub coalesces for 50 ms: this is many of them.
+    let s = rig.shell().await;
+    let quiet = tokio::time::timeout(Duration::from_millis(500), c.events.recv_msg::<S2C>()).await;
+    assert!(
+        quiet.is_err(),
+        "a change was sent after Unsubscribe: {quiet:?}"
+    );
+    // Subscribed again from where it was, it gets what it missed.
+    assert_eq!(c.call(all(Some(held))).await, Ok(Resp::Ok));
+    let (_, _, rows) = c.changes().await;
+    assert!(session_ids(&rows).contains(&s.sid), "{rows:?}");
+    // Leaving what was never joined is nothing.
+    let never = Req::Unsubscribe {
+        scope: Scope::Session(Id::new()),
+    };
+    assert_eq!(c.call(never).await, Ok(Resp::Ok));
+}
+
 // ---- terminals --------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1553,12 +1705,60 @@ async fn a_shell_pane_that_exits_on_its_own_loses_its_row_and_the_desktop_hears_
     assert_eq!(closed.unwrap_err().code, ErrCode::NotFound);
 }
 
+/// What the daemon holds for a terminal stream, a socket to the pane's holder, goes when the stream
+/// does, and a closed connection's go with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_stream_and_a_connection_give_back_their_holder_sockets_when_they_end() {
+    fn open_files() -> usize {
+        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+    async fn back_to(at_most: usize) {
+        within("the sockets to close", async {
+            while open_files() > at_most {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+    // Alone: the process's open files are then this test's own.
+    let rig = Rig::new(true, Waits::default()).await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let pane = PaneId { sid, no: 1 };
+
+    // Warm: the daemon keeps one connection to the holder, whatever the streams do.
+    let mut t = c.term(pane, RowCache::new()).await;
+    t.until("a first frame", |s| s.rev > 0).await;
+    t.tx.finish().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let base = open_files();
+
+    for _ in 0..10 {
+        let mut t = c.term(pane, RowCache::new()).await;
+        t.until("a first frame", |s| s.rev > 0).await;
+        t.tx.finish().await.unwrap();
+    }
+    back_to(base + 2).await;
+
+    // Three views at once hold three sockets; the connection ending takes them all.
+    let mut views = Vec::new();
+    for _ in 0..3 {
+        let mut t = c.term(pane, RowCache::new()).await;
+        t.until("a first frame", |s| s.rev > 0).await;
+        views.push(t);
+    }
+    assert!(open_files() >= base + 3, "the count does not see the views");
+    c.conn.close();
+    back_to(base + 2).await;
+}
+
 // ---- the SSH fallback ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_ssh_fallback_speaks_the_same_protocol_over_the_unix_socket() {
     let rig = rig().await;
-    let sock = rig.front.sock_path().to_path_buf();
+    let sock = rig.front().sock_path().to_path_buf();
     // Only the user may get in: a private folder and a private socket.
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!((mode(&sock), mode(sock.parent().unwrap())), (0o600, 0o700));
@@ -1653,7 +1853,7 @@ async fn keystroke_relay_adds_under_three_milliseconds_in_the_daemon() {
         t.until("the key's echo", |s| s.echo_seq >= seq).await;
     }
 
-    let s = rig.front.stats();
+    let s = rig.front().stats();
     // p50, p99, p99.9 and max of each, in microseconds.
     println!("daemon hops over 500 keys on loopback QUIC:\n{s}");
     println!(
@@ -1682,7 +1882,7 @@ async fn enroll_lists_and_revokes_a_device_from_the_command_line() {
             .env_clear()
             .env("HOME", rig.home())
             .env("FEMME_STATE", rig.b.dir.path().join("state"))
-            .env("QUIC_PORT", rig.front.quic_addr().port().to_string())
+            .env("QUIC_PORT", rig.front().quic_addr().port().to_string())
             .env("HOST", "agentbox");
         cmd
     };
@@ -1704,8 +1904,8 @@ async fn enroll_lists_and_revokes_a_device_from_the_command_line() {
         .unwrap());
     let want = format!(
         "fingerprint={} quic_port={} host=agentbox\n",
-        femme_transport::fp_to_hex(&rig.front.fingerprint()),
-        rig.front.quic_addr().port()
+        femme_transport::fp_to_hex(&rig.front().fingerprint()),
+        rig.front().quic_addr().port()
     );
     assert_eq!(line, want);
     // The daemon let it in without a restart.
