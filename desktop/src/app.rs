@@ -599,7 +599,16 @@ impl FemmeApp {
                         .child("femme"),
                 ),
         )
-        .child(meta(status).flex_1().min_w_0())
+        // Wraps instead of cutting (`meta` truncates): the enroll hint has a 64-digit key in it.
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .font_family(theme::FONT_MONO)
+                .text_size(theme::META_SIZE)
+                .text_color(theme::MUTED)
+                .child(status),
+        )
         .child(
             toggle("n-sidebar", "sidebar", self.show_sidebar).on_click(cx.listener(
                 |t, _, _, cx| {
