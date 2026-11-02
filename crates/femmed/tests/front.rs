@@ -1,0 +1,983 @@
+//! The desktop's front of `femmed`, with the desktop's side written out in the tests: a real QUIC
+//! endpoint on loopback (and the unix socket behind `femmed proxy`), a device enrolled by its key,
+//! and terminals relayed to a real `femme-holder`. Needs the `femme-holder` binary (`common` builds
+//! it when it is missing).
+
+mod common;
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Once};
+use std::time::Duration;
+
+use common::Box_;
+use femme_proto::rpc::{Cursors, Err as WireErr, ErrCode, Req, Resp, Scope, StreamKind, C2S, S2C};
+use femme_proto::state::{Agent, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
+use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
+use femme_proto::{Id, OpId, PaneId, Sid, PROTO_VERSION};
+use femme_store::{auth, sessions};
+use femme_term::client::RowCache;
+use femme_transport::{
+    command_connect, connect, mux_client, Conn, DeviceIdentity, Error, Rx, ServerIdentity, Tx,
+};
+use femmed::core::{Core, CreateSession};
+use femmed::daemon::Daemon;
+use femmed::front::{serve_front_on, FrontHandle};
+use tokio::sync::RwLock;
+
+/// The longest any one wait on the daemon may take.
+const WAIT: Duration = Duration::from_secs(20);
+/// This desktop process, as terminals know it across reconnects.
+const INSTANCE: u128 = 0xFE33E;
+
+async fn within<T>(what: &str, f: impl Future<Output = T>) -> T {
+    tokio::time::timeout(WAIT, f)
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+}
+
+/// Every test holds a read lock; the latency test takes the write lock, so it runs with the other
+/// tests of this file (and their holders and shells) stopped, not competing for the CPU.
+static QUIET: RwLock<()> = RwLock::const_new(());
+
+/// Shell sessions run `$SHELL`: pin one that does not ask a new user questions in an empty home.
+fn pin_shell() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| std::env::set_var("SHELL", "/bin/sh"));
+}
+
+/// A daemon in a box with its front on loopback.
+struct Rig {
+    // Field order is drop order: the front and daemon go before the box that holds their files.
+    front: FrontHandle,
+    d: Arc<Daemon>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+    b: Box_,
+    _quiet: Box<dyn Send>,
+}
+
+async fn rig() -> Rig {
+    Rig::new(false).await
+}
+
+impl Rig {
+    async fn new(alone: bool) -> Rig {
+        pin_shell();
+        let quiet: Box<dyn Send> = if alone {
+            Box::new(QUIET.write().await)
+        } else {
+            Box::new(QUIET.read().await)
+        };
+        let b = Box_::new();
+        let (d, stop) = b.start(None).await;
+        let front = serve_front_on(d.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("the front starts");
+        Rig {
+            front,
+            d,
+            _stop: stop,
+            b,
+            _quiet: quiet,
+        }
+    }
+
+    fn home(&self) -> PathBuf {
+        self.b.home()
+    }
+
+    /// A device, enrolled the way `femmed enroll` does it.
+    fn enroll(&self, name: &str) -> DeviceIdentity {
+        let dev = DeviceIdentity::generate(name);
+        let spki = dev.spki_sha256().expect("a generated certificate parses");
+        self.d
+            .store
+            .write(|tx| tx.enroll_device(name, &spki, 1_000))
+            .expect("enrolls");
+        dev
+    }
+
+    async fn connect(&self, dev: &DeviceIdentity) -> Result<Arc<dyn Conn>, Error> {
+        connect(self.front.quic_addr(), self.front.fingerprint(), dev).await
+    }
+
+    /// A connection of `dev`, past `Hello`.
+    async fn desktop(&self, dev: &DeviceIdentity, cursors: Cursors) -> Desktop {
+        let conn = within("the connection", self.connect(dev))
+            .await
+            .expect("an enrolled device connects");
+        Desktop::hello(conn, cursors).await
+    }
+
+    /// A shell session made through the core, outside any connection.
+    async fn shell(&self) -> femmed::core::SessionInfo {
+        self.d
+            .create_session(CreateSession {
+                cwd: self.home().display().to_string(),
+                agent: Agent::Shell,
+                mode: Mode::Tui,
+                label: None,
+                name: None,
+                owner: "board".into(),
+            })
+            .await
+            .expect("a shell opens")
+    }
+}
+
+fn shell_req(home: &Path) -> Req {
+    Req::SessionCreate {
+        cwd: home.display().to_string(),
+        agent: Agent::Shell,
+        mode: Mode::Tui,
+        label: None,
+        name: None,
+        prompt: None,
+    }
+}
+
+/// The desktop's end of one connection: the `ctrl` stream (past `Hello`) and the `events` stream
+/// the daemon opened.
+struct Desktop {
+    conn: Arc<dyn Conn>,
+    tx: Tx,
+    rx: Rx,
+    events: Rx,
+    epoch: u64,
+    _events_tx: Tx,
+}
+
+impl Desktop {
+    async fn hello(conn: Arc<dyn Conn>, cursors: Cursors) -> Desktop {
+        let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.expect("ctrl stream");
+        let hello = C2S::Hello {
+            proto: PROTO_VERSION,
+            client_instance: INSTANCE,
+            cursors,
+        };
+        tx.send(&hello).await.expect("sends Hello");
+        let welcome = within("Welcome", rx.recv_msg::<S2C>())
+            .await
+            .expect("ctrl stream")
+            .expect("the stream ended before Welcome");
+        let S2C::Welcome {
+            proto,
+            server_version,
+            epoch,
+        } = welcome
+        else {
+            panic!("expected Welcome, got {welcome:?}")
+        };
+        assert_eq!(
+            (proto, server_version.as_str()),
+            (PROTO_VERSION, env!("CARGO_PKG_VERSION"))
+        );
+        let (kind, events_tx, events) = within("the events stream", conn.accept())
+            .await
+            .expect("accepts");
+        assert_eq!(kind, StreamKind::Events);
+        Desktop {
+            conn,
+            tx,
+            rx,
+            events,
+            epoch,
+            _events_tx: events_tx,
+        }
+    }
+
+    async fn send(&mut self, op: OpId, req: Req) {
+        self.tx
+            .send(&C2S::Req { op, req })
+            .await
+            .expect("sends a request");
+    }
+
+    /// The next answer, whichever request it is for.
+    async fn next_answer(&mut self) -> (OpId, Result<Resp, WireErr>) {
+        match within("an answer", self.rx.recv_msg::<S2C>())
+            .await
+            .expect("ctrl stream")
+        {
+            Some(S2C::Resp { op, result }) => (op, result),
+            other => panic!("expected an answer, got {other:?}"),
+        }
+    }
+
+    async fn call_op(&mut self, op: OpId, req: Req) -> Result<Resp, WireErr> {
+        self.send(op, req).await;
+        let (got, result) = self.next_answer().await;
+        assert_eq!(got, op, "the answer is for another request");
+        result
+    }
+
+    async fn call(&mut self, req: Req) -> Result<Resp, WireErr> {
+        self.call_op(OpId::new(), req).await
+    }
+
+    /// The next `Changes` of the events stream.
+    async fn changes(&mut self) -> (Scope, u64, Vec<Row>) {
+        match within("changes", self.events.recv_msg::<S2C>())
+            .await
+            .expect("events stream")
+        {
+            Some(S2C::Changes { scope, rev, rows }) => (scope, rev, rows),
+            other => panic!("expected changes, got {other:?}"),
+        }
+    }
+
+    async fn session(&mut self, home: &Path) -> Sid {
+        match self.call(shell_req(home)).await {
+            Ok(Resp::Session(sid)) => sid,
+            other => panic!("SessionCreate: {other:?}"),
+        }
+    }
+
+    /// Attaches `pane`, resuming from what `screen` holds.
+    async fn term(&self, pane: PaneId, screen: RowCache) -> Term {
+        let (mut tx, rx) = self
+            .conn
+            .open_kind(StreamKind::Term(pane))
+            .await
+            .expect("term stream");
+        let open = TermUp::Open {
+            pane,
+            epoch: screen.epoch,
+            have_rev: screen.rev,
+            client_instance: INSTANCE,
+        };
+        tx.send(&open).await.expect("sends Open");
+        Term {
+            tx,
+            rx,
+            screen,
+            seq: 0,
+        }
+    }
+}
+
+/// One attached pane, as the desktop sees it: its stream and the screen the frames build.
+struct Term {
+    tx: Tx,
+    rx: Rx,
+    screen: RowCache,
+    /// Input sequence numbers, continued across reconnects.
+    seq: u32,
+}
+
+impl Term {
+    /// The next message; a frame is applied to the screen and acknowledged first.
+    async fn next(&mut self) -> TermDown {
+        let m = within("the terminal", self.rx.recv_msg::<TermDown>())
+            .await
+            .expect("term stream")
+            .expect("the term stream ended");
+        if let TermDown::Frame(f) = &m {
+            self.screen.apply(f).expect("frames follow one another");
+            self.tx
+                .send(&TermUp::Ack { rev: f.rev })
+                .await
+                .expect("acks");
+        }
+        m
+    }
+
+    /// Frames until the screen satisfies `ok`.
+    async fn until(&mut self, what: &str, ok: impl Fn(&RowCache) -> bool) {
+        within(what, async {
+            while !ok(&self.screen) {
+                self.next().await;
+            }
+        })
+        .await;
+    }
+
+    /// Types `data` as raw bytes with the next sequence number; returns it.
+    async fn bytes(&mut self, data: &str) -> u32 {
+        self.seq += 1;
+        let m = TermUp::Bytes {
+            seq: self.seq,
+            data: data.as_bytes().to_vec(),
+        };
+        self.tx.send(&m).await.expect("sends input");
+        self.seq
+    }
+}
+
+fn session_ids(rows: &[Row]) -> Vec<Sid> {
+    rows.iter()
+        .filter_map(|r| match r {
+            Row::Session(s) => Some(s.id),
+            _ => None,
+        })
+        .collect()
+}
+
+// ---- who may connect --------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_enrolled_by_spki_connects_over_quic_says_hello_and_is_welcomed() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    // `desktop` checks the Welcome (this protocol, this build) and that the daemon opens `events`.
+    let c = rig.desktop(&dev, Cursors::default()).await;
+    assert_eq!(c.epoch, rig.d.store.epoch());
+    assert!(c.conn.is_quic());
+
+    // The fingerprint the front presents is the one saved for `femmed enroll` to print.
+    let saved = ServerIdentity::load(&rig.b.dir.path().join("state/quic")).expect("identity saved");
+    assert_eq!(saved.fingerprint(), rig.front.fingerprint());
+    // It noted the device was here.
+    let devices = rig.d.store.read(auth::list_devices).unwrap();
+    assert!(devices[0].last_seen.is_some(), "{devices:?}");
+
+    // A key nobody enrolled is refused in the handshake.
+    let stranger = DeviceIdentity::generate("stranger");
+    let refused = rig.connect(&stranger).await;
+    assert!(
+        matches!(refused, Err(Error::Handshake(_))),
+        "an unenrolled device got {:?}",
+        refused.map(|_| ())
+    );
+    // So is an enrolled one once it is revoked.
+    let id = devices[0].id;
+    rig.d.store.write(|tx| tx.revoke_device(id)).unwrap();
+    let refused = rig.connect(&dev).await;
+    assert!(
+        matches!(refused, Err(Error::Handshake(_))),
+        "a revoked device got {:?}",
+        refused.map(|_| ())
+    );
+}
+
+// ---- requests ---------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn requests_are_answered_by_op_id_and_a_repeated_op_is_not_run_twice() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let create = shell_req(&rig.home());
+    let sessions = || async { rig.d.terminals().await.unwrap().len() };
+
+    // The same op again is the same answer, and nothing runs.
+    let op = OpId::new();
+    let Ok(Resp::Session(sid)) = c.call_op(op, create.clone()).await else {
+        panic!("SessionCreate failed")
+    };
+    assert_eq!(c.call_op(op, create.clone()).await, Ok(Resp::Session(sid)));
+    assert_eq!(sessions().await, 1);
+    // From a new connection too: the desktop reconnected without knowing whether it was heard.
+    let mut again = rig.desktop(&dev, Cursors::default()).await;
+    assert_eq!(
+        again.call_op(op, create.clone()).await,
+        Ok(Resp::Session(sid))
+    );
+    assert_eq!(sessions().await, 1);
+    // A copy that arrives while the first is still running joins it.
+    let op2 = OpId::new();
+    c.send(op2, create.clone()).await;
+    c.send(op2, create.clone()).await;
+    let (first, second) = (c.next_answer().await, c.next_answer().await);
+    assert_eq!((first.0, second.0), (op2, op2));
+    assert_eq!(first.1, second.1);
+    let Ok(Resp::Session(other)) = first.1 else {
+        panic!("{first:?}")
+    };
+    assert_ne!(other, sid);
+    assert_eq!(sessions().await, 2);
+
+    // Answers carry their op, whatever order the requests finish in.
+    let (slow, fast) = (OpId::new(), OpId::new());
+    c.send(slow, create).await;
+    c.send(fast, Req::BlobGet { hash: [0; 32] }).await;
+    let mut got = HashMap::new();
+    for _ in 0..2 {
+        let (op, result) = c.next_answer().await;
+        got.insert(op, result);
+    }
+    assert!(matches!(got[&slow], Ok(Resp::Session(_))), "{got:?}");
+    assert_eq!(got[&fast].as_ref().unwrap_err().code, ErrCode::NotFound);
+    assert_eq!(sessions().await, 3);
+
+    // The current and the previous protocol are welcome; any other is told so, and the
+    // connection ends.
+    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+    let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
+    let hello = |proto| C2S::Hello {
+        proto,
+        client_instance: INSTANCE,
+        cursors: Cursors::default(),
+    };
+    tx.send(&hello(PROTO_VERSION + 1)).await.unwrap();
+    let told = within("the refusal", rx.recv_msg::<S2C>()).await;
+    let Ok(Some(S2C::Resp {
+        result: Err(refusal),
+        ..
+    })) = told
+    else {
+        panic!("expected an Unsupported error, got {told:?}")
+    };
+    assert_eq!(refusal.code, ErrCode::Unsupported, "{refusal:?}");
+    assert!(matches!(rx.recv_msg::<S2C>().await, Ok(None)));
+    conn.close();
+    let previous = PROTO_VERSION - 1;
+    let conn = within("the connection", rig.connect(&dev)).await.unwrap();
+    let (mut tx, mut rx) = conn.open_kind(StreamKind::Ctrl).await.unwrap();
+    tx.send(&hello(previous)).await.unwrap();
+    let welcome = within("Welcome", rx.recv_msg::<S2C>()).await;
+    assert!(
+        matches!(welcome, Ok(Some(S2C::Welcome { proto, .. })) if proto == previous),
+        "{welcome:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let code = |r: Result<Resp, WireErr>| r.expect_err("an error").code;
+    let nobody = Id::new();
+
+    assert_eq!(
+        code(c.call(Req::SessionClose { sid: nobody }).await),
+        ErrCode::NotFound
+    );
+    let req = Req::SessionCreate {
+        cwd: "/no/such/folder".into(),
+        agent: Agent::Shell,
+        mode: Mode::Tui,
+        label: None,
+        name: None,
+        prompt: None,
+    };
+    assert_eq!(code(c.call(req).await), ErrCode::Bad);
+    // A shell has no agent to prompt: the core's Busy.
+    let sid = c.session(&rig.home()).await;
+    let prompt = |attachments| Req::Prompt {
+        sid,
+        text: "hi".into(),
+        attachments,
+        how: femme_proto::rpc::PromptHow::Queue,
+    };
+    assert_eq!(code(c.call(prompt(vec![])).await), ErrCode::Busy);
+    let attached = vec![femme_proto::rpc::Attachment {
+        name: "a".into(),
+        blob: [0; 32],
+    }];
+    assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Unsupported);
+    // M5.
+    for req in [
+        Req::Upload {
+            name: "a".into(),
+            len: 1,
+        },
+        Req::FsList {
+            sid,
+            path: "/".into(),
+        },
+        Req::FsRead {
+            sid,
+            path: "/etc/hostname".into(),
+        },
+    ] {
+        assert_eq!(code(c.call(req).await), ErrCode::Unsupported);
+    }
+    // Replayed, an error is the same error.
+    let op = OpId::new();
+    let first = c.call_op(op, Req::SessionClose { sid: nobody }).await;
+    assert_eq!(
+        c.call_op(op, Req::SessionClose { sid: nobody }).await,
+        first
+    );
+}
+
+// ---- state ------------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscribing_with_a_cursor_delivers_only_what_changed_since_it() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let (s1, s2) = (rig.shell().await, rig.shell().await);
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+
+    // No cursor: everything. (A Hello without cursors subscribes to nothing, so it asks.)
+    let all = Req::Subscribe {
+        scope: Scope::Global,
+        after: None,
+    };
+    assert_eq!(c.call(all).await, Ok(Resp::Ok));
+    let (scope, _, rows) = c.changes().await;
+    assert_eq!(scope, Scope::Global);
+    let ids = session_ids(&rows);
+    assert!(ids.contains(&s1.sid) && ids.contains(&s2.sid), "{ids:?}");
+    let epoch = c.epoch;
+    c.conn.close();
+    drop(c);
+
+    // What it holds is the store's rev now; one more session happens while it is away.
+    let held = rig.d.store.rev().unwrap();
+    let s3 = rig.shell().await;
+
+    // Back with a cursor and no request: only the rows newer than it, s3 among them.
+    let cursor = Cursors {
+        epoch,
+        global_rev: Some(held),
+        sessions: vec![],
+    };
+    let mut c = rig.desktop(&dev, cursor).await;
+    let (scope, rev, rows) = c.changes().await;
+    assert_eq!(scope, Scope::Global);
+    assert!(rows.iter().all(|r| r.rev() > held), "{rows:?}");
+    assert!(session_ids(&rows).contains(&s3.sid));
+    assert!(rev > held);
+    c.conn.close();
+    drop(c);
+
+    // Another epoch is another database: the cursor means nothing, everything comes.
+    let stale = Cursors {
+        epoch: epoch ^ 1,
+        global_rev: Some(rev),
+        sessions: vec![],
+    };
+    let mut c = rig.desktop(&dev, stale).await;
+    let (_, _, rows) = c.changes().await;
+    let ids = session_ids(&rows);
+    assert!(
+        [s1.sid, s2.sid, s3.sid].iter().all(|s| ids.contains(s)),
+        "{ids:?}"
+    );
+    c.conn.close();
+    drop(c);
+
+    // A session's transcript resumes the same way, by its own cursor.
+    let put = |n: u64| {
+        rig.d
+            .store
+            .write(|tx| tx.put_item(&item(s1.sid, n, "hello")))
+            .unwrap()
+    };
+    let (first, second) = (put(1), put(2));
+    let cursor = Cursors {
+        epoch,
+        global_rev: None,
+        sessions: vec![(s1.sid, first.rev)],
+    };
+    let mut c = rig.desktop(&dev, cursor).await;
+    let (scope, _, rows) = c.changes().await;
+    assert_eq!(scope, Scope::Session(s1.sid));
+    assert_eq!(rows, vec![Row::Item(second)]);
+}
+
+fn item(sid: Sid, n: u64, body: &str) -> Item {
+    Item {
+        sid,
+        item_id: format!("i{n}"),
+        seq: 0,
+        rev: 0,
+        kind: ItemKind::UserMessage,
+        status: ItemStatus::Completed,
+        preview: String::new(),
+        body: Some(body.into()),
+        blob_hash: None,
+        ts: n as i64,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transcript_pages_come_newest_first_and_a_blob_comes_whole() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let s = rig.shell().await;
+    let big = "x".repeat(10_000); // past what an item keeps inline: the body is a blob
+    let stored: Vec<Item> = rig
+        .d
+        .store
+        .write(|tx| {
+            (1..=5)
+                .map(|n| tx.put_item(&item(s.sid, n, if n == 5 { &big } else { "short" })))
+                .collect()
+        })
+        .unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+
+    let page = |before_seq, limit| Req::TranscriptPage {
+        sid: s.sid,
+        before_seq,
+        limit,
+    };
+    let seqs = |r: Result<Resp, WireErr>| match r {
+        Ok(Resp::Page { items, next_before }) => {
+            (items.iter().map(|i| i.seq).collect::<Vec<_>>(), next_before)
+        }
+        other => panic!("{other:?}"),
+    };
+    // From the end (0, or the highest there is), two at a time, until there is no next page.
+    assert_eq!(seqs(c.call(page(0, 2)).await), (vec![5, 4], Some(4)));
+    assert_eq!(seqs(c.call(page(u64::MAX, 2)).await), (vec![5, 4], Some(4)));
+    assert_eq!(seqs(c.call(page(4, 2)).await), (vec![3, 2], Some(2)));
+    assert_eq!(seqs(c.call(page(2, 2)).await), (vec![1], None));
+    // Asking for none gets one: a page is never empty while there is more.
+    assert_eq!(seqs(c.call(page(0, 0)).await), (vec![5], Some(5)));
+    let missing = Req::TranscriptPage {
+        sid: Id::new(),
+        before_seq: 0,
+        limit: 10,
+    };
+    assert_eq!(c.call(missing).await.unwrap_err().code, ErrCode::NotFound);
+
+    // The big one's body is a blob the desktop fetches by hash.
+    let hash = stored[4].blob_hash.expect("the body went to a blob");
+    assert_eq!(
+        c.call(Req::BlobGet { hash }).await,
+        Ok(Resp::Blob(big.into_bytes()))
+    );
+    let gone = c.call(Req::BlobGet { hash: [7; 32] }).await;
+    assert_eq!(gone.unwrap_err().code, ErrCode::NotFound);
+}
+
+// ---- terminals --------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_stream_carries_keys_in_and_frames_out() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let mut t = c.term(PaneId { sid, no: 1 }, RowCache::new()).await;
+
+    // The first frame is the whole screen.
+    t.until("a first frame", |s| s.rev > 0).await;
+    t.bytes("echo marker-$((40+2))\r").await;
+    t.until("the output of the command", |s| {
+        s.text().contains("marker-42")
+    })
+    .await;
+
+    // A resize is a frame of the new size.
+    t.tx.send(&TermUp::Resize { cols: 90, rows: 25 })
+        .await
+        .unwrap();
+    t.until("a frame of the new size", |s| (s.cols, s.rows) == (90, 25))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_connection_and_a_reopen_with_have_rev_resume_the_screen_without_replaying_bytes()
+{
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let pane = PaneId { sid, no: 1 };
+    let mut t = c.term(pane, RowCache::new()).await;
+    let first = t.bytes("echo first-$((1+1))\r").await;
+    t.until("the first command's output", |s| {
+        s.text().contains("first-2")
+    })
+    .await;
+    let (screen, seq) = (t.screen.clone(), t.seq);
+
+    // The connection goes away, and the screen changes while the desktop is not looking.
+    c.conn.close();
+    drop((t, c));
+    let info = common::wait_for(&rig.d, sid, "the session", |s| s.is_some()).await;
+    let behind = common::pane_of(&info.unwrap());
+    rig.d
+        .input(&behind, b"echo second-$((2+1))\r")
+        .await
+        .unwrap();
+    common::wait_screen(&rig.d, &behind, "second-3").await;
+
+    // A new connection reopens the pane with the rev it holds: what comes is the difference.
+    let c = rig.desktop(&dev, Cursors::default()).await;
+    let mut t = c.term(pane, screen.clone()).await;
+    t.seq = seq;
+    let TermDown::Frame(delta) = t.next().await else {
+        panic!("the first message is a frame")
+    };
+    assert_eq!(
+        delta.base_rev, screen.rev,
+        "a delta from what the desktop held, not a snapshot"
+    );
+    assert_eq!(delta.epoch, screen.epoch);
+    t.until("the second command's output", |s| {
+        s.text().contains("second-3")
+    })
+    .await;
+    let text = t.screen.text();
+    assert_eq!(text.matches("first-2").count(), 1, "{text}");
+
+    // Input the holder already applied is not applied twice when the desktop resends it.
+    t.seq = first - 1;
+    t.bytes("echo first-$((1+1))\r").await; // the first seq again
+    t.seq = seq;
+    let third = t.bytes("echo third-$((1+2))\r").await;
+    t.until("the third command's output", |s| {
+        s.text().contains("third-3")
+    })
+    .await;
+    assert!(t.screen.applied_seq >= third);
+    let text = t.screen.text();
+    assert_eq!(
+        text.matches("first-2").count(),
+        1,
+        "resent input ran again:\n{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_session_ends_its_terminal_streams_with_exited() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let mut t = c.term(PaneId { sid, no: 1 }, RowCache::new()).await;
+    t.until("a first frame", |s| s.rev > 0).await;
+
+    assert_eq!(c.call(Req::SessionClose { sid }).await, Ok(Resp::Ok));
+    let exited = within("Exited", async {
+        loop {
+            if let TermDown::Exited { status } = t.next().await {
+                break status;
+            }
+        }
+    })
+    .await;
+    let _ = exited; // the holder's word for how the shell went, or -1 when it was cut off
+    assert!(
+        matches!(
+            within("the end of the stream", t.rx.recv_msg::<TermDown>()).await,
+            Ok(None)
+        ),
+        "nothing follows Exited"
+    );
+
+    // A pane that is not there is the same: Exited, then the end.
+    for pane in [
+        PaneId { sid, no: 1 }, // the session is closed
+        PaneId {
+            sid: Id::new(),
+            no: 1,
+        }, // there never was one
+    ] {
+        let mut t = c.term(pane, RowCache::new()).await;
+        assert_eq!(t.next().await, TermDown::Exited { status: -1 }, "{pane:?}");
+        assert!(matches!(t.rx.recv_msg::<TermDown>().await, Ok(None)));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pane_opens_next_to_the_agents_and_closes_again() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+
+    let Ok(Resp::Pane(pane)) = c.call(Req::PaneOpen { sid }).await else {
+        panic!("PaneOpen failed")
+    };
+    assert_eq!(pane, PaneId { sid, no: 2 });
+    let panes = rig.d.store.read(|c| sessions::panes(c, sid)).unwrap();
+    assert_eq!(
+        panes.iter().map(|p| (p.id.no, p.kind)).collect::<Vec<_>>(),
+        [(1, PaneKind::Shell), (2, PaneKind::Shell)]
+    );
+    // It is a shell like any other.
+    let mut t = c.term(pane, RowCache::new()).await;
+    t.bytes("echo pane-$((20+2))\r").await;
+    t.until("the shell's answer", |s| s.text().contains("pane-22"))
+        .await;
+
+    // The session's own pane is closed by closing the session; a pane nobody opened is not there.
+    let own = Req::PaneClose {
+        pane: PaneId { sid, no: 1 },
+    };
+    assert_eq!(c.call(own).await.unwrap_err().code, ErrCode::Bad);
+    let none = Req::PaneClose {
+        pane: PaneId { sid, no: 9 },
+    };
+    assert_eq!(c.call(none).await.unwrap_err().code, ErrCode::NotFound);
+    assert_eq!(c.call(Req::PaneClose { pane }).await, Ok(Resp::Ok));
+    let panes = rig.d.store.read(|c| sessions::panes(c, sid)).unwrap();
+    assert_eq!(panes.len(), 1);
+    let mut again = c.term(pane, RowCache::new()).await;
+    assert_eq!(again.next().await, TermDown::Exited { status: -1 });
+}
+
+// ---- the SSH fallback ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ssh_fallback_speaks_the_same_protocol_over_the_unix_socket() {
+    let rig = rig().await;
+    let sock = rig.front.sock_path().to_path_buf();
+    // Only the user may get in: a private folder and a private socket.
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(&sock), mode(sock.parent().unwrap())), (0o600, 0o700));
+
+    // Straight to the socket, the way `femmed proxy` relays to it.
+    let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let (r, w) = stream.into_split();
+    let mut c = Desktop::hello(mux_client(r, w), Cursors::default()).await;
+    assert!(!c.conn.is_quic());
+    let sid = c.session(&rig.home()).await;
+    let owners: Vec<String> = rig
+        .d
+        .terminals()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.owner)
+        .collect();
+    assert_eq!(owners, ["device:ssh"]);
+    // Terminals ride the mux as well.
+    let mut t = c.term(PaneId { sid, no: 1 }, RowCache::new()).await;
+    t.bytes("echo ssh-$((1+2))\r").await;
+    t.until("the shell's answer", |s| s.text().contains("ssh-3"))
+        .await;
+
+    // And through the real `femmed proxy`, which finds the socket by `XDG_RUNTIME_DIR`.
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_femmed"));
+    cmd.arg("proxy")
+        .env_clear()
+        .env("HOME", rig.home())
+        .env("XDG_RUNTIME_DIR", rig.b.dir.path().join("rt"));
+    let conn = within("femmed proxy", command_connect(cmd))
+        .await
+        .expect("the proxy connects");
+    let mut p = Desktop::hello(conn, Cursors::default()).await;
+    let page = Req::TranscriptPage {
+        sid,
+        before_seq: 0,
+        limit: 10,
+    };
+    assert_eq!(
+        p.call(page).await,
+        Ok(Resp::Page {
+            items: vec![],
+            next_before: None
+        })
+    );
+    // The same op from the other connection is the same answer: both are the one ssh user.
+    let op = OpId::new();
+    let made = c.call_op(op, shell_req(&rig.home())).await;
+    assert!(matches!(made, Ok(Resp::Session(_))));
+    assert_eq!(p.call_op(op, shell_req(&rig.home())).await, made);
+}
+
+// ---- how long the daemon holds a keystroke ------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keystroke_relay_adds_under_three_milliseconds_in_the_daemon() {
+    let rig = Rig::new(true).await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&rig.home()).await;
+    let mut t = c.term(PaneId { sid, no: 1 }, RowCache::new()).await;
+    t.until("a first frame", |s| s.rev > 0).await;
+
+    // One key at a time, each waited for until its echo is on the screen: 'a' and Backspace,
+    // so the line never grows.
+    for i in 0..500u32 {
+        let code = if i % 2 == 0 {
+            KeyCode::Char('a')
+        } else {
+            KeyCode::Backspace
+        };
+        t.seq += 1;
+        let seq = t.seq;
+        let key = Key {
+            code,
+            mods: Mods::empty(),
+        };
+        t.tx.send(&TermUp::Key { seq, key }).await.unwrap();
+        t.until("the key's echo", |s| s.echo_seq >= seq).await;
+    }
+
+    let s = rig.front.stats();
+    println!("daemon hops over 500 keys on loopback QUIC:\n{s}");
+    println!(
+        "everything this process relayed:\n{}",
+        femmed::front::stats()
+    );
+    assert!(s.up.n >= 500 && s.down.n >= 500, "{s}");
+    let limit = Duration::from_millis(3);
+    assert!(s.up.p99 < limit, "keys into the holder: {s}");
+    assert!(s.down.p99 < limit, "frames out to the desktop: {s}");
+}
+
+// ---- the command line ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enroll_lists_and_revokes_a_device_from_the_command_line() {
+    let rig = rig().await;
+    // The command the user runs over ssh, in the daemon's own environment.
+    let femmed = |args: &[&str]| {
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_femmed"));
+        cmd.args(args)
+            .env_clear()
+            .env("HOME", rig.home())
+            .env("FEMME_STATE", rig.b.dir.path().join("state"))
+            .env("QUIC_PORT", rig.front.quic_addr().port().to_string())
+            .env("HOST", "agentbox");
+        cmd
+    };
+    let ok = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let dev = DeviceIdentity::generate("laptop");
+    let spki = femme_transport::fp_to_hex(&dev.spki_sha256().unwrap());
+
+    // One line, what the desktop pins: the running daemon's fingerprint, its port and the host.
+    let line = ok(femmed(&["enroll", "--name", "laptop", "--spki", &spki])
+        .output()
+        .await
+        .unwrap());
+    let want = format!(
+        "fingerprint={} quic_port={} host=agentbox\n",
+        femme_transport::fp_to_hex(&rig.front.fingerprint()),
+        rig.front.quic_addr().port()
+    );
+    assert_eq!(line, want);
+    // The daemon let it in without a restart.
+    let c = rig.desktop(&dev, Cursors::default()).await;
+    drop(c);
+    let list = ok(femmed(&["devices"]).output().await.unwrap());
+    assert!(
+        list.contains("laptop") && list.contains(&spki) && !list.contains("REVOKED"),
+        "{list}"
+    );
+
+    // Revoked by name, it is refused; enrolling the same key again lets it back in.
+    ok(femmed(&["devices", "revoke", "laptop"])
+        .output()
+        .await
+        .unwrap());
+    assert!(matches!(rig.connect(&dev).await, Err(Error::Handshake(_))));
+    let list = ok(femmed(&["devices", "list"]).output().await.unwrap());
+    assert!(list.contains("REVOKED"), "{list}");
+    ok(femmed(&["enroll", "--name", "laptop", "--spki", &spki])
+        .output()
+        .await
+        .unwrap());
+    drop(rig.desktop(&dev, Cursors::default()).await);
+
+    // A key that is not a hash, and a device that is not there, say so and fail.
+    for args in [
+        &["enroll", "--name", "x", "--spki", "not-a-hash"][..],
+        &["devices", "revoke", "nobody"][..],
+    ] {
+        let out = femmed(args).output().await.unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert!(!out.stderr.is_empty(), "{args:?}");
+    }
+}
