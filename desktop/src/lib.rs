@@ -34,7 +34,8 @@ pub fn run(cfg: app::Config) -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("femme-side")
-        .enable_time()
+        // The client needs sockets (QUIC) and child processes (ssh) as well as timers.
+        .enable_all()
         .build()
         .context("start the side tokio runtime")?;
     let handle = rt.handle().clone();
