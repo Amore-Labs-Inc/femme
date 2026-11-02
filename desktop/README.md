@@ -85,7 +85,8 @@ quotes dropped, no `export`). Without `--daemon` and `--ssh` (or their keys) the
 
 Tested on a Linux VPS with no GPU: Xvfb + lavapipe (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`),
 a scratch `femmed` (own `FEMME_STATE`, `XDG_RUNTIME_DIR`, `QUIC_PORT`, `FEMME_HOLDER_DIRECT=1`) and input
-injected with XTEST.
+injected with XTEST. Xvfb has no window manager, so the window never counts as active (no focus in/out
+reports) until a client gives it X input focus (`SetInputFocus`).
 
 Environment:
 
