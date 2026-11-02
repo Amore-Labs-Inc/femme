@@ -1,0 +1,9 @@
+[Unit]
+Description=FEMME sessions: one femme-holder unit per session (its PTYs, terminal state and the agent's pipes)
+
+[Slice]
+# femmed starts each holder with its own MemoryHigh/MemoryMax/TasksMax (server/femmed, plan §5);
+# this is the ceiling for all of them together on a 15 GiB box.
+MemoryHigh=10G
+MemoryMax=12G
+TasksMax=16384

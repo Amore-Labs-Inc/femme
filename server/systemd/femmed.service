@@ -1,0 +1,19 @@
+[Unit]
+Description=FEMME daemon: sessions, agents, the board and the API (localhost; Caddy serves it over HTTPS)
+After=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=%h/femme/.env
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RUST_LOG=info
+ExecStart=%h/.local/bin/femmed serve
+# femmed pings the watchdog from its main loop; a wedged daemon is restarted, its sessions are not
+# touched: they run as femme-holder units in femme-sessions.slice and femmed reconnects to them.
+WatchdogSec=10
+Restart=always
+RestartSec=1
+CPUWeight=500
+
+[Install]
+WantedBy=default.target
