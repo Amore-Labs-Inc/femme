@@ -696,6 +696,126 @@ async fn the_front_checks_repos_titles_names_and_folders_the_way_the_board_does(
     assert_eq!(label, Some("é".repeat(60)));
 }
 
+fn issue_req(title: &str) -> Req {
+    Req::IssueCreate {
+        repo: "o/r".into(),
+        title: title.into(),
+        body: String::new(),
+    }
+}
+
+/// The op id is the retry's key, so it has to be one request's: a second request under it was once
+/// answered with the first one's answer, a success for something that never ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_op_id_used_for_another_request_is_refused_not_answered_with_the_first_answer() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let (op, other) = (OpId::new(), Req::IssueDelete { id: 987_654 });
+    let made = c.call_op(op, issue_req("t")).await;
+    assert!(matches!(made, Ok(Resp::Issue(_))), "{made:?}");
+    // The same request again is the retry: the same answer.
+    assert_eq!(c.call_op(op, issue_req("t")).await, made);
+    // Another one is refused, on this connection and (the row is in the database) on a new one.
+    let refused = c.call_op(op, other.clone()).await;
+    assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+    let mut again = rig.desktop(&dev, Cursors::default()).await;
+    let refused = again.call_op(op, other).await;
+    assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+
+    // Two different requests under one op, sent together: one runs, the other is refused.
+    let op = OpId::new();
+    c.send(op, issue_req("a")).await;
+    c.send(op, issue_req("b")).await;
+    let answers = [c.next_answer().await.1, c.next_answer().await.1];
+    let ran = answers
+        .iter()
+        .filter(|r| matches!(r, Ok(Resp::Issue(_))))
+        .count();
+    let refused = answers
+        .iter()
+        .filter(|r| matches!(r, Err(e) if e.code == ErrCode::Bad))
+        .count();
+    assert_eq!((ran, refused), (1, 1), "{answers:?}");
+    assert_eq!(rig.d.issues().await.unwrap().len(), 2, "t and one of a, b");
+}
+
+/// The nil id is what an answer to no request carries (the refusal of a `Hello`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_under_the_nil_op_id_is_refused() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    for req in [issue_req("t"), Req::BlobGet { hash: [0; 32] }] {
+        let refused = c.call_op(Id(0), req).await;
+        assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+    }
+    assert!(rig.d.issues().await.unwrap().is_empty());
+}
+
+/// "Not now" answers (`Busy`, `Internal`) are not the op's answer: the retry has to run it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_internal_failure_is_not_remembered_so_the_retry_runs_the_op_again() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let (claude, away) = (
+        rig.b.dir.path().join("bin/claude"),
+        rig.b.dir.path().join("claude.away"),
+    );
+    let req = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Tui,
+        label: None,
+        name: None,
+        prompt: None,
+    };
+    // No claude on the box's PATH: the core's Internal.
+    std::fs::rename(&claude, &away).unwrap();
+    let op = OpId::new();
+    let failed = c.call_op(op, req.clone()).await;
+    assert_eq!(failed.unwrap_err().code, ErrCode::Internal);
+    let device = rig.d.store.read(auth::list_devices).unwrap()[0].id;
+    let row = rig
+        .d
+        .store
+        .read(|c| auth::op_lookup(c, device, op))
+        .unwrap();
+    assert_eq!(row, None, "the failure was recorded as the op's answer");
+    // The box is mended; the same op, retried, runs.
+    std::fs::rename(&away, &claude).unwrap();
+    let again = c.call_op(op, req).await;
+    assert!(matches!(again, Ok(Resp::Session(_))), "{again:?}");
+}
+
+/// A session that was made but could not be prompted is told as a `Conflict`, which is
+/// remembered: a retry gets the same answer and no second session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_made_but_not_prompted_is_one_session_however_often_the_op_is_retried() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let req = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Shell, // a shell has no agent to prompt
+        mode: Mode::Tui,
+        label: None,
+        name: None,
+        prompt: Some("hello".into()),
+    };
+    let op = OpId::new();
+    let told = c.call_op(op, req.clone()).await.unwrap_err();
+    assert_eq!(told.code, ErrCode::Conflict, "{told:?}");
+    assert!(
+        told.msg
+            .contains("was created but its prompt was not delivered"),
+        "{told:?}"
+    );
+    assert_eq!(c.call_op(op, req).await.unwrap_err(), told);
+    assert_eq!(rig.d.terminals().await.unwrap().len(), 1);
+}
+
 // ---- who may open a terminal ------------------------------------------------------------------
 
 /// The Term stream of a connection that is not welcomed ends without a frame.

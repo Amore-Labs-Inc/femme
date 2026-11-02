@@ -13,7 +13,8 @@
 //! [`RECHECK`].
 //!
 //! A request that changes something is remembered by `(device, op)` for 24 h ([`Ctx::run`]): a
-//! retry after a dropped connection gets the recorded answer instead of running the op again.
+//! retry after a dropped connection gets the recorded answer instead of running the op again. The
+//! op id belongs to the request it came with: another request under it is refused.
 //!
 //! [`stats`] is the terminal relay's latency, measured per hop, because the plan says the daemon
 //! adds under 3 ms to a keystroke and that wants a number.
@@ -35,7 +36,7 @@ use anyhow::Context;
 use femme_proto::codec;
 use femme_proto::rpc::{Err as WireErr, ErrCode, Req, Resp, Scope, StreamKind, C2S, S2C};
 use femme_proto::{DeviceId, Id, OpId, PROTO_VERSION};
-use femme_store::auth;
+use femme_store::{auth, sha256};
 use femme_transport::quic::Allow;
 use femme_transport::{fp_to_hex, listen, mux_server, Conn, Listener, ServerIdentity, Tx};
 use tokio::net::{UnixListener, UnixStream};
@@ -75,8 +76,15 @@ const SSH: DeviceId = Id(0);
 /// What a request comes to: its answer on the wire.
 type Outcome = Result<Resp, WireErr>;
 
-/// Mutating requests being run, by `(device, op)`.
-type Inflight = Mutex<HashMap<(DeviceId, OpId), Arc<OnceCell<Outcome>>>>;
+/// The answer to a request that comes under an op id another request has.
+const OP_REUSED: &str = "that op id belongs to another request";
+
+/// SHA-256 of a request's encoding: what ties an op id to the request it came with.
+type Digest = [u8; 32];
+
+/// Mutating requests being run, by `(device, op)`: the digest of the request that came first, and
+/// what it came to.
+type Inflight = Mutex<HashMap<(DeviceId, OpId), Arc<OnceCell<(Digest, Outcome)>>>>;
 
 /// The front's clocks; tests shorten them.
 #[derive(Clone, Copy)]
@@ -585,13 +593,22 @@ impl Ctx {
     /// first attempt's answer is recorded (and shared with a retry that arrives while it runs), and
     /// every later one gets that answer back. Reads are just run.
     async fn run(&self, op: OpId, req: Req) -> Outcome {
-        if codec::encode(&req).map_or(usize::MAX, |b| b.len()) > BODY_MAX {
-            let why = format!("a request is at most {BODY_MAX} bytes");
-            return Err(req::err(ErrCode::Bad, why));
+        let wire = match codec::encode(&req) {
+            Ok(bytes) if bytes.len() <= BODY_MAX => bytes,
+            _ => {
+                let why = format!("a request is at most {BODY_MAX} bytes");
+                return Err(req::err(ErrCode::Bad, why));
+            }
+        };
+        // The nil id signs what is no request's answer (a refused `Hello`): a request under it
+        // could not be told from that.
+        if op.is_nil() {
+            return Err(req::err(ErrCode::Bad, "an op id is never nil"));
         }
         if !req::mutates(&req) {
             return req::dispatch(self, req).await;
         }
+        let digest = sha256(&wire);
         let key = (self.device, op);
         let cell = {
             let mut inflight = self
@@ -601,35 +618,56 @@ impl Ctx {
                 .unwrap_or_else(PoisonError::into_inner);
             inflight.entry(key).or_default().clone()
         };
-        let out = cell.get_or_init(|| self.once(op, req)).await.clone();
+        let (first, out) = cell
+            .get_or_init(|| async { (digest, self.once(op, digest, req).await) })
+            .await
+            .clone();
         // Recorded by now, so a later retry finds it in the database.
         self.front
             .inflight
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
-        out
+        if first == digest {
+            out
+        } else {
+            Err(req::err(ErrCode::Bad, OP_REUSED))
+        }
     }
 
-    /// Runs `req` unless the database already holds this op's answer.
+    /// Runs `req` (whose encoding has `digest`) unless the database already holds this op's
+    /// answer. A row is the 32 bytes of the request's digest and then the answer's encoding
+    /// (`ops.resp` has no column of its own for the digest); one under another digest, or from
+    /// before the digest was added, is not this request's answer.
     // ponytail: the answer is recorded after the op, not in its transaction (the core writes its
     // own): a crash in between runs the op again on retry. Pass the `Tx` through `Core` to close it.
-    async fn once(&self, op: OpId, req: Req) -> Outcome {
+    async fn once(&self, op: OpId, digest: Digest, req: Req) -> Outcome {
         let (store, device) = (&self.daemon.store, self.device);
         match store.read(|c| auth::op_lookup(c, device, op)) {
-            Ok(Some(bytes)) => match codec::decode::<Outcome>(&bytes) {
-                Ok(out) => return out,
-                Err(e) => {
-                    tracing::warn!(%op, %e, "recorded answer unreadable; running the op again")
+            Ok(Some(row)) => match row.split_at_checked(32) {
+                Some((bound, answer)) if bound == digest => {
+                    match codec::decode::<Outcome>(answer) {
+                        Ok(out) => return out,
+                        Err(e) => {
+                            tracing::warn!(%op, %e, "recorded answer unreadable; running the op again")
+                        }
+                    }
                 }
+                _ => return Err(req::err(ErrCode::Bad, OP_REUSED)),
             },
             Ok(None) => {}
             Err(e) => tracing::warn!(%op, %e, "op lookup failed; running the op"),
         }
         let out = req::dispatch(self, req).await;
+        // A "not now" is not the op's answer: remembered, it would be given to every retry for a
+        // day, and the retry is what the desktop makes it for.
+        if matches!(&out, Err(e) if matches!(e.code, ErrCode::Busy | ErrCode::Internal)) {
+            return out;
+        }
         match codec::encode(&out) {
-            Ok(bytes) => {
-                if let Err(e) = store.write(|tx| tx.op_record(device, op, &bytes, now_ms())) {
+            Ok(answer) => {
+                let row = [&digest[..], &answer].concat();
+                if let Err(e) = store.write(|tx| tx.op_record(device, op, &row, now_ms())) {
                     tracing::warn!(%op, %e, "answer not recorded");
                 }
             }

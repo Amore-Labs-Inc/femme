@@ -277,13 +277,15 @@ async fn create(
             no: MAIN,
         };
         if let Err(e) = d.prompt(&pane, &text).await {
-            // The session exists (the desktop sees it in its subscription): say so, with the reason.
-            let mut e = wire(e);
-            e.msg = format!(
-                "session {} was created but its prompt was not delivered: {}",
-                info.sid, e.msg
+            // The session exists (the desktop sees it in its subscription): say so, with the
+            // reason. Always `Conflict`, whatever the reason was: it is remembered with the op, so
+            // a retry is told the same instead of making a second session (`Busy` and `Internal`
+            // are not remembered, and a prompt that goes wrong is often one of them).
+            let why = format!(
+                "session {} was created but its prompt was not delivered: {e}",
+                info.sid
             );
-            return Err(e);
+            return Err(err(ErrCode::Conflict, why));
         }
     }
     Ok(Resp::Session(info.sid))
