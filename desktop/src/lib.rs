@@ -7,6 +7,7 @@ pub mod app;
 pub mod bench;
 pub mod connect;
 pub mod display;
+pub mod net;
 pub mod panels;
 pub mod rng;
 pub mod terminal;
