@@ -6,11 +6,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use femme_client::{Client, Event, Link as Transport};
 use femme_proto::rpc::{Req, Resp, Scope};
 use femme_proto::state::{Entity as Kind, Pane, Row, Session, SessionStatus};
 use femme_proto::{PaneId, Sid};
 use gpui::{Context, Task};
+
+use crate::connect::{self, Connect};
+
+/// How many characters of a tab's label are shown.
+const LABEL: usize = 28;
 
 /// Where the connection stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -146,6 +152,22 @@ impl Model {
         v.into_iter().map(|(_, p)| p).collect()
     }
 
+    /// A tab's label: the title the program gave its terminal, else the pane's own, else
+    /// `<session> · <no>`; cut at [`LABEL`] characters.
+    pub fn tab_label(&self, pane: PaneId, term_title: Option<String>) -> String {
+        let named = |t: Option<String>| t.filter(|t| !t.is_empty());
+        let given =
+            named(term_title).or_else(|| named(self.panes.get(&pane).map(|p| p.title.clone())));
+        let label = given.unwrap_or_else(|| {
+            let session = self.sessions.get(&pane.sid).map(title).unwrap_or_default();
+            format!("{session} · {}", pane.no)
+        });
+        match label.char_indices().nth(LABEL) {
+            Some((end, _)) => format!("{}…", &label[..end]),
+            None => label,
+        }
+    }
+
     /// The nav bar's word for the link.
     pub fn status(&self) -> String {
         match &self.link {
@@ -157,6 +179,44 @@ impl Model {
             Link::Down(why) => format!("offline: {why}"),
         }
     }
+}
+
+/// The nav bar's line: the link, then what to do when QUIC refused this device (the hint names the
+/// command that enrolls it) and the last request that failed.
+pub fn status_line(model: &Model, enroll: &str, error: Option<&str>) -> String {
+    let mut line = model.status();
+    if model.quic_error.is_some() {
+        line.push_str(&format!(" | quic refused this device, enroll it: {enroll}"));
+    }
+    if let Some(e) = error {
+        line.push_str(&format!(" | {e}"));
+    }
+    line
+}
+
+/// A running client and what the shell needs besides it.
+pub struct Started {
+    /// The client; it is already dialling.
+    pub client: Arc<Client>,
+    /// The command that enrolls this device with the daemon, for the hint.
+    pub enroll: String,
+}
+
+/// Starts the client for `c` with this device's identity and a fresh client instance (one per
+/// process: terminals know it across reconnects). Call inside the side runtime: the client spawns
+/// its tasks on it.
+pub fn start(c: &Connect) -> anyhow::Result<Started> {
+    let device = connect::identity(&c.identity)?;
+    let spki = device
+        .spki_sha256()
+        .context("the device certificate has no public key")?;
+    let mut cfg = femme_client::Config::new(device, ulid::Ulid::generate());
+    cfg.quic = c.quic;
+    cfg.ssh_host.clone_from(&c.ssh);
+    Ok(Started {
+        client: Arc::new(Client::start(cfg)),
+        enroll: connect::enroll_line(c.ssh.as_deref(), &spki),
+    })
 }
 
 /// The client of the daemon, as an entity the views observe.
@@ -241,6 +301,11 @@ impl Net {
     /// The side runtime the client lives on.
     pub fn rt(&self) -> tokio::runtime::Handle {
         self.rt.clone()
+    }
+
+    /// The nav bar's line.
+    pub fn status_line(&self) -> String {
+        status_line(&self.model, &self.enroll, self.error.as_deref())
     }
 
     /// Runs `req` on the side runtime. The answer is `None` when the request failed, and the
@@ -446,6 +511,49 @@ mod tests {
         assert_eq!(title(&s), "nightly");
         s.name = Some(String::new());
         assert_eq!(title(&s), "fix the build", "an empty name is no name");
+    }
+
+    #[test]
+    fn tabs_are_named_by_the_program_the_pane_or_the_session() {
+        let mut m = Model::default();
+        let mut s = session(1, 1, 1);
+        s.name = Some("build".into());
+        let mut titled = pane(1, 2, 1);
+        titled.title = "vim".into();
+        m.apply(&changes(vec![
+            Row::Session(s),
+            Row::Pane(pane(1, 1, 1)),
+            Row::Pane(titled),
+        ]));
+        let id = |no| PaneId { sid: Id(1), no };
+        assert_eq!(m.tab_label(id(1), None), "build · 1");
+        assert_eq!(m.tab_label(id(2), None), "vim");
+        assert_eq!(m.tab_label(id(2), Some("htop".into())), "htop");
+        assert_eq!(m.tab_label(id(2), Some(String::new())), "vim");
+        assert_eq!(m.tab_label(id(9), None), "build · 9");
+        let long = "é".repeat(40);
+        assert_eq!(
+            m.tab_label(id(1), Some(long)),
+            format!("{}…", "é".repeat(LABEL))
+        );
+    }
+
+    #[test]
+    fn the_status_line_tells_a_refused_device_how_to_enroll() {
+        let mut m = Model::default();
+        let up = |quic_error| Event::Connected {
+            link: Transport::Ssh,
+            server_version: "1".into(),
+            epoch: 1,
+            quic_error,
+        };
+        m.apply(&up(None));
+        assert_eq!(status_line(&m, "ssh h femmed enroll", None), "ssh");
+        m.apply(&up(Some("unknown device".into())));
+        assert_eq!(
+            status_line(&m, "ssh h femmed enroll", Some("boom")),
+            "ssh | quic refused this device, enroll it: ssh h femmed enroll | boom"
+        );
     }
 
     #[test]
