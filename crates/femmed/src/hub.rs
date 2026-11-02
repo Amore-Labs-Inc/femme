@@ -172,6 +172,7 @@ impl Hub {
                     scope,
                     rev,
                     rows: vec![],
+                    reset: false,
                 })
                 .await;
         }
@@ -182,6 +183,7 @@ impl Hub {
                 scope,
                 rev: if rest.is_empty() { rev } else { chunk_rev },
                 rows,
+                reset: false,
             };
             if tx.send(msg).await.is_err() {
                 return Err("client gone".into());
@@ -269,6 +271,7 @@ impl Hub {
                     scope,
                     rev,
                     rows: rows.clone(),
+                    reset: false,
                 }) {
                     Ok(()) => sub.rev_sent = sub.rev_sent.max(rev),
                     Err(mpsc::error::TrySendError::Full(_)) => {
@@ -307,6 +310,7 @@ impl Hub {
             scope,
             rev,
             rows: b.rows,
+            reset: false,
         });
         let mut g = self.inner.lock().unwrap();
         if let Some(s) = g

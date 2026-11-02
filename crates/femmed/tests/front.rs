@@ -224,7 +224,7 @@ impl Desktop {
             .await
             .expect("events stream")
         {
-            Some(S2C::Changes { scope, rev, rows }) => (scope, rev, rows),
+            Some(S2C::Changes { scope, rev, rows, .. }) => (scope, rev, rows),
             other => panic!("expected changes, got {other:?}"),
         }
     }

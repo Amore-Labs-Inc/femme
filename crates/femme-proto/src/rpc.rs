@@ -162,8 +162,17 @@ pub enum S2C {
         op: OpId,
         result: Result<Resp, Err>,
     },
-    /// Rows newer than the subscriber's cursor; `rev` is the highest rev included.
-    Changes { scope: Scope, rev: u64, rows: Vec<Row> },
+    /// Rows newer than the subscriber's cursor; `rev` is the highest rev included. `reset`: the
+    /// cursor could not be honoured (older than the tombstone horizon, or ahead of the database),
+    /// so `rows` are the scope's full set and the subscriber drops its copy of the scope before
+    /// applying them; a scope the daemon no longer has (a purged session) comes as an empty reset.
+    /// Only the first message of a backlog carries it.
+    Changes {
+        scope: Scope,
+        rev: u64,
+        rows: Vec<Row>,
+        reset: bool,
+    },
     /// Streaming text of an in-progress item (never persisted as such).
     Delta {
         sid: Sid,
