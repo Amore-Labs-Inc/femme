@@ -236,6 +236,12 @@ impl Sessions {
     }
 }
 
+/// A session the daemon lost: no holder to reach, or one it could not take over again.
+fn interrupted(s: &mut Session) {
+    s.status = SessionStatus::Interrupted;
+    s.attention = Attention::None;
+}
+
 /// `name` as an absolute path: itself when it has a slash, else the first match on `path`.
 pub(crate) fn find_on_path(name: &str, path: &str) -> Option<String> {
     if name.contains('/') {
@@ -513,7 +519,11 @@ impl Daemon {
             match Holder::connect(&self.sessions.dirs, s.id).await {
                 Ok(h) if managed => match headless::reattach(self, &s, h).await {
                     Ok(()) => tracing::info!(sid = %s.id, "headless session reattached"),
-                    Err(e) => tracing::warn!(sid = %s.id, %e, "headless session not reattached"),
+                    Err(e) => {
+                        // No actor will drive it: its row must not go on saying `working`.
+                        let _ = self.update(s.id, interrupted);
+                        tracing::warn!(sid = %s.id, %e, "headless session not reattached");
+                    }
                 },
                 Ok(h) if h.info.panes.iter().any(|p| p.no == MAIN && p.alive) => {
                     match self.adopt(h, s.id).await {
@@ -527,10 +537,7 @@ impl Daemon {
                     tracing::info!(sid = %s.id, "session's pane had exited; closed");
                 }
                 Err(_) if s.status != SessionStatus::Interrupted => {
-                    let _ = self.update(s.id, |s| {
-                        s.status = SessionStatus::Interrupted;
-                        s.attention = Attention::None;
-                    });
+                    let _ = self.update(s.id, interrupted);
                     tracing::warn!(sid = %s.id, "no holder; session interrupted");
                 }
                 Err(_) => {}
