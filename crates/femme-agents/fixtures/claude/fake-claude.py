@@ -3,6 +3,7 @@
 # speaks (shapes copied from crates/femme-agents/fixtures/claude). TUI (no `-p`): the bash fake
 # from tests/session.rs, reporting through the hooks. Prompts it understands, in either mode:
 #   ask    asks a question (options a / b) and waits for the answer
+#   ask2   headless only: asks two in one request ("Which?" a / b, "Second?" x / y), waits for both
 #   slow   50 lines 200 ms apart (an interrupt or a restart can land inside)
 #   quit   exits 0 mid-turn        crash   exits 1 with text on stderr
 #   <any>  replies "echo: <any>", with a 100 ms pause mid-turn
@@ -208,10 +209,13 @@ def control(v):
     return None
 
 
-def ask(u):
+def ask(u, two=False):
     tid, rid = f"toolu_{uid()[:8]}", uid()
     questions = [{"question": "Which?", "header": "Which", "options": [{"label": "a", "description": "Option a"},
                                                                        {"label": "b", "description": "Option b"}], "multiSelect": False}]
+    if two:
+        questions.append({"question": "Second?", "header": "Second", "options": [{"label": "x"}, {"label": "y"}],
+                          "multiSelect": False})
     mid = f"msg_{uid()[:8]}"
     out({"type": "assistant", "message": {"model": MODEL, "id": mid, "type": "message", "role": "assistant",
          "content": [{"type": "tool_use", "id": tid, "name": "AskUserQuestion", "input": {"questions": questions}}],
@@ -231,9 +235,11 @@ def ask(u):
             return False
     if r.get("behavior") == "allow":
         answers = r.get("updatedInput", {}).get("answers", {})
-        chosen = ", ".join(answers.values()) or "nothing"
+        given = [(q["question"], answers[q["question"]]) for q in questions if q["question"] in answers]  # in the order asked
+        chosen = ", ".join(a for _, a in given) or "nothing"
+        said = ", ".join(f'"{q}"="{a}"' for q, a in given)
         out({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid,
-             "content": f"Your questions have been answered: \"Which?\"=\"{chosen}\". You can now continue with these answers in mind."}]},
+             "content": f"Your questions have been answered: {said}. You can now continue with these answers in mind."}]},
              "parent_tool_use_id": None, "session_id": SID, "uuid": uid(),
              "tool_use_result": {"questions": questions, "answers": answers}})
     else:
@@ -259,8 +265,8 @@ def turn(v):
         sys.stderr.write("fake claude: crash\n")
         sys.stderr.flush()
         sys.exit(1)
-    if word == "ask":
-        ok = ask(u)
+    if word in ("ask", "ask2"):
+        ok = ask(u, word == "ask2")
     elif word == "slow":
         ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u)
     else:

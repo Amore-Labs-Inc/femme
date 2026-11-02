@@ -242,6 +242,53 @@ fn the_fake_claude_drives_every_path_the_daemon_uses() {
         "second answer must be refused"
     );
 
+    // 2b. two questions in one request: the first answer alone writes nothing, the second sends
+    // the one response, with both answers in the order asked
+    rig.driver
+        .prompt("ask2", PromptHow::Queue, &mut rig.out)
+        .unwrap();
+    rig.flush();
+    let ev = rig.until("two questions", |e| {
+        e.iter()
+            .filter(|x| matches!(x, AgentEvent::QuestionAsked { .. }))
+            .count()
+            == 2
+    });
+    let qs: Vec<_> = ev
+        .iter()
+        .filter_map(|x| match x {
+            AgentEvent::QuestionAsked { q, .. } => Some(q.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        qs.iter().map(|q| q.prompt.as_str()).collect::<Vec<_>>(),
+        ["Which?", "Second?"]
+    );
+    rig.driver
+        .answer(&qs[0].request_id, &Answer::Option(0), &mut rig.out)
+        .unwrap();
+    assert!(rig.out.stdin.is_empty(), "one part of two is not sent");
+    rig.driver
+        .answer(&qs[1].request_id, &Answer::Option(1), &mut rig.out)
+        .unwrap();
+    rig.flush();
+    let ev = rig.until("both answered", |e| {
+        has(e, |x| matches!(x, AgentEvent::TurnEnded { .. }))
+    });
+    assert!(
+        has(
+            &ev,
+            |x| matches!(x, AgentEvent::ItemCompleted { kind: ItemKind::AssistantMessage, body, .. } if body["text"] == "you chose: a, y")
+        ),
+        "{ev:#?}"
+    );
+    assert_eq!(
+        completed(&ev, ItemKind::Question).len(),
+        2,
+        "each part ends Answered: {ev:#?}"
+    );
+
     // 3. slow + interrupt mid-stream
     rig.driver
         .prompt("slow", PromptHow::Queue, &mut rig.out)
