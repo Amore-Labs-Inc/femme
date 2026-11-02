@@ -1,0 +1,18 @@
+[package]
+name = "femme-agents"
+description = "Sans-IO drivers for Claude Code, Codex and Pi headless protocols, plus the hook/notify glue that reports agent status from PTY mode."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+femme-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Codex hook trust hashes (hooks.rs); same version femmed already uses.
+sha2 = "0.10"
+
+[dev-dependencies]
+proptest.workspace = true
