@@ -116,15 +116,14 @@ async fn carry_out(
             resume_at,
             note,
         } => {
-            // worker.sh sent Esc; a headless agent is interrupted through its driver.
+            // worker.sh sent Esc; a headless agent is interrupted through its driver. One that
+            // refuses (replaying, switching mode, starting) leaves the issue as it is: while the
+            // agent works over the cap the next pass plans the pause again.
             if let Some(s) = agent_of(issue) {
-                let r = if s.mode == Mode::Headless {
-                    d.interrupt(s.sid).await
+                if s.mode == Mode::Headless {
+                    d.interrupt(s.sid).await?;
                 } else {
-                    d.input(&pane_of(s), b"\x1b").await
-                };
-                if let Err(e) = r {
-                    tracing::warn!(issue, %e, "scheduler: agent not interrupted");
+                    d.input(&pane_of(s), b"\x1b").await?;
                 }
             }
             patch(d, issue, |i| {
@@ -236,5 +235,70 @@ fn pane_of(s: &SessionInfo) -> PaneRef {
         machine: s.machine.clone(),
         handle: s.handle.clone(),
         no: MAIN,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use femme_proto::state::{Attention, Session, SessionStatus};
+    use femme_proto::Id;
+
+    #[tokio::test]
+    async fn a_pause_whose_interrupt_is_refused_leaves_the_issue_working_for_the_next_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::from_vars([("HOME".to_string(), dir.path().display().to_string())]);
+        cfg.state_dir = dir.path().join("state");
+        let d = Daemon::open(cfg).unwrap();
+        // A headless session nothing drives (no actor, as while a reattach fails): `Busy`.
+        let sid = d
+            .write(|tx, _| {
+                Ok(tx
+                    .insert_session(&Session {
+                        id: Id(0),
+                        handle: String::new(),
+                        rev: 0,
+                        name: None,
+                        owner: "issue:1".into(),
+                        agent: Agent::Claude,
+                        mode: Mode::Headless,
+                        cwd: "/".into(),
+                        label: None,
+                        agent_sid: None,
+                        model: None,
+                        status: SessionStatus::Working,
+                        attention: Attention::None,
+                        created: 0,
+                        closed: None,
+                    })?
+                    .id)
+            })
+            .unwrap();
+        let issue = d.issue_create("o/r", "t", "b").await.unwrap();
+        patch(&d, issue.id, |i| {
+            i.status = IssueStatus::Working;
+            i.session = Some(sid);
+        })
+        .unwrap();
+        let (issues, sessions) = (d.issues().await.unwrap(), d.terminals().await.unwrap());
+        let pause = || Action::Pause {
+            issue: issue.id,
+            resume_at: 5,
+            note: "over".into(),
+        };
+
+        assert_eq!(
+            carry_out(&d, pause(), &issues, &sessions).await,
+            Err(CoreError::Busy)
+        );
+        assert_eq!(d.issues().await.unwrap()[0].status, IssueStatus::Working);
+        // an issue with no agent to stop is paused all the same
+        carry_out(&d, pause(), &issues, &[]).await.unwrap();
+        let paused = &d.issues().await.unwrap()[0];
+        assert_eq!(
+            (paused.status, paused.resume_at),
+            (IssueStatus::Paused, Some(5))
+        );
     }
 }
