@@ -1,0 +1,137 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "87648a58-b521-43fc-b06e-31414d1786d3",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Run `sleep 5` with your Bash tool, then reply with the single word first."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+      "kind": "ToolCall",
+      "preview": "Bash"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+      "body": {
+        "call_id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+        "input": {
+          "command": "sleep 5",
+          "description": "Sleep for 5 seconds"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 33.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+        "input": {
+          "command": "sleep 5",
+          "description": "Sleep for 5 seconds"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+        "is_error": false,
+        "output": "(Bash completed with no output)"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000002-0000-4000-8000-000000000002",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Also, after that, reply with the single word second."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvJD2RbK3ki6viVTo3j:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvJD2RbK3ki6viVTo3j:1",
+      "text": "first"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvJD2RbK3ki6viVTo3j:1",
+      "text": "\n\nsecond"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvJD2RbK3ki6viVTo3j:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "first\n\nsecond"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 34.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 4,
+        "output": 369,
+        "cache_read": 54216,
+        "cache_write": 25812
+      },
+      "duration_ms": 9932
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

@@ -1,0 +1,3 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run `sleep 5` with your Bash tool, then reply with the single word first."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Also, after that, reply with the single word second."}]},"uuid":"00000002-0000-4000-8000-000000000002"}
