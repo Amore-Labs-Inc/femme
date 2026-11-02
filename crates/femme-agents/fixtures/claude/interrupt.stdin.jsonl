@@ -1,0 +1,4 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Write the numbers from 1 to 400, one per line, nothing else."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"control_request","request_id":"femme-int-1","request":{"subtype":"interrupt"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word ok."}]},"uuid":"00000002-0000-4000-8000-000000000002"}

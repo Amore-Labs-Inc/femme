@@ -1,0 +1,3 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Call the EnterPlanMode tool now, then in plan mode write a one-line plan 'create hello.txt' and call ExitPlanMode with it. After approval just say done (do not create anything)."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"control_response","response":{"subtype":"success","request_id":"deab25a3-3557-44dc-91fe-d31d30be358c","response":{"behavior":"allow","updatedInput":{"plan":"create hello.txt\n","planFilePath":"/home/user/.claude/plans/smooth-skipping-fountain.md"}}}}

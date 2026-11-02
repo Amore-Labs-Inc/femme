@@ -1,0 +1,145 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "1bbc1306-d6f6-4e6d-bc2e-e3c875c7b526",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000002-0000-4000-8000-000000000002",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "What did I ask you to do in my previous message, and did it finish? Answer in one short sentence."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "You"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " asked me to run a 40"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "-second"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " Python sleep and reply \""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "done\"; the s"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "leep was"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " interrupted with"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " an unknown outcome,"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " so it's"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " uncon"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "firmed and I never"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " sent the"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": " re"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "text": "ply."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvMRsBYq71BAUmaCaWx:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "You asked me to run a 40-second Python sleep and reply \"done\"; the sleep was interrupted with an unknown outcome, so it's unconfirmed and I never sent the reply."
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 36.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 2,
+        "output": 185,
+        "cache_read": 38038,
+        "cache_write": 1798
+      },
+      "duration_ms": 2018
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

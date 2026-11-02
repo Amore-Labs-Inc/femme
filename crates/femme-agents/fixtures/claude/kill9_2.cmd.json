@@ -1,0 +1,19 @@
+{
+ "argv": [
+  "claude",
+  "-p",
+  "--input-format=stream-json",
+  "--output-format=stream-json",
+  "--verbose",
+  "--include-partial-messages",
+  "--replay-user-messages",
+  "--permission-mode=bypassPermissions",
+  "--permission-prompt-tool=stdio",
+  "--model=claude-haiku-5-5",
+  "--resume=1bbc1306-d6f6-4e6d-bc2e-e3c875c7b526"
+ ],
+ "env": {
+  "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"
+ },
+ "exit": 0
+}

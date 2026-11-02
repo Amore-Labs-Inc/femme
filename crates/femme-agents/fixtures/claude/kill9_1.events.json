@@ -1,0 +1,49 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "1bbc1306-d6f6-4e6d-bc2e-e3c875c7b526",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Run `python3 -c 'import time; time.sleep(40)'` with your Bash tool, then reply with the single word done."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01Dk4RUDHmKqN1KVbDKpdscV",
+      "kind": "ToolCall",
+      "preview": "Bash"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01Dk4RUDHmKqN1KVbDKpdscV",
+      "body": {
+        "call_id": "toolu_01Dk4RUDHmKqN1KVbDKpdscV",
+        "input": {
+          "command": "python3 -c 'import time; time.sleep(40)'",
+          "description": "Sleep 40 seconds via Python"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 35.0,
+      "resets_at": 1793617200
+    }
+  }
+]
