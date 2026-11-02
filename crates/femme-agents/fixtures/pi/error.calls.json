@@ -1,0 +1,30 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": null,
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "Queue"
+  }
+ ],
+ "stdin_at": [
+  0,
+  0
+ ]
+}

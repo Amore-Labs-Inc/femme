@@ -1,0 +1,206 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bc5-a2a7-7762-a5f9-2cc52c204d93",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12513",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Count slowly from 1 to 50."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o12793:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "1\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "2\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "3\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "4\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "5\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "6\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "7\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "8\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "9\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "10\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "11\n"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12793:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "Interrupted",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "duration_ms": 2127
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o24213",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o24501:0",
+      "kind": "Thinking",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o24501:0",
+      "text": "The user wants "
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o24501:0",
+      "text": "the word ok."
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o24501:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o24501:1",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o24501:0",
+      "kind": "Thinking",
+      "status": "Completed",
+      "body": {
+        "text": "The user wants the word ok."
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o24501:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 230,
+        "output": 7,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 13
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

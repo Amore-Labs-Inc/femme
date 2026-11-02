@@ -1,0 +1,43 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a",
+  "--session-id",
+  "01a19bac-7f26-747d-a504-ccfa15f7aa9a"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": "01a19bac-7f26-747d-a504-ccfa15f7aa9a"
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 1,
+   "call": "raw",
+   "line": {
+    "id": "k-get_messages",
+    "type": "get_messages"
+   }
+  },
+  {
+   "at": 2,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "Queue"
+  }
+ ],
+ "stdin_at": [
+  0,
+  1,
+  2
+ ]
+}

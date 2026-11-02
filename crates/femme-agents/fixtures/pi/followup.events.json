@@ -1,0 +1,140 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bac-57e3-7743-97fd-3d7e46bc9dfa",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12513",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Count slowly from 1 to 8."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o12791:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "1\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "2\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "3\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "4\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "5\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "6\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "7\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "8\n"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12791:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "1\n2\n3\n4\n5\n6\n7\n8\n"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o17016",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Then say FOLLOWUP."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o17280:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o17280:0",
+      "text": "FOLLOWUP"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o17280:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "FOLLOWUP"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 1260,
+        "output": 6,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 1647
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

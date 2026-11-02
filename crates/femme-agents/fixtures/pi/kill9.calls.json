@@ -1,0 +1,32 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": null
+ },
+ "exit": null,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Count slowly from 1 to 50.",
+   "how": "Queue"
+  }
+ ],
+ "stdin_at": [
+  0,
+  0
+ ]
+}

@@ -1,0 +1,48 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Count slowly from 1 to 50.",
+   "how": "Queue"
+  },
+  {
+   "at": 16,
+   "call": "prompt",
+   "text": "Stop counting and say STEERED.",
+   "how": "Steer"
+  },
+  {
+   "at": 21,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "InterruptThenSend"
+  }
+ ],
+ "stdin_at": [
+  0,
+  0,
+  16,
+  21,
+  21,
+  28
+ ]
+}
