@@ -1,0 +1,53 @@
+[package]
+name = "femme-holder"
+description = "One process per session: owns PTY panes, the emulator, and the headless agent's pipes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The library is the part `femmed` shares with the holder: file locations, socket framing and the
+# snapshot format. femmed should depend on it with `default-features = false`, which leaves out
+# the emulator, PTY and CLI dependencies the binary needs.
+[lib]
+name = "femme_holder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "femme-holder"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[[test]]
+name = "holder"
+path = "tests/holder.rs"
+required-features = ["bin"]
+
+[features]
+default = ["bin"]
+bin = [
+    "dep:femme-term",
+    "dep:pty-process",
+    "dep:rustix",
+    "dep:sd-notify",
+    "dep:clap",
+    "dep:anyhow",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
+
+[dependencies]
+femme-proto.workspace = true
+serde.workspace = true
+postcard.workspace = true
+tokio.workspace = true
+femme-term = { workspace = true, optional = true }
+pty-process = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true }
+sd-notify = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
