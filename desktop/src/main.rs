@@ -96,8 +96,15 @@ fn main() -> anyhow::Result<()> {
         println!("{}", connect::show(flags, cli.identity)?);
         return Ok(());
     }
+    // A benchmark measures the synthetic panes: a daemon that only the environment or the env file
+    // names is not its business (`run` refuses `--bench` with a `--daemon` or `--ssh` flag).
+    let connect = if cli.bench.is_some() && flags.daemon.is_none() && flags.ssh.is_none() {
+        None
+    } else {
+        connect::load(flags, cli.identity)?
+    };
     femme_desktop::run(Config {
-        connect: connect::load(flags, cli.identity)?,
+        connect,
         bench: cli.bench,
         panes: cli.panes,
         rows: cli.rows,
