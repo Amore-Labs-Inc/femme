@@ -9,7 +9,7 @@
 //! [`daemon::Daemon`] is the [`core::Core`] over the store ([`cli`]'s `serve` builds it and calls
 //! [`serve`]); [`session`] runs sessions in holders (PTY mode); [`headless`] drives agents through
 //! their pipes, one actor per session; [`takeover`] is the switch between the two; [`worker`] is
-//! the scheduler's loop. The QUIC front is still to come.
+//! the scheduler's loop; [`front`] is the desktop's way in (QUIC, and the unix socket behind `femmed proxy`).
 
 pub mod cli;
 pub mod compat;
@@ -18,6 +18,7 @@ pub mod core;
 #[cfg(any(test, feature = "test-util"))]
 pub mod core_fake;
 pub mod daemon;
+pub mod front;
 mod headless;
 pub mod holder_client;
 pub mod hub;

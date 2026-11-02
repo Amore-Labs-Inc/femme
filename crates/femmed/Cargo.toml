@@ -21,6 +21,7 @@ test-util = []
 femme-proto.workspace = true
 femme-store.workspace = true
 femme-agents.workspace = true
+femme-transport.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 axum.workspace = true
@@ -42,6 +43,8 @@ async-trait = "0.1"
 thiserror.workspace = true
 
 [dev-dependencies]
+# The desktop's side of the wire in tests/front.rs: `RowCache` applies the frames the front relays.
+femme-term.workspace = true
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }

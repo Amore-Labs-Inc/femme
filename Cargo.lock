@@ -797,6 +797,8 @@ dependencies = [
  "femme-agents",
  "femme-proto",
  "femme-store",
+ "femme-term",
+ "femme-transport",
  "futures",
  "hdrhistogram",
  "reqwest",
