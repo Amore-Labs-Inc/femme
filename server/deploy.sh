@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."  # the checkout root: .env and every path below are rela
   git reset -q --hard "$new"
   what=$(git log -1 --format='%h %s')
   report null "deploying $what"
-  if out=$(HERDR_VERSION=$(herdr --version | cut -d' ' -f2) ./server/bootstrap.sh 2>&1); then
+  if out=$(HERDR_VERSION=$(herdr --version 2>/dev/null | cut -d' ' -f2) ./server/bootstrap.sh 2>&1); then
     report true "deployed $what"
   else
     report false "$what failed to deploy (full log: journalctl --user -u femme-deploy)
