@@ -1,0 +1,22 @@
+[package]
+name = "femme-client"
+description = "The desktop's network layer: a tokio client of the daemon's front (QUIC, SSH stdio mux as the fallback). No GUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+femme-proto.workspace = true
+femme-transport.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+ulid.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The real daemon and its front, in process: what the tests talk to.
+femmed = { path = "../femmed" }
+femme-term.workspace = true
+femme-store.workspace = true
+tempfile = "3"
+tracing-subscriber.workspace = true

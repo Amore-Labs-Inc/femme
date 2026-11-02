@@ -706,6 +706,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "femme-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "femme-proto",
+ "femme-store",
+ "femme-term",
+ "femme-transport",
+ "femmed",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "femme-holder"
 version = "0.1.0"
 dependencies = [
