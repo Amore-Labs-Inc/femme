@@ -18,7 +18,9 @@ pub fn holder_bin() -> PathBuf {
         let femmed = PathBuf::from(env!("CARGO_BIN_EXE_femmed"));
         let dir = femmed.parent().unwrap();
         let bin = dir.join("femme-holder");
-        if !bin.is_file() {
+        // Always built (a no-op when fresh): the suites spawn this binary, and a stale one once
+        // ran a whole audit against an older wire format.
+        {
             let st = std::process::Command::new(env!("CARGO"))
                 .args([
                     "build",
