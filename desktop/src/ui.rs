@@ -100,10 +100,13 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> State
 
 /// `button.dark`: inverse of [`button`], also used for the selected tab.
 pub fn button_dark(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    // ponytail: hover recolours the background only. gpui takes the label's colour from the last
+    // mouse move and the background from the live hit test, and after a key press they disagree:
+    // a hover text colour left ink on ink under a pointer that had not moved.
     button_box(id, label)
         .bg(INK)
         .text_color(PAPER)
-        .hover(|s| s.bg(HOVER).text_color(INK))
+        .hover(|s| s.bg(HOVER))
 }
 
 /// `.st`: status pill, VT323 18px with a currentColor border.
