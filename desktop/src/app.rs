@@ -253,6 +253,8 @@ struct Live {
     active: Option<PaneId>,
     /// A session this shell just created: its first pane is shown as soon as the daemon lists it.
     fresh: Option<Sid>,
+    /// The tab "close" asked the daemon to close: when it goes, the keyboard moves to the next tab.
+    closing: Option<PaneId>,
 }
 
 /// The shell view.
@@ -295,6 +297,7 @@ impl FemmeApp {
             terms: BTreeMap::new(),
             active: None,
             fresh: None,
+            closing: None,
         });
         // With a daemon the panes are its own: no synthetic ones.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
@@ -376,6 +379,10 @@ impl FemmeApp {
         let fresh = live
             .fresh
             .and_then(|sid| tabs.iter().copied().find(|p| p.sid == sid));
+        let closed = live.closing.filter(|p| !tabs.contains(p));
+        if closed.is_some() {
+            live.closing = None;
+        }
         if fresh.is_some() {
             live.fresh = None;
             live.active = fresh;
@@ -390,7 +397,9 @@ impl FemmeApp {
                 live.terms.insert(*p, term);
             }
         }
-        if let Some(term) = fresh.and_then(|p| live.terms.get(&p)) {
+        // The keyboard goes to a new session's terminal, and on to the next one when a tab is closed.
+        let refocus = fresh.or_else(|| closed.and(live.active));
+        if let Some(term) = refocus.and_then(|p| live.terms.get(&p)) {
             window.focus(&term.focus_handle(cx), cx);
         }
         cx.notify();
@@ -456,8 +465,9 @@ impl FemmeApp {
 
     /// "close": the tab on show goes, with its session when it is the session's only pane.
     fn close_tab(&mut self, cx: &mut Context<Self>) {
-        let Some(live) = &self.live else { return };
+        let Some(live) = &mut self.live else { return };
         let Some(p) = live.active else { return };
+        live.closing = Some(p);
         let siblings = live
             .net
             .read(cx)
@@ -471,7 +481,19 @@ impl FemmeApp {
         } else {
             Req::PaneClose { pane: p }
         };
-        live.net.update(cx, |n, cx| n.run(req, cx)).detach();
+        let sent = live.net.update(cx, |n, cx| n.run(req, cx));
+        // A refused close leaves the tab where it is: nothing to follow.
+        cx.spawn(async move |this, cx| {
+            if sent.await.is_none() {
+                this.update(cx, |t, _| {
+                    if let Some(l) = &mut t.live {
+                        l.closing = None;
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
