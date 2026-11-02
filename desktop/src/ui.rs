@@ -71,8 +71,8 @@ pub fn dialog() -> Div {
     d
 }
 
-/// `button`: VT323 20px label in a paper box, pink on hover.
-pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+/// The box both buttons share; each sets its own hover style, since gpui allows exactly one.
+fn button_box(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     ruled(
         div()
             .id(id)
@@ -82,20 +82,25 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> State
             .justify_center()
             .h(px(34.))
             .px(px(10.))
-            .bg(PAPER)
-            .text_color(INK)
             .font_family(FONT_PIXEL)
             .text_size(BTN_SIZE)
             .line_height(relative(1.))
             .cursor_pointer(),
     )
-    .hover(|s| s.bg(HOVER))
     .child(label.into())
+}
+
+/// `button`: VT323 20px label in a paper box, pink on hover.
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    button_box(id, label)
+        .bg(PAPER)
+        .text_color(INK)
+        .hover(|s| s.bg(HOVER))
 }
 
 /// `button.dark`: inverse of [`button`], also used for the selected tab.
 pub fn button_dark(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    button(id, label)
+    button_box(id, label)
         .bg(INK)
         .text_color(PAPER)
         .hover(|s| s.bg(HOVER).text_color(INK))
