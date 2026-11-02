@@ -1,0 +1,2 @@
+{"id":"f1","type":"get_state"}
+{"id":"f2","type":"prompt","message":"Run `echo hi` with your shell tool and then say done."}

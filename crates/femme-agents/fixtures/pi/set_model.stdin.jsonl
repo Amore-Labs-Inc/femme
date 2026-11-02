@@ -1,0 +1,4 @@
+{"id":"f1","type":"get_state"}
+{"id":"f2","type":"prompt","message":"Reply with the single word ok."}
+{"id":"f3","type":"set_model","provider":"mock","modelId":"mock-b"}
+{"id":"f4","type":"prompt","message":"Reply with the single word ok."}

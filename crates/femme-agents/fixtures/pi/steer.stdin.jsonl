@@ -1,0 +1,3 @@
+{"id":"f1","type":"get_state"}
+{"id":"f2","type":"prompt","message":"Count slowly from 1 to 12."}
+{"id":"f3","type":"prompt","message":"Stop counting and say STEERED.","streamingBehavior":"steer"}

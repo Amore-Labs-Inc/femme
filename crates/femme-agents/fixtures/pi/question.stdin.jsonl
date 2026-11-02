@@ -1,0 +1,3 @@
+{"id":"f1","type":"get_state"}
+{"id":"f2","type":"prompt","message":"Ask me to pick a color."}
+{"type":"extension_ui_response","id":"63dce6fd-dc6c-4529-945d-2c3bbf9648ea","value":"blue"}

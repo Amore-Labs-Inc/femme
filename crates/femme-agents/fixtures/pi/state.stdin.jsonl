@@ -1,0 +1,9 @@
+{"id":"f1","type":"get_state"}
+{"id":"s-get_available_models","type":"get_available_models"}
+{"id":"s-get_session_stats","type":"get_session_stats"}
+{"id":"s-get_messages","type":"get_messages"}
+{"id":"f2","type":"prompt","message":"Reply with the single word ok."}
+{"id":"s2-get_state","type":"get_state"}
+{"id":"s2-get_messages","type":"get_messages"}
+{"id":"s2-get_session_stats","type":"get_session_stats"}
+{"id":"s2-get_last_assistant_text","type":"get_last_assistant_text"}
