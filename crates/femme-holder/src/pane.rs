@@ -809,10 +809,13 @@ impl Pane {
         }
     }
 
-    /// A resent input (`seq` already accepted from this client) is dropped. `seq` 0 is untracked
-    /// input (the compat layer's `/input`): always written, never deduped.
+    /// A resent input (`seq` already accepted from this client, on this view or on another one it
+    /// still has, like the connection it is leaving) is dropped. `seq` 0 is untracked input (the
+    /// compat layer's `/input`): always written, never deduped.
     fn stale(&self, i: usize, seq: u32) -> bool {
-        seq != 0 && seq <= self.views[i].queued_seq
+        let v = &self.views[i];
+        let known = self.seqs.get(&v.client).map_or(0, |e| e.0).max(v.queued_seq);
+        seq != 0 && seq <= known
     }
 
     fn input(&mut self, i: usize, seq: u32, bytes: &[u8], recv_ns: u64) {

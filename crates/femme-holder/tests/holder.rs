@@ -724,6 +724,34 @@ fn input_seq_survives_a_reconnect_of_the_same_client() {
 }
 
 #[test]
+fn a_resend_on_another_live_view_of_the_same_client_is_dropped() {
+    let h = Holder::start();
+    let mut ctl = h.ctl();
+    ctl.spawn_pty(0, &["cat"]);
+    let client = 0xC0FFEE;
+    let mut old = h.view_as(0, 0, 0, client);
+    old.key(1, 'p');
+    old.until_echo(1);
+
+    // A reconnect while the old connection still delivers: the new view starts from the client's seq...
+    let mut new = h.view_as(0, 0, 0, client);
+    assert!(new.pump(LONG, |v| !v.frames.is_empty()));
+    assert_eq!(new.last().applied_seq, 1);
+    new.key(2, 'q');
+    new.until_echo(2);
+    // ...a seq arriving late on the old view is not typed twice, and one the old view applied after
+    // the new one attached is not typed again by the new view.
+    old.key(2, 'X');
+    old.key(3, 'r');
+    old.until_echo(3);
+    new.key(3, 'Y');
+    new.key(4, 's');
+    new.until_echo(4);
+    let screen = ctl.screen(0);
+    assert!(screen.contains("pqrs") && !screen.contains('X') && !screen.contains('Y'), "screen: {screen:?}");
+}
+
+#[test]
 fn keystroke_to_frame_latency() {
     let h = Holder::start();
     let mut ctl = h.ctl();
