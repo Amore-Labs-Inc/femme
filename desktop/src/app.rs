@@ -7,21 +7,27 @@
 //! instead of rebuilding them. Only the shell itself (cheap: a few dozen divs) and the pane views
 //! re-render per frame.
 
+use std::collections::BTreeMap;
 #[cfg(feature = "bench")]
 use std::time::Duration;
 
+use femme_proto::rpc::{Req, Resp};
+use femme_proto::state::{Agent, Mode};
+use femme_proto::{PaneId, Sid};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, relative, size, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
+    div, px, relative, size, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _, Render,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Task, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::{h_resizable, resizable_panel, v_resizable, Root};
 
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
-use crate::panels::{palette, Composer, RightPanel, Sidebar};
+use crate::connect::Connect;
+use crate::net::{Net, Started};
+use crate::panels::{palette, Composer, OpenSession, RightPanel, Sidebar};
 use crate::terminal::{SourceKind, TerminalPane};
 use crate::theme::{self, BODY_SIZE, FONT_BRAND, FONT_UI, INK, NEON, PAPER};
 use crate::transcript::TranscriptView;
@@ -93,6 +99,8 @@ pub struct Config {
     pub seed: u64,
     /// Requested window size in logical pixels (a compositor may override it).
     pub window: (f32, f32),
+    /// The daemon to show; `None` runs on synthetic panes and mock sessions.
+    pub connect: Option<Connect>,
 }
 
 impl Default for Config {
@@ -107,6 +115,7 @@ impl Default for Config {
             target_ms: None,
             seed: 1,
             window: (1440., 900.),
+            connect: None,
         }
     }
 }
@@ -130,8 +139,8 @@ impl Config {
 ///
 /// The display comes from [`crate::display::place`] (`FEMME_DISPLAY`, built-in by default). A benchmark
 /// window is not focused and the app is not activated, so it never takes the keyboard from whoever
-/// is working.
-pub fn open(cfg: Config, rt: tokio::runtime::Handle, cx: &mut App) {
+/// is working. `started` is the client of the daemon when `cfg.connect` asked for one.
+pub fn open(cfg: Config, rt: tokio::runtime::Handle, started: Option<Started>, cx: &mut App) {
     let bench = cfg.bench.is_some();
     let place = crate::display::place(cx, size(px(cfg.window.0), px(cfg.window.1)));
     let opts = WindowOptions {
@@ -152,7 +161,7 @@ pub fn open(cfg: Config, rt: tokio::runtime::Handle, cx: &mut App) {
         ..Default::default()
     };
     cx.open_window(opts, |window, cx| {
-        let app = cx.new(|cx| FemmeApp::new(cfg, rt, window, cx));
+        let app = cx.new(|cx| FemmeApp::new(cfg, rt, started, window, cx));
         window.focus(&app.read(cx).focus.clone(), cx);
         cx.new(|cx| Root::new(app, window, cx))
     })
@@ -231,6 +240,21 @@ fn bench_task(
     })
 }
 
+/// Terminals attached at start, all of them, up to this many panes; past it only the tab on show
+/// has one (every attached terminal is a stream the daemon keeps feeding).
+const EAGER: usize = 8;
+
+/// The shell on a daemon: what the sidebar and the drawer show of it.
+struct Live {
+    net: Entity<Net>,
+    /// The terminals of the panes that have a tab, attached once and kept while the pane lives.
+    terms: BTreeMap<PaneId, Entity<TerminalPane>>,
+    /// The tab on show.
+    active: Option<PaneId>,
+    /// A session this shell just created: its first pane is shown as soon as the daemon lists it.
+    fresh: Option<Sid>,
+}
+
 /// The shell view.
 pub struct FemmeApp {
     cfg: Config,
@@ -246,6 +270,8 @@ pub struct FemmeApp {
     show_right: bool,
     show_drawer: bool,
     palette_open: bool,
+    live: Option<Live>,
+    _subs: Vec<Subscription>,
     _bench: Option<Task<()>>,
 }
 
@@ -253,6 +279,7 @@ impl FemmeApp {
     fn new(
         cfg: Config,
         rt: tokio::runtime::Handle,
+        started: Option<Started>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -263,7 +290,15 @@ impl FemmeApp {
         };
         let transcript = (cfg.rows > 0)
             .then(|| cx.new(|cx| TranscriptView::new(cfg.rows, cfg.seed, &rt, window, cx)));
+        let live = started.map(|s| Live {
+            net: cx.new(|cx| Net::new(s.client, rt.clone(), s.enroll, cx)),
+            terms: BTreeMap::new(),
+            active: None,
+            fresh: None,
+        });
+        // With a daemon the panes are its own: no synthetic ones.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
+            .filter(|_| live.is_none())
             .map(|i| {
                 // Stagger the sources: independent terminals do not tick in the same instant, and
                 // aligned ones would hide half the frames a real session draws.
@@ -279,11 +314,30 @@ impl FemmeApp {
             .map(|secs| bench_task(secs, &cfg, &panes, window, cx));
         #[cfg(not(feature = "bench"))]
         let bench = None;
+        let sidebar = cx.new(|cx| Sidebar::new(live.as_ref().map(|l| l.net.clone()), cx));
+        let mut subs = Vec::new();
+        if let Some(l) = &live {
+            subs.push(cx.observe_in(&l.net, window, |t, _, window, cx| t.sync(window, cx)));
+            subs.push(
+                cx.subscribe_in(&sidebar, window, |t, _, ev: &OpenSession, window, cx| {
+                    t.open_session(ev.0, window, cx)
+                }),
+            );
+            // A window nobody looks at needs the daemon's attention less often.
+            subs.push(cx.observe_window_activation(window, |t, window, cx| {
+                if let Some(l) = &t.live {
+                    l.net
+                        .read(cx)
+                        .client()
+                        .set_background(!window.is_window_active());
+                }
+            }));
+        }
         Self {
             dots: DotGrid::new(window.scale_factor(), cx),
             focus: cx.focus_handle(),
             palette_focus: cx.focus_handle(),
-            sidebar: cx.new(Sidebar::new),
+            sidebar,
             right: cx.new(RightPanel::new),
             composer: cx.new(Composer::new),
             transcript,
@@ -293,8 +347,131 @@ impl FemmeApp {
             show_right: true,
             show_drawer: true,
             palette_open: false,
+            live,
+            _subs: subs,
             _bench: bench,
         }
+    }
+
+    /// The terminals the drawer shows: every synthetic pane, or the tab on show.
+    fn shown(&self) -> Vec<Entity<TerminalPane>> {
+        match &self.live {
+            None => self.panes.clone(),
+            Some(l) => l
+                .active
+                .and_then(|p| l.terms.get(&p))
+                .cloned()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Brings the drawer in line with the daemon's panes: a terminal for each tab that appeared
+    /// (past [`EAGER`] only for the one on show), none for those that went, and a tab on show.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(live) = &mut self.live else { return };
+        let net = live.net.read(cx);
+        let tabs = net.model.tabs();
+        let (client, rt) = (net.client(), net.rt());
+        let fresh = live
+            .fresh
+            .and_then(|sid| tabs.iter().copied().find(|p| p.sid == sid));
+        if fresh.is_some() {
+            live.fresh = None;
+            live.active = fresh;
+            self.show_drawer = true;
+        } else if !live.active.is_some_and(|p| tabs.contains(&p)) {
+            live.active = tabs.first().copied();
+        }
+        live.terms.retain(|p, _| tabs.contains(p));
+        for p in &tabs {
+            if (tabs.len() <= EAGER || Some(*p) == live.active) && !live.terms.contains_key(p) {
+                let term = cx.new(|cx| TerminalPane::attach(client.clone(), *p, &rt, cx));
+                live.terms.insert(*p, term);
+            }
+        }
+        if let Some(term) = fresh.and_then(|p| live.terms.get(&p)) {
+            window.focus(&term.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows tab `p` with the keyboard on its terminal.
+    fn select(&mut self, p: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(live) = &mut self.live else { return };
+        live.active = Some(p);
+        self.show_drawer = true;
+        self.sync(window, cx);
+        if let Some(term) = self.live.as_ref().and_then(|l| l.terms.get(&p)) {
+            window.focus(&term.focus_handle(cx), cx);
+        }
+    }
+
+    /// The sidebar's click: the session's first terminal, if it has one.
+    fn open_session(&mut self, sid: Sid, window: &mut Window, cx: &mut Context<Self>) {
+        let first = self.live.as_ref().and_then(|l| {
+            l.net
+                .read(cx)
+                .model
+                .tabs()
+                .into_iter()
+                .find(|p| p.sid == sid)
+        });
+        if let Some(p) = first {
+            self.select(p, window, cx);
+        }
+    }
+
+    /// "+": a new shell session, started where the one on show is. It takes the drawer when the
+    /// daemon lists it.
+    fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else { return };
+        let cwd = live
+            .active
+            .and_then(|p| live.net.read(cx).model.sessions.get(&p.sid))
+            .map(|s| s.cwd.clone())
+            .unwrap_or_default();
+        let req = Req::SessionCreate {
+            cwd,
+            agent: Agent::Shell,
+            mode: Mode::Tui,
+            label: None,
+            name: None,
+            prompt: None,
+        };
+        let sent = live.net.update(cx, |n, cx| n.run(req, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(Resp::Session(sid)) = sent.await {
+                this.update_in(cx, |t, window, cx| {
+                    if let Some(l) = &mut t.live {
+                        l.fresh = Some(sid);
+                    }
+                    t.sync(window, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// "close": the tab on show goes, with its session when it is the session's only pane.
+    fn close_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else { return };
+        let Some(p) = live.active else { return };
+        let siblings = live
+            .net
+            .read(cx)
+            .model
+            .panes
+            .keys()
+            .filter(|q| q.sid == p.sid)
+            .count();
+        let req = if siblings <= 1 {
+            Req::SessionClose { sid: p.sid }
+        } else {
+            Req::PaneClose { pane: p }
+        };
+        live.net.update(cx, |n, cx| n.run(req, cx)).detach();
     }
 
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -325,8 +502,9 @@ impl FemmeApp {
             s.push(vec![t.focus_handle(cx)]);
         }
         s.push(vec![self.composer.focus_handle(cx)]);
-        if self.show_drawer && !self.panes.is_empty() {
-            s.push(self.panes.iter().map(|p| p.focus_handle(cx)).collect());
+        let shown = self.shown();
+        if self.show_drawer && !shown.is_empty() {
+            s.push(shown.iter().map(|p| p.focus_handle(cx)).collect());
         }
         s
     }
@@ -341,6 +519,16 @@ impl FemmeApp {
     }
 
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = match &self.live {
+            Some(l) => l.net.read(cx).status_line(),
+            None => format!(
+                "{} pane(s) {}@{}Hz | {} transcript rows",
+                self.cfg.panes,
+                self.cfg.mode_label(),
+                self.cfg.hz,
+                self.cfg.rows
+            ),
+        };
         let toggle = |id: &'static str, label: &'static str, on: bool| {
             let b = if on {
                 button_dark(id, label)
@@ -389,14 +577,7 @@ impl FemmeApp {
                         .child("femme"),
                 ),
         )
-        .child(meta(format!(
-            "{} pane(s) {}@{}Hz | {} transcript rows",
-            self.cfg.panes,
-            self.cfg.mode_label(),
-            self.cfg.hz,
-            self.cfg.rows
-        )))
-        .child(div().flex_1())
+        .child(meta(status).flex_1().min_w_0())
         .child(
             toggle("n-sidebar", "sidebar", self.show_sidebar).on_click(cx.listener(
                 |t, _, _, cx| {
@@ -459,11 +640,12 @@ impl FemmeApp {
             )
     }
 
-    fn drawer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = div()
-            .flex()
-            .gap(px(3.))
-            .children(self.panes.iter().enumerate().map(|(i, p)| {
+    /// The synthetic panes' tabs: each focuses its pane (they are all on show).
+    fn synthetic_tabs(&self, window: &Window, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
+        self.panes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
                 let handle = p.focus_handle(cx);
                 let label = p.read(cx).label();
                 let b = if handle.contains_focused(window, cx) {
@@ -473,31 +655,79 @@ impl FemmeApp {
                 };
                 b.h(px(28.))
                     .on_click(move |_, window, cx| window.focus(&handle, cx))
-            }));
+            })
+            .collect()
+    }
+
+    /// The daemon's tabs, one per pane of a live session, then "+" and "close".
+    fn live_tabs(&self, live: &Live, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
+        let net = live.net.read(cx);
+        let mut tabs: Vec<_> = net
+            .model
+            .tabs()
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let title = live.terms.get(&p).and_then(|t| t.read(cx).title());
+                let label = net.model.tab_label(p, title);
+                let b = if live.active == Some(p) {
+                    button_dark(("dtab", i), label)
+                } else {
+                    button(("dtab", i), label)
+                };
+                b.h(px(28.))
+                    .on_click(cx.listener(move |t, _, window, cx| t.select(p, window, cx)))
+            })
+            .collect();
+        tabs.push(
+            button("dnew", "+")
+                .h(px(28.))
+                .on_click(cx.listener(|t, _, window, cx| t.new_session(window, cx))),
+        );
+        if live.active.is_some() {
+            tabs.push(
+                button("dclose", "close")
+                    .h(px(28.))
+                    .on_click(cx.listener(|t, _, _, cx| t.close_tab(cx))),
+            );
+        }
+        tabs
+    }
+
+    fn drawer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (count, tabs) = match &self.live {
+            None => (self.panes.len(), self.synthetic_tabs(window, cx)),
+            Some(l) => (l.net.read(cx).model.tabs().len(), self.live_tabs(l, cx)),
+        };
+        let shown = self.shown();
+        let body = div().flex_1().min_h_0();
+        let body = if shown.is_empty() {
+            body.p(px(12.)).child(meta("no terminal: + starts a shell"))
+        } else {
+            body.child(h_resizable("panes").children(shown.iter().map(|p| {
+                resizable_panel().child(crate::ui::ruled(
+                    div()
+                        .size_full()
+                        .bg(PAPER)
+                        .pl(px(8.))
+                        .pr(px(4.))
+                        .py(px(6.))
+                        .child(p.clone()),
+                ))
+            })))
+        };
         div().size_full().p(px(3.)).child(
             win()
                 .size_full()
-                .child(tb(format!(
-                    "terminal drawer - {} pane(s)",
-                    self.panes.len()
-                )))
-                .child(div().flex_none().bg(theme::PANEL).p(px(3.)).child(tabs))
+                .child(tb(format!("terminal drawer - {count} pane(s)")))
                 .child(
                     div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(h_resizable("panes").children(self.panes.iter().map(|p| {
-                            resizable_panel().child(crate::ui::ruled(
-                                div()
-                                    .size_full()
-                                    .bg(PAPER)
-                                    .pl(px(8.))
-                                    .pr(px(4.))
-                                    .py(px(6.))
-                                    .child(p.clone()),
-                            ))
-                        }))),
-                ),
+                        .flex_none()
+                        .bg(theme::PANEL)
+                        .p(px(3.))
+                        .child(div().flex().gap(px(3.)).children(tabs)),
+                )
+                .child(body),
         )
     }
 }

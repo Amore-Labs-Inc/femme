@@ -3,13 +3,16 @@
 //! own entity so the shell can cache it: a frame where only the terminal panes changed replays these
 //! from the previous frame instead of rebuilding them.
 
+use femme_proto::state::{Attention, Session as Wire, SessionStatus};
+use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, relative, AnyElement, App, Context, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render, Rgba, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    div, px, relative, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render,
+    Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
+use crate::net::{self, Net};
 use crate::theme::{
     self, BAD, DONE, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PANEL, PAPER, PAUSE, PR, QUEUE,
     RULE, WORK,
@@ -91,18 +94,95 @@ const SESSIONS: [Session; 12] = [
     },
 ];
 
+/// The status colour of a session's dot: what it is doing, or what it waits for.
+pub fn status_color(s: &Wire) -> Rgba {
+    match (s.status, s.attention) {
+        (SessionStatus::Working, _) => WORK,
+        (SessionStatus::Blocked, _) | (_, Attention::Blocked) => PAUSE,
+        (SessionStatus::Idle | SessionStatus::Starting, _) => QUEUE,
+        // A crash is as much a failure as a lost holder (a deviation from the plain mapping: DONE
+        // would paint a dead session as finished).
+        (
+            SessionStatus::Interrupted
+            | SessionStatus::Paused
+            | SessionStatus::Crashed
+            | SessionStatus::Failed,
+            _,
+        ) => BAD,
+        (SessionStatus::Closed, _) => DONE,
+    }
+}
+
+/// What the sidebar asks of the shell when a session is clicked: show its first terminal.
+pub struct OpenSession(pub Sid);
+
 /// Left column: lane counts, sessions, accounts.
 pub struct Sidebar {
     focus: FocusHandle,
+    /// The daemon's sessions; without one the list is the mock one.
+    net: Option<Entity<Net>>,
+    _watch: Option<Subscription>,
 }
 
+impl EventEmitter<OpenSession> for Sidebar {}
+
 impl Sidebar {
-    /// A sidebar with its own focus stop.
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    /// A sidebar with its own focus stop, listing the sessions `net` knows of (or mock ones).
+    pub fn new(net: Option<Entity<Net>>, cx: &mut Context<Self>) -> Self {
+        let watch = net.as_ref().map(|n| cx.observe(n, |_, _, cx| cx.notify()));
         Self {
             focus: cx.focus_handle(),
+            net,
+            _watch: watch,
         }
     }
+
+    /// One row per live session, newest first.
+    fn rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(net) = &self.net else {
+            return SESSIONS
+                .iter()
+                .map(|s| row(s.color, s.title.into(), s.cwd.into()).into_any_element())
+                .collect();
+        };
+        let sessions: Vec<_> = net
+            .read(cx)
+            .model
+            .live()
+            .into_iter()
+            .map(|s| {
+                let line = format!("{} {}", format!("{:?}", s.agent).to_lowercase(), s.cwd);
+                (s.id, row(status_color(s), net::title(s), line))
+            })
+            .collect();
+        sessions
+            .into_iter()
+            .map(|(sid, row)| {
+                row.id(SharedString::from(sid.to_string()))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(HOVER))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(OpenSession(sid))))
+                    .into_any_element()
+            })
+            .collect()
+    }
+}
+
+/// A session row: status dot, title, agent and directory.
+fn row(color: Rgba, title: String, meta_line: String) -> gpui::Div {
+    card()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .py(px(6.))
+        .child(dot(color))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_size(px(14.)).truncate().child(title))
+                .child(meta(meta_line)),
+        )
 }
 
 impl Focusable for Sidebar {
@@ -148,6 +228,7 @@ fn account(title: &'static str, plan: &'static str, used: f32, on: bool) -> gpui
 
 impl Render for Sidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows(cx);
         let lanes = [
             ("work", WORK, 4),
             ("pause", PAUSE, 2),
@@ -180,25 +261,14 @@ impl Render for Sidebar {
             .child(
                 section("sessions").flex_1().min_h_0().child(
                     div()
+                        .id("sessions")
+                        .flex_1()
+                        .min_h_0()
                         .flex()
                         .flex_col()
                         .gap(px(3.))
-                        .overflow_hidden()
-                        .children(SESSIONS.iter().map(|s| {
-                            card()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.))
-                                .py(px(6.))
-                                .child(dot(s.color))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(div().text_size(px(14.)).truncate().child(s.title))
-                                        .child(meta(s.cwd)),
-                                )
-                        })),
+                        .overflow_y_scroll()
+                        .children(rows),
                 ),
             )
             .child(

@@ -1,14 +1,22 @@
-//! `femme-desktop [--bench SECONDS] [--panes N] [--mode fire,cat] [--rows R] [--size WxH]`;
+//! `femme-desktop [--daemon ADDR:PORT --fingerprint HEX64] [--ssh HOST] [--identity DIR] [--show-spki]`
+//! shows a daemon's sessions; without them it runs on synthetic panes:
+//! `femme-desktop [--bench SECONDS] [--panes N] [--mode fire,cat] [--rows R] [--size WxH]`.
 //! `FEMME_DISPLAY` picks the display. `--bench` needs a build with `--features bench`.
+
+use std::path::PathBuf;
 
 use clap::Parser;
 use femme_desktop::app::Config;
+use femme_desktop::connect::{self, Flags};
 use femme_desktop::terminal::SourceKind;
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// FEMME desktop client (prototype). Without `--bench` it opens the app window.
+/// FEMME desktop client (prototype). Without `--bench` it opens the app window. `--daemon`,
+/// `--fingerprint` and `--ssh` also come from FEMME_DAEMON, FEMME_FINGERPRINT and FEMME_SSH in the
+/// environment or in ~/.config/femme/desktop.env (the flags win); with a daemon or an ssh host the
+/// window shows its sessions and terminals, without one it runs on synthetic panes.
 #[derive(Parser)]
 #[command(name = "femme-desktop", version)]
 struct Cli {
@@ -40,6 +48,21 @@ struct Cli {
     /// Requested window size in logical pixels, WIDTHxHEIGHT (a compositor may override it).
     #[arg(long, default_value = "1440x900", value_parser = parse_size, value_name = "WxH")]
     size: (f32, f32),
+    /// The daemon's QUIC address (needs --fingerprint).
+    #[arg(long, value_name = "ADDR:PORT")]
+    daemon: Option<String>,
+    /// SHA-256 of the daemon's certificate, 64 hex digits (`femmed enroll` prints it).
+    #[arg(long, value_name = "HEX64")]
+    fingerprint: Option<String>,
+    /// ssh alias of the daemon's box: the fallback link, and the host the enroll line names.
+    #[arg(long, value_name = "HOST")]
+    ssh: Option<String>,
+    /// Where this device's certificate and key live (created on first use, mode 0700).
+    #[arg(long, value_name = "DIR")]
+    identity: Option<PathBuf>,
+    /// Print this device's SPKI hash and the `femmed enroll` line that enrolls it, then exit.
+    #[arg(long)]
+    show_spki: bool,
 }
 
 fn parse_size(s: &str) -> Result<(f32, f32), String> {
@@ -64,7 +87,17 @@ fn parse_target_ms(s: &str) -> Result<f64, String> {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let flags = Flags {
+        daemon: cli.daemon,
+        fingerprint: cli.fingerprint,
+        ssh: cli.ssh,
+    };
+    if cli.show_spki {
+        println!("{}", connect::show(flags, cli.identity)?);
+        return Ok(());
+    }
     femme_desktop::run(Config {
+        connect: connect::load(flags, cli.identity)?,
         bench: cli.bench,
         panes: cli.panes,
         rows: cli.rows,
@@ -106,6 +139,30 @@ mod tests {
                 .mode,
             [Shell]
         );
+    }
+
+    #[test]
+    fn daemon_flags_are_optional() {
+        let cli = Cli::try_parse_from([
+            "femme-desktop",
+            "--daemon",
+            "127.0.0.1:7788",
+            "--fingerprint",
+            "ab",
+            "--ssh",
+            "vps",
+            "--identity",
+            "/tmp/device",
+            "--show-spki",
+        ])
+        .unwrap();
+        assert_eq!(cli.daemon.as_deref(), Some("127.0.0.1:7788"));
+        assert_eq!(cli.fingerprint.as_deref(), Some("ab"));
+        assert_eq!(cli.ssh.as_deref(), Some("vps"));
+        assert_eq!(cli.identity, Some("/tmp/device".into()));
+        assert!(cli.show_spki);
+        let bare = Cli::try_parse_from(["femme-desktop"]).unwrap();
+        assert!(bare.daemon.is_none() && bare.identity.is_none() && !bare.show_spki);
     }
 
     #[test]
