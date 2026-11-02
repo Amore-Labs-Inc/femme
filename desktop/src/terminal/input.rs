@@ -12,6 +12,8 @@ pub fn key(ks: &Keystroke) -> Option<Key> {
     if m.platform || (m.control && m.shift && ks.key == "c") {
         return None;
     }
+    // TODO(femme-proto): no `KeyCode` for Menu, PrintScreen, Pause or ScrollLock; they fall through
+    // to `typed`, which has no single character for them, so they are dropped.
     let code = match ks.key.as_str() {
         "enter" => KeyCode::Enter,
         "tab" => KeyCode::Tab,
