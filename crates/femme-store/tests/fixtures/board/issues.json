@@ -1,0 +1,64 @@
+[
+  {
+    "id": 1,
+    "repo": "acme/webshop",
+    "title": "Checkout button does nothing on Safari",
+    "body": "Clicking Pay shows no spinner.\n\nRepro: Safari 17, cart with 2 items.",
+    "status": "done",
+    "created": 1790000000,
+    "updated": 1790003600,
+    "pane": "w3:p1",
+    "pr_url": "https://github.com/acme/webshop/pull/12",
+    "note": ""
+  },
+  {
+    "id": 2,
+    "repo": "acme/webshop",
+    "title": "Add dark mode",
+    "body": "",
+    "status": "working",
+    "created": 1792000000,
+    "updated": 1792990000,
+    "pane": "w9:p1",
+    "note": ""
+  },
+  {
+    "id": 3,
+    "repo": "acme/infra",
+    "title": "Rotate the staging certificates",
+    "body": "Both certs expire next month.",
+    "status": "paused",
+    "created": 1792100000,
+    "updated": 1792900000,
+    "resume_at": 1793010000,
+    "note": "paused at 61%: resumes when the window resets"
+  },
+  {
+    "id": 5,
+    "repo": "acme/webshop",
+    "title": "Is the cart total rounded correctly?",
+    "body": "Customer says 0.5 cent differences.",
+    "status": "triage",
+    "created": 1791000000,
+    "updated": 1791000500,
+    "report": "Looks like a rounding bug in totals.rs; needs an owner decision before a fix."
+  },
+  {
+    "id": 6,
+    "repo": "octo/hello-world",
+    "title": "Fix déjà-vu in the naïve parser 🙂",
+    "body": "The parser re-reads its input.",
+    "status": "failed",
+    "created": 1792500000,
+    "updated": 1792600000,
+    "pane": "w12:p1",
+    "note": "its workspace was closed"
+  },
+  {
+    "id": 7,
+    "repo": "octo/hello-world",
+    "title": "Write the README",
+    "status": "open",
+    "created": 1792950000
+  }
+]
