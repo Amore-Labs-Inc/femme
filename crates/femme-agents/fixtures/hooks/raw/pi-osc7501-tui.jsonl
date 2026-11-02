@@ -1,0 +1,8 @@
+{"state": "idle", "app": "pi"}
+{"state": "working", "app": "pi"}
+{"state": "done", "app": "pi"}
+{"state": "working", "app": "pi"}
+{"state": "blocked", "app": "pi", "kind": "question", "msg": "Pick a color"}
+{"state": "working", "app": "pi"}
+{"state": "done", "app": "pi"}
+{"state": "clear"}

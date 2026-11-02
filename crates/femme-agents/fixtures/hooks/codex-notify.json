@@ -1,0 +1,1 @@
+{"type":"agent-turn-complete","thread-id":"01a19bba-7dc7-7370-b191-fd47dd00557e","turn-id":"01a19bba-888d-71c1-85d8-f41521bae133","cwd":"/work/repo","client":"codex-tui","input-messages":["Run `echo hi` with your shell tool, then reply with the single word done."],"last-assistant-message":"done"}

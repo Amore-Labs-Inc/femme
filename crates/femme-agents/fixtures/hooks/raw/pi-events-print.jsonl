@@ -1,0 +1,19 @@
+{"n": 1, "t": 0, "type": "(factory)", "argv": ["/$bunfs/root/pi", "--model", "mock/mock-a", "-e", "/work/repo/pi-hooks/bin dir/it's here/femme-pi-hook.ts", "-e", "/work/repo/pi-hooks/bin dir/it's here/femme-test-probe.ts", "-p", "reply with the single word ok"], "femme_sid": "femme-sid-print"}
+{"n": 2, "t": 69, "type": "session_start", "mode": "print", "hasUI": false, "idle": true, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "reason": "startup"}
+{"n": 3, "t": 76, "type": "resources_discover", "mode": "print", "hasUI": false, "idle": true, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "reason": "startup"}
+{"n": 4, "t": 82, "type": "input", "mode": "print", "hasUI": false, "idle": true, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52"}
+{"n": 5, "t": 83, "type": "before_agent_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "messageType": "user"}
+{"n": 6, "t": 97, "type": "agent_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52"}
+{"n": 7, "t": 97, "type": "turn_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "turnIndex": 0}
+{"n": 8, "t": 97, "type": "message_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "system"}
+{"n": 9, "t": 98, "type": "message_end", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "system"}
+{"n": 10, "t": 98, "type": "message_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "user"}
+{"n": 11, "t": 98, "type": "message_end", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "user"}
+{"n": 12, "t": 210, "type": "(detached spawn check)", "pi_pid": 908408, "child_pid": 908536, "child_ppid": 908408, "child_pgrp": 908536, "child_sid": 908536}
+{"n": 13, "t": 227, "type": "message_start", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "assistant", "stopReason": "pending"}
+{"n": 14, "t": 233, "type": "message_end", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "role": "assistant", "stopReason": "stop"}
+{"n": 15, "t": 237, "type": "turn_end", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "turnIndex": 0, "outcome": "completed", "continue": false, "role": "assistant", "stopReason": "stop"}
+{"n": 16, "t": 238, "type": "agent_end", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "messages": ["system", "user", "assistant:stop"]}
+{"n": 17, "t": 240, "type": "agent_before_settle", "mode": "print", "hasUI": false, "idle": false, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "outcome": "completed", "continue": false}
+{"n": 18, "t": 243, "type": "agent_settled", "mode": "print", "hasUI": false, "idle": true, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "aborted": false}
+{"n": 19, "t": 539, "type": "session_shutdown", "mode": "print", "hasUI": false, "idle": true, "session_id": "01a19bb9-5d75-7405-aaec-627eb5594c52", "reason": "quit"}

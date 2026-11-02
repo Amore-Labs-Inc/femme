@@ -1,0 +1,14 @@
+{"n": 1, "t": 0, "type": "(factory)", "argv": ["/$bunfs/root/pi", "--model", "mock/mock-a", "-e", "/work/repo/pi-hooks/bin dir/it's here/femme-pi-hook.ts", "-e", "/work/repo/pi-hooks/bin dir/it's here/femme-test-ask.ts", "-e", "/work/repo/pi-hooks/bin dir/it's here/femme-test-probe.ts", "--session", "/home/user/.pi/agent/sessions/--work-repo--/2026-11-02T10-06-22-623Z_01a19bb9-6b9f-7247-8d7c-69142a082644.jsonl"], "femme_sid": "femme-sid-takeover"}
+{"n": 2, "t": 78, "type": "session_start", "mode": "tui", "hasUI": true, "idle": true, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "reason": "startup"}
+{"n": 3, "t": 86, "type": "resources_discover", "mode": "tui", "hasUI": true, "idle": true, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "reason": "startup"}
+{"n": 4, "t": 256, "type": "(detached spawn check)", "pi_pid": 909416, "child_pid": 909500, "child_ppid": 909416, "child_pgrp": 909500, "child_sid": 909500}
+{"n": 5, "t": 2320, "type": "input", "mode": "tui", "hasUI": true, "idle": true, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644"}
+{"n": 6, "t": 2333, "type": "before_agent_start", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "messageType": "user"}
+{"n": 7, "t": 2358, "type": "agent_start", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644"}
+{"n": 8, "t": 2367, "type": "turn_start", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "turnIndex": 0}
+{"n": 9, "t": 2368, "type": "message_start", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "role": "user"}
+{"n": 10, "t": 2369, "type": "message_end", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "role": "user"}
+{"n": 11, "t": 2449, "type": "message_start", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "role": "assistant", "stopReason": "pending"}
+{"n": 12, "t": 4104, "type": "session_shutdown", "mode": "tui", "hasUI": true, "idle": false, "session_id": "01a19bb9-6b9f-7247-8d7c-69142a082644", "reason": "quit"}
+{"n": 13, "t": 4121, "type": "agent_before_settle", "mode": "<stale ctx>", "hasUI": "<stale ctx>", "idle": "<stale ctx>", "session_id": "<stale ctx>", "outcome": "aborted", "continue": false}
+{"n": 14, "t": 4122, "type": "agent_settled", "mode": "<stale ctx>", "hasUI": "<stale ctx>", "idle": "<stale ctx>", "session_id": "<stale ctx>", "aborted": false}
