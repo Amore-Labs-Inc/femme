@@ -1,0 +1,44 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a"
+ ],
+ "extra_args": [
+  "-e",
+  "/work/repo/femme-ask.ts"
+ ],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Ask me to pick a color.",
+   "how": "Queue"
+  },
+  {
+   "at": 18,
+   "call": "answer",
+   "request_id": "63dce6fd-dc6c-4529-945d-2c3bbf9648ea",
+   "answer": {
+    "Option": 1
+   }
+  }
+ ],
+ "stdin_at": [
+  0,
+  0,
+  18
+ ]
+}

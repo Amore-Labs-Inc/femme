@@ -1,0 +1,34 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a",
+  "--session-id",
+  "01a19bac-79a1-76a6-a417-ebee80fd5e59"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": "01a19bac-79a1-76a6-a417-ebee80fd5e59"
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "What word did I ask you to remember?",
+   "how": "Queue"
+  }
+ ],
+ "stdin_at": [
+  0,
+  0
+ ]
+}

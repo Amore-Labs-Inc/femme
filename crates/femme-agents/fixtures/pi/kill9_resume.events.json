@@ -1,0 +1,94 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bac-7f26-747d-a504-ccfa15f7aa9a",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o6859",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o7147:0",
+      "kind": "Thinking",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o7147:0",
+      "text": "The user wants "
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o7147:0",
+      "text": "the word ok."
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o7147:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o7147:1",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o7147:0",
+      "kind": "Thinking",
+      "status": "Completed",
+      "body": {
+        "text": "The user wants the word ok."
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o7147:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 230,
+        "output": 7,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 96
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

@@ -1,0 +1,45 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "Queue"
+  },
+  {
+   "at": 20,
+   "call": "set_model",
+   "model": "mock/mock-b"
+  },
+  {
+   "at": 21,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "Queue"
+  }
+ ],
+ "stdin_at": [
+  0,
+  0,
+  20,
+  21
+ ]
+}

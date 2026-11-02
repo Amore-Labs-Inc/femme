@@ -1,0 +1,159 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bac-66c5-7395-acc7-775c8ff4e8d4",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12513",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Count slowly from 1 to 8."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o12791:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "1\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "2\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "3\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "4\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "5\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "6\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "7\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12791:0",
+      "text": "8\n"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12791:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "1\n2\n3\n4\n5\n6\n7\n8\n"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 1020,
+        "output": 4,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "duration_ms": 1650
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o23421",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Then say FOLLOWUP."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o23685:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o23685:0",
+      "text": "FOLLOWUP"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o23685:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "FOLLOWUP"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 240,
+        "output": 2,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 6
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

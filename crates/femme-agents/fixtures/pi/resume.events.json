@@ -1,0 +1,65 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bac-79a1-76a6-a417-ebee80fd5e59",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o853",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "What word did I ask you to remember?"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o1153:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o1153:0",
+      "text": "banana"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o1153:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "banana"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 240,
+        "output": 1,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 49
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]
