@@ -1,0 +1,12 @@
+[
+  {
+    "ItemCompleted": {
+      "id": "o5229",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "text": "claude rejected a control request: Model 'no-such-model-xyz' not found"
+      }
+    }
+  }
+]

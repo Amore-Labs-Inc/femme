@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"What was the code word I asked you to remember? Reply with that single word."}]},"uuid":"00000002-0000-4000-8000-000000000002"}

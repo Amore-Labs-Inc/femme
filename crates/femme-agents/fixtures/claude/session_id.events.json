@@ -1,0 +1,67 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "317f6d68-65c1-4577-9da2-2da2ba2c326b",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvLeuUc61gT6dVXMEaz:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvLeuUc61gT6dVXMEaz:0",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvLeuUc61gT6dVXMEaz:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 35.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 2,
+        "output": 4,
+        "cache_read": 21259,
+        "cache_write": 16749
+      },
+      "duration_ms": 1392
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

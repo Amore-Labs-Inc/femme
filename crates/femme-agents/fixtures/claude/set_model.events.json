@@ -1,0 +1,132 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "6de05448-fc41-4ce3-864d-60a28f5154bb",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvKTkUzhNbVfLrvCZJk:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvKTkUzhNbVfLrvCZJk:0",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvKTkUzhNbVfLrvCZJk:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 34.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 2,
+        "output": 4,
+        "cache_read": 21259,
+        "cache_write": 16749
+      },
+      "duration_ms": 1030
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "ModelChanged": "claude-haiku-4-5-20251001"
+  },
+  {
+    "ItemCompleted": {
+      "id": "10005e98-095a-44a5-ba83-13e2a0d85833",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "text": "Set model to `claude-haiku-4-5-20251001`"
+      }
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "ItemCompleted": {
+      "id": "00000002-0000-4000-8000-000000000002",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvKc15agKCEPAsQsHR1:1",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvKc15agKCEPAsQsHR1:1",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvKc15agKCEPAsQsHR1:1",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 10,
+        "output": 43,
+        "cache_read": 12189,
+        "cache_write": 18690
+      },
+      "duration_ms": 1258
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

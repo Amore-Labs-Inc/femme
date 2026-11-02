@@ -1,0 +1,4 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Use the AskUserQuestion tool to ask me whether I prefer A or B (two options, labels A and B), then wait for my answer and tell me what I chose."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"control_request","request_id":"femme-init-2","request":{"subtype":"initialize"}}
+{"type":"control_response","response":{"subtype":"success","request_id":"0b9ac20b-a8bf-41ae-9569-2ac28e818b26","response":{"behavior":"allow","updatedInput":{"questions":[{"question":"Do you prefer A or B?","header":"A or B","options":[{"label":"A","description":"Choose option A"},{"label":"B","description":"Choose option B"}],"multiSelect":false}],"answers":{"Do you prefer A or B?":"A"}}}}}

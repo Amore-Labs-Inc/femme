@@ -1,0 +1,4 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word ok."}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"control_request","request_id":"femme-model-1","request":{"subtype":"set_model","model":"claude-haiku-4-5-20251001"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word ok."}]},"uuid":"00000002-0000-4000-8000-000000000002"}

@@ -1,0 +1,114 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "af33818b-0be5-4a29-9a35-c499ecab5341",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Run `echo hi` with your Bash tool and then reply with the single word done."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+      "kind": "ToolCall",
+      "preview": "Bash"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+      "body": {
+        "call_id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+        "input": {
+          "command": "echo hi",
+          "description": "Print hi"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 31.0,
+      "resets_at": 1793617200
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+        "input": {
+          "command": "echo hi",
+          "description": "Print hi"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01JBjzExyVfbT78Xq8F96Eoa:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
+        "is_error": false,
+        "output": "hi"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgdvEAggEcb7NCwh5GvLe:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgdvEAggEcb7NCwh5GvLe:0",
+      "text": "done"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgdvEAggEcb7NCwh5GvLe:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "done"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 4,
+        "output": 77,
+        "cache_read": 56788,
+        "cache_write": 25561
+      },
+      "duration_ms": 3333
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]
