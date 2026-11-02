@@ -1,0 +1,20 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bbf-9f4f-71c1-902c-0d4da10b5454",
+      "model": "gpt-6-luna"
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "monthly",
+      "percent": 2.0,
+      "resets_at": 1796204676
+    }
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

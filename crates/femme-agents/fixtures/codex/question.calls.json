@@ -1,0 +1,51 @@
+{
+ "argv": [
+  "codex",
+  "app-server",
+  "-c",
+  "approval_policy=\"never\"",
+  "-c",
+  "sandbox_mode=\"danger-full-access\"",
+  "--enable",
+  "default_mode_request_user_input",
+  "-c",
+  "suppress_unstable_features_warning=true"
+ ],
+ "extra_args": [
+  "-c",
+  "model_reasoning_effort=\"low\""
+ ],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "gpt-6-luna",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Before doing anything else, use your request_user_input tool to ask me one multiple-choice question: which color do I prefer, with the options red and blue. After I answer, reply with only the color I picked.",
+   "how": "Queue"
+  },
+  {
+   "at": 10,
+   "call": "answer",
+   "request_id": "call_924d2c111d0b4827970980ab6b5624e1",
+   "answer": {
+    "Option": 0
+   }
+  }
+ ],
+ "stdin_at": [
+  0,
+  1,
+  1,
+  2,
+  10
+ ]
+}

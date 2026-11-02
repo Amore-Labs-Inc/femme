@@ -1,0 +1,47 @@
+{
+ "argv": [
+  "codex",
+  "app-server",
+  "-c",
+  "approval_policy=\"never\"",
+  "-c",
+  "sandbox_mode=\"danger-full-access\"",
+  "--enable",
+  "default_mode_request_user_input",
+  "-c",
+  "suppress_unstable_features_warning=true"
+ ],
+ "extra_args": [
+  "-c",
+  "model_reasoning_effort=\"low\""
+ ],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "gpt-6-luna",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 0,
+   "call": "prompt",
+   "text": "Run `sleep 6; echo hi` with your shell tool, then reply with the single word ok.",
+   "how": "Queue"
+  },
+  {
+   "at": 9,
+   "call": "interrupt"
+  }
+ ],
+ "stdin_at": [
+  0,
+  1,
+  1,
+  2,
+  9
+ ]
+}

@@ -1,0 +1,79 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bba-f448-7503-b55c-6d29979a0ac3",
+      "model": "gpt-6-luna"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemStarted": {
+      "id": "01a19bba-f9b8-7e71-ad5e-9f9778dd0c48",
+      "kind": "UserMessage",
+      "preview": "Reply with the single word ok."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "01a19bba-f9b8-7e71-ad5e-9f9778dd0c48",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_087b9295cac15a98016ae8610534ec8191831f346fdf4b247f",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_087b9295cac15a98016ae8610534ec8191831f346fdf4b247f",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_087b9295cac15a98016ae8610534ec8191831f346fdf4b247f",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "monthly",
+      "percent": 1.0,
+      "resets_at": 1796204676
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 13178,
+        "output": 5,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "duration_ms": 2144
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

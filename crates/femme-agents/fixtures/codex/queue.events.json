@@ -1,0 +1,185 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bbf-7057-7f53-bfad-079045233110",
+      "model": "gpt-6-luna"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemStarted": {
+      "id": "01a19bbf-74b6-7af3-b3a4-930d21e8e839",
+      "kind": "UserMessage",
+      "preview": "Run `sleep 4; echo hi` with your shell tool, then reply with the single word ok."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "01a19bbf-74b6-7af3-b3a4-930d21e8e839",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Run `sleep 4; echo hi` with your shell tool, then reply with the single word ok."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+      "kind": "ToolCall",
+      "preview": "/bin/bash -lc 'sleep 4; echo hi'"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+      "body": {
+        "call_id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+        "input": {
+          "command": "/bin/bash -lc 'sleep 4; echo hi'",
+          "cwd": "/work/repo"
+        },
+        "name": "commandExecution"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+        "input": {
+          "command": "/bin/bash -lc 'sleep 4; echo hi'",
+          "cwd": "/work/repo"
+        },
+        "name": "commandExecution"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "exec-52707f70-c9b7-47b3-885b-4182137b711f:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "exec-52707f70-c9b7-47b3-885b-4182137b711f",
+        "is_error": false,
+        "output": "hi\n"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "monthly",
+      "percent": 2.0,
+      "resets_at": 1796204676
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_0910d6c349465f24016ae86230bebc8191a2717fe2720902fa",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_0910d6c349465f24016ae86230bebc8191a2717fe2720902fa",
+      "text": "ok"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_0910d6c349465f24016ae86230bebc8191a2717fe2720902fa",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "ok"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 13393,
+        "output": 43,
+        "cache_read": 13056,
+        "cache_write": 0
+      },
+      "duration_ms": 7734
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemStarted": {
+      "id": "01a19bbf-8f18-72c2-bf2e-29ecaa4dd646",
+      "kind": "UserMessage",
+      "preview": "Reply with the single word second."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "01a19bbf-8f18-72c2-bf2e-29ecaa4dd646",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Reply with the single word second."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_0910d6c349465f24016ae862322b088191a32e1b3f6de394e7",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_0910d6c349465f24016ae862322b088191a32e1b3f6de394e7",
+      "text": "second"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_0910d6c349465f24016ae862322b088191a32e1b3f6de394e7",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "second"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 1073,
+        "output": 5,
+        "cache_read": 13056,
+        "cache_write": 0
+      },
+      "duration_ms": 1428
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

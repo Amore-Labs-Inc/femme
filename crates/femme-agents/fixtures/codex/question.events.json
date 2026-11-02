@@ -1,0 +1,105 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bbe-ee89-7bd2-81e5-a9be384ca6b4",
+      "model": "gpt-6-luna"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemStarted": {
+      "id": "01a19bbe-f2ca-7523-8c2b-76fe1b1fcaf3",
+      "kind": "UserMessage",
+      "preview": "Before doing anything else, use your request_user_input tool to ask me one multiple-choice question: which color do I prefer, with the options red and blue. After I answer, reply with only the color I picked."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "01a19bbe-f2ca-7523-8c2b-76fe1b1fcaf3",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Before doing anything else, use your request_user_input tool to ask me one multiple-choice question: which color do I prefer, with the options red and blue. After I answer, reply with only the color I picked."
+      }
+    }
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "call_924d2c111d0b4827970980ab6b5624e1",
+      "q": {
+        "request_id": "call_924d2c111d0b4827970980ab6b5624e1",
+        "prompt": "Which color do you prefer?",
+        "options": [
+          "Red",
+          "Blue"
+        ],
+        "multi": false,
+        "free_text": true
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "call_924d2c111d0b4827970980ab6b5624e1"
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "RateLimit": {
+      "kind": "monthly",
+      "percent": 1.0,
+      "resets_at": 1796204676
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_070f26c8ff5cb674016ae8620b2de88191b9bbc62e730ba35b",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_070f26c8ff5cb674016ae8620b2de88191b9bbc62e730ba35b",
+      "text": "Red"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_070f26c8ff5cb674016ae8620b2de88191b9bbc62e730ba35b",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Red"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 15635,
+        "output": 66,
+        "cache_read": 10880,
+        "cache_write": 0
+      },
+      "duration_ms": 3414
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]
