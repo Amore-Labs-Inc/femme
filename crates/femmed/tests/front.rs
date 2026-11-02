@@ -498,6 +498,43 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_over_one_mebibyte_is_refused_and_the_global_scope_stays_subscribable() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let create = |body: String| Req::IssueCreate {
+        repo: "o/r".into(),
+        title: "t".into(),
+        body,
+    };
+    // The board answers 413 there. Two of 9 MiB once got in, and their backlog passed the frame
+    // limit: the connection died and every reconnect hit the same message.
+    for _ in 0..2 {
+        let refused = c.call(create("x".repeat(9 << 20))).await;
+        assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+    }
+    let fits = c.call(create("x".repeat((1 << 20) - 200))).await;
+    assert!(matches!(fits, Ok(Resp::Issue(_))), "{fits:?}");
+    c.conn.close();
+    drop(c);
+    for _ in 0..2 {
+        let mut c = rig.desktop(&dev, Cursors::default()).await;
+        let all = Req::Subscribe {
+            scope: Scope::Global,
+            after: None,
+        };
+        assert_eq!(c.call(all).await, Ok(Resp::Ok));
+        let (scope, _, rows) = c.changes().await;
+        assert_eq!(scope, Scope::Global);
+        assert_eq!(
+            rows.iter().filter(|r| matches!(r, Row::Issue(_))).count(),
+            1
+        );
+        c.conn.close();
+    }
+}
+
 // ---- state ------------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -791,6 +828,39 @@ async fn two_issues_too_big_for_one_frame_do_not_lock_the_desktop_out_of_the_glo
         assert_eq!(c.next_answer().await, (op, Ok(Resp::Ok)));
         c.conn.close();
     }
+}
+
+/// A row can be bigger than a frame (these came by import, or from a bug): its message cannot be
+/// sent, but the connection must not die of it, and everything else still arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_event_too_big_for_a_frame_is_skipped_and_the_connection_goes_on() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    rig.d
+        .issue_create("o/r", "too big", &"x".repeat(17 << 20))
+        .await
+        .unwrap();
+    rig.d.issue_create("o/r", "small", "b").await.unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let all = Req::Subscribe {
+        scope: Scope::Global,
+        after: None,
+    };
+    let op = OpId::new();
+    c.send(op, all).await;
+    let (_, _, rows) = c.changes().await;
+    let titles: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Issue(i) => Some(i.title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["small"]);
+    assert_eq!(c.next_answer().await, (op, Ok(Resp::Ok)));
+    // And the connection still serves, and pushes.
+    let sid = c.session(&rig.home()).await;
+    while !session_ids(&c.changes().await.2).contains(&sid) {}
 }
 
 // ---- terminals --------------------------------------------------------------------------------

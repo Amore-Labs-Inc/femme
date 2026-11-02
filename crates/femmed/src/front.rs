@@ -52,6 +52,10 @@ const MAX_INFLIGHT: usize = 64;
 const EVENTS_QUEUE: usize = 256;
 /// Answers queued for one connection's `ctrl` stream.
 const ANSWER_QUEUE: usize = 64;
+/// The most a request may weigh on the wire: what the board's API takes (`MAX_BODY` there, private
+/// to it) and answers 413 past. A bigger one is `Bad`, so nothing gets in through here that the
+/// board would refuse, and no row outgrows what a subscription can carry.
+const BODY_MAX: usize = 1 << 20;
 /// How long a refused client gets to read why before the connection is closed on it.
 const LINGER: Duration = Duration::from_secs(5);
 /// How often the terminal relay's latency is logged (when it has changed).
@@ -439,13 +443,18 @@ async fn run_ctrl(
 
 /// Writes what arrives on `queue` to the stream, in order, until the queue closes or the stream
 /// fails. A reply too big to frame (a blob past the frame limit) is answered with an error for its
-/// op instead of silence.
+/// op instead of silence; an event too big (one row can be) is skipped and logged.
 async fn pump(mut tx: Tx, mut queue: mpsc::Receiver<S2C>) {
     while let Some(msg) = queue.recv().await {
         match tx.send(&msg).await {
             Ok(()) => {}
             Err(femme_transport::Error::Proto(e)) => {
-                let S2C::Resp { op, .. } = msg else { return };
+                let S2C::Resp { op, .. } = msg else {
+                    // `send` refuses it before a byte is written, so the stream is whole; ending it
+                    // would only make the desktop reconnect into the same row.
+                    tracing::warn!(%e, "event too large to send, skipped");
+                    continue;
+                };
                 let result = Err(req::err(
                     ErrCode::Internal,
                     format!("reply too large to send: {e}"),
@@ -486,6 +495,10 @@ impl Ctx {
     /// first attempt's answer is recorded (and shared with a retry that arrives while it runs), and
     /// every later one gets that answer back. Reads are just run.
     async fn run(&self, op: OpId, req: Req) -> Outcome {
+        if codec::encode(&req).map_or(usize::MAX, |b| b.len()) > BODY_MAX {
+            let why = format!("a request is at most {BODY_MAX} bytes");
+            return Err(req::err(ErrCode::Bad, why));
+        }
         if !req::mutates(&req) {
             return req::dispatch(self, req).await;
         }
