@@ -1,0 +1,17 @@
+[package]
+name = "femme-term"
+description = "Terminal emulator wrapper: absolute rows, per-row revs, RowPatch frames, key encoding."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# The desktop builds this crate with `default-features = false`: it only needs `client`.
+default = ["emulator"]
+emulator = ["dep:alacritty_terminal", "dep:unicode-width"]
+
+[dependencies]
+femme-proto.workspace = true
+alacritty_terminal = { workspace = true, optional = true }
+# Same minor as alacritty_terminal's own dependency, so both resolve to one copy and one width table.
+unicode-width = { version = "0.2", optional = true }
