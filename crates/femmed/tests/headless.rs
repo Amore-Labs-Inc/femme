@@ -567,6 +567,11 @@ async fn twenty_headless_tui_takeover_cycles_never_run_two_processes_and_each_ta
                 )
             })
             .await;
+            // the way to the terminal is refused while a turn runs: let this one end first
+            wait_for(&d, sid, "the round's turn over", |s| {
+                s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+            })
+            .await;
         }
     }
     let max = took.iter().max().unwrap();
