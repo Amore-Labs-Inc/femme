@@ -105,18 +105,27 @@ pub fn resolve(
     }))
 }
 
+/// The text of `~/.config/femme/desktop.env`; empty when there is none.
+fn env_file() -> anyhow::Result<String> {
+    let Some(path) = config_dir().map(|d| d.join("desktop.env")) else {
+        return Ok(String::new());
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn default_identity() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("device"))
+}
+
 /// [`resolve`] over the real environment and `~/.config/femme/desktop.env`; `identity` is
 /// `--identity` (default `~/.config/femme/device`).
 pub fn load(flags: Flags, identity: Option<PathBuf>) -> anyhow::Result<Option<Connect>> {
-    let file = match config_dir().map(|d| d.join("desktop.env")) {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
-        },
-        None => String::new(),
-    };
-    let identity = identity.or_else(|| config_dir().map(|d| d.join("device")));
+    let file = env_file()?;
+    let identity = identity.or_else(default_identity);
     // Without a home and without --identity there is nowhere to keep the device: only a run that
     // connects needs one, so the error waits for a connection to be asked for.
     let connect = resolve(
@@ -175,6 +184,22 @@ pub fn enroll_line(host: Option<&str>, spki: &[u8; 32]) -> String {
         hostname(),
         fp_to_hex(spki)
     )
+}
+
+/// `--show-spki`: [`show_spki`] for the identity directory and ssh host the flags, the environment
+/// and the env file give. No daemon address is needed: the point is to enroll before there is one.
+pub fn show(flags: Flags, identity: Option<PathBuf>) -> anyhow::Result<String> {
+    let file = env_file()?;
+    let ssh = pick(
+        flags.ssh,
+        "FEMME_SSH",
+        &|k| std::env::var(k).ok(),
+        &parse_env_file(&file),
+    );
+    let dir = identity
+        .or_else(default_identity)
+        .context("HOME is not set: pass --identity DIR")?;
+    show_spki(&dir, ssh.as_deref())
 }
 
 /// What `--show-spki` prints: the SPKI hash of this device's key and the line that enrolls it.
