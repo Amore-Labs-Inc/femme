@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FEMME sign in</title>
+<link rel="icon" href="/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kaushan+Script&family=Schibsted+Grotesk:wght@400&family=VT323&display=swap">
+<style>
+  /* Same Lisa-desktop look as index.html. */
+  :root { --desk: #F386A1; --paper: #FEFEFE; --panel: #E5E5E5; --ink: #1E1E1E; --muted: #5c5c5c; --hover: #D45BB6; --neon: #FF4FB4; --bad: #B42318;
+          --pixel: VT323, ui-monospace, monospace; color-scheme: light; }
+  * { box-sizing: border-box; }
+  ::selection { background: var(--hover); color: var(--ink); }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; color: var(--ink);
+         font: 16px/1.5 "Schibsted Grotesk", system-ui, sans-serif; letter-spacing: .02em;
+         background: var(--desk) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Crect x='2' y='2' width='1' height='1' fill='%231e1e1e'/%3E%3C/svg%3E"); }
+  main { width: 100%; max-width: 360px; background: var(--panel); border: 1.2px solid var(--ink); box-shadow: 3px 3px 0 rgba(0, 0, 0, .4); }
+  h1 { margin: 0; padding: 10px 14px; display: flex; align-items: center; gap: 10px; background: var(--paper); border-bottom: 1.2px solid var(--ink);
+       font: 400 32px/1.1 "Kaushan Script", cursive; color: var(--neon); text-shadow: 2px 2px 0 var(--ink); letter-spacing: .03em; }
+  h1 img { width: 34px; height: 34px; }
+  .pane { padding: 20px 16px; }
+  p { color: var(--muted); margin: 0 0 16px; font-size: 15px; }
+  input, button { width: 100%; font: inherit; border-radius: 0; border: 1.2px solid var(--ink); }
+  input { background: var(--paper); color: var(--ink); padding: 10px 12px; margin-bottom: 12px; }
+  ::placeholder { color: #767676; }
+  button { height: 44px; background: var(--ink); color: var(--paper); font: 22px/1 var(--pixel); cursor: pointer; transition: background-color .2s; }
+  button:hover { background: var(--hover); color: var(--ink); }
+  button:disabled { opacity: .6; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .msg { margin-top: 14px; font-size: 14px; color: var(--muted); }
+  .msg:empty { display: none; }
+  .msg.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1><img src="/logo.svg" alt="">FEMME</h1>
+  <div class="pane">
+    <p id="lead">Enter your email for a sign-in link.</p>
+    <form id="f">
+      <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+      <button id="go">Email me a link</button>
+    </form>
+    <div class="msg" id="msg" role="status"></div>
+  </div>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const token = (location.pathname.match(/^\/magic\/([0-9a-f]+)$/) || [])[1];
+
+  if (token) {
+    // The emailed link lands here; signing in takes a click, so mail scanners
+    // that open links can't use it up.
+    $('lead').textContent = 'Tap to finish signing in on this device.';
+    $('email').remove();
+    $('go').textContent = 'Sign in';
+  }
+
+  $('f').onsubmit = async e => {
+    e.preventDefault();
+    $('go').disabled = true;
+    $('msg').className = 'msg';
+    if (token) {
+      const r = await post('/api/magic', { token });
+      if (r.ok) return location.replace('/');
+      $('msg').className = 'msg bad';
+      $('msg').textContent = (await r.json()).error;
+      $('go').disabled = false;
+    } else {
+      await post('/api/login', { email: $('email').value });
+      $('msg').textContent = 'If that address is allowed, a link is on its way. It works once, for 15 minutes.';
+    }
+  };
+</script>
+</body>
+</html>
