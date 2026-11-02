@@ -10,7 +10,7 @@ use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
 use femme_proto::rpc::Answer;
 use femme_proto::state::{Attention, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
-use femmed::core::{Core, CoreError};
+use femmed::core::{Core, CoreError, PaneRef};
 use femmed::daemon::Daemon;
 use serde_json::Value;
 
@@ -590,4 +590,279 @@ async fn twenty_headless_tui_takeover_cycles_never_run_two_processes_and_each_ta
     assert_eq!(claude_processes(&b), 1);
     d.close_session(sid).await.unwrap();
     wait_for(&d, sid, "closed", |s| s.is_none()).await;
+}
+
+/// The statuses of a transcript's question items, oldest first.
+fn questions(v: &[Item]) -> Vec<ItemStatus> {
+    v.iter()
+        .filter(|i| i.kind == ItemKind::Question)
+        .map(|i| i.status)
+        .collect()
+}
+
+/// One `/input`, tried again while the actor is still replaying after a restart (`Busy`).
+async fn input_when_ready(d: &Daemon, pane: &PaneRef, bytes: &[u8]) {
+    let t0 = Instant::now();
+    loop {
+        match d.input(pane, bytes).await {
+            Ok(()) => return,
+            Err(CoreError::Busy) if t0.elapsed() < Duration::from_secs(10) => {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(e) => panic!("input {bytes:?}: {e:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_with_two_parts_is_answered_part_by_part_through_input() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+
+    d.prompt(&pane, "ask2").await.unwrap();
+    wait_for(&d, sid, "blocked", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Blocked)
+    })
+    .await;
+    let v = wait_items(&d, sid, "both parts", |v| questions(v).len() == 2).await;
+    assert_eq!(questions(&v), [ItemStatus::Pending; 2]);
+    let screen = d.screen(&pane, false).await.unwrap().text;
+    assert!(
+        screen.contains("? Which?") && screen.contains("? Second?"),
+        "{screen}"
+    );
+
+    // the first `/input` answers the first part, and only that: the session still waits
+    d.input(&pane, b"1").await.unwrap();
+    let v = items(&d, sid);
+    assert_eq!(
+        questions(&v),
+        [ItemStatus::Answered, ItemStatus::Pending],
+        "{:#?}",
+        shape(&v)
+    );
+    let s = d
+        .terminals()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.sid == sid)
+        .unwrap();
+    assert_eq!(
+        (s.status, s.attention),
+        (SessionStatus::Blocked, Attention::Blocked)
+    );
+    let screen = d.screen(&pane, false).await.unwrap().text;
+    assert!(screen.contains("? Which? -> a"), "{screen}");
+    assert!(
+        screen.contains("? Second?\n  1. x\n  2. y"),
+        "the second part is asked still: {screen}"
+    );
+
+    // the second reaches the second part, and the agent goes on with both answers
+    d.input(&pane, b"2").await.unwrap();
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    let v = wait_items(&d, sid, "the choices", |v| {
+        has_text(v, ItemKind::AssistantMessage, "you chose: a, y")
+    })
+    .await;
+    assert_eq!(questions(&v), [ItemStatus::Answered; 2], "{:#?}", shape(&v));
+    let screen = d.screen(&pane, false).await.unwrap().text;
+    assert!(
+        screen.contains("? Which? -> a") && screen.contains("? Second? -> y"),
+        "{screen}"
+    );
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_part_answered_before_a_daemon_restart_stays_answered_and_the_next_one_completes_the_question(
+) {
+    let b = Box_::new();
+    let (mut d, mut stop) = b.start(None).await;
+    let port = port_of(&d);
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "ask2").await.unwrap();
+    wait_items(&d, sid, "both parts", |v| questions(v).len() == 2).await;
+    d.input(&pane, b"1").await.unwrap();
+
+    drop(stop);
+    drop(d);
+    (d, stop) = b.start(Some(port)).await;
+    d.reconcile().await;
+    let _stop = stop;
+    let v = items(&d, sid);
+    assert_eq!(
+        questions(&v),
+        [ItemStatus::Answered, ItemStatus::Pending],
+        "{:#?}",
+        shape(&v)
+    );
+    input_when_ready(&d, &pane, b"2").await;
+    wait_items(&d, sid, "the choices", |v| {
+        has_text(v, ItemKind::AssistantMessage, "you chose: a, y")
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_takeover_is_refused_while_a_turn_runs_and_goes_through_after_an_interrupt() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid = b.claude_pid();
+
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(d.takeover(sid, Mode::Tui).await, Err(CoreError::Busy));
+    // the refusal left the turn alone: the same process streams on, still headless
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let s = d
+        .terminals()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.sid == sid)
+        .unwrap();
+    assert_eq!((s.mode, s.status), (Mode::Headless, SessionStatus::Working));
+    assert_eq!((b.claude_pid(), claude_processes(&b)), (pid, 1));
+
+    d.interrupt(sid).await.unwrap();
+    wait_for(&d, sid, "idle after the interrupt", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.takeover(sid, Mode::Tui).await.unwrap();
+    wait_for(&d, sid, "the terminal", |s| {
+        s.is_some_and(|s| s.mode == Mode::Tui && s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(claude_processes(&b), 1);
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_screen_shows_an_answer_while_it_is_still_streaming() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_screen(&d, &pane, "tick 3").await;
+    let screen = d.screen(&pane, false).await.unwrap();
+    assert_eq!(screen.status.as_deref(), Some("working"), "mid-turn");
+    assert!(
+        screen.text.contains("tick 1") && !screen.text.contains("tick 50"),
+        "{}",
+        screen.text
+    );
+    d.interrupt(sid).await.unwrap();
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    // the turn is over: the screen reads the item the store has
+    assert!(d
+        .screen(&pane, false)
+        .await
+        .unwrap()
+        .text
+        .contains("tick 3"));
+    d.close_session(sid).await.unwrap();
+}
+
+/// What the held prompt of an agent that died was kept for: its next process. A terminal that
+/// takes the session over first leaves no such process, and the prompt must not come back from
+/// the next restart as a turn nobody asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_the_agent_dropped_when_it_died_does_not_run_after_a_takeover_and_a_restart() {
+    let b = Box_::new();
+    let (mut d, mut stop) = b.start(None).await;
+    let port = port_of(&d);
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid = b.claude_pid();
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(&d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    // held behind the turn; then the agent is killed, taking the turn and the held prompt with it
+    d.prompt(&pane, "second").await.unwrap();
+    assert!(std::process::Command::new("kill")
+        .args(["-9", &pid])
+        .status()
+        .unwrap()
+        .success());
+    wait_items(&d, sid, "the dropped prompt's note", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::Event && text_of(i).contains("was not run"))
+    })
+    .await;
+
+    // the restart is two seconds away: the terminal takes the session first, and gives it back
+    d.takeover(sid, Mode::Tui).await.unwrap();
+    d.takeover(sid, Mode::Headless).await.unwrap();
+    wait_for(&d, sid, "headless again", |s| {
+        s.is_some_and(|s| s.mode == Mode::Headless && s.status == SessionStatus::Idle)
+    })
+    .await;
+    let held = |d: &Daemon| {
+        let state = d
+            .store
+            .read(|c| femme_store::sessions::agent_state(c, sid))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&state.unwrap().1).unwrap();
+        saved["held"].as_array().unwrap().len()
+    };
+    assert_eq!(held(&d), 0, "nothing is saved for a restart");
+
+    drop(stop);
+    drop(d);
+    (d, stop) = b.start(Some(port)).await;
+    d.reconcile().await;
+    let _stop = stop;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let v = items(&d, sid);
+    assert!(
+        !v.iter()
+            .any(|i| i.kind == ItemKind::UserMessage && text_of(i) == "second"),
+        "a turn nobody asked for: {:#?}",
+        shape(&v)
+    );
+    assert_eq!(held(&d), 0);
+    d.close_session(sid).await.unwrap();
 }
