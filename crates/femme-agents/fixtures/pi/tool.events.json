@@ -1,0 +1,133 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bac-3091-756a-adf1-7cb585e25d6a",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12513",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Run `echo hi` with your shell tool and then say done."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o12847:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12847:0",
+      "text": "Running it."
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "call_echo_1",
+      "kind": "ToolCall",
+      "preview": "bash"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12847:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Running it."
+      }
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "call_echo_1",
+      "body": {
+        "call_id": "call_echo_1",
+        "input": {
+          "command": "echo hi"
+        },
+        "name": "bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "call_echo_1",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "call_echo_1",
+        "input": {
+          "command": "echo hi"
+        },
+        "name": "bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "call_echo_1:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "call_echo_1",
+        "is_error": false,
+        "output": "hi\n"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o18173:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o18173:0",
+      "text": "done"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o18173:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "done"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 1260,
+        "output": 9,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 114
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

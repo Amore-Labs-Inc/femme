@@ -1,0 +1,164 @@
+[
+  {
+    "Started": {
+      "agent_sid": "01a19bc5-8f54-7245-81b3-e8ceb045340c",
+      "model": "mock/mock-a"
+    }
+  },
+  "TurnStarted",
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12513",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Count slowly from 1 to 12."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o12793:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "1\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "2\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "3\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "4\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "5\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "6\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "7\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "8\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "9\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "10\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "11\n"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o12793:0",
+      "text": "12\n"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o12793:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o18038",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Stop counting and say STEERED."
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "o18326:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "o18326:0",
+      "text": "STEERED"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "o18326:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "STEERED"
+      }
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 1260,
+        "output": 7,
+        "cache_read": 800,
+        "cache_write": 0
+      },
+      "duration_ms": 2526
+    }
+  },
+  {
+    "Status": "Idle"
+  },
+  {
+    "Exited": {
+      "code": 0
+    }
+  }
+]

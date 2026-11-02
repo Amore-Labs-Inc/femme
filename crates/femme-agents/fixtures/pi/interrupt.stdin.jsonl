@@ -1,0 +1,5 @@
+{"id":"f1","type":"get_state"}
+{"id":"f2","type":"prompt","message":"Count slowly from 1 to 50."}
+{"id":"f3","type":"clear_queue"}
+{"id":"f4","type":"abort"}
+{"id":"f5","type":"prompt","message":"Reply with the single word ok."}

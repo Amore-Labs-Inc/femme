@@ -1,0 +1,95 @@
+{
+ "argv": [
+  "pi",
+  "--mode",
+  "rpc",
+  "--model",
+  "mock/mock-a"
+ ],
+ "extra_args": [],
+ "launch": {
+  "cwd": "/work/repo",
+  "model": "mock/mock-a",
+  "resume": null
+ },
+ "exit": 0,
+ "calls": [
+  {
+   "at": 0,
+   "call": "on_start"
+  },
+  {
+   "at": 1,
+   "call": "raw",
+   "line": {
+    "id": "s-get_available_models",
+    "type": "get_available_models"
+   }
+  },
+  {
+   "at": 2,
+   "call": "raw",
+   "line": {
+    "id": "s-get_session_stats",
+    "type": "get_session_stats"
+   }
+  },
+  {
+   "at": 3,
+   "call": "raw",
+   "line": {
+    "id": "s-get_messages",
+    "type": "get_messages"
+   }
+  },
+  {
+   "at": 4,
+   "call": "prompt",
+   "text": "Reply with the single word ok.",
+   "how": "Queue"
+  },
+  {
+   "at": 23,
+   "call": "raw",
+   "line": {
+    "id": "s2-get_state",
+    "type": "get_state"
+   }
+  },
+  {
+   "at": 24,
+   "call": "raw",
+   "line": {
+    "id": "s2-get_messages",
+    "type": "get_messages"
+   }
+  },
+  {
+   "at": 25,
+   "call": "raw",
+   "line": {
+    "id": "s2-get_session_stats",
+    "type": "get_session_stats"
+   }
+  },
+  {
+   "at": 26,
+   "call": "raw",
+   "line": {
+    "id": "s2-get_last_assistant_text",
+    "type": "get_last_assistant_text"
+   }
+  }
+ ],
+ "stdin_at": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  23,
+  24,
+  25,
+  26
+ ]
+}
