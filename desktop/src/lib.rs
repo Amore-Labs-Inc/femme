@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod bench;
+pub mod connect;
 pub mod display;
 pub mod panels;
 pub mod rng;
