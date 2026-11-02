@@ -47,7 +47,8 @@ the terminal.
 
 With a daemon the sidebar lists its real sessions, the drawer has a tab per pane and the panes are live
 shells. The transcript, right panel, composer, lanes and accounts stay mock. No synthetic panes are
-created (`--panes`/`--mode` only drive the benchmark; `--bench` refuses to run with a daemon).
+created (`--panes`/`--mode` only drive the benchmark; `--bench` ignores a daemon that only the
+environment or the env file names, and refuses the `--daemon` and `--ssh` flags).
 
 ```sh
 femme-desktop --show-spki --ssh myvps          # prints this device's key and the line to run on the box:
