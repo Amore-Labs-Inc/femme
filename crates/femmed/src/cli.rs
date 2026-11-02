@@ -1,5 +1,5 @@
-//! `femmed`'s command line: `serve` (the daemon), `proxy` (the SSH fallback transport) and `hook`
-//! (agent status from PTY mode).
+//! `femmed`'s command line: `serve` (the daemon), `proxy` (the SSH fallback transport), `hook`
+//! (agent status from PTY mode), and `enroll` / `devices` (which desktops may connect).
 //!
 //! - `femmed proxy`: `ssh -T host femmed proxy` turns the SSH channel into a byte pipe to the
 //!   daemon's unix socket ([`config::sock_path`]); the client speaks the same frames over it as
@@ -9,6 +9,9 @@
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
 //!   `/internal/hook` ([`post_hook`]). It always exits 0: a Claude hook that exits 2 blocks the
 //!   tool call and feeds its stderr to the model.
+//! - `femmed enroll --name <dev> --spki <sha256 hex>` registers a desktop (the SSH login is the root
+//!   of trust) and prints what it pins; `femmed devices` lists them and `femmed devices revoke
+//!   <id|name>` refuses one from its next connection on ([`crate::front::admin`]).
 //!
 //! stdout is `proxy`'s data channel: diagnostics go to stderr.
 
@@ -67,6 +70,34 @@ pub enum Command {
         /// The event's JSON when the agent passes it as the last argument (Codex `notify`); stdin is then not read.
         payload: Option<String>,
     },
+    /// Let a desktop connect: record its key and print what it pins (`fingerprint=... quic_port=... host=...`).
+    Enroll {
+        /// What to call the device in `femmed devices`.
+        #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+        name: String,
+        /// SHA-256 of the device certificate's public key, 64 hex digits (the desktop shows it on first run).
+        #[arg(long)]
+        spki: String,
+    },
+    /// List the enrolled devices, or revoke one.
+    Devices {
+        /// What to do with them (default: list).
+        #[command(subcommand)]
+        cmd: Option<DevicesCmd>,
+    },
+}
+
+/// What `femmed devices` does.
+#[derive(Debug, Subcommand)]
+pub enum DevicesCmd {
+    /// One line per device (the default).
+    List,
+    /// Refuse a device's connections from now on (open ones end on their own).
+    Revoke {
+        /// The device's id, or its name when no other device has it.
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        device: String,
+    },
 }
 
 /// `femmed serve` until the daemon's wiring exists: this crate cannot build a real
@@ -94,6 +125,9 @@ async fn serve_daemon() -> anyhow::Result<()> {
         tracing::info!(?report, "old board files");
     }
     daemon.reconcile().await;
+    // Before the worker starts anything: a port that is taken must stop the daemon, not half-start it.
+    // Held to the end of `serve`; dropping it closes the listeners and removes the socket.
+    let _front = crate::front::serve_front(daemon.clone()).await?;
     tokio::spawn(crate::worker::run(std::sync::Arc::downgrade(&daemon)));
     tokio::spawn(crate::daemon::Daemon::retain_daily(
         std::sync::Arc::downgrade(&daemon),
@@ -292,6 +326,33 @@ pub async fn run(cli: Cli) -> ExitCode {
             .await;
             ExitCode::SUCCESS
         }
+        Command::Enroll { name, spki } => finish(
+            "enroll",
+            crate::front::admin::enroll(&Config::load(), &name, &spki),
+        ),
+        Command::Devices {
+            cmd: None | Some(DevicesCmd::List),
+        } => finish("devices", crate::front::admin::devices(&Config::load())),
+        Command::Devices {
+            cmd: Some(DevicesCmd::Revoke { device }),
+        } => finish(
+            "devices",
+            crate::front::admin::revoke(&Config::load(), &device),
+        ),
+    }
+}
+
+/// Prints an admin command's line, or why it failed.
+fn finish(what: &str, out: anyhow::Result<String>) -> ExitCode {
+    match out {
+        Ok(line) => {
+            println!("{line}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("femmed {what}: {e:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -398,10 +459,43 @@ mod tests {
             Cli::try_parse_from(["femmed", "serve"]).unwrap().command,
             Command::Serve
         ));
+        let spki = "ab".repeat(32);
+        let Command::Enroll { name, spki: got } =
+            Cli::try_parse_from(["femmed", "enroll", "--name", "laptop", "--spki", &spki])
+                .unwrap()
+                .command
+        else {
+            panic!("enroll")
+        };
+        assert_eq!((name.as_str(), got.as_str()), ("laptop", spki.as_str()));
+        assert!(matches!(
+            Cli::try_parse_from(["femmed", "devices"]).unwrap().command,
+            Command::Devices { cmd: None }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["femmed", "devices", "list"])
+                .unwrap()
+                .command,
+            Command::Devices {
+                cmd: Some(DevicesCmd::List)
+            }
+        ));
+        let Command::Devices {
+            cmd: Some(DevicesCmd::Revoke { device }),
+        } = Cli::try_parse_from(["femmed", "devices", "revoke", "laptop"])
+            .unwrap()
+            .command
+        else {
+            panic!("revoke")
+        };
+        assert_eq!(device, "laptop");
         for bad in [
             &["femmed", "hook", "nosuchagent", "x"][..],
             &["femmed", "hook", "pi", ""],
             &["femmed", "hook", "claude"],
+            &["femmed", "enroll", "--name", "x"],
+            &["femmed", "enroll", "--name", "", "--spki", "ab"],
+            &["femmed", "devices", "revoke"],
             &["femmed"],
         ] {
             assert!(Cli::try_parse_from(bad).is_err(), "{bad:?}");
