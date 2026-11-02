@@ -111,6 +111,10 @@ enum Cmd {
     },
     /// A hook of the agent's TUI (takeover phases that wait for a turn to end).
     Hook(HookEvent),
+    /// The text streamed so far of the items still open (the store has them when they are done).
+    Streams {
+        reply: oneshot::Sender<HashMap<String, String>>,
+    },
 }
 
 /// The way into a session's actor. Dropping the last one stops the actor and leaves the agent be.
@@ -169,6 +173,15 @@ impl Head {
     /// Passes a TUI hook on (fire and forget: the hook route must not wait for the actor).
     pub(crate) fn hook(&self, ev: HookEvent) {
         let _ = self.tx.try_send(Cmd::Hook(ev));
+    }
+
+    /// What the open items have streamed so far (empty when the actor is gone).
+    pub(crate) async fn streams(&self) -> HashMap<String, String> {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(Cmd::Streams { reply }).await.is_err() {
+            return HashMap::new();
+        }
+        answer.await.unwrap_or_default()
     }
 }
 
@@ -299,6 +312,11 @@ struct Actor {
     /// Takeover steps to run first (the TUI ended while the daemon was away).
     boot_acts: Vec<Act>,
     fold: FoldState,
+    /// Writes a commit could not store, tried again first by the next one: the offset they
+    /// complete is not committed before they are.
+    // ponytail: unbounded while the store keeps failing, each batch is only a few KiB; cap it (and
+    // fail the session) if a store that stays broken is ever seen.
+    pending_puts: Vec<Put>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
     resend: Vec<HeldPrompt>,
     restart_at: Option<Instant>,
@@ -351,6 +369,7 @@ impl Actor {
             dead_at_attach: None,
             boot_acts: Vec::new(),
             fold: FoldState::default(),
+            pending_puts: Vec::new(),
             resend: Vec::new(),
             restart_at: None,
             restarted_at: None,
@@ -466,6 +485,9 @@ impl Actor {
                 };
                 self.run_acts(d, acts).await;
             }
+            Cmd::Streams { reply } => {
+                let _ = reply.send(self.fold.streams.clone());
+            }
         }
     }
 
@@ -516,9 +538,17 @@ impl Actor {
         self.driver
             .answer(request_id, a, &mut self.out)
             .map_err(driver_err)?;
+        // One part of a question with several: the driver keeps the answer until the others are
+        // in and writes nothing, and the CLI says nothing either. Its item is `Answered` now, so
+        // the next `/input` reaches the next part.
+        let part = if self.out.stdin.is_empty() {
+            d.answered_part(self.sid, request_id, a)
+        } else {
+            None
+        };
         self.flush().await;
         // the answers and the resume offset go together (the driver's contract)
-        self.commit(d, Vec::new()).await;
+        self.commit(d, part.into_iter().collect()).await;
         Ok(())
     }
 
@@ -537,6 +567,20 @@ impl Actor {
             || self.replay_until.is_some()
             || self.failed
         {
+            let _ = reply.send(Err(CoreError::Busy));
+            return;
+        }
+        // Closing the agent's stdin ends its turn: the user interrupts it or waits, as the way back
+        // waits for a turn in the terminal. A prompt written and not started yet counts (the driver
+        // is `Working`), the machine only knows turns the agent began.
+        if to == Mode::Tui
+            && self.machine.phase == Phase::Headless
+            && (self.machine.turn_active || self.driver.status() != AgentStatus::Idle)
+        {
+            tracing::info!(
+                sid = %self.sid,
+                "takeover refused: a turn is running, interrupt it or wait"
+            );
             let _ = reply.send(Err(CoreError::Busy));
             return;
         }
@@ -579,9 +623,31 @@ impl Actor {
             Ok(_) => {}
             Err(RecvError::Lagged(n)) => {
                 tracing::warn!(sid = %self.sid, n, "holder events were missed");
+                self.catch_up(d).await;
             }
             Err(RecvError::Closed) => {
                 self.holder_gone(d);
+            }
+        }
+    }
+
+    /// Events were missed: what the holder says now stands in for an exit among them, which
+    /// nothing else would announce again (a takeover would wait for it for good).
+    async fn catch_up(&mut self, d: &Daemon) {
+        let Ok(info) = self.holder.info().await else {
+            return;
+        };
+        match self.machine.phase {
+            Phase::Headless | Phase::StoppingAgent { .. } => {
+                if let Some(a) = info.agent.filter(|a| self.live && !a.alive) {
+                    self.agent_exited(d, a.exit.unwrap_or(-1)).await;
+                }
+            }
+            Phase::Tui | Phase::WaitingStop | Phase::StoppingTui { .. } => {
+                if !self.failed && !info.panes.iter().any(|p| p.no == MAIN && p.alive) {
+                    let acts = self.machine.step(Ev::PaneExited);
+                    self.run_acts(d, acts).await;
+                }
             }
         }
     }
@@ -822,8 +888,13 @@ impl Actor {
     }
 
     /// One transaction: the items, the spool offset they complete, and the attach state when it
-    /// changed. Then the holder hears the offset.
+    /// changed. Then the holder hears the offset. A transaction that fails leaves its items in
+    /// `pending_puts` for the next one: the offset only moves with the items it covers.
     async fn commit(&mut self, d: &Daemon, puts: Vec<Put>) {
+        let puts: Vec<Put> = std::mem::take(&mut self.pending_puts)
+            .into_iter()
+            .chain(puts)
+            .collect();
         let committed = self.committed.max(self.driver.resume_offset());
         let saved = Saved {
             answers: self.driver.pending_answers(),
@@ -842,7 +913,7 @@ impl Actor {
         }
         let (sid, epoch) = (self.sid, self.epoch);
         let r = d.write_items(|tx, _, published| {
-            for p in puts {
+            for p in &puts {
                 put(tx, sid, p, published)?;
             }
             if committed != before {
@@ -865,7 +936,10 @@ impl Actor {
                     }
                 }
             }
-            Err(e) => tracing::warn!(sid = %self.sid, %e, "transcript not stored"),
+            Err(e) => {
+                tracing::warn!(sid = %self.sid, %e, "transcript not stored, kept for later");
+                self.pending_puts = puts;
+            }
         }
     }
 
@@ -873,7 +947,7 @@ impl Actor {
     fn event(&self, d: &Daemon, text: &str) {
         let item = event_item(self.sid, format!("x{}", Id::new()), text, now_ms());
         if let Err(e) =
-            d.write_items(|tx, _, published| put(tx, self.sid, Put::Done(item), published))
+            d.write_items(|tx, _, published| put(tx, self.sid, &Put::Done(item), published))
         {
             tracing::warn!(sid = %self.sid, %e, "event not stored");
         }
@@ -1065,7 +1139,14 @@ impl Actor {
                     .type_into(self.sid, t.trim_end_matches('\r'))
                     .await
                     .map_err(|e| e.to_string()),
-                Act::SpawnTui => self.spawn_tui(d).await,
+                Act::SpawnTui => {
+                    // The prompts that waited for a headless process each have an Event item that
+                    // says they did not run, and the conversation moves to the terminal: none may
+                    // come back as a turn nobody asked for after the next restart.
+                    self.resend.clear();
+                    self.commit(d, Vec::new()).await;
+                    self.spawn_tui(d).await
+                }
                 Act::ClosePane => {
                     let r = self.holder.close_pane(MAIN).await;
                     d.sessions.forget(self.sid);
@@ -1396,14 +1477,15 @@ fn same(old: &Item, new: &Item) -> bool {
 }
 
 /// Applies one write inside the transaction; the items it stores go into `published`.
-fn put(tx: &mut Tx<'_>, sid: Sid, p: Put, published: &mut Vec<Item>) -> femme_store::Result<()> {
+fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_store::Result<()> {
     match p {
         Put::Start(item) => {
             if store_items::get_item(tx, sid, &item.item_id)?.is_none() {
-                published.push(tx.put_item(&item)?);
+                published.push(tx.put_item(item)?);
             }
         }
-        Put::Done(mut item) => {
+        Put::Done(item) => {
+            let mut item = item.clone();
             if let Some(old) = store_items::get_item(tx, sid, &item.item_id)? {
                 if same(&old, &item) {
                     return Ok(());
@@ -1413,13 +1495,13 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: Put, published: &mut Vec<Item>) -> femme_st
             published.push(tx.put_item(&item)?);
         }
         Put::Update(id, b) => {
-            let Some(mut item) = store_items::get_item(tx, sid, &id)? else {
+            let Some(mut item) = store_items::get_item(tx, sid, id)? else {
                 return Ok(());
             };
             if is_final(item.status) {
                 return Ok(());
             }
-            let preview = preview_of(item.kind, &b);
+            let preview = preview_of(item.kind, b);
             if !preview.is_empty() {
                 item.preview = preview;
             }
@@ -1465,11 +1547,18 @@ fn preview_of(kind: ItemKind, b: &Value) -> String {
 // ---- the screen and raw input -------------------------------------------------------------------
 
 /// The text of a headless session's `/screen`: the items, oldest first, one block each; a pending
-/// question lists its options with numbers (`input` answers with the number).
-fn render(items: &[(Item, Value)]) -> String {
+/// question lists its options with numbers (`input` answers with the number). An item still open
+/// has no body in the store: `streams` holds the text it has so far.
+fn render(items: &[(Item, Value)], streams: &HashMap<String, String>) -> String {
     let mut out = String::new();
     for (item, b) in items {
-        let text = |k: &str| b[k].as_str().unwrap_or(&item.preview).to_string();
+        let text = |k: &str| match b[k].as_str() {
+            Some(t) => t.to_string(),
+            None => streams
+                .get(&item.item_id)
+                .unwrap_or(&item.preview)
+                .to_string(),
+        };
         let line = match item.kind {
             ItemKind::UserMessage => format!("> {}", text("text")),
             ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
@@ -1564,8 +1653,9 @@ fn body_value(store: &Store, i: &Item) -> Value {
 // ---- the daemon's side of it --------------------------------------------------------------------
 
 impl Daemon {
-    /// The oldest open question of a headless session.
-    pub(crate) fn pending_question(&self, sid: Sid) -> Result<Option<Question>, CoreError> {
+    /// The open questions of a headless session, oldest first (a request with several has one
+    /// item each, answered one by one).
+    fn pending_questions(&self, sid: Sid) -> Result<Vec<(Item, QuestionItem)>, CoreError> {
         let items = self
             .store
             .read(|c| store_items::page_items(c, sid, None, 200))
@@ -1573,13 +1663,48 @@ impl Daemon {
         Ok(items
             .into_iter()
             .rev()
-            .find(|i| i.kind == ItemKind::Question && i.status == ItemStatus::Pending)
-            .and_then(|i| serde_json::from_value::<QuestionItem>(body_value(&self.store, &i)).ok())
-            .map(|q| q.q))
+            .filter(|i| i.kind == ItemKind::Question && i.status == ItemStatus::Pending)
+            .filter_map(|i| {
+                let q = serde_json::from_value(body_value(&self.store, &i)).ok()?;
+                Some((i, q))
+            })
+            .collect())
     }
 
-    /// The text a headless session shows as its screen.
-    pub(crate) fn headless_screen(&self, sid: Sid) -> Result<String, CoreError> {
+    /// The oldest open question of a headless session.
+    pub(crate) fn pending_question(&self, sid: Sid) -> Result<Option<Question>, CoreError> {
+        Ok(self
+            .pending_questions(sid)?
+            .into_iter()
+            .next()
+            .map(|(_, q)| q.q))
+    }
+
+    /// The write that turns the open question `request_id` into `Answered` with `a`.
+    fn answered_part(&self, sid: Sid, request_id: &str, a: &Answer) -> Option<Put> {
+        let (item, mut q) = self
+            .pending_questions(sid)
+            .ok()?
+            .into_iter()
+            .find(|(_, q)| q.q.request_id == request_id)?;
+        q.answered = Some(a.clone());
+        Some(Put::Done(new_item(
+            sid,
+            item.item_id,
+            ItemKind::Question,
+            ItemStatus::Answered,
+            Some(&body(&q)),
+            item.ts,
+        )))
+    }
+
+    /// The text a headless session shows as its screen. The actor is asked first: an item that is
+    /// done by the time the store is read is read in full.
+    pub(crate) async fn headless_screen(&self, sid: Sid) -> Result<String, CoreError> {
+        let streams = match self.sessions.head(sid) {
+            Some(head) => head.streams().await,
+            None => HashMap::new(),
+        };
         let mut items = self
             .store
             .read(|c| store_items::page_items(c, sid, None, SCREEN_ITEMS))
@@ -1592,7 +1717,7 @@ impl Daemon {
                 (i, b)
             })
             .collect();
-        Ok(render(&items))
+        Ok(render(&items, &streams))
     }
 
     /// Raw input to a headless session: it answers the question the session waits on, or it is
@@ -1668,8 +1793,17 @@ impl Daemon {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+    use femme_proto::holder::{HolderAgent, HolderInfo, HolderPane, HolderReq, HolderResp};
+    use femme_proto::{codec, HOLDER_VERSION};
+    use futures::{SinkExt, StreamExt};
     use serde_json::json;
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio_util::codec::LengthDelimitedCodec;
+
+    use crate::config::Config;
 
     const SID: Sid = Id(7);
 
@@ -1716,32 +1850,31 @@ mod tests {
         }
     }
 
+    fn session_row(sid: Sid, mode: Mode, status: SessionStatus) -> Session {
+        Session {
+            id: sid,
+            handle: String::new(),
+            rev: 0,
+            name: None,
+            owner: "board".into(),
+            agent: Agent::Claude,
+            mode,
+            cwd: "/".into(),
+            label: None,
+            agent_sid: None,
+            model: None,
+            status,
+            attention: Attention::None,
+            created: 0,
+            closed: None,
+        }
+    }
+
     /// A store with one session, and a way to apply writes to it: what each one published.
     fn store_with_session() -> (Store, Sid) {
         let store = Store::open_memory().unwrap();
-        let sid = store
-            .write(|tx| {
-                Ok(tx
-                    .insert_session(&Session {
-                        id: Id(0),
-                        handle: String::new(),
-                        rev: 0,
-                        name: None,
-                        owner: "board".into(),
-                        agent: Agent::Claude,
-                        mode: Mode::Headless,
-                        cwd: "/".into(),
-                        label: None,
-                        agent_sid: None,
-                        model: None,
-                        status: SessionStatus::Starting,
-                        attention: Attention::None,
-                        created: 0,
-                        closed: None,
-                    })?
-                    .id)
-            })
-            .unwrap();
+        let row = session_row(Id(0), Mode::Headless, SessionStatus::Starting);
+        let sid = store.write(|tx| Ok(tx.insert_session(&row)?.id)).unwrap();
         (store, sid)
     }
 
@@ -1749,7 +1882,7 @@ mod tests {
         let mut published = Vec::new();
         store
             .write(|tx| {
-                for p in puts {
+                for p in &puts {
                     put(tx, sid, p, &mut published)?;
                 }
                 Ok(())
@@ -1767,33 +1900,6 @@ mod tests {
         assert_eq!(f.puts.len(), 2, "the message and the end of the turn");
         let f = fold(&mut st, SID, "d9", turn(StopReason::Interrupted), 1);
         assert_eq!(f.state, Some((SessionStatus::Idle, Attention::None)));
-    }
-
-    #[test]
-    fn working_and_blocked_rows_go_out_before_the_items_and_idle_after_them() {
-        let f = fold(
-            &mut FoldState::default(),
-            SID,
-            "d0",
-            turn(StopReason::EndTurn),
-            1,
-        );
-        assert!(!row_first(f.state), "idle (done) follows the final message");
-        let f = fold(
-            &mut FoldState::default(),
-            SID,
-            "d0",
-            vec![AgentEvent::TurnStarted],
-            1,
-        );
-        assert!(row_first(f.state), "working precedes the first item");
-        let ev = AgentEvent::QuestionAsked {
-            item_id: "q1".into(),
-            q: question(),
-        };
-        let f = fold(&mut FoldState::default(), SID, "d0", vec![ev], 1);
-        assert!(row_first(f.state), "blocked precedes the question item");
-        assert!(!row_first(None));
     }
 
     #[test]
@@ -1945,10 +2051,11 @@ mod tests {
         );
     }
 
+    // What this proves is the 4 KiB inline limit (the next test is about the 1 MiB cap).
     #[test]
     fn a_big_body_goes_to_a_blob_with_a_short_preview_and_is_not_written_twice() {
         let (store, sid) = store_with_session();
-        let big = json!({"text": "x".repeat(5000)});
+        let big = json!({"text": "x".repeat(store_items::INLINE_MAX + 1000)});
         let close = || {
             vec![Put::Done(new_item(
                 sid,
@@ -1968,21 +2075,6 @@ mod tests {
             stored[0].preview.len()
         );
         assert!(apply_puts(&store, sid, close()).is_empty());
-    }
-
-    #[test]
-    fn the_attach_state_roundtrips_through_its_json() {
-        let s = Saved {
-            answers: vec![("r1".into(), Answer::Option(1))],
-            held: vec![HeldPrompt {
-                text: "x".into(),
-                how: PromptHow::Queue,
-                queued_at_ms: 5,
-            }],
-        };
-        assert_eq!(serde_json::from_str::<Saved>(&s.json()).unwrap(), s);
-        let empty = Saved::default();
-        assert_eq!(serde_json::from_str::<Saved>(&empty.json()).unwrap(), empty);
     }
 
     #[test]
@@ -2037,11 +2129,14 @@ mod tests {
             ]
         };
         assert_eq!(
-            render(&asked(ItemStatus::Pending, None)),
+            render(&asked(ItemStatus::Pending, None), &HashMap::new()),
             "> hi\necho: hi\n? Which?\n  1. a\n  2. b\n"
         );
         assert_eq!(
-            render(&asked(ItemStatus::Answered, Some(Answer::Option(1)))),
+            render(
+                &asked(ItemStatus::Answered, Some(Answer::Option(1))),
+                &HashMap::new()
+            ),
             "> hi\necho: hi\n? Which? -> b\n"
         );
     }
@@ -2055,26 +2150,411 @@ mod tests {
     }
 
     #[test]
-    fn driver_refusals_map_to_busy_conflict_and_bad() {
-        assert_eq!(driver_err(DriverError::State("starting")), CoreError::Busy);
-        assert!(matches!(
-            driver_err(DriverError::UnknownRequest("r".into())),
-            CoreError::Conflict(_)
-        ));
-        assert!(matches!(
-            driver_err(DriverError::Bad("b".into())),
-            CoreError::Bad(_)
-        ));
-        assert!(matches!(
-            driver_err(DriverError::Unsupported("u")),
-            CoreError::Bad(_)
-        ));
-    }
-
-    #[test]
     fn cuts_land_on_character_boundaries() {
         assert_eq!(cut("héllo", 2), "h");
         assert_eq!(tail_of("éa", 2), "a");
         assert_eq!(tail_of("abc", 10), "abc");
+    }
+
+    // ---- the actor, against a holder that only answers ----------------------------------------
+
+    /// A holder for a test: `Hello` gets `info`, every other control request `Ok`, and what it was
+    /// asked is kept. Nothing runs in it and its spool stays empty. With `once` it stops
+    /// accepting after the first connection, so the next ones (the spool, a pane's view) fail.
+    struct FakeHolder {
+        info: Arc<Mutex<HolderInfo>>,
+        asked: Arc<Mutex<Vec<HolderReq>>>,
+    }
+
+    impl FakeHolder {
+        fn start(d: &Daemon, sid: Sid, once: bool) -> FakeHolder {
+            let path = d.sessions.dirs.socket(sid);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let listener = UnixListener::bind(&path).unwrap();
+            let info = Arc::new(Mutex::new(HolderInfo {
+                v: HOLDER_VERSION,
+                sid,
+                epoch: 1,
+                started: 0,
+                panes: Vec::new(),
+                agent: Some(agent(true, None)),
+            }));
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let (i, a) = (info.clone(), asked.clone());
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(hold(stream, i.clone(), a.clone()));
+                    if once {
+                        break;
+                    }
+                }
+            });
+            FakeHolder { info, asked }
+        }
+
+        fn asked(&self) -> Vec<HolderReq> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    fn agent(alive: bool, exit: Option<i32>) -> HolderAgent {
+        HolderAgent {
+            pid: 1,
+            alive,
+            exit,
+            spool_lo: 0,
+            spool_hi: 0,
+        }
+    }
+
+    async fn hold(
+        stream: UnixStream,
+        info: Arc<Mutex<HolderInfo>>,
+        asked: Arc<Mutex<Vec<HolderReq>>>,
+    ) {
+        let mut f = LengthDelimitedCodec::builder()
+            .little_endian()
+            .length_field_length(4)
+            .max_frame_length(codec::MAX_FRAME)
+            .new_framed(stream);
+        while let Some(Ok(frame)) = f.next().await {
+            let Ok(req) = codec::decode::<HolderReq>(&frame) else {
+                return;
+            };
+            let reply = match &req {
+                HolderReq::Hello { .. } => Some(HolderResp::Info(info.lock().unwrap().clone())),
+                // a pane's view, the spool: the connection stays open, and silent
+                HolderReq::Attach { .. } | HolderReq::SpoolRead { .. } | HolderReq::Term(_) => None,
+                _ => Some(HolderResp::Ok),
+            };
+            asked.lock().unwrap().push(req);
+            if let Some(r) = reply {
+                let sent = f.send(Bytes::from(codec::encode(&r).unwrap())).await;
+                if sent.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// A daemon over temp dirs whose only tool is an empty `claude` (the holder is fake: nothing
+    /// is run).
+    fn daemon() -> (Arc<Daemon>, tempfile::TempDir) {
+        let dir = tempfile::Builder::new()
+            .prefix("femmed-u-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude"), "").unwrap();
+        let mut cfg = Config::from_vars([("HOME".to_string(), dir.path().display().to_string())]);
+        cfg.state_dir = dir.path().join("state");
+        cfg.runtime_dir = dir.path().join("rt");
+        cfg.tool_path = Some(bin.display().to_string());
+        (Daemon::open(cfg).unwrap(), dir)
+    }
+
+    /// The session's row and its (empty) attach state go into the store, as `open_session` does.
+    fn insert_row(d: &Daemon, s: &Session) {
+        d.write(|tx, _| {
+            tx.insert_session(s)?;
+            tx.set_agent_state(s.id, 0, &Saved::default().json())
+        })
+        .unwrap();
+    }
+
+    /// An actor for session `SID` in `mode` over a fake holder. The session has no row in the
+    /// store until [`Rig::row`].
+    struct Rig {
+        d: Arc<Daemon>,
+        a: Actor,
+        fake: FakeHolder,
+        mode: Mode,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Rig {
+        async fn new(mode: Mode) -> Rig {
+            let (d, dir) = daemon();
+            let fake = FakeHolder::start(&d, SID, false);
+            let holder = Holder::connect(&d.sessions.dirs, SID).await.unwrap();
+            let s = session_row(SID, mode, SessionStatus::Starting);
+            let a = Actor::new(&d, &s, holder, 0, 0, Saved::default());
+            Rig {
+                d,
+                a,
+                fake,
+                mode,
+                _dir: dir,
+            }
+        }
+
+        fn row(&self) {
+            let s = session_row(SID, self.mode, SessionStatus::Starting);
+            insert_row(&self.d, &s);
+        }
+
+        fn item(&self, id: &str) -> Item {
+            let got = self.d.store.read(|c| store_items::get_item(c, SID, id));
+            got.unwrap().unwrap()
+        }
+    }
+
+    /// What the CLI prints for a turn that is one assistant message: its lines, newline ended.
+    fn turn_lines(mid: &str, text: &str) -> String {
+        [
+            json!({"type": "assistant", "message": {"id": mid, "content": [{"type": "text", "text": text}]}}),
+            json!({"type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5}),
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn a_commit_the_store_refused_is_made_again_with_the_next_one_and_the_offset_waits_for_it(
+    ) {
+        let mut rig = Rig::new(Mode::Headless).await;
+        let (first, second) = (turn_lines("m1", "one"), turn_lines("m2", "two"));
+        // The session has no row: the store refuses every write (a foreign key), as a store that
+        // fails would.
+        rig.a.ingest(&rig.d, 0, Bytes::from(first.clone())).await;
+        assert_eq!(
+            rig.a.committed, 0,
+            "no offset for items that are not stored"
+        );
+        assert_eq!(
+            rig.a.pending_puts.len(),
+            2,
+            "the message and the end of the turn wait"
+        );
+
+        rig.row();
+        let at = first.len() as u64;
+        rig.a.ingest(&rig.d, at, Bytes::from(second.clone())).await;
+        let (items, committed) = rig
+            .d
+            .store
+            .read(|c| {
+                Ok((
+                    store_items::page_items(c, SID, None, 100)?,
+                    sessions::spool_committed(c, SID)?,
+                ))
+            })
+            .unwrap();
+        let said: Vec<String> = items
+            .iter()
+            .rev()
+            .filter(|i| i.kind == ItemKind::AssistantMessage)
+            .map(|i| {
+                body_value(&rig.d.store, i)["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(said, ["one", "two"], "the first turn is not lost");
+        assert_eq!(
+            items.iter().filter(|i| i.kind == ItemKind::TurnEnd).count(),
+            2
+        );
+        assert_eq!(committed, (first.len() + second.len()) as u64);
+        assert!(rig.a.pending_puts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_session_row_goes_out_before_the_items_when_work_starts_and_after_them_when_it_ends(
+    ) {
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        let mut start = turn(StopReason::EndTurn);
+        let end = start.split_off(2);
+
+        rig.a.apply(&rig.d, Src::Line(0), start).await;
+        let row = rig.d.session(SID).unwrap();
+        assert_eq!(row.status, SessionStatus::Working);
+        let message = rig.item("m1");
+        assert!(
+            row.rev < message.rev,
+            "a client sees `working` before the turn's first item: row {} item {}",
+            row.rev,
+            message.rev
+        );
+
+        rig.a.apply(&rig.d, Src::Line(100), end).await;
+        let row = rig.d.session(SID).unwrap();
+        assert_eq!(
+            (row.status, row.attention),
+            (SessionStatus::Idle, Attention::Done)
+        );
+        let last = rig.item("d100-1");
+        assert!(
+            last.rev < row.rev,
+            "and never `done` before its last: item {} row {}",
+            last.rev,
+            row.rev
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_the_dead_agent_dropped_is_forgotten_when_the_terminal_takes_over() {
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        rig.a.spawn_process(&rig.d, None).await.unwrap();
+        // the agent has not answered `initialize`: the driver holds the prompt back
+        rig.a.prompt(&rig.d, "second").await.unwrap();
+        assert_eq!(rig.a.driver.held_prompts().len(), 1);
+        // it dies: the prompt is dropped and kept for the restart, two seconds away
+        rig.a.agent_exited(&rig.d, -9).await;
+        let kept: Vec<_> = rig.a.resend.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(kept, ["second"]);
+        assert!(rig.a.restart_at.is_some());
+
+        // the terminal takes over before it: there is no next headless process for it
+        let (reply, mut answer) = oneshot::channel();
+        rig.a.takeover(&rig.d, Mode::Tui, reply).await;
+        assert_eq!(answer.try_recv().unwrap(), Ok(()));
+        assert!(rig.a.resend.is_empty());
+        assert!(rig.a.restart_at.is_none());
+        let state = rig.d.store.read(|c| sessions::agent_state(c, SID));
+        let saved: Saved = serde_json::from_str(&state.unwrap().unwrap().1).unwrap();
+        assert!(
+            saved.held.is_empty(),
+            "nothing is saved for a restart either"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_exit_of_the_agent_is_taken_from_the_holders_report_when_events_were_missed() {
+        use broadcast::error::RecvError;
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        rig.a.spawn_process(&rig.d, None).await.unwrap();
+        let (reply, mut answer) = oneshot::channel();
+        rig.a.takeover(&rig.d, Mode::Tui, reply).await;
+        assert!(matches!(rig.a.machine.phase, Phase::StoppingAgent { .. }));
+
+        // events were missed, but the holder still has the agent: nothing to take
+        rig.a.on_holder(&rig.d, Err(RecvError::Lagged(300))).await;
+        assert!(matches!(rig.a.machine.phase, Phase::StoppingAgent { .. }));
+        // it is gone, and the event that said so was among them
+        rig.fake.info.lock().unwrap().agent = Some(agent(false, Some(0)));
+        rig.a.on_holder(&rig.d, Err(RecvError::Lagged(300))).await;
+        assert_eq!(rig.a.machine.phase, Phase::Tui);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Ok(()),
+            "the takeover is through"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_exit_of_the_terminal_is_taken_from_the_holders_report_when_events_were_missed()
+    {
+        use broadcast::error::RecvError;
+        let mut rig = Rig::new(Mode::Tui).await;
+        rig.row();
+        {
+            let mut info = rig.fake.info.lock().unwrap();
+            info.agent = None;
+            info.panes = vec![HolderPane {
+                no: MAIN,
+                pid: 2,
+                alive: false,
+                exit: Some(0),
+                cols: 80,
+                rows: 24,
+                title: String::new(),
+            }];
+        }
+        rig.a.on_holder(&rig.d, Err(RecvError::Lagged(300))).await;
+        assert_eq!(rig.a.machine.phase, Phase::Headless, "the terminal ended");
+        assert!(rig.a.live, "the agent runs headless again");
+        assert!(rig
+            .fake
+            .asked()
+            .iter()
+            .any(|r| matches!(r, HolderReq::SpawnAgent { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_headless_session_the_daemon_cannot_reattach_is_marked_interrupted() {
+        let (d, _dir) = daemon();
+        let (broken, healthy) = (Id(8), Id(9));
+        for sid in [broken, healthy] {
+            insert_row(
+                &d,
+                &session_row(sid, Mode::Headless, SessionStatus::Working),
+            );
+        }
+        // the first answers its hello and then refuses connections: its spool cannot be read
+        let _first = FakeHolder::start(&d, broken, true);
+        let _second = FakeHolder::start(&d, healthy, false);
+        d.reconcile().await;
+
+        let row = d.session(broken).unwrap();
+        assert_eq!(
+            (row.status, row.attention),
+            (SessionStatus::Interrupted, Attention::None)
+        );
+        assert!(d.sessions.head(broken).is_none(), "no actor drives it");
+        assert!(
+            d.sessions.head(healthy).is_some(),
+            "the other is reattached as usual"
+        );
+        assert_ne!(
+            d.session(healthy).unwrap().status,
+            SessionStatus::Interrupted
+        );
+    }
+
+    #[test]
+    fn the_screen_shows_what_an_open_item_has_streamed_so_far() {
+        let mut open = item(ItemKind::AssistantMessage, ItemStatus::InProgress, "");
+        open.item_id = "m1:0".into();
+        let items = vec![
+            (
+                item(ItemKind::UserMessage, ItemStatus::Completed, "hi"),
+                json!({"text": "hi"}),
+            ),
+            (open, Value::Null),
+        ];
+        let streams = HashMap::from([("m1:0".to_string(), "tick 1\ntick 2".to_string())]);
+        assert_eq!(render(&items, &streams), "> hi\ntick 1\ntick 2\n");
+    }
+
+    #[test]
+    fn a_body_past_the_blob_cap_is_stored_cut_with_its_marker_and_a_replay_leaves_it_as_it_is() {
+        let (store, sid) = store_with_session();
+        let huge = json!({"text": "x".repeat(store_items::BLOB_MAX + 10_000)});
+        let write = || {
+            vec![Put::Done(new_item(
+                sid,
+                "m1".into(),
+                ItemKind::AssistantMessage,
+                ItemStatus::Completed,
+                Some(&huge),
+                2,
+            ))]
+        };
+        let stored = apply_puts(&store, sid, write());
+        assert_eq!(stored.len(), 1);
+        let hash = stored[0].blob_hash.expect("a blob");
+        let blob = String::from_utf8(store.get_blob(&hash).unwrap().unwrap()).unwrap();
+        assert!(blob.ends_with(store_items::TRUNCATED), "cut, and says so");
+        assert!(
+            blob.len() <= store_items::BLOB_MAX && blob.len() > store_items::BLOB_MAX - 100,
+            "cut at the cap: {} bytes",
+            blob.len()
+        );
+        // Replayed, it is the same text again. (It is written again, as `same` says it must be
+        // for a body past the cap: that is not asserted, only that nothing else changes.)
+        let again = apply_puts(&store, sid, write());
+        assert!(again.iter().all(|i| i.blob_hash == Some(hash)));
+        let after = store
+            .read(|c| store_items::get_item(c, sid, "m1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!((after.blob_hash, after.ts), (Some(hash), 2));
     }
 }

@@ -665,7 +665,7 @@ impl Daemon {
         let (s, p) = self.resolve(pane)?;
         let text = if s.mode == Mode::Headless {
             // ponytail: no colours on a transcript's text, `ansi` is ignored
-            self.headless_screen(s.id)?
+            self.headless_screen(s.id).await?
         } else {
             self.sessions
                 .live(s.id)?
