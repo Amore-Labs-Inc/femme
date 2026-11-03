@@ -3,11 +3,22 @@
 //! composer's attachment previews.
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
+mod bitmap;
 mod chrome;
 mod hex;
 mod kind;
 
 pub use kind::{detect, Kind, Raster};
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+/// Runs `f`, turning a panic inside a decoder into an error message, so that one hostile file does
+/// not take the window down. (The release profile has `panic = "abort"`, where a panic still ends
+/// the process: the guard is for dev builds and tests.)
+fn guarded<T>(what: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(format!("{what} crashed on this file")))
+}
 
 use gpui::{div, Context, IntoElement, ParentElement, Render, Window};
 
