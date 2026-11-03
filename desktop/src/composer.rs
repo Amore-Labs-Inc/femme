@@ -117,6 +117,26 @@ impl Composer {
         cx.notify();
     }
 
+    /// Attaches `data` as `name` to the selected session's draft, as if it had been pasted or
+    /// dropped: a chip with a thumbnail when the bytes are a picture, uploaded at once with
+    /// `Req::BlobPut`, then through the same states (uploading, ready, failed with a retry) until
+    /// the prompt goes out. For a caller elsewhere in the app that made a file, such as a drawing
+    /// board handing over a PNG:
+    /// `composer.update(cx, |c, cx| c.add_attachment("diagram-1.png".into(), png, cx))`.
+    ///
+    /// Nothing happens while no session that takes prompts is selected (none, or a shell). A file
+    /// the composer refuses (empty, over `femme_proto::rpc::MAX_BLOB_PUT`, a seventeenth) leaves its
+    /// reason under the input, as a drop does. The name is kept unless the draft already holds it
+    /// (`diagram-1 (2).png`). Focus does not move: focus the composer afterwards so that the user
+    /// can type the message.
+    pub fn add_attachment(&mut self, name: String, data: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(sid) = self.session.filter(|_| self.target(cx).takes_prompts()) else {
+            return;
+        };
+        let refusal = self.attach(sid, name, data, cx);
+        self.settle_notice(sid, refusal.into_iter().collect(), cx);
+    }
+
     /// What the selected session is, as far as typing into it goes.
     fn target(&self, cx: &App) -> Target {
         let agent = self
