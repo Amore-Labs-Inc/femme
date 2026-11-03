@@ -8,6 +8,7 @@ mod chrome;
 mod hex;
 mod highlight;
 mod kind;
+mod pdf;
 
 pub use kind::{detect, Kind, Raster};
 
