@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
+use std::time::Duration;
 
 use femme_client::Client;
 use femme_proto::term::{TermDown, TermUp};
@@ -37,11 +38,51 @@ pub fn route(up: TermUp, opened: &mut bool) -> Route {
     }
 }
 
+/// How often a pane's stream is opened again when it fails before its first frame, and how long
+/// to wait before the first try (the wait doubles up to [`RETRY_MAX`]). The daemon writes a new
+/// session's rows, and so lists its pane, a moment before the session's holder listens: a
+/// terminal stream opened in that moment is answered `Exited { status: -1 }`, and the same stream
+/// a moment later is fine.
+const RETRIES: u32 = 8;
+const RETRY_FIRST: Duration = Duration::from_millis(150);
+const RETRY_MAX: Duration = Duration::from_secs(2);
+
+/// Whether to open the stream again, and after how long, for `msg` coming from it: `seen` says a
+/// frame has come already (the pane is there, so an `Exited` is its own), `tried` how many times
+/// the stream was opened again.
+pub fn retry_after(msg: &TermDown, seen: bool, tried: u32) -> Option<Duration> {
+    let failed = matches!(msg, TermDown::Exited { status: -1 });
+    (failed && !seen && tried < RETRIES).then(|| (RETRY_FIRST * 2u32.pow(tried)).min(RETRY_MAX))
+}
+
+/// The last `Resize` and `Focus` the pane said: a `Term` keeps them for its own reconnects, a new
+/// one has to be told again.
+#[derive(Default)]
+struct Told {
+    size: Option<TermUp>,
+    focus: Option<TermUp>,
+}
+
+impl Told {
+    fn note(&mut self, up: &TermUp) {
+        match up {
+            TermUp::Resize { .. } => self.size = Some(up.clone()),
+            TermUp::Focus(_) => self.focus = Some(up.clone()),
+            _ => {}
+        }
+    }
+
+    fn again(&self) -> impl Iterator<Item = &TermUp> {
+        self.size.iter().chain(&self.focus)
+    }
+}
+
 /// Attaches `pane` through `client` on the side runtime and returns what the pane talks to: the
 /// holder's messages, bounded at twice the holder's unacked window, and the channel for what the
 /// pane says. `refused` counts the input the `Term` handed back (past 64 KiB it has not been able to
-/// deliver, a long way into an outage): such input is dropped. The task ends when the pane drops
-/// its sender or the pane exits.
+/// deliver, a long way into an outage): such input is dropped. A stream that fails before its first
+/// frame is opened again (see [`retry_after`]). The task ends when the pane drops its sender or the
+/// pane exits.
 pub fn spawn_term(
     rt: &tokio::runtime::Handle,
     client: Arc<Client>,
@@ -53,10 +94,24 @@ pub fn spawn_term(
     rt.spawn(async move {
         let mut term = client.open_term(pane).await;
         let mut opened = false;
+        // A frame has come (the pane is there), and how often the stream was opened again for want
+        // of one.
+        let (mut seen, mut tried) = (false, 0);
+        let mut told = Told::default();
         loop {
             tokio::select! {
                 down = term.recv() => match down {
                     Some(msg) => {
+                        if let Some(wait) = retry_after(&msg, seen, tried) {
+                            tried += 1;
+                            tokio::time::sleep(wait).await;
+                            term = client.open_term(pane).await;
+                            for up in told.again() {
+                                let _ = term.send(up.clone());
+                            }
+                            continue;
+                        }
+                        seen |= matches!(msg, TermDown::Frame(_));
                         if down_tx.send(msg).await.is_err() {
                             break;
                         }
@@ -67,6 +122,7 @@ pub fn spawn_term(
                     None => break,
                     Some(Route::Ack(rev)) => term.applied(rev),
                     Some(Route::Send(up)) => {
+                        told.note(&up);
                         if term.send(up).is_err() {
                             refused.fetch_add(1, Relaxed);
                         }
@@ -88,7 +144,6 @@ mod tests {
     use femme_proto::term::{Key, KeyCode, Mods};
     use femme_proto::Id;
     use femme_transport::DeviceIdentity;
-    use std::time::Duration;
 
     fn open() -> TermUp {
         TermUp::Open {
@@ -122,6 +177,52 @@ mod tests {
         assert_eq!(
             route(TermUp::Focus(true), &mut opened),
             Route::Send(TermUp::Focus(true))
+        );
+    }
+
+    fn exited(status: i32) -> TermDown {
+        TermDown::Exited { status }
+    }
+
+    #[test]
+    fn a_stream_that_fails_before_its_first_frame_is_opened_again() {
+        // The daemon lists a new session's pane a moment before its holder listens.
+        let wait = |tried| retry_after(&exited(-1), false, tried);
+        assert_eq!(wait(0), Some(RETRY_FIRST));
+        assert_eq!(wait(1), Some(RETRY_FIRST * 2));
+        assert_eq!(wait(RETRIES - 1), Some(RETRY_MAX), "the wait stops growing");
+        assert_eq!(wait(RETRIES), None, "and so do the tries");
+        // Once a frame has come the pane is there: an exit is the pane's own.
+        assert_eq!(retry_after(&exited(-1), true, 0), None);
+        assert_eq!(retry_after(&exited(0), false, 0), None, "the program ended");
+        assert_eq!(retry_after(&TermDown::Bell, false, 0), None);
+    }
+
+    #[test]
+    fn a_stream_opened_again_is_told_the_last_size_and_focus() {
+        let mut told = Told::default();
+        assert_eq!(told.again().count(), 0);
+        for up in [
+            TermUp::Resize { cols: 80, rows: 24 },
+            key(),
+            TermUp::Focus(true),
+            TermUp::Resize {
+                cols: 100,
+                rows: 30,
+            },
+            TermUp::Focus(false),
+        ] {
+            told.note(&up);
+        }
+        assert_eq!(
+            told.again().cloned().collect::<Vec<_>>(),
+            [
+                TermUp::Resize {
+                    cols: 100,
+                    rows: 30
+                },
+                TermUp::Focus(false)
+            ]
         );
     }
 
