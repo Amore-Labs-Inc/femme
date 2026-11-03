@@ -362,11 +362,14 @@ pub enum Glyph {
     Terminal,
     /// `≡` the files tab of the right strip.
     Files,
+    /// `◈` the drawing board button of the right strip: a diamond around a dot, the flow chart's node.
+    /// The bundled fonts have no pencil, and a plain `◇` is too thin next to `>_` and `≡`.
+    Board,
 }
 
 impl Glyph {
     /// Every glyph, in the order the style sheet shows them.
-    pub const ALL: [Glyph; 10] = [
+    pub const ALL: [Glyph; 11] = [
         Glyph::Right,
         Glyph::Down,
         Glyph::Back,
@@ -377,6 +380,7 @@ impl Glyph {
         Glyph::Home,
         Glyph::Terminal,
         Glyph::Files,
+        Glyph::Board,
     ];
 
     /// The glyph's name, for tooltips and the style sheet.
@@ -392,6 +396,7 @@ impl Glyph {
             Glyph::Home => "home",
             Glyph::Terminal => "terminal",
             Glyph::Files => "files",
+            Glyph::Board => "board",
         }
     }
 
@@ -409,6 +414,7 @@ impl Glyph {
             Glyph::Home => ("⌂", FONT_MONO, true, 20., -1.5),
             Glyph::Terminal => (">_", FONT_PIXEL, false, 24., -0.5),
             Glyph::Files => ("≡", FONT_MONO, true, 20., -0.5),
+            Glyph::Board => ("◈", FONT_MONO, true, 20., 0.),
         };
         GlyphSpec {
             text,
