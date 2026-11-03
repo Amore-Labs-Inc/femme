@@ -487,14 +487,29 @@ pub fn error_text(status: u16, body: &str) -> String {
     }
 }
 
+/// The kinds of error a daemon answers with, as the client writes them before the message
+/// (`Internal: the board is not answering at ...`).
+const WIRE_CODES: [&str; 6] = [
+    "Bad",
+    "NotFound",
+    "Conflict",
+    "Busy",
+    "Unauthorized",
+    "Internal",
+];
+
 /// A failed request, in words for the card: a daemon that does not serve the accounts requests yet
-/// (`Unsupported`) is said to be too old, plainly; anything else is the daemon's own message.
+/// (`Unsupported`) is said to be too old, plainly; anything else is the daemon's own message,
+/// without the name of its kind.
 pub fn explain(err: &str) -> String {
     if err.starts_with("Unsupported") {
-        format!("daemon too old for accounts ({err})")
-    } else {
-        err.to_owned()
+        return format!("daemon too old for accounts ({err})");
     }
+    WIRE_CODES
+        .iter()
+        .find_map(|code| err.strip_prefix(code)?.strip_prefix(": "))
+        .unwrap_or(err)
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -851,5 +866,24 @@ mod tests {
         );
         assert_eq!(explain("Timeout"), "Timeout");
         assert_eq!(explain("the client was stopped"), "the client was stopped");
+    }
+
+    #[test]
+    fn a_daemons_error_loses_the_name_of_its_kind() {
+        assert_eq!(
+            explain("Internal: the board is not answering at http://127.0.0.1:8787"),
+            "the board is not answering at http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            explain("Bad: a cap is 50 to 99 percent"),
+            "a cap is 50 to 99 percent"
+        );
+        // Only the kinds the client writes, and only as a prefix.
+        assert_eq!(explain("Internally: fine"), "Internally: fine");
+        assert_eq!(explain("Busy"), "Busy");
+        assert_eq!(
+            explain("no answer within the deadline"),
+            "no answer within the deadline"
+        );
     }
 }
