@@ -49,7 +49,7 @@ names, and refuses the `--daemon` and `--ssh` flags.
 +-----------+------------------------------------------+-------------+
 | sessions <| transcript (Claude)  or  terminal (shell)| terminal    |  strip, 28 px:
 |           +------------------------------------------+ files       |  hover opens the panel
-|           | composer                                 |             |
+|           | composer                                 | board       |  a click opens the board
 +-----------+------------------------------------------+-------------+
 ```
 
@@ -66,15 +66,27 @@ names, and refuses the `--daemon` and `--ssh` flags.
   reflows and no terminal is resized. It closes when the pointer has left it and nothing inside has
   keyboard focus, on `ctrl-k`, or on its `x`. A click on an icon opens that tab with the keyboard in it.
 - **Accounts**: femme > accounts opens a modal layer over the centre; `escape` closes it.
+- **Board**: a drawing board for quick diagrams, a layer over the whole window (the top bar stays in view
+  above it). The strip's third icon, `board`, or `ctrl-shift-d` opens it with the keyboard in it;
+  `escape`, its `‹` or a click outside it closes it and gives the keyboard back to where it was
+  (`ctrl-shift-d` closes it too, and the keyboard goes to the centre). `ctrl-enter` sends the drawing to
+  the Claude session on show: the composer gets it as a `diagram-1.png` chip (a PNG, ready to send with
+  the message) and the keyboard, and the board closes. With a shell or no session there is nowhere to send
+  it: the top bar says "open a claude session to send the diagram" for a few seconds and the board stays
+  open. The drawing is kept in `$XDG_STATE_HOME/femme/board.json` (else
+  `~/.local/state/femme/board.json`); its tools and keys (`1`-`7`, `ctrl-z`, `ctrl-d`, ...) are listed in
+  the docs of `src/board.rs`, and none of them reach the shell while it is open.
 - **At start**: once connected, the newest live Claude session is shown; with none, a headless Claude
   session is started in the box's home directory; if the box cannot, a shell (`src/session.rs`). The
   link's status line says what is being started, or why nothing could be.
 
 Keys (`cmd` instead of `ctrl` on macOS): `ctrl-b` sidebar, `ctrl-j` terminal tab (opens it with the keyboard
 in it, closes it when it is on show), `ctrl-k` closes the right panel, `F6` / `shift-F6` walk the focus
-sidebar, transcript (a Claude session has one), composer or terminal, right panel, `escape` closes the
-accounts overlay. These chords belong to the app even when a terminal has the keyboard (the shell never sees
-`ctrl-b`, `ctrl-j`, `ctrl-k`); every other key goes to whatever has the focus. The transcript, when it has
+sidebar, transcript (a Claude session has one), composer or terminal, right panel, `ctrl-shift-d` opens the
+board (and closes it), `escape` closes the accounts overlay. These chords belong to the app even when a
+terminal has the keyboard (the shell never sees `ctrl-b`, `ctrl-j`, `ctrl-k`, `ctrl-shift-d`); every other
+key goes to whatever has the focus. While the board is open it has every key but `ctrl-shift-d`: the other
+chords are off, so the board's `ctrl-d` and the rest are its own. The transcript, when it has
 the keyboard (F6 gives it, and so does a click unless a text field such as the composer has it: a click on a
 row never takes the keyboard from a field), takes PageUp / PageDown / Home / End; its box turns neon while
 it has it. The composer takes the keyboard when a Claude session becomes current, the terminal pane when a
@@ -211,8 +223,8 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/lib.rs` | Builds the 2-worker tokio side runtime (time and IO), starts the daemon's client on it when asked, boots gpui, installs theme, keys, window. |
 | `src/connect.rs` | `--daemon`/`--fingerprint`/`--ssh`/`--identity` and their env and `desktop.env` keys, the device identity (dir 0700), `--show-spki`. |
 | `src/net.rs` | The daemon's state as `Model` (link, sessions, panes from `Changes{Global}`), `Net` (drains `Client::events`, runs requests), tab labels and the status line. |
-| `src/app.rs` | The shell: top bar (menu, link), the sessions column, the centre (transcript over composer, a terminal, or a card), the right-hand strip and its hover panel, the accounts layer, key bindings, focus, the benchmark's synthetic panes and driver (`bench` feature). |
-| `src/frame.rs` | Pure and unit-tested: what the centre shows for the current session, the right panel's hover/focus/width state machine, the F6 focus cycle, the status line's error clause. |
+| `src/app.rs` | The shell: top bar (menu, link), the sessions column, the centre (transcript over composer, a terminal, or a card), the right-hand strip and its hover panel, the accounts layer, the board's layer and its events (a picture to the composer), key bindings, focus, the benchmark's synthetic panes and driver (`bench` feature). |
+| `src/frame.rs` | Pure and unit-tested: what the centre shows for the current session, the right panel's hover/focus/width state machine, the F6 focus cycle, the status line's error clause and notes, whether the centre has a composer to take the board's picture. |
 | `src/app/right.rs` | The right-hand strip and its panel (terminal and files tabs): opening, hover, resize, closing. |
 | `build.rs` | Stamps the binary with the commit it was built from (`FEMME_COMMIT`, else `git rev-parse`, else `dev`). |
 | `src/session.rs` | Which session the centre shows when the app opens (`pick`, pure) and `open_at_start`. |
@@ -221,6 +233,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/accounts.rs`, `src/accounts/` | The accounts layer: the board's "Me" page as a card (accounts with 5 h / 7 d usage, rotation caps, API keys), through `Req::BoardApi` and `Req::Caps`. |
 | `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
 | `src/viewer.rs`, `src/viewer/` | `FileView`: images (raster, SVG), PDF pages, text and code with syntax highlighting, markdown, a hex dump for the rest. |
+| `src/board.rs`, `src/board/` | The drawing board: scene, editor state machine and PNG export (pure, tested on their own), the gpui layer over them; emits `BoardEvent::{Send, Closed}`. |
 | `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
