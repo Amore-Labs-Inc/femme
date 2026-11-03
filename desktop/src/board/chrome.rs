@@ -117,11 +117,6 @@ impl Board {
         .child(button("board-clear", "clear").on_click(cx.listener(|t, _, _, cx| t.ask_clear(cx))))
     }
 
-    /// The row under the title bar. The tools come with the next change.
-    fn tool_row(&self, _: &mut Context<Self>) -> Div {
-        div()
-    }
-
     /// Called when the canvas has a new size: the editor needs it to fit the first drawing and to
     /// zoom around the middle.
     pub(super) fn canvas_resized(&mut self, cx: &mut Context<Self>) {

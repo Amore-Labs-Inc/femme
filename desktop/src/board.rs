@@ -51,7 +51,6 @@ pub mod geometry;
 pub mod icons;
 pub mod palette;
 pub mod scene;
-pub mod skin;
 pub mod store;
 pub mod stroke;
 pub mod textedit;
@@ -62,6 +61,8 @@ mod clip;
 mod input;
 mod paint;
 mod persist;
+mod skin;
+mod toolbar;
 
 use std::cell::Cell;
 use std::rc::Rc;
