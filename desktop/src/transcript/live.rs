@@ -19,8 +19,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
     InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 use gpui_component::scroll::Scrollbar;
 use tokio::sync::watch;
@@ -538,10 +538,13 @@ impl Render for Transcript {
             .relative()
             .bg(PAPER)
             .track_focus(&self.focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
-            )
+            // Capturing: the click takes the focus here first, and a field in a question row,
+            // which takes it when the click gets down to it, ends up with it.
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                if event.button == MouseButton::Left {
+                    window.focus(&this.focus, cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key))
             .child(
                 list(
