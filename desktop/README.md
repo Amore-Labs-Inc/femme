@@ -67,6 +67,10 @@ femme-desktop --daemon 203.0.113.7:7788 --fingerprint <hex from enroll> --ssh my
 Flags win over the environment, which wins over the file (`KEY=value` lines, `#` comments, one pair of
 quotes dropped, no `export`). Without `--daemon` and `--ssh` (or their keys) the app runs synthetic.
 
+On a PC linked to the box (`laptop/pc-setup.sh`, docs/laptop.md) the app is installed and kept at the commit
+the box runs by `femme-desktop-update.timer` (`laptop/femme-desktop-update.sh`): a build from `git archive`
+of that commit into this crate's `target/`, copied to `~/.local/bin/femme-desktop`, plus a launcher entry.
+
 - **Nav bar** shows the link: `quic 23 ms`, `ssh`, `connecting…`, `offline: <reason>`. When QUIC
   refused this device while ssh worked it adds the enroll line to run on the box; a failed request
   (new session, close) is appended to it.

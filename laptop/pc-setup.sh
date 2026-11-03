@@ -32,9 +32,15 @@ grep -qxF "$key" ~/.ssh/authorized_keys || echo "$key" >> ~/.ssh/authorized_keys
 # The link now also forwards this sshd; the VPS names "Host pc" after the linked laptop.
 mkdir -p ~/.config/systemd/user
 cp laptop/systemd/femme-link.service ~/.config/systemd/user/
+# The desktop app (desktop/README.md), rebuilt here whenever the box moves to a new commit (FEMMED=1 or 2 there).
+if [ "${FEMMED:-0}" != 0 ]; then
+  sed "s|@SRC@|$PWD|" laptop/systemd/femme-desktop-update.service > ~/.config/systemd/user/femme-desktop-update.service
+  cp laptop/systemd/femme-desktop-update.timer ~/.config/systemd/user/
+fi
 systemctl --user daemon-reload
 systemctl --user enable --now femme-link
 systemctl --user restart femme-link
+[ "${FEMMED:-0}" = 0 ] || systemctl --user enable --now femme-desktop-update.timer
 ssh "$HOST" 'grep -q "^Host pc$" ~/.ssh/config 2>/dev/null' \
   || ssh "$HOST" "cd femme && HERDR_VERSION=$(herdr --version | cut -d' ' -f2) ./server/bootstrap.sh" >/dev/null
 

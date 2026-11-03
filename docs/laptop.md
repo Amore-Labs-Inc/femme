@@ -46,7 +46,9 @@ Agents run on the VPS (its RAM) while the heavy files and the toolchain stay on 
 ./laptop/pc-setup.sh                               # once, on the laptop: sshd on 127.0.0.1 only, the VPS's key, the link forwards it
 ```
 
-`pc` needs a Linux laptop (Arch, Debian/Ubuntu or Fedora) for now.
+`pc` needs a Linux laptop (Arch, Debian/Ubuntu or Fedora) for now. With `FEMMED` set in `.env` it also installs
+`femme-desktop-update.timer`: every 10 minutes the desktop app (`desktop/README.md`) is rebuilt at the commit the box
+runs and copied to `~/.local/bin/femme-desktop`, with a notification to restart it.
 
 Then per folder, on the laptop: put what must not leave it in `<dir>/.femme-ignore`, one Mutagen pattern per line, and sync it (`sh laptop/sync-dir.sh <dir>`, or `prefix+shift+v` on an agent there):
 

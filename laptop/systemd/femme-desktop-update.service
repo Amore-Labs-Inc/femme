@@ -1,0 +1,8 @@
+# PC side (pc-setup.sh fills in the checkout path): rebuilds the desktop app when the box moves to a new commit.
+[Unit]
+Description=Keep the FEMME desktop app at the commit the box runs
+
+[Service]
+Type=oneshot
+ExecStart=@SRC@/laptop/femme-desktop-update.sh
+Nice=10
