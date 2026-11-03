@@ -13,10 +13,6 @@ use crate::net::{Link, Load, Model};
 pub const MARGIN: f32 = 6.0;
 /// Height of the top bar ([`crate::theme::TOP_BAR_H`]).
 pub const TOP_BAR: f32 = 36.0;
-/// Width of the sessions column while it is open.
-pub const SIDEBAR_W: f32 = 264.0;
-/// Width of the gutter that holds the sidebar's collapse handle.
-pub const EDGE_W: f32 = 14.0;
 /// Width of the right-hand hover strip ([`crate::theme::STRIP_W`]).
 pub const STRIP_W: f32 = 28.0;
 /// Narrowest the right-hand panel gets.
@@ -393,20 +389,15 @@ pub enum Stop {
     Right,
 }
 
-/// The stop after (or, with `back`, before) `from`. Without a current stop, or when it is the sidebar
-/// and the sidebar is collapsed, the walk starts in the centre.
-pub fn next_stop(from: Option<Stop>, sidebar_open: bool, back: bool) -> Stop {
-    let mut stops = Vec::with_capacity(3);
-    if sidebar_open {
-        stops.push(Stop::Sidebar);
-    }
-    stops.push(Stop::Centre);
-    stops.push(Stop::Right);
-    let Some(at) = from.and_then(|f| stops.iter().position(|s| *s == f)) else {
+/// The stop after (or, with `back`, before) `from`; without a current stop the walk starts in the
+/// centre. The sidebar is a stop whether it is open or collapsed to its strip: the strip takes keys too.
+pub fn next_stop(from: Option<Stop>, back: bool) -> Stop {
+    const STOPS: [Stop; 3] = [Stop::Sidebar, Stop::Centre, Stop::Right];
+    let Some(at) = from.and_then(|f| STOPS.iter().position(|s| *s == f)) else {
         return Stop::Centre;
     };
-    let n = stops.len();
-    stops[if back { (at + n - 1) % n } else { (at + 1) % n }]
+    let n = STOPS.len();
+    STOPS[if back { (at + n - 1) % n } else { (at + 1) % n }]
 }
 
 #[cfg(test)]
@@ -812,28 +803,17 @@ mod tests {
     #[test]
     fn the_focus_cycle_walks_sidebar_centre_right() {
         use Stop::*;
-        assert_eq!(next_stop(Some(Sidebar), true, false), Centre);
-        assert_eq!(next_stop(Some(Centre), true, false), Right);
-        assert_eq!(next_stop(Some(Right), true, false), Sidebar);
-        assert_eq!(next_stop(Some(Sidebar), true, true), Right);
-        assert_eq!(next_stop(Some(Right), true, true), Centre);
-        assert_eq!(next_stop(Some(Centre), true, true), Sidebar);
-    }
-
-    #[test]
-    fn the_focus_cycle_skips_a_collapsed_sidebar() {
-        use Stop::*;
-        assert_eq!(next_stop(Some(Centre), false, false), Right);
-        assert_eq!(next_stop(Some(Right), false, false), Centre);
-        assert_eq!(next_stop(Some(Right), false, true), Centre);
-        assert_eq!(next_stop(Some(Centre), false, true), Right);
-        // The sidebar was where the keyboard was, and then it collapsed.
-        assert_eq!(next_stop(Some(Sidebar), false, false), Centre);
+        assert_eq!(next_stop(Some(Sidebar), false), Centre);
+        assert_eq!(next_stop(Some(Centre), false), Right);
+        assert_eq!(next_stop(Some(Right), false), Sidebar);
+        assert_eq!(next_stop(Some(Sidebar), true), Right);
+        assert_eq!(next_stop(Some(Right), true), Centre);
+        assert_eq!(next_stop(Some(Centre), true), Sidebar);
     }
 
     #[test]
     fn the_focus_cycle_starts_in_the_centre() {
-        assert_eq!(next_stop(None, true, false), Stop::Centre);
-        assert_eq!(next_stop(None, false, true), Stop::Centre);
+        assert_eq!(next_stop(None, false), Stop::Centre);
+        assert_eq!(next_stop(None, true), Stop::Centre);
     }
 }

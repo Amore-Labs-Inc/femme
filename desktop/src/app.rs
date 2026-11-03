@@ -1,22 +1,23 @@
 //! The desktop shell: the frame that mounts every module and owns the keyboard.
 //!
 //! ```text
-//! ┌──────────────────────────────────────────────────────────────────────────────────┐
-//! │ [femme ▾]  quic 23 ms                                                            │  top bar
-//! ├──────────┬─┬─────────────────────────────────────────────────────┬──────────────┤
-//! │ sessions │‹│ transcript (agent)  OR  terminal (shell)             │ terminal     │
-//! │          │ │                                                      │ files        │
-//! │          │ ├──────────────────────────────────────────────────────┤ (hover strip │
-//! │          │ │ composer                                             │  opens panel)│
-//! └──────────┴─┴─────────────────────────────────────────────────────┴──────────────┘
+//! ┌─────────────────────────────────────────────────────────────────────────────────┐
+//! │ [femme ▾]  quic 23 ms                                                           │  top bar
+//! ├────────────┬─────────────────────────────────────────────────────┬──────────────┤
+//! │ sessions ‹ │ transcript (agent)  OR  terminal (shell)            │ terminal     │
+//! │            │                                                     │ files        │
+//! │            ├─────────────────────────────────────────────────────┤ (hover strip │
+//! │            │ composer                                            │  opens panel)│
+//! └────────────┴─────────────────────────────────────────────────────┴──────────────┘
 //! ```
 //!
 //! The pure rules (which view the centre shows, what the right-hand panel does with the pointer, the
 //! focus cycle) live in [`crate::frame`]; this file wires them to the daemon's state and draws.
 //!
-//! The shell draws the outer paper surface and ink rule of the sidebar, the transcript, the terminal
-//! and the right-hand panel; the module inside fills its box and draws no outer border. The composer
-//! is the exception: it draws its own box on the desk.
+//! The shell draws the outer paper surface and ink rule of the transcript, the terminal and the
+//! right-hand panel; the module inside fills its box and draws no outer border. The sidebar and the
+//! composer are the exceptions: they draw their own boxes on the desk (the sidebar sizes itself, and
+//! collapses to a strip of dots; the shell follows its width).
 //!
 //! Frame cost: the sidebar, transcript, terminal panel and files panel are mounted with
 //! `.cached(..)`, so a frame in which only a terminal pane changed replays their recorded paint.
@@ -42,16 +43,14 @@ use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{next_stop, Centre, Right, Shown, Stop, EDGE_W, SIDEBAR_W};
+use crate::frame::{next_stop, Centre, Right, Shown, Stop};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
-use crate::sidebar::{OpenSession, Sidebar};
+use crate::sidebar::{CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
-use crate::theme::{
-    ACCENT, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, TOP_BAR_H,
-};
+use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, TOP_BAR_H};
 use crate::transcript::live::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
@@ -289,13 +288,11 @@ pub struct FemmeApp {
     panes: Vec<Entity<TerminalPane>>,
     /// The window's own stop: the key context of the shell is always in the dispatch path.
     focus: FocusHandle,
-    sidebar_focus: FocusHandle,
     centre_focus: FocusHandle,
     right_focus: FocusHandle,
     modal_focus: FocusHandle,
     /// What the centre shows, and what the modules were last told.
     shown: Shown,
-    sidebar_open: bool,
     right: Right,
     /// The accounts overlay was open at the last look.
     modal_open: bool,
@@ -352,6 +349,8 @@ impl FemmeApp {
             cx.subscribe_in(&sidebar, window, |t, _, ev: &OpenSession, _, cx| {
                 t.open_session(ev.0, cx)
             }),
+            // The column's width is the sidebar's to say: collapsing it resizes the frame.
+            cx.subscribe(&sidebar, |_, _, _: &CollapsedChanged, cx| cx.notify()),
             cx.observe_in(&accounts, window, |t, _, window, cx| {
                 t.accounts_changed(window, cx)
             }),
@@ -384,7 +383,6 @@ impl FemmeApp {
         Self {
             dots: DotGrid::new(window.scale_factor(), cx),
             focus: cx.focus_handle(),
-            sidebar_focus: cx.focus_handle(),
             centre_focus: cx.focus_handle(),
             right_focus,
             modal_focus: cx.focus_handle(),
@@ -399,7 +397,6 @@ impl FemmeApp {
             accounts,
             panes,
             shown,
-            sidebar_open: true,
             right: Right::new(),
             modal_open: false,
             want_focus: false,
@@ -557,18 +554,17 @@ impl FemmeApp {
         self.accounts.update(cx, |a, cx| a.close(cx));
     }
 
-    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_open = !self.sidebar_open;
-        // A hidden column must not keep the keyboard.
-        if !self.sidebar_open && self.sidebar_focus.contains_focused(window, cx) {
-            self.land_focus(window, cx);
-        }
-        cx.notify();
+    /// mod+b: the sessions column collapses to its strip of dots, or expands again.
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |s, cx| {
+            let collapsed = s.collapsed();
+            s.set_collapsed(!collapsed, cx)
+        });
     }
 
     /// F6 and shift+F6: sidebar, centre, right-hand panel (which the cycle opens).
     fn focus_cycle(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let at = if self.sidebar_open && self.sidebar_focus.contains_focused(window, cx) {
+        let at = if self.sidebar.focus_handle(cx).contains_focused(window, cx) {
             Some(Stop::Sidebar)
         } else if self.right.open().is_some() && self.right_focus.contains_focused(window, cx) {
             Some(Stop::Right)
@@ -578,11 +574,8 @@ impl FemmeApp {
             None
         };
         self.want_focus = false;
-        match next_stop(at, self.sidebar_open, back) {
-            Stop::Sidebar => {
-                let own = focus_of!(self.sidebar.read(cx), cx);
-                window.focus(&own.unwrap_or_else(|| self.sidebar_focus.clone()), cx);
-            }
+        match next_stop(at, back) {
+            Stop::Sidebar => window.focus(&self.sidebar.focus_handle(cx), cx),
             Stop::Centre => {
                 if !self.focus_centre(window, cx) {
                     window.focus(&self.centre_focus, cx);
@@ -629,65 +622,6 @@ impl FemmeApp {
                 .min_w_0()
                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
         )
-    }
-
-    /// The sessions column.
-    fn sidebar_region(&self) -> impl IntoElement {
-        ruled(
-            div()
-                .flex_none()
-                .w(px(SIDEBAR_W))
-                .h_full()
-                .bg(SURFACE)
-                .overflow_hidden()
-                .track_focus(&self.sidebar_focus),
-        )
-        .child(
-            self.sidebar
-                .clone()
-                .cached(StyleRefinement::default().size_full()),
-        )
-    }
-
-    /// The thin handle between the sidebar and the centre: it collapses and expands the sidebar.
-    fn edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let open = self.sidebar_open;
-        div()
-            .flex_none()
-            .w(px(EDGE_W))
-            .h_full()
-            .flex()
-            .items_center()
-            .child(
-                ruled(
-                    div()
-                        .id("edge")
-                        .flex_none()
-                        .w(px(EDGE_W))
-                        .h(px(56.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(SURFACE)
-                        .text_color(INK)
-                        .font_family(FONT_MONO)
-                        .text_size(px(14.))
-                        .line_height(relative(1.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ACCENT)),
-                )
-                .child(if open { "‹" } else { "›" })
-                .tooltip(move |window, cx| {
-                    Tooltip::new(if open {
-                        "hide sessions"
-                    } else {
-                        "show sessions"
-                    })
-                    .action(&ToggleSidebar, Some("Femme"))
-                    .build(window, cx)
-                })
-                .on_click(cx.listener(|t, _, window, cx| t.toggle_sidebar(window, cx))),
-            )
     }
 
     /// A paper card in the middle of the centre: why there is no session to show.
@@ -815,12 +749,17 @@ impl Render for FemmeApp {
                 .child(self.centre(cx))
                 .into_any_element();
         }
+        // The sidebar draws its own box and says how wide it is; a cached view lays out as the style
+        // it is given alone.
+        let column = StyleRefinement::default()
+            .h_full()
+            .w(self.sidebar.read(cx).width());
         let body = div()
             .flex_1()
             .min_h_0()
             .flex()
-            .when(self.sidebar_open, |d| d.child(self.sidebar_region()))
-            .child(self.edge(cx))
+            .gap(GUTTER)
+            .child(self.sidebar.clone().cached(column))
             .child(
                 div()
                     .relative()
@@ -831,12 +770,12 @@ impl Render for FemmeApp {
                     .child(self.centre(cx))
                     .when(self.modal_open, |d| d.child(self.modal(cx))),
             )
-            .child(div().flex_none().h_full().ml(GUTTER).child(self.strip(cx)));
+            .child(div().flex_none().h_full().child(self.strip(cx)));
         div()
             .id("femme")
             .key_context("Femme")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|t, _: &ToggleSidebar, window, cx| t.toggle_sidebar(window, cx)))
+            .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
             .on_action(
                 cx.listener(|t, _: &ToggleTerminal, window, cx| t.toggle_terminal(window, cx)),
             )
