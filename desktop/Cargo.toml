@@ -22,6 +22,12 @@ gpui = { version = "=0.3.10", package = "gpui-pre" }
 # The platform backend (windowing + renderer + text) is a separate crate in this gpui snapshot; same version as gpui.
 gpui_platform = { version = "=0.3.10", package = "gpui-pre-platform", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 gpui-component = "0.8.1"
+# viewer (ui/viewer): `hayro` is a pure-Rust PDF rasteriser (no pdfium, no system libs); `image` decodes
+# rasters with the 8192 px cap (the same 0.25 gpui already links); `syntect` + `two-face` highlight code.
+hayro = "=0.8.0"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "=0.5.2", default-features = false, features = ["syntect-fancy"] }
 femme-proto = { path = "../crates/femme-proto" }
 femme-term = { path = "../crates/femme-term", default-features = false }
 # The network layer: the client of the daemon's front, its device identity and the ULID that names this process.
@@ -59,6 +65,46 @@ opt-level = 3
 [profile.dev.package.rustybuzz]
 opt-level = 3
 [profile.dev.package.swash]
+opt-level = 3
+
+# The viewer's PDF rasteriser (hayro on vello_cpu), its codecs, and the code highlighter: a page or a
+# syntax pass takes seconds unoptimised. Only crates gpui does not link, so these do not make the
+# shared crates (flate2, png, image, regex, ...) and gpui itself rebuild.
+[profile.dev.package.hayro]
+opt-level = 3
+[profile.dev.package.hayro-interpret]
+opt-level = 3
+[profile.dev.package.hayro-syntax]
+opt-level = 3
+[profile.dev.package.hayro-jpeg2000]
+opt-level = 3
+[profile.dev.package.hayro-jbig2]
+opt-level = 3
+[profile.dev.package.hayro-ccitt]
+opt-level = 3
+[profile.dev.package.hayro-cmap]
+opt-level = 3
+[profile.dev.package.vello_cpu]
+opt-level = 3
+[profile.dev.package.vello_common]
+opt-level = 3
+[profile.dev.package.fearless_simd]
+opt-level = 3
+[profile.dev.package.pic-scale]
+opt-level = 3
+[profile.dev.package."skrifa@0.46.2"]
+opt-level = 3
+[profile.dev.package."read-fonts@0.43.3"]
+opt-level = 3
+[profile.dev.package.syntect]
+opt-level = 3
+[profile.dev.package.fancy-regex]
+opt-level = 3
+[profile.dev.package.bit-set]
+opt-level = 3
+[profile.dev.package.bit-vec]
+opt-level = 3
+[profile.dev.package.bincode]
 opt-level = 3
 
 # Faster optimised builds while iterating (no LTO, parallel codegen); numbers in the README use `release`.
