@@ -1,5 +1,6 @@
-//! FEMME desktop client (prototype P4): a gpui app with FEMME-skinned panes, a 50 000-row streaming
-//! transcript and a terminal drawer, plus a frame-time benchmark. See `desktop/README.md`.
+//! FEMME desktop client: a gpui app that shows a daemon's sessions (transcript and composer, or a
+//! terminal, with files and terminals in a right-hand panel), plus a frame-time benchmark on
+//! synthetic panes. See `desktop/README.md` and `docs/desktop-ui.md`.
 
 #![warn(missing_docs)]
 
@@ -13,7 +14,6 @@ pub mod files;
 pub mod frame;
 pub mod menu;
 pub mod net;
-pub mod panels;
 pub mod rng;
 pub mod session;
 pub mod sidebar;
@@ -28,8 +28,9 @@ use anyhow::Context as _;
 /// Starts the app (or the benchmark when `cfg.bench` is set, in a `bench` build) and blocks until the
 /// window closes.
 ///
-/// A two-worker tokio runtime runs the synthetic terminal and transcript sources, and the daemon's
-/// client when `cfg.connect` names one, off the UI thread.
+/// A two-worker tokio runtime runs the benchmark's synthetic terminals, and the daemon's client when
+/// `cfg.connect` names one, off the UI thread. Without a daemon the window shows its frame with
+/// "no daemon configured" and nothing in it.
 pub fn run(cfg: app::Config) -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg.bench.is_none() || cfg!(feature = "bench"),

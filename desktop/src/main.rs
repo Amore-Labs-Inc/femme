@@ -1,7 +1,8 @@
 //! `femme-desktop [--daemon ADDR:PORT --fingerprint HEX64] [--ssh HOST] [--identity DIR] [--show-spki]`
-//! shows a daemon's sessions; without them it runs on synthetic panes:
-//! `femme-desktop [--bench SECONDS] [--panes N] [--mode fire,cat] [--size WxH]`.
-//! `FEMME_DISPLAY` picks the display. `--bench` needs a build with `--features bench`.
+//! shows a daemon's sessions; without a daemon it shows the frame and "no daemon configured".
+//! `femme-desktop --bench SECONDS [--panes N] [--mode fire,cat] [--hz HZ] [--size WxH]` measures
+//! synthetic terminal panes. `FEMME_DISPLAY` picks the display. `--bench` needs a build with
+//! `--features bench`.
 
 use std::path::PathBuf;
 
@@ -13,33 +14,35 @@ use femme_desktop::terminal::SourceKind;
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// FEMME desktop client (prototype). Without `--bench` it opens the app window. `--daemon`,
-/// `--fingerprint` and `--ssh` also come from FEMME_DAEMON, FEMME_FINGERPRINT and FEMME_SSH in the
-/// environment or in ~/.config/femme/desktop.env (the flags win); with a daemon or an ssh host the
-/// window shows its sessions and terminals, without one it runs on synthetic panes.
+/// FEMME desktop client. Without `--bench` it opens the app window. `--daemon`, `--fingerprint` and
+/// `--ssh` also come from FEMME_DAEMON, FEMME_FINGERPRINT and FEMME_SSH in the environment or in
+/// ~/.config/femme/desktop.env (the flags win); with a daemon or an ssh host the window shows its
+/// sessions and terminals, without one it shows the frame with "no daemon configured". `--panes`,
+/// `--hz`, `--mode`, `--full-height`, `--target-ms` and `--seed` only drive `--bench`.
 #[derive(Parser)]
 #[command(name = "femme-desktop", version)]
 struct Cli {
     /// Run the frame-time benchmark for SECONDS (after a short warm-up), print percentiles, exit 0.
     #[arg(long, value_name = "SECONDS")]
     bench: Option<u64>,
-    /// Terminal panes in the drawer.
+    /// Synthetic terminal panes of the benchmark.
     #[arg(long, default_value_t = 4)]
     panes: usize,
-    /// Synthetic terminal frame rate.
+    /// Synthetic terminal frame rate (benchmark).
     #[arg(long, default_value_t = 60)]
     hz: u32,
-    /// What the panes show, comma separated and repeated over the panes: `fire` (every cell changes
-    /// every frame), `shell` (one scrolled line per frame) or `cat` (a screenful of new text per frame).
+    /// What the benchmark's panes show, comma separated and repeated over the panes: `fire` (every
+    /// cell changes every frame), `shell` (one scrolled line per frame) or `cat` (a screenful of new
+    /// text per frame).
     #[arg(long, default_value = "fire", value_delimiter = ',', value_parser = parse_mode)]
     mode: Vec<SourceKind>,
-    /// The drawer takes the whole window (no columns, no transcript): tall panes.
+    /// The benchmark's panes take the whole window (no frame around them): tall panes.
     #[arg(long)]
     full_height: bool,
     /// Judge the benchmark's p99 frame work against MS milliseconds, whatever the display's refresh.
     #[arg(long, value_name = "MS", value_parser = parse_target_ms)]
     target_ms: Option<f64>,
-    /// Seed of the synthetic sources.
+    /// Seed of the benchmark's synthetic sources.
     #[arg(long, default_value_t = 1)]
     seed: u64,
     /// Requested window size in logical pixels, WIDTHxHEIGHT (a compositor may override it).
