@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, px, relative, AnyElement, AppContext as _, Axis, Context, Div, DragMoveEvent, Empty,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Rgba,
+    div, px, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window,
 };
 use gpui_component::resizable::HandleEdge;
@@ -17,9 +17,9 @@ use gpui_component::resize_handle;
 use gpui_component::tooltip::Tooltip;
 
 use super::{FemmeApp, ToggleTerminal};
-use crate::frame::{self, Settle, Tab, MARGIN, STRIP_W, TOP_BAR};
-use crate::theme::{self, FONT_MONO, HOVER, INK, PAPER};
-use crate::ui::{self, ruled};
+use crate::frame::{self, Settle, Tab};
+use crate::theme::{self, GUTTER, STRIP_W, SURFACE, TOP_BAR_H};
+use crate::ui::{self, Glyph};
 
 /// How long the pointer rests on the strip before the panel opens.
 const OPEN_AFTER: Duration = Duration::from_millis(120);
@@ -115,61 +115,40 @@ impl FemmeApp {
 
     /// One of the strip's icons: it opens its tab when the pointer rests on it, or on a click.
     fn strip_icon(&self, tab: Tab, cx: &mut Context<Self>) -> impl IntoElement {
-        let on = self.right.open() == Some(tab);
-        let (bg, fg) = if on { (INK, PAPER) } else { (PAPER, INK) };
-        let id = tab.label();
-        ruled(
-            div()
-                .id(id)
-                .flex_none()
-                .size(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(bg)
-                .cursor_pointer()
-                // Hover recolours the background only (see `ui::button_dark`).
-                .hover(|s| s.bg(HOVER)),
-        )
-        .child(match tab {
-            Tab::Terminal => icon_terminal(fg),
-            Tab::Files => icon_files(fg),
-        })
-        .tooltip(move |window, cx| {
-            let tip = Tooltip::new(tab.label());
-            match tab {
-                Tab::Terminal => tip.action(&ToggleTerminal, Some("Femme")),
-                Tab::Files => tip,
-            }
-            .build(window, cx)
-        })
-        .on_hover(cx.listener(move |t, on: &bool, window, cx| {
-            t.right.hover_icon(tab, *on);
-            t.poke(if *on { OPEN_AFTER } else { CLOSE_AFTER }, window, cx);
-        }))
-        .on_click(cx.listener(move |t, _, window, cx| t.open_right(tab, true, window, cx)))
+        let glyph = match tab {
+            Tab::Terminal => Glyph::Terminal,
+            Tab::Files => Glyph::Files,
+        };
+        let button = if self.right.open() == Some(tab) {
+            ui::icon_button_on(tab.label(), glyph)
+        } else {
+            ui::icon_button(tab.label(), glyph)
+        };
+        button
+            .tooltip(move |window, cx| {
+                let tip = Tooltip::new(tab.label());
+                match tab {
+                    Tab::Terminal => tip.action(&ToggleTerminal, Some("Femme")),
+                    Tab::Files => tip,
+                }
+                .build(window, cx)
+            })
+            .on_hover(cx.listener(move |t, on: &bool, window, cx| {
+                t.right.hover_icon(tab, *on);
+                t.poke(if *on { OPEN_AFTER } else { CLOSE_AFTER }, window, cx);
+            }))
+            .on_click(cx.listener(move |t, _, window, cx| t.open_right(tab, true, window, cx)))
     }
 
-    /// The 28 px strip on the right edge: hovering it opens the panel.
+    /// The strip on the right edge: hovering it opens the panel.
     pub(super) fn strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        ruled(
-            div()
-                .id("strip")
-                .flex_none()
-                .w(px(STRIP_W))
-                .h_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.))
-                .py(px(4.))
-                .bg(PAPER),
-        )
-        .on_hover(cx.listener(|t, on: &bool, window, cx| {
-            t.right.hover_strip(*on);
-            t.poke(if *on { OPEN_AFTER } else { CLOSE_AFTER }, window, cx);
-        }))
-        .children(Tab::ALL.map(|tab| self.strip_icon(tab, cx)))
+        ui::strip("strip")
+            .h_full()
+            .on_hover(cx.listener(|t, on: &bool, window, cx| {
+                t.right.hover_strip(*on);
+                t.poke(if *on { OPEN_AFTER } else { CLOSE_AFTER }, window, cx);
+            }))
+            .children(Tab::ALL.map(|tab| self.strip_icon(tab, cx)))
     }
 
     /// The right-hand panel, floating over the centre's right edge so that opening it never
@@ -199,9 +178,9 @@ impl FemmeApp {
         let mut panel = div()
             .id("right-panel")
             .absolute()
-            .top(px(MARGIN + TOP_BAR + MARGIN))
-            .bottom(px(MARGIN))
-            .right(px(MARGIN + STRIP_W))
+            .top(GUTTER + TOP_BAR_H + GUTTER)
+            .bottom(GUTTER)
+            .right(GUTTER + STRIP_W)
             .w(px(self.right.width()))
             .occlude()
             .track_focus(&self.right_focus)
@@ -215,60 +194,21 @@ impl FemmeApp {
                 ui::win()
                     .size_full()
                     .child(
-                        ui::tb(tab.label()).child(div().flex_1()).child(
-                            div()
-                                .id("right-close")
-                                .px(px(6.))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(HOVER))
-                                .child("x")
-                                .on_click(
-                                    cx.listener(|t, _, window, cx| t.close_right(window, cx)),
-                                ),
+                        ui::title_bar(tab.label()).child(
+                            ui::title_button("right-close", Glyph::Close).on_click(
+                                cx.listener(|t, _, window, cx| t.close_right(window, cx)),
+                            ),
                         ),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_h_0()
-                            .bg(PAPER)
+                            .bg(SURFACE)
                             .overflow_hidden()
                             .child(body),
                     ),
             )
             .child(grip)
     }
-}
-
-/// The terminal icon: a framed `>_`.
-fn icon_terminal(color: Rgba) -> Div {
-    ruled_in(
-        div()
-            .w(px(18.))
-            .h(px(14.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .font_family(FONT_MONO)
-            .text_size(px(9.))
-            .line_height(relative(1.))
-            .text_color(color)
-            .child(">_"),
-        color,
-    )
-}
-
-/// The files icon: a folder, a tab on top of a framed body.
-fn icon_files(color: Rgba) -> Div {
-    let b = theme::RULE;
-    div()
-        .flex()
-        .flex_col()
-        .child(ui::ruled_sides(div().w(px(8.)).h(px(3.)), b, b, px(0.), b).border_color(color))
-        .child(ruled_in(div().w(px(18.)).h(px(11.)), color))
-}
-
-/// `ui::ruled` in a colour other than ink.
-fn ruled_in(el: Div, color: Rgba) -> Div {
-    ruled(el).border_color(color)
 }

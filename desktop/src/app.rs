@@ -34,7 +34,7 @@ use gpui::{
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::tooltip::Tooltip;
-use gpui_component::Root;
+use gpui_component::{ActiveTheme as _, Root};
 
 use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
@@ -42,14 +42,16 @@ use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{next_stop, Centre, Right, Shown, Stop, EDGE_W, MARGIN, SIDEBAR_W, TOP_BAR};
+use crate::frame::{next_stop, Centre, Right, Shown, Stop, EDGE_W, SIDEBAR_W};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
 use crate::sidebar::{OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
-use crate::theme::{self, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PAPER};
+use crate::theme::{
+    ACCENT, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, TOP_BAR_H,
+};
 use crate::transcript::live::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
@@ -605,12 +607,12 @@ impl FemmeApp {
         ruled(
             div()
                 .flex_none()
-                .h(px(TOP_BAR))
+                .h(TOP_BAR_H)
                 .flex()
                 .items_center()
                 .gap(px(10.))
                 .px(px(8.))
-                .bg(PAPER),
+                .bg(SURFACE),
         )
         .child(
             div()
@@ -636,7 +638,7 @@ impl FemmeApp {
                 .flex_none()
                 .w(px(SIDEBAR_W))
                 .h_full()
-                .bg(PAPER)
+                .bg(SURFACE)
                 .overflow_hidden()
                 .track_focus(&self.sidebar_focus),
         )
@@ -666,13 +668,13 @@ impl FemmeApp {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(PAPER)
+                        .bg(SURFACE)
                         .text_color(INK)
                         .font_family(FONT_MONO)
                         .text_size(px(14.))
                         .line_height(relative(1.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(HOVER)),
+                        .hover(|s| s.bg(ACCENT)),
                 )
                 .child(if open { "‹" } else { "›" })
                 .tooltip(move |window, cx| {
@@ -729,14 +731,14 @@ impl FemmeApp {
             return div()
                 .size_full()
                 .flex()
-                .gap(px(MARGIN))
+                .gap(GUTTER)
                 .children(self.panes.iter().map(|p| {
                     ruled(
                         div()
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .bg(PAPER)
+                            .bg(SURFACE)
                             .pl(px(8.))
                             .pr(px(4.))
                             .py(px(6.)),
@@ -750,15 +752,15 @@ impl FemmeApp {
                 .size_full()
                 .flex()
                 .flex_col()
-                .gap(px(MARGIN))
+                .gap(GUTTER)
                 .child(
-                    ruled(div().flex_1().min_h_0().bg(PAPER).overflow_hidden())
+                    ruled(div().flex_1().min_h_0().bg(SURFACE).overflow_hidden())
                         .child(self.transcript.clone().cached(full)),
                 )
                 // The composer sizes itself and draws its own box.
                 .child(div().flex_none().child(self.composer.clone()))
                 .into_any_element(),
-            Centre::Terminal(sid) => ruled(div().size_full().bg(PAPER).overflow_hidden())
+            Centre::Terminal(sid) => ruled(div().size_full().bg(SURFACE).overflow_hidden())
                 .child(match self.terminal.read(cx).main_pane(*sid) {
                     Some(pane) => div()
                         .size_full()
@@ -770,7 +772,7 @@ impl FemmeApp {
                     None => Self::card_view("starting…", "attaching to the session's terminal"),
                 })
                 .into_any_element(),
-            Centre::Card(card) => ruled(div().size_full().bg(PAPER))
+            Centre::Card(card) => ruled(div().size_full().bg(SURFACE))
                 .child(Self::card_view(card.title(), &card.detail()))
                 .into_any_element(),
         }
@@ -787,11 +789,11 @@ impl FemmeApp {
             .key_context("FemmeModal")
             .track_focus(&self.modal_focus)
             .on_action(cx.listener(|t, _: &CloseModal, _, cx| t.close_modal(cx)))
-            .bg(theme::rgba8(0x000000, 0.25))
+            .bg(cx.theme().overlay)
             .flex()
             .items_center()
             .justify_center()
-            .p(px(MARGIN))
+            .p(GUTTER)
             .child(self.accounts.clone())
     }
 }
@@ -807,8 +809,8 @@ impl Render for FemmeApp {
             return div()
                 .id("femme")
                 .size_full()
-                .p(px(MARGIN))
-                .bg(PAPER)
+                .p(GUTTER)
+                .bg(SURFACE)
                 .text_color(INK)
                 .child(self.centre(cx))
                 .into_any_element();
@@ -829,13 +831,7 @@ impl Render for FemmeApp {
                     .child(self.centre(cx))
                     .when(self.modal_open, |d| d.child(self.modal(cx))),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .h_full()
-                    .ml(px(MARGIN))
-                    .child(self.strip(cx)),
-            );
+            .child(div().flex_none().h_full().ml(GUTTER).child(self.strip(cx)));
         div()
             .id("femme")
             .key_context("Femme")
@@ -868,8 +864,8 @@ impl Render for FemmeApp {
                     .size_full()
                     .flex()
                     .flex_col_reverse()
-                    .gap(px(MARGIN))
-                    .p(px(MARGIN))
+                    .gap(GUTTER)
+                    .p(GUTTER)
                     .child(body)
                     .child(self.top_bar(cx)),
             )
