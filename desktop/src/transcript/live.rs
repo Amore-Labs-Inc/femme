@@ -538,10 +538,11 @@ impl Render for Transcript {
             .relative()
             .bg(PAPER)
             .track_focus(&self.focus)
-            // Capturing: the click takes the focus here first, and a field in a question row,
-            // which takes it when the click gets down to it, ends up with it.
+            // A click takes the keyboard only when nobody has it: a click on a row must not take
+            // it from the composer. Capturing, so a field in a question row, which takes it when
+            // the click gets down to it, ends up with it.
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                if event.button == MouseButton::Left {
+                if event.button == MouseButton::Left && window.focused(cx).is_none() {
                     window.focus(&this.focus, cx);
                 }
             }))
