@@ -535,6 +535,18 @@ fn request(net: &Entity<Net>, req: Req, cx: &mut Context<Composer>) -> Task<Resu
     })
 }
 
+/// The card's colour while files are dragged over it: paper with a fifth of neon pink in it.
+/// Opaque on purpose, a see-through fill lets the desk's dots show and goes muddy.
+fn drop_fill() -> Rgba {
+    let mix = |paper: f32, neon: f32| paper * 0.8 + neon * 0.2;
+    Rgba {
+        r: mix(PAPER.r, NEON.r),
+        g: mix(PAPER.g, NEON.g),
+        b: mix(PAPER.b, NEON.b),
+        a: 1.,
+    }
+}
+
 /// A button that cannot be pressed now: [`button`]'s box in panel grey with a muted label, and no
 /// hover (gpui takes one hover style per element, and `button` has set its own).
 fn disabled_button(id: &'static str, label: &'static str) -> Stateful<Div> {
@@ -618,7 +630,7 @@ impl Render for Composer {
         let card = card
             .when(takes, |card| {
                 card.drag_over::<ExternalPaths>(|style, _, _, _| {
-                    style.border_color(NEON).bg(Rgba { a: 0.15, ..NEON })
+                    style.border_color(NEON).bg(drop_fill())
                 })
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                     if let Some(sid) = this.session {
