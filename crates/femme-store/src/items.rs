@@ -23,6 +23,11 @@
 //! `preview` is at most 512 bytes: the caller's if given (cut at a character boundary), else the
 //! first 512 bytes of the body.
 //!
+//! [`Tx::put_blob_bytes`] stores arbitrary bytes in the same table, for what a client uploads
+//! (attachments): never cut, never a transcript body, up to [`BLOB_BYTES_MAX`]. Such a blob is
+//! referenced by no item, so retention sweeps it as an orphan: it lives until the next sweep
+//! (daemon start, then daily), long enough to be read once by whoever was told its hash.
+//!
 //! A blob that a re-put replaces is deleted at once (unless another item has the same text); the
 //! ones left behind by deletes and purged sessions are swept by
 //! [`Store::retain`](crate::Store::retain). Retention may also *evict* the oldest blobs when
@@ -46,6 +51,9 @@ pub const INLINE_RAW_MAX: usize = 512;
 pub const INLINE_MAX: usize = 4096;
 /// Largest blob. Longer bodies are truncated and end with [`TRUNCATED`].
 pub const BLOB_MAX: usize = 1 << 20;
+/// Largest blob [`Tx::put_blob_bytes`] takes (`Error::TooLarge` past it), and the most
+/// [`get_blob`] decompresses. Over [`BLOB_MAX`] because an upload is not a transcript body.
+pub const BLOB_BYTES_MAX: usize = 8 << 20;
 /// Longest `preview`.
 pub const PREVIEW_MAX: usize = 512;
 /// What a truncated blob ends with.
@@ -194,8 +202,8 @@ pub fn items_since(
     Ok((out, false))
 }
 
-/// The decompressed text stored under `hash` (see [`Item::blob_hash`]); `None` if it was never
-/// stored or retention has evicted it.
+/// The decompressed bytes stored under `hash` (see [`Item::blob_hash`], [`Tx::put_blob_bytes`]);
+/// `None` if it was never stored or retention has evicted it.
 pub fn get_blob(conn: &Connection, hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
     one(
         conn,
@@ -203,7 +211,7 @@ pub fn get_blob(conn: &Connection, hash: &[u8; 32]) -> Result<Option<Vec<u8>>> {
         [hash],
         |r| {
             let (len, data): (usize, Vec<u8>) = (r.get(0)?, r.get(1)?);
-            zstd::bulk::decompress(&data, len.min(BLOB_MAX))
+            zstd::bulk::decompress(&data, len.min(BLOB_BYTES_MAX))
                 .map_err(|e| Error::Corrupt(format!("blob: {e}")))
         },
     )
@@ -374,17 +382,36 @@ impl Tx<'_> {
         })
     }
 
-    /// Stores (or refreshes) a blob and returns its hash. An identical body is stored once; its
-    /// `ts` moves forward so retention evicts the least recently *written* blob first.
+    /// Stores (or refreshes) a transcript body as a blob and returns its hash: cut to
+    /// [`BLOB_MAX`] first (see the [module docs](crate::items)).
     fn put_blob(&mut self, body: &str) -> Result<[u8; 32]> {
-        let body = cap_blob(body);
-        let hash = sha256(body.as_bytes());
+        self.put_blob_raw(cap_blob(body).as_bytes())
+    }
+
+    /// Stores (or refreshes) `data` as a blob, whole, and returns its SHA-256, which
+    /// [`get_blob`] answers to. For what a client uploads. The bytes are kept as they are (no
+    /// UTF-8 needed, nothing cut); `Error::TooLarge` past [`BLOB_BYTES_MAX`]. Idempotent: the
+    /// same bytes are one row, and putting them again only refreshes it. No item refers to the
+    /// blob, so retention sweeps it as an orphan (see the [module docs](crate::items)).
+    pub fn put_blob_bytes(&mut self, data: &[u8]) -> Result<[u8; 32]> {
+        if data.len() > BLOB_BYTES_MAX {
+            return Err(Error::TooLarge {
+                max: BLOB_BYTES_MAX,
+            });
+        }
+        self.put_blob_raw(data)
+    }
+
+    /// An identical body is stored once; its `ts` moves forward so retention evicts the least
+    /// recently *written* blob first.
+    fn put_blob_raw(&mut self, body: &[u8]) -> Result<[u8; 32]> {
+        let hash = sha256(body);
         let now = self.now();
         let known = self
             .prepare_cached("UPDATE blobs SET ts = ?2 WHERE hash = ?1")?
             .execute(params![hash, now])?;
         if known == 0 {
-            let data = zstd::bulk::compress(body.as_bytes(), ZSTD_LEVEL)?;
+            let data = zstd::bulk::compress(body, ZSTD_LEVEL)?;
             self.prepare_cached("INSERT INTO blobs (hash, len, data, ts) VALUES (?1, ?2, ?3, ?4)")?
                 .execute(params![hash, body.len(), data, now])?;
         }

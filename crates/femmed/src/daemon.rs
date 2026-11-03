@@ -192,6 +192,7 @@ pub(crate) fn core_err(e: femme_store::Error) -> CoreError {
     match e {
         E::NotFound => CoreError::NotFound,
         E::Conflict { .. } | E::Exists(_) => CoreError::Conflict(e.to_string()),
+        E::TooLarge { .. } => CoreError::Bad(e.to_string()),
         E::Sqlite(_) | E::Corrupt(_) | E::Io(_) | E::Json(_) => CoreError::Internal(e.to_string()),
     }
 }
