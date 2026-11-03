@@ -257,6 +257,40 @@ mod tests {
     }
 
     #[test]
+    fn the_sessions_uploads_folder_is_readable_even_outside_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, state) = (dir.path().join("home"), dir.path().join("state"));
+        let (mine, theirs) = (state.join("uploads/mine"), state.join("uploads/theirs"));
+        for d in [&home, &mine, &theirs] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(mine.join("a.png"), "a").unwrap();
+        std::fs::write(theirs.join("b.png"), "b").unwrap();
+        std::fs::write(state.join("worker.token"), "secret").unwrap();
+        symlink(state.join("worker.token"), mine.join("link")).unwrap();
+        let s = Scope {
+            uploads: [resolved(&mine), mine.clone()],
+            ..scope_in(&home, &home)
+        };
+        let ok = s.resolve(&mine.join("a.png").display().to_string());
+        assert_eq!(
+            ok.unwrap(),
+            std::fs::canonicalize(&mine).unwrap().join("a.png")
+        );
+        // Not another session's uploads, not the state folder around them, and not what a link
+        // in the folder leads to.
+        for no in [
+            theirs.join("b.png"),
+            state.join("worker.token"),
+            mine.join("link"),
+            mine.join("../theirs/b.png"),
+        ] {
+            let r = s.resolve(&no.display().to_string());
+            assert_eq!(r.unwrap_err().code, ErrCode::Bad, "{}", no.display());
+        }
+    }
+
+    #[test]
     fn a_neighbour_of_home_is_not_home() {
         let dir = tempfile::tempdir().unwrap();
         let (home, twin) = (dir.path().join("home"), dir.path().join("home2"));
