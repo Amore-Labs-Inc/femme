@@ -42,7 +42,14 @@ fn wire(e: CoreError) -> WireErr {
 /// replayed `Subscribe` must subscribe the *new* connection, and a page is not worth a row. A
 /// `BlobPut` is not remembered either: the same bytes are the same blob, and a recorded hash could
 /// outlive the blob (retention sweeps what no item refers to), where running it again stores it.
+/// Nor is a `BoardApi` GET: it reads, and its answer (the accounts and their emails, up to 1 MiB
+/// each time the desktop polls) would sit in the `ops` table for a day for nothing. A POST or
+/// DELETE is, so a retry gets what the first try got (a new key's secret is shown once, and a
+/// second `POST /api/keys` would only say the name is taken).
 pub(crate) fn mutates(req: &Req) -> bool {
+    if let Req::BoardApi { method, .. } = req {
+        return !method.eq_ignore_ascii_case("GET");
+    }
     !matches!(
         req,
         Req::Subscribe { .. }

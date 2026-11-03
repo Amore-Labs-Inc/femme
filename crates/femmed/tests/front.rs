@@ -2359,7 +2359,7 @@ async fn a_board_api_call_is_made_with_the_owner_token_and_answered_as_the_board
     }
     assert_eq!(hits.load(SeqCst), calls);
 
-    // A call changes things, so it is made once per op id: a replay gets the first answer.
+    // A POST changes things, so it is made once per op id: a replay gets the first answer.
     let op = OpId::new();
     let first = c
         .call_op(op, call("POST", "/api/accounts/2/disable", ""))
@@ -2372,6 +2372,23 @@ async fn a_board_api_call_is_made_with_the_owner_token_and_answered_as_the_board
         first
     );
     assert_eq!(hits.load(SeqCst), calls, "the board was asked again");
+    let device = rig.d.store.read(auth::list_devices).unwrap()[0].id;
+    let kept = |op| {
+        rig.d
+            .store
+            .read(|c| auth::op_lookup(c, device, op))
+            .unwrap()
+    };
+    assert!(kept(op).is_some(), "the POST's answer was not kept");
+
+    // A GET only reads: it is made each time, and its answer (accounts, emails) is not kept.
+    let op = OpId::new();
+    let first = c.call_op(op, call("GET", "/api/accounts", "")).await;
+    assert!(first.is_ok(), "{first:?}");
+    let calls = hits.load(SeqCst);
+    assert_eq!(c.call_op(op, call("get", "/api/accounts", "")).await, first);
+    assert_eq!(hits.load(SeqCst), calls + 1, "a read is not replayed");
+    assert_eq!(kept(op), None, "a GET's answer was kept");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
