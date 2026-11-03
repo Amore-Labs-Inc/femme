@@ -3,6 +3,9 @@
 //! hoverable thumbnails. Owned by the composer agent (docs/desktop-ui.md §composer).
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
+#[allow(dead_code)]
+mod sniff;
+
 use femme_proto::Sid;
 use gpui::{
     div, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, Window,
