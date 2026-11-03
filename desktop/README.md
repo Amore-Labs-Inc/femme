@@ -68,14 +68,14 @@ names, and refuses the `--daemon` and `--ssh` flags.
 - **Accounts**: femme > accounts opens a modal layer over the centre; `escape` closes it.
 - **Board**: a drawing board for quick diagrams, a layer over the whole window (the top bar stays in view
   above it). The strip's third icon, `board`, or `ctrl-shift-d` opens it with the keyboard in it;
-  `escape`, its `‹` or a click outside it closes it and gives the keyboard back to where it was
-  (`ctrl-shift-d` closes it too, and the keyboard goes to the centre). `ctrl-enter` sends the drawing to
-  the Claude session on show: the composer gets it as a `diagram-1.png` chip (a PNG, ready to send with
-  the message) and the keyboard, and the board closes. With a shell or no session there is nowhere to send
-  it: the top bar says "open a claude session to send the diagram" for a few seconds and the board stays
-  open. The drawing is kept in `$XDG_STATE_HOME/femme/board.json` (else
-  `~/.local/state/femme/board.json`); its tools and keys (`1`-`7`, `ctrl-z`, `ctrl-d`, ...) are listed in
-  the docs of `src/board.rs`, and none of them reach the shell while it is open.
+  `escape`, its `‹`, a click outside it or `ctrl-shift-d` again closes it and gives the keyboard back to
+  where it was. `ctrl-enter` sends the drawing to the Claude session on show: the composer gets it as a
+  `diagram-1.png` chip (a PNG, ready to send with the message) and the keyboard, and the board closes.
+  With a shell or no session there is nowhere to send it: the top bar says "open a claude session to send
+  the diagram" for a few seconds and the board stays open. The drawing is kept in
+  `$XDG_STATE_HOME/femme/board.json` (else `~/.local/state/femme/board.json`); its tools and keys
+  (`1`-`7`, `ctrl-z`, `ctrl-d`, ...) are listed in the docs of `src/board.rs`, and none of them reach the
+  shell while it is open.
 - **At start**: once connected, the newest live Claude session is shown; with none, a headless Claude
   session is started in the box's home directory; if the box cannot, a shell (`src/session.rs`). The
   link's status line says what is being started, or why nothing could be.

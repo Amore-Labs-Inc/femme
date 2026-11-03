@@ -162,7 +162,7 @@ impl FemmeApp {
                     .action(&ToggleBoard, None)
                     .build(window, cx)
             })
-            .on_click(cx.listener(|t, _, _, cx| t.toggle_board(cx)))
+            .on_click(cx.listener(|t, _, window, cx| t.toggle_board(window, cx)))
     }
 
     /// The strip on the right edge: hovering it opens the panel.

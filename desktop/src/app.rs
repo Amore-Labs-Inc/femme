@@ -592,12 +592,12 @@ impl FemmeApp {
         }
     }
 
-    /// mod+shift+d and the strip's button: the board opens (it takes the keyboard), or closes when it is
-    /// showing (the keyboard lands in the centre).
-    fn toggle_board(&mut self, cx: &mut Context<Self>) {
+    /// mod+shift+d and the strip's button: the board opens (it takes the keyboard), or closes the way
+    /// escape does when it is showing (the keyboard goes back to whoever had it).
+    fn toggle_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.board.update(cx, |board, cx| {
             if board.is_open() {
-                board.close(cx)
+                board.dismiss(window, cx)
             } else {
                 board.open(cx)
             }
@@ -623,9 +623,9 @@ impl FemmeApp {
         }
     }
 
-    /// The board closed. When the user dismissed it, it gave the keyboard back to whoever had it (make
-    /// sure that one is still drawn); a send, or a close from here, leaves it on the board, and then
-    /// the centre takes it.
+    /// The board closed. When it was dismissed (escape, `‹`, a click outside, the chord) it gave the
+    /// keyboard back to whoever had it (make sure that one is still drawn); a send leaves it on the
+    /// board, and then the centre takes it.
     fn board_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Opened again by a send that had nowhere to go: this `Closed` is already stale.
         if self.board.read(cx).is_open() {
@@ -894,7 +894,7 @@ impl Render for FemmeApp {
             .on_action(cx.listener(|t, _: &CloseRight, window, cx| t.close_right(window, cx)))
             .on_action(cx.listener(|t, _: &FocusNext, window, cx| t.focus_cycle(false, window, cx)))
             .on_action(cx.listener(|t, _: &FocusPrev, window, cx| t.focus_cycle(true, window, cx)))
-            .on_action(cx.listener(|t, _: &ToggleBoard, _, cx| t.toggle_board(cx)))
+            .on_action(cx.listener(|t, _: &ToggleBoard, window, cx| t.toggle_board(window, cx)))
             .size_full()
             .relative()
             .font_family(FONT_UI)
