@@ -4,6 +4,8 @@
 //! agent (docs/desktop-ui.md §terminal).
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
+pub mod tabs;
+
 use femme_proto::{PaneId, Sid};
 use gpui::{div, Context, Entity, IntoElement, ParentElement, Render, Window};
 
