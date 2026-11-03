@@ -130,7 +130,7 @@ pub const ACCENT: Rgba = HOVER;
 /// Strong accent (neon): the pressed/active state and the focus ring (same as [`NEON`]).
 pub const ACCENT_STRONG: Rgba = NEON;
 /// Soft pink: a light wash for a hovered row inside a list whose selected row is [`ACCENT`]; ink on
-/// it is 10:1. `#F6CDE6`.
+/// it is 11.7:1. `#F6CDE6`.
 pub const ACCENT_SOFT: Rgba = rgb8(0xF6CDE6);
 /// Deep pink: the hover fill of a *dark* control (ink fill, paper label), where the label stays paper:
 /// paper on it is 5.5:1. Also the colour of a hovered link.
