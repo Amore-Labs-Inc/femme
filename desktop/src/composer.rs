@@ -26,7 +26,9 @@ use gpui::{
 use gpui_component::input::{Escape, InputEvent, Textarea, TextareaState};
 
 use self::chips::Previews;
-use self::draft::{Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE};
+use self::draft::{
+    join_notices, picker_notice, Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE,
+};
 use crate::net::Net;
 use crate::theme::{
     self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
@@ -366,13 +368,14 @@ impl Composer {
         let Some(sid) = self.session.filter(|_| self.target(cx).takes_prompts()) else {
             return false;
         };
+        let mut refusals = Vec::new();
         let mut taken = false;
         for entry in &item.entries {
             match entry {
                 ClipboardEntry::Image(image) => {
                     self.pastes += 1;
                     let name = sniff::paste_name(self.pastes, image.format);
-                    self.attach(sid, name, image.bytes.clone(), cx);
+                    refusals.extend(self.attach(sid, name, image.bytes.clone(), cx));
                     taken = true;
                 }
                 ClipboardEntry::ExternalPaths(paths) => {
@@ -381,6 +384,9 @@ impl Composer {
                 }
                 ClipboardEntry::String(_) => {}
             }
+        }
+        if taken {
+            self.settle_notice(sid, refusals, cx);
         }
         taken
     }
@@ -394,12 +400,14 @@ impl Composer {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                let mut refusals = Vec::new();
                 for file in loaded {
                     match file {
-                        Ok((name, data)) => this.attach(sid, name, data, cx),
-                        Err(refusal) => this.notice(sid, refusal.to_string(), cx),
+                        Ok((name, data)) => refusals.extend(this.attach(sid, name, data, cx)),
+                        Err(refusal) => refusals.push(refusal.to_string()),
                     }
                 }
+                this.settle_notice(sid, refusals, cx);
             })
             .ok();
         })
@@ -425,24 +433,35 @@ impl Composer {
                 // Cancelled.
                 Ok(Ok(None)) | Err(_) => return,
                 // Linux without a file chooser portal says so here.
-                Ok(Err(why)) => format!("can't open the file picker: {why}"),
+                Ok(Err(why)) => picker_notice(&why.to_string()),
             };
             this.update(cx, |this, cx| this.notice(sid, line, cx)).ok();
         })
         .detach();
     }
 
-    /// Adds a chip to `sid`'s draft and starts its upload.
-    fn attach(&mut self, sid: Sid, name: String, data: Vec<u8>, cx: &mut Context<Self>) {
+    /// Adds a chip to `sid`'s draft and starts its upload; the refusal's line when it is not taken.
+    fn attach(
+        &mut self,
+        sid: Sid,
+        name: String,
+        data: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
         let id = self.drafts.new_id();
-        let draft = self.drafts.entry(sid);
-        match draft.add(id, &name, data).map(|_| ()) {
+        match self.drafts.entry(sid).add(id, &name, data).map(|_| ()) {
             Ok(()) => {
-                draft.notice = None;
                 self.upload(sid, id, cx);
+                None
             }
-            Err(refusal) => draft.notice = Some(refusal.to_string()),
+            Err(refusal) => Some(refusal.to_string()),
         }
+    }
+
+    /// Shows what a batch of attachments refused, in one line, under `sid`'s input; with nothing
+    /// refused it takes the old line down, as any edit does.
+    fn settle_notice(&mut self, sid: Sid, refusals: Vec<String>, cx: &mut Context<Self>) {
+        self.drafts.entry(sid).notice = join_notices(refusals);
         cx.notify();
     }
 

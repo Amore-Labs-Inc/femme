@@ -103,6 +103,34 @@ impl fmt::Display for Refusal {
     }
 }
 
+/// The most refusals one line spells out before it counts the rest.
+const NOTICE_NAMES: usize = 3;
+
+/// One line for everything a drop or paste refused, the reasons in order; `None` when it refused
+/// nothing. Past the third reason it says how many more there were.
+pub fn join_notices(mut lines: Vec<String>) -> Option<String> {
+    if lines.is_empty() {
+        return None;
+    }
+    let more = lines.len().saturating_sub(NOTICE_NAMES);
+    lines.truncate(NOTICE_NAMES);
+    let line = lines.join("; ");
+    Some(match more {
+        0 => line,
+        n => format!("{line}; and {n} more"),
+    })
+}
+
+/// The line for a file picker that would not open. On Linux gpui asks the desktop portal, which a
+/// session without a desktop lacks; say what to do instead of quoting the D-Bus error.
+pub fn picker_notice(why: &str) -> String {
+    if why.contains("portal") {
+        "no file picker here: drop or paste files instead".into()
+    } else {
+        format!("can't open the file picker: {why}")
+    }
+}
+
 /// What the composer is attached to; decides whether it takes input and what its placeholder says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -656,6 +684,44 @@ mod tests {
         let out = d.gate("", agent()).unwrap();
         assert_eq!(out.text, "");
         assert_eq!(out.ids, [1]);
+    }
+
+    #[test]
+    fn what_one_drop_refused_shares_a_line() {
+        assert_eq!(join_notices(Vec::new()), None);
+        assert_eq!(
+            join_notices(vec!["a is empty".into()]).as_deref(),
+            Some("a is empty")
+        );
+        let five = ["a", "b", "c", "d", "e"].map(|n| format!("{n} is empty"));
+        assert_eq!(
+            join_notices(five.to_vec()).as_deref(),
+            Some("a is empty; b is empty; c is empty; and 2 more")
+        );
+        let three = five[..3].to_vec();
+        assert_eq!(
+            join_notices(three).as_deref(),
+            Some("a is empty; b is empty; c is empty")
+        );
+    }
+
+    #[test]
+    fn a_missing_portal_is_explained_not_quoted() {
+        let explained = "no file picker here: drop or paste files instead";
+        assert_eq!(
+            picker_notice(
+                "Portal request failed: org.freedesktop.zbus.Error: The name \
+                 org.freedesktop.portal.Desktop was not provided by any .service files"
+            ),
+            explained
+        );
+        assert_eq!(
+            picker_notice(
+                "Couldn't open file picker due to missing xdg-desktop-portal implementation."
+            ),
+            explained
+        );
+        assert_eq!(picker_notice("boom"), "can't open the file picker: boom");
     }
 
     #[test]
