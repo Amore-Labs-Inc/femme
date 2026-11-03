@@ -47,11 +47,21 @@ impl FemmeApp {
         cx: &mut Context<Self>,
     ) {
         self.right.show(tab);
+        self.revealed(tab, cx);
         if focus {
             self.want_focus = false;
             self.focus_right(window, cx);
         }
         cx.notify();
+    }
+
+    /// `tab` has come into view. The files tab is a cached view, which is not drawn again by
+    /// itself, so it is told to look at the age of its listings (they are asked for again past
+    /// their TTL).
+    fn revealed(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        if tab == Tab::Files {
+            self.files.update(cx, |files, cx| files.shown(cx));
+        }
     }
 
     pub(super) fn close_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -103,7 +113,8 @@ impl FemmeApp {
                 }
             }
             // The tab changed under the keyboard: the old tab's module is gone, so it follows.
-            Settle::Open(_) => {
+            Settle::Open(tab) => {
+                self.revealed(tab, cx);
                 if inside {
                     self.focus_right(window, cx);
                 }
