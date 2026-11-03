@@ -147,6 +147,20 @@ impl Shown {
         }
     }
 
+    /// What is on show next, given what is on show now. After a `Reset` the daemon lists its sessions
+    /// again, and for that while the session on show is not in the list: it stays as it is instead
+    /// of passing through an "opening" card, which would make the modules forget it (the composer's
+    /// draft, the file tree, the transcript's place).
+    pub fn after(&self, model: &Model, note: Option<&str>) -> Self {
+        let next = Shown::of(model, note);
+        let relisting =
+            model.load == Load::Rebuilding && next.centre == Centre::Card(Card::Opening);
+        if relisting && next.sid == self.sid {
+            return self.clone();
+        }
+        next
+    }
+
     /// The session whose transcript is on show, if any.
     pub fn transcript(&self) -> Option<Sid> {
         match self.centre {
@@ -487,6 +501,47 @@ mod tests {
             ..model(up(), Some(4), vec![])
         };
         assert_eq!(Shown::of(&m, None).centre, Centre::Card(Card::Opening));
+    }
+
+    #[test]
+    fn the_session_on_show_stays_while_the_daemon_lists_its_sessions_again() {
+        let agent = || vec![session(2, Agent::Claude, Mode::Headless)];
+        let listed = model(up(), Some(2), agent());
+        let on_show = Shown::of(&listed, None);
+        assert_eq!(on_show.centre, Centre::Transcript(Id(2)));
+        // A `Reset` emptied the list and the session is still named: nothing moves.
+        let relisting = Model {
+            load: Load::Rebuilding,
+            ..model(up(), Some(2), vec![])
+        };
+        assert_eq!(on_show.after(&relisting, None), on_show);
+        // The full set is back: the same, from the list.
+        assert_eq!(on_show.after(&listed, None), on_show);
+        // Done listing and the session is not there: it is opening (just created), as before.
+        let done = Model {
+            load: Load::Done,
+            ..model(up(), Some(2), vec![])
+        };
+        assert_eq!(
+            on_show.after(&done, None).centre,
+            Centre::Card(Card::Opening)
+        );
+        // Another session is named: that is what shows, even while relisting.
+        let other = Model {
+            load: Load::Rebuilding,
+            ..model(up(), Some(3), vec![])
+        };
+        let next = on_show.after(&other, None);
+        assert_eq!(
+            (next.sid, next.centre),
+            (Some(Id(3)), Centre::Card(Card::Opening))
+        );
+        // Nothing was on show before: the card says so.
+        let first = Shown::of(&model(up(), None, vec![]), None);
+        assert_eq!(
+            first.after(&relisting, None).centre,
+            Centre::Card(Card::Opening)
+        );
     }
 
     #[test]

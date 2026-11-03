@@ -264,10 +264,9 @@ fn bench_task(
     })
 }
 
-/// What the centre shows for the daemon's state, and for what the app says about having no session
-/// (what it is starting, or why that failed).
-fn shown_of(net: &Net) -> Shown {
-    Shown::of(&net.model, net.starting().or(net.error.as_deref()))
+/// What the app says about having no session: what it is starting, or why that failed.
+fn note_of(net: &Net) -> Option<&str> {
+    net.starting().or(net.error.as_deref())
 }
 
 /// The shell view.
@@ -374,9 +373,10 @@ impl FemmeApp {
                 }
             }));
         }
-        let shown = net
-            .as_ref()
-            .map_or_else(Shown::no_daemon, |n| shown_of(n.read(cx)));
+        let shown = net.as_ref().map_or_else(Shown::no_daemon, |n| {
+            let net = n.read(cx);
+            Shown::of(&net.model, note_of(net))
+        });
         Self {
             dots: DotGrid::new(window.scale_factor(), cx),
             focus: cx.focus_handle(),
@@ -419,7 +419,10 @@ impl FemmeApp {
     /// the keyboard where to go when it changed.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown = match &self.net {
-            Some(net) => shown_of(net.read(cx)),
+            Some(net) => {
+                let net = net.read(cx);
+                self.shown.after(&net.model, note_of(net))
+            }
             None => Shown::no_daemon(),
         };
         let mut new_session = false;
