@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod element;
 pub mod input;
 pub mod pane;
+pub mod panel;
 pub mod runs;
 pub mod synth;
 

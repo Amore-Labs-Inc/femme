@@ -3,17 +3,24 @@
 
 #![warn(missing_docs)]
 
+pub mod accounts;
 pub mod app;
 pub mod bench;
+pub mod composer;
 pub mod connect;
 pub mod display;
+pub mod files;
+pub mod menu;
 pub mod net;
 pub mod panels;
 pub mod rng;
+pub mod session;
+pub mod sidebar;
 pub mod terminal;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
+pub mod viewer;
 
 use anyhow::Context as _;
 

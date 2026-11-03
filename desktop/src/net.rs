@@ -41,6 +41,8 @@ pub struct Model {
     pub rtt_ms: Option<u32>,
     /// Every session of the global scope (closed ones too, until the daemon forgets them).
     pub sessions: BTreeMap<Sid, Session>,
+    /// The session the centre shows (docs/desktop-ui.md §sessions); the sessions agent sets it.
+    pub current: Option<Sid>,
     /// Every pane of the global scope.
     pub panes: BTreeMap<PaneId, Pane>,
 }
@@ -296,6 +298,19 @@ impl Net {
     /// The client, for panes that attach to a terminal.
     pub fn client(&self) -> Arc<Client> {
         self.client.clone()
+    }
+
+    /// The session the centre shows.
+    pub fn current(&self) -> Option<Sid> {
+        self.model.current
+    }
+
+    /// Makes `sid` the session the centre shows (`None`: nothing); observers of `Net` are told.
+    pub fn set_current(&mut self, sid: Option<Sid>, cx: &mut Context<Self>) {
+        if self.model.current != sid {
+            self.model.current = sid;
+            cx.notify();
+        }
     }
 
     /// The side runtime the client lives on.
