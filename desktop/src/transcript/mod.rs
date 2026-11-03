@@ -2,6 +2,7 @@
 
 pub mod attach;
 pub mod body;
+pub mod items;
 pub mod live;
 pub mod model;
 pub mod pacer;
