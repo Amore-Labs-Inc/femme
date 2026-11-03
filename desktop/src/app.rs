@@ -36,6 +36,7 @@ use gpui::{
 use gpui_component::tooltip::Tooltip;
 use gpui_component::Root;
 
+use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
@@ -48,13 +49,16 @@ use crate::session;
 use crate::sidebar::{OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
-use crate::theme::{BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PAPER};
+use crate::theme::{self, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PAPER};
 use crate::transcript::live::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
+#[macro_use]
+mod focus;
+
 #[allow(missing_docs)]
 mod actions_def {
-    gpui::actions!(femme, [ToggleSidebar]);
+    gpui::actions!(femme, [ToggleSidebar, CloseModal]);
 }
 pub use actions_def::*;
 
@@ -73,9 +77,12 @@ macro_rules! modkey {
     };
 }
 
-/// Binds the shell's keys: mod+b sidebar.
+/// Binds the shell's keys: mod+b sidebar, escape closes the accounts overlay.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme"))]);
+    cx.bind_keys([
+        KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
+        KeyBinding::new("escape", CloseModal, Some("FemmeModal")),
+    ]);
 }
 
 /// Everything the command line configures. `bench`, `panes`, `hz`, `modes`, `full_height`,
@@ -256,15 +263,19 @@ pub struct FemmeApp {
     composer: Entity<Composer>,
     terminal: Entity<TerminalPanel>,
     files: Entity<FilesPanel>,
+    accounts: Entity<AccountsOverlay>,
     /// The benchmark's synthetic terminals; empty otherwise.
     panes: Vec<Entity<TerminalPane>>,
     /// The window's own stop: the key context of the shell is always in the dispatch path.
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
     centre_focus: FocusHandle,
+    modal_focus: FocusHandle,
     /// What the centre shows, and what the modules were last told.
     shown: Shown,
     sidebar_open: bool,
+    /// The accounts overlay was open at the last look.
+    modal_open: bool,
     /// The centre should take the keyboard as soon as there is something to take it.
     want_focus: bool,
     /// A module's handle took the keyboard: `verify_focus` looks once the frame that carries it is drawn.
@@ -288,6 +299,7 @@ impl FemmeApp {
         let composer = cx.new(|cx| Composer::new(net.clone(), cx));
         let terminal = cx.new(|cx| TerminalPanel::new(net.clone(), cx));
         let files = cx.new(|cx| FilesPanel::new(net.clone(), cx));
+        let accounts = cx.new(|cx| AccountsOverlay::new(net.clone(), cx));
         // Synthetic terminals exist for the benchmark only; the app itself has no mock.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
             .filter(|_| cfg.bench.is_some())
@@ -313,6 +325,9 @@ impl FemmeApp {
             }),
             cx.subscribe_in(&sidebar, window, |t, _, ev: &OpenSession, _, cx| {
                 t.open_session(ev.0, cx)
+            }),
+            cx.observe_in(&accounts, window, |t, _, window, cx| {
+                t.accounts_changed(window, cx)
             }),
             cx.observe_in(&terminal, window, |t, _, window, cx| {
                 t.terminal_changed(window, cx)
@@ -340,6 +355,7 @@ impl FemmeApp {
             focus: cx.focus_handle(),
             sidebar_focus: cx.focus_handle(),
             centre_focus: cx.focus_handle(),
+            modal_focus: cx.focus_handle(),
             cfg,
             net,
             menu,
@@ -348,9 +364,11 @@ impl FemmeApp {
             composer,
             terminal,
             files,
+            accounts,
             panes,
             shown,
             sidebar_open: true,
+            modal_open: false,
             want_focus: false,
             check_focus: false,
             _subs: subs,
@@ -470,16 +488,36 @@ impl FemmeApp {
 
     fn on_menu(&mut self, ev: MenuEvent, _: &mut Window, cx: &mut Context<Self>) {
         match ev {
+            MenuEvent::Accounts => self.accounts.update(cx, |a, cx| a.open(cx)),
             MenuEvent::Reconnect => {
                 if let Some(net) = &self.net {
                     net.read(cx).reconnect();
                 }
             }
             MenuEvent::Quit => cx.quit(),
-            // The accounts overlay is shown by a later change; the menu says what the timer will do by
-            // itself.
-            MenuEvent::Accounts | MenuEvent::CheckUpdates => {}
+            // The menu says what the timer will do by itself.
+            MenuEvent::CheckUpdates => {}
         }
+    }
+
+    /// The accounts overlay opened or closed: it takes the keyboard while it is open (Esc closes it)
+    /// and gives it back to the centre.
+    fn accounts_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self.accounts.read(cx).is_open();
+        if open != self.modal_open {
+            self.modal_open = open;
+            if open {
+                let handle = focus_of!(self.accounts.read(cx), cx);
+                window.focus(&handle.unwrap_or_else(|| self.modal_focus.clone()), cx);
+            } else {
+                self.land_focus(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn close_modal(&mut self, cx: &mut Context<Self>) {
+        self.accounts.update(cx, |a, cx| a.close(cx));
     }
 
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -672,6 +710,25 @@ impl FemmeApp {
                 .into_any_element(),
         }
     }
+
+    /// The accounts overlay: a scrim over the centre, the overlay's card in the middle of it (a card
+    /// that fills the scrim fills it).
+    fn modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("modal")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .key_context("FemmeModal")
+            .track_focus(&self.modal_focus)
+            .on_action(cx.listener(|t, _: &CloseModal, _, cx| t.close_modal(cx)))
+            .bg(theme::rgba8(0x000000, 0.25))
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(MARGIN))
+            .child(self.accounts.clone())
+    }
 }
 
 impl Render for FemmeApp {
@@ -702,7 +759,8 @@ impl Render for FemmeApp {
                     .min_w_0()
                     .h_full()
                     .track_focus(&self.centre_focus)
-                    .child(self.centre(cx)),
+                    .child(self.centre(cx))
+                    .when(self.modal_open, |d| d.child(self.modal(cx))),
             );
         div()
             .id("femme")
