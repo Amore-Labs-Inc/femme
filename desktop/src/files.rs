@@ -607,6 +607,8 @@ impl FilesPanel {
         spin: &'static str,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        // The lines that do something when clicked; a spinner or "(empty)" is only text.
+        let clickable = !matches!(row.kind, Kind::Loading | Kind::Empty);
         let base = div()
             .id(("files-row", ix))
             .w_full()
@@ -621,7 +623,7 @@ impl FilesPanel {
             .when(selected, |d| {
                 d.bg(if focused { NEON } else { cursor_idle() })
             })
-            .when(!selected, |d| d.hover(|s| s.bg(PANEL)));
+            .when(!selected && clickable, |d| d.hover(|s| s.bg(PANEL)));
         let marker = |glyph: &'static str| {
             div()
                 .w(px(12.))
@@ -681,12 +683,20 @@ impl FilesPanel {
                 .child(marker("!"))
                 .child(note("could not list: click to try again".to_owned(), BAD)),
         };
-        match row.kind {
-            Kind::Loading | Kind::Empty => line.cursor_default(),
-            _ => line.on_click(cx.listener(move |t, e: &ClickEvent, _, cx| {
-                t.row_clicked(&row, e.click_count(), cx)
-            })),
+        if !clickable {
+            return line.cursor_default();
         }
+        line
+            // gpui paints the hover style from where the pointer is, but only repaints this view
+            // when the pointer moves: a line that slid under a still pointer (a notice appeared,
+            // the page changed) would stay grey after the pointer left. This listener also
+            // fires for such moves of the layout, and the repaint it asks for is what clears it.
+            .on_hover(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_click(
+                cx.listener(move |t, e: &ClickEvent, _, cx| {
+                    t.row_clicked(&row, e.click_count(), cx)
+                }),
+            )
     }
 
     /// The viewer page: a black title bar (`‹ back`, name, size) over the file.
