@@ -61,6 +61,12 @@ pub(super) fn board_body(answer: Result<Resp, String>) -> Result<String, String>
     }
 }
 
+/// Whether a read of `step` that went through takes back `notice`: the one that says a read failed
+/// goes when the accounts, which every pass starts with, come in again.
+fn takes_back(notice: &Notice, step: Step) -> bool {
+    notice.read && step == Step::Accounts
+}
+
 impl AccountsOverlay {
     /// Sends `req`; `done` runs on the overlay with the answer, or with why there is none.
     fn call(
@@ -142,7 +148,12 @@ impl AccountsOverlay {
             }
         };
         if let Some(why) = failed {
-            self.notice = Some(Notice::bad(why));
+            self.notice = Some(Notice::lost(why));
+        } else if matches!(self.accounts, Load::Ready(_))
+            && self.notice.as_ref().is_some_and(|n| takes_back(n, step))
+        {
+            // The box answers again: what it failed to say is no news any more.
+            self.notice = None;
         }
         cx.notify();
     }
@@ -411,6 +422,24 @@ impl AccountsOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_reads_notice_goes_when_the_accounts_come_in_again() {
+        assert!(takes_back(
+            &Notice::lost("the board is not answering"),
+            Step::Accounts
+        ));
+        assert!(!takes_back(
+            &Notice::lost("the board is not answering"),
+            Step::Keys
+        ));
+        // A refusal of a button stays until the next button.
+        assert!(!takes_back(
+            &Notice::bad("a key with that name exists"),
+            Step::Accounts
+        ));
+        assert!(!takes_back(&Notice::ok("copied"), Step::Accounts));
+    }
 
     fn board(status: u16, body: &str) -> Result<Resp, String> {
         Ok(Resp::BoardApi {
