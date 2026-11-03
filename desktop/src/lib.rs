@@ -10,6 +10,7 @@ pub mod composer;
 pub mod connect;
 pub mod display;
 pub mod files;
+pub mod frame;
 pub mod menu;
 pub mod net;
 pub mod panels;
