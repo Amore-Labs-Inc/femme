@@ -36,7 +36,7 @@ if [ "${MOSH:-0}" = 1 ]; then  # phone terminal (opt-in): mosh picks a UDP port 
   aws ec2 authorize-security-group-ingress --group-id "$sg" --ip-permissions \
     'IpProtocol=udp,FromPort=60000,ToPort=61000,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null 2>&1 || true  # already open
 fi
-if [ "${FEMMED:-0}" = 1 ]; then  # the desktop app's QUIC transport (docs/plan-desktop.md); ssh is its fallback
+if [ "${FEMMED:-0}" != 0 ]; then  # the desktop app's QUIC transport (docs/plan-desktop.md); ssh is its fallback
   aws ec2 authorize-security-group-ingress --group-id "$sg" --ip-permissions \
     "IpProtocol=udp,FromPort=${QUIC_PORT:-7788},ToPort=${QUIC_PORT:-7788},IpRanges=[{CidrIp=0.0.0.0/0}]" >/dev/null 2>&1 || true  # already open
 fi

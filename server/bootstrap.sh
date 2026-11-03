@@ -4,8 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."  # the checkout root: .env and every path below are relative to it
 . ./.env
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
-# FEMMED=1: the Rust daemon (femmed) runs sessions, the board and the worker and herdr is not installed
-# (docs/plan-desktop.md, M1). 0: the herdr-based setup.
+# FEMMED (docs/plan-desktop.md): 0 the herdr-based setup; 1 the Rust daemon (femmed) runs beside it, for the
+# desktop app; 2 femmed replaces the board, the worker and herdr (M1 cutover).
 femmed=${FEMMED:-0}
 
 # Toolchains + claude/codex/pi/gh from the synced ~/.config/mise/config.toml
@@ -35,7 +35,7 @@ mkdir -p ~/.local/bin
 # their herdr socket for the board into this dir. sshd replaces a stale socket on reconnect and drops
 # a dead link (lid shut) in ~45 s.
 mkdir -p ~/.config/herdr/remote
-if [ "$femmed" != 1 ]; then
+if [ "$femmed" != 2 ]; then
   # Same herdr version as the laptop: the laptop's client talks to this server.
   want=${HERDR_VERSION:?pass HERDR_VERSION}
   [ "$(herdr --version 2>/dev/null)" = "herdr $want" ] || {
@@ -77,7 +77,8 @@ mkdir -p ~/.claude/rules && cp server/rules/pc.md ~/.claude/rules/femme-pc.md
   printf '<!-- femme pc start -->\n'; cat server/rules/pc.md; printf '<!-- femme pc end -->\n'
 } > ~/.codex/AGENTS.new && mv ~/.codex/AGENTS.new ~/.codex/AGENTS.md
 
-if [ "$femmed" = 1 ]; then units=femmed; else units="herdr-server herdr-instinct herdr-notify"; fi
+units="herdr-server herdr-instinct herdr-notify"
+case $femmed in 1) units="$units femmed" ;; 2) units=femmed ;; esac
 if [ -n "${BOARD_URL:-}" ] && [ "${BOARD_PUBLIC:-0}" = 1 ]; then
   # Optional (BOARD_PUBLIC=1): the board on the internet, for agents that call the API from elsewhere.
   # Caddy terminates HTTPS for the board (automatic certificate for BOARD_URL's host).
@@ -110,11 +111,11 @@ ${BOARD_URL#https://} {
 EOF
   sudo systemctl reload-or-restart caddy
 fi
-if [ "$femmed" = 1 ] || [ -n "${BOARD_URL:-}" ]; then
+if [ "$femmed" != 0 ] || [ -n "${BOARD_URL:-}" ]; then
   # Built here, not on the laptop, so a merge to main can deploy itself (deploy.sh).
   [ -x ~/.cargo/bin/cargo ] || curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path
 fi
-if [ "$femmed" = 1 ]; then
+if [ "$femmed" != 0 ]; then
   # femmed and the per-session holder. Copy then rename: a running binary can't be written over, and
   # holders already running keep the old binary open until their session ends (plan §5, upgrade by rename).
   ~/.cargo/bin/cargo build -q --release -p femmed -p femme-holder
@@ -122,7 +123,8 @@ if [ "$femmed" = 1 ]; then
   # Non-interactive ssh (`ssh agentbox femmed proxy`, the desktop app's fallback transport) has no ~/.local/bin on PATH.
   sudo ln -sf ~/.local/bin/femmed /usr/local/bin/femmed
   mkdir -p ~/.local/state/femme
-elif [ -n "${BOARD_URL:-}" ]; then
+fi
+if [ "$femmed" != 2 ] && [ -n "${BOARD_URL:-}" ]; then
   ~/.cargo/bin/cargo build -q --release --manifest-path board/Cargo.toml
   # Copy then rename: the running binary can't be written over.
   cp board/target/release/femme-board ~/.local/bin/femme-board.new
@@ -147,15 +149,15 @@ fi
 
 mkdir -p ~/.config/systemd/user
 for u in $units; do cp "server/systemd/$u.service" ~/.config/systemd/user/; done
-[ "$femmed" != 1 ] || cp server/systemd/femme-sessions.slice ~/.config/systemd/user/
+[ "$femmed" = 0 ] || cp server/systemd/femme-sessions.slice ~/.config/systemd/user/
 # Only the timer is started here: deploy.sh runs this script, and starting its own service would wait on itself.
 # Optional (AUTODEPLOY=1): anyone who can merge to main can then run code on this box.
 [ "${AUTODEPLOY:-0}" != 1 ] || { cp server/systemd/femme-deploy.service server/systemd/femme-deploy.timer ~/.config/systemd/user/; units="$units femme-deploy.timer"; }
 systemctl --user daemon-reload
 # femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
-[ "$femmed" != 1 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
+[ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
 systemctl --user enable --now $units
-if [ "$femmed" != 1 ]; then
+if [ "$femmed" != 2 ]; then
   # The plugin runs from this checkout (deploy.sh keeps it at main). sync.sh just copied the laptop's
   # plugins.json over ours, which points femme at the laptop's checkout path: relink when it differs.
   if [ "$(herdr plugin list --json 2>/dev/null | jq -r '.result.plugins[] | select(.plugin_id == "femme") | .plugin_root')" != "$PWD/plugin" ]; then
@@ -164,5 +166,5 @@ if [ "$femmed" != 1 ]; then
   fi
 fi
 systemctl --user restart $(printf '%s\n' $units | grep -vE '^(herdr-server|herdr-instinct|femme-deploy.timer)$')
-[ "$femmed" = 1 ] || herdr server reload-config >/dev/null 2>&1 || true
+[ "$femmed" = 2 ] || herdr server reload-config >/dev/null 2>&1 || true
 systemctl --user is-active $units
