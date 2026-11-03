@@ -190,7 +190,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/transcript/{body,question,attach}.rs` | Pure: item bodies (JSON, also the cut ones of the blob tier), questions and their answers, `Attached:` lines. |
 | `src/transcript/{markdown,md_view}.rs` | pulldown-cmark folded into a block model (pure), and the block model as elements. |
 | `src/transcript/faces.rs`, `faces/` | The bold, italic and bold-italic faces of Schibsted Grotesk (static instances cut from the family's variable files; gpui draws a variable file at its default weight only, so `**bold**` and `*italic*` came out plain), registered once by `Transcript::new`. |
-| `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (the viewer's `FileView`); the list diff (pure). |
+| `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (both gpui `img`, the picture fitted whole into its box); the list diff (pure). |
 | `src/bench.rs` | Frame-time histograms from gpui's profiler (`bench` feature), probes, the report. |
 | `assets/fonts/` | VT323, JetBrains Mono NL (no ligatures), Schibsted Grotesk, Kaushan Script (all OFL). |
 | `assets/dots-{1x,2x}.png` | Desk dot-grid tiles (192 logical px, a multiple of the board's 6px period). |

@@ -1,13 +1,14 @@
 //! The files attached to a user message, in the transcript: a chip with the file's name for any
 //! file, and for an image a thumbnail that opens a larger preview while the pointer is on it. The
-//! bytes come from the box (`Req::FsRead`), the picture is drawn by gpui's `img`, the preview is
-//! the viewer's `FileView`.
+//! bytes come from the box (`Req::FsRead`); the thumbnail and the preview both draw the picture
+//! with gpui's `img`, fitted whole into their box: it keeps its ratio, sits in the middle, and the
+//! panel colour shows around it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, img, px, relative, AnyElement, App, AppContext as _, Context, ElementId, Entity, Image,
+    div, img, px, relative, AnyElement, App, AppContext as _, Context, ElementId, Image, Img,
     InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
 };
@@ -15,7 +16,6 @@ use gpui::{
 use super::attach::{self, Attached};
 use crate::theme::{self, BAD, FONT_MONO, MUTED, PANEL, PAPER};
 use crate::ui::{meta, ruled, tb};
-use crate::viewer::FileView;
 
 /// Side of a thumbnail's box.
 pub const THUMB: f32 = 88.;
@@ -33,7 +33,7 @@ pub enum Thumb {
     Loading,
     /// A picture gpui can draw.
     Ready {
-        /// The decoded-on-demand picture; its bytes are also what the preview shows.
+        /// The decoded-on-demand picture; the preview draws this same one, so gpui decodes it once.
         image: Arc<Image>,
         /// The file's name.
         name: String,
@@ -55,20 +55,25 @@ impl Thumb {
     }
 }
 
-/// The preview that opens over a thumbnail: the file in the viewer, in a titled box.
-struct Preview {
-    name: SharedString,
-    view: Entity<FileView>,
+/// The picture fitted whole into the box it is put in: it keeps its ratio and is centred, and the
+/// box's own background shows around it. It is placed absolutely and takes the box's size, so the
+/// box must have one: an image in the flow is never laid out shorter than its width over its
+/// ratio, which leaves a tall one no room to be letterboxed.
+fn picture(image: &Arc<Image>) -> Img {
+    img(image.clone())
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .object_fit(ObjectFit::Contain)
+        .with_loading(|| div().size_full().bg(PANEL).into_any_element())
+        .with_fallback(|| note("cannot draw", BAD).into_any_element())
 }
 
-impl Preview {
-    fn new(name: String, data: Vec<u8>, cx: &mut Context<Self>) -> Self {
-        let shown = name.clone();
-        Self {
-            view: cx.new(|cx| FileView::new(shown, data, cx)),
-            name: name.into(),
-        }
-    }
+/// The preview that opens over a thumbnail: the picture, fitted whole into a titled box.
+struct Preview {
+    name: SharedString,
+    image: Arc<Image>,
 }
 
 impl Render for Preview {
@@ -86,11 +91,13 @@ impl Render for Preview {
         shell.style().box_shadow = Some(theme::hard_shadow());
         shell.child(tb(self.name.clone())).child(
             div()
+                .relative()
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
+                .bg(PANEL)
                 .overflow_hidden()
-                .child(self.view.clone()),
+                .child(picture(&self.image)),
         )
     }
 }
@@ -105,6 +112,7 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
     let frame = ruled(
         div()
             .id(id.into())
+            .relative()
             .flex_none()
             .size(side)
             .bg(PANEL)
@@ -112,20 +120,16 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
     );
     match thumb {
         Some(Thumb::Ready { image, name }) => {
-            let (image, name) = (image.clone(), name.clone());
-            let picture = img(image.clone())
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .with_loading(|| div().size_full().bg(PANEL).into_any_element())
-                .with_fallback(|| note("cannot draw", BAD).into_any_element());
+            let (image, name) = (image.clone(), SharedString::from(name.clone()));
+            let thumb = picture(&image);
             frame
                 .cursor_pointer()
                 .tooltip_show_delay(PREVIEW_DELAY)
                 .tooltip(move |_, cx: &mut App| {
-                    let (name, data) = (name.clone(), image.bytes.clone());
-                    cx.new(|cx| Preview::new(name, data, cx)).into()
+                    let (name, image) = (name.clone(), image.clone());
+                    cx.new(|_| Preview { name, image }).into()
                 })
-                .child(picture)
+                .child(thumb)
                 .into_any_element()
         }
         Some(Thumb::Failed) => frame.child(note("unavailable", BAD)).into_any_element(),
