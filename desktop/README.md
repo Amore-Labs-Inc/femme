@@ -70,15 +70,16 @@ names, and refuses the `--daemon` and `--ssh` flags.
   session is started in the box's home directory; if the box cannot, a shell (`src/session.rs`). The
   link's status line says what is being started, or why nothing could be.
 
-Keys (`cmd` instead of `ctrl` on macOS): `ctrl-b` sidebar, `ctrl-j` terminal tab (opens it with the
-keyboard in it, closes it when it is on show), `ctrl-k` closes the right panel, `F6` / `shift-F6` walk the
-focus sidebar, centre, right panel, `escape` closes the accounts overlay. These chords belong to the app even
-when a terminal has the keyboard (the shell never sees `ctrl-b`, `ctrl-j`, `ctrl-k`); every other key goes to
-whatever has the focus. The transcript, when it has the keyboard (a click gives it, unless a text field such as
-the composer has it: a click on a row never takes the keyboard from a field), takes PageUp / PageDown / Home / End.
-The composer takes the keyboard when a Claude session becomes current, the terminal
-pane when a shell one does. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width
-state machine, the focus cycle) and their tests.
+Keys (`cmd` instead of `ctrl` on macOS): `ctrl-b` sidebar, `ctrl-j` terminal tab (opens it with the keyboard
+in it, closes it when it is on show), `ctrl-k` closes the right panel, `F6` / `shift-F6` walk the focus
+sidebar, transcript (a Claude session has one), composer or terminal, right panel, `escape` closes the
+accounts overlay. These chords belong to the app even when a terminal has the keyboard (the shell never sees
+`ctrl-b`, `ctrl-j`, `ctrl-k`); every other key goes to whatever has the focus. The transcript, when it has
+the keyboard (F6 gives it, and so does a click unless a text field such as the composer has it: a click on a
+row never takes the keyboard from a field), takes PageUp / PageDown / Home / End; its box turns neon while
+it has it. The composer takes the keyboard when a Claude session becomes current, the terminal pane when a
+shell one does. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width state
+machine, the focus cycle) and their tests.
 
 ## Talking to a daemon
 
