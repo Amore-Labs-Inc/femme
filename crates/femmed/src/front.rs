@@ -21,6 +21,7 @@
 
 pub(crate) mod admin;
 mod board;
+mod caps;
 mod fs;
 mod panes;
 mod req;

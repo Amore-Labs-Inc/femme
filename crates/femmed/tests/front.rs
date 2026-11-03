@@ -2373,3 +2373,46 @@ async fn a_board_api_call_is_made_with_the_owner_token_and_answered_as_the_board
     );
     assert_eq!(hits.load(SeqCst), calls, "the board was asked again");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_caps_are_set_listed_cleared_and_kept_in_caps_json() {
+    use femme_proto::rpc::AccountCap;
+
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let set = |account, five_hour, weekly| Req::SetCap {
+        account,
+        five_hour,
+        weekly,
+    };
+    let cap = |account, five_hour, weekly| AccountCap {
+        account,
+        five_hour,
+        weekly,
+    };
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(vec![])));
+    assert_eq!(c.call(set(10, Some(80), None)).await, Ok(Resp::Ok));
+    assert_eq!(c.call(set(2, Some(60), Some(90))).await, Ok(Resp::Ok));
+    let want = vec![cap(2, Some(60), Some(90)), cap(10, Some(80), None)];
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(want)));
+    // the file `server/fable-cap.sh` reads
+    let text = std::fs::read_to_string(rig.b.dir.path().join("state/caps.json")).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        file,
+        serde_json::json!({"2": {"five_hour": 60, "weekly": 90}, "10": {"five_hour": 80}})
+    );
+
+    for bad in [
+        set(2, Some(49), None),
+        set(2, None, Some(100)),
+        set(0, Some(60), None),
+    ] {
+        assert_eq!(c.call(bad).await.unwrap_err().code, ErrCode::Bad);
+    }
+    // both None clears the account
+    assert_eq!(c.call(set(2, None, None)).await, Ok(Resp::Ok));
+    let left = vec![cap(10, Some(80), None)];
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(left)));
+}

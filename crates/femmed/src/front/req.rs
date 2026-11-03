@@ -162,13 +162,17 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
         Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
-        // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
         Req::BoardApi { method, path, body } => {
             super::board::call(&d.cfg, &method, &path, body).await
         }
-        Req::Caps | Req::SetCap { .. } => Err(unsupported("not served yet")),
+        Req::Caps => super::caps::caps(&d.cfg).await,
+        Req::SetCap {
+            account,
+            five_hour,
+            weekly,
+        } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
     }
 }
 
