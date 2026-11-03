@@ -3,4 +3,5 @@
 
 pub mod font;
 pub mod geom;
+pub mod palette;
 pub mod scene;
