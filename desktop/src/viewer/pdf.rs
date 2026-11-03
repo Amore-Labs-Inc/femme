@@ -1,13 +1,14 @@
 //! PDF files. hayro (pure Rust: no pdfium, no system libraries) draws the pages, lazily: only the
 //! pages in view and one beyond are rendered, at the view's width times the screen's scale, and the
-//! bitmaps of pages that have scrolled away are dropped again.
+//! bitmaps of pages that have scrolled away are dropped again. The view is as tall as all its pages
+//! (their sizes are known up front); what is in view comes from a probe, because whoever hosts the
+//! view owns the scroll.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    div, img, px, AnyElement, Context, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, Render, RenderImage, ScrollHandle, StatefulInteractiveElement as _,
+    div, img, px, Context, Div, IntoElement, ObjectFit, ParentElement as _, Render, RenderImage,
     Styled as _, StyledImage as _, Subscription, Window,
 };
 use hayro::hayro_interpret::InterpreterSettings;
@@ -16,7 +17,7 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 
 use super::bitmap::{bgra_image, MAX_SIDE};
-use super::chrome;
+use super::chrome::{self, Seen};
 use super::guarded;
 use super::hex::human_size;
 use crate::theme::{PANEL, PAPER};
@@ -75,15 +76,6 @@ fn pages_in_window(starts: &[f32], top: f32, height: f32) -> Range<usize> {
 /// `range` made `by` pages wider on both sides, within `n` pages.
 fn widen(range: Range<usize>, by: usize, n: usize) -> Range<usize> {
     range.start.saturating_sub(by)..(range.end + by).min(n)
-}
-
-/// The page whose slot holds height `y` of the column.
-fn page_at(starts: &[f32], y: f32) -> usize {
-    let n = starts.len().saturating_sub(1);
-    starts
-        .get(1..)
-        .map_or(0, |ends| ends.partition_point(|&end| end <= y))
-        .min(n.saturating_sub(1))
 }
 
 /// The bitmap width to draw a page `display` logical pixels wide on a screen of `scale`.
@@ -199,11 +191,51 @@ enum State {
     Ready(Doc),
 }
 
-/// A PDF file: its pages in a vertical scroll, with `page N / M` in the caption.
+/// What a render built: the pages, and the width (in pixels) their bitmaps were asked for.
+#[derive(Clone, Debug, PartialEq)]
+struct Plan {
+    shown: Range<usize>,
+    want: u32,
+}
+
+/// The width pages are laid out at (logical pixels) in a column the probe saw `seen.width` wide.
+fn page_width(seen: Seen) -> f32 {
+    if seen.width > 1. {
+        (seen.width - 2. * GAP).max(MIN_PAGE_WIDTH)
+    } else {
+        DEFAULT_WIDTH
+    }
+}
+
+/// Which pages to build, and at which bitmap width, for what the probe saw on a screen of `scale`.
+/// `None` until the probe has measured the column: nothing is drawn at a guessed width.
+fn plan(sizes: &[(f32, f32)], seen: Seen, scale: f32) -> Option<Plan> {
+    if seen.width <= 1. {
+        return None;
+    }
+    let width = page_width(seen);
+    let shown = if seen.is_empty() {
+        0..FIRST_PAGES.min(sizes.len())
+    } else {
+        pages_in_window(&slot_starts(sizes, width), seen.top, seen.bottom - seen.top)
+    };
+    Some(Plan {
+        shown,
+        want: pixel_width(width, scale),
+    })
+}
+
+/// A PDF file: its pages stacked, `N pages` in the caption. As tall as the pages together; which of
+/// them are drawn depends on what the host's scroll area shows of them.
 pub(crate) struct PdfView {
     bytes: usize,
     state: State,
-    scroll: ScrollHandle,
+    /// What the probe saw of the page column in the last frame.
+    seen: Seen,
+    /// What the last render built; a new sighting asks for a render only when it would differ.
+    plan: Option<Plan>,
+    /// The screen's scale, as of the last render.
+    scale: f32,
     _release: Subscription,
 }
 
@@ -250,8 +282,21 @@ impl PdfView {
         PdfView {
             bytes,
             state: State::Opening,
-            scroll: ScrollHandle::new(),
+            seen: Seen::default(),
+            plan: None,
+            scale: 1.,
             _release: release,
+        }
+    }
+
+    /// Takes in what the probe saw of the page column, and asks for a frame if it would change what
+    /// is drawn.
+    fn see(&mut self, seen: Seen, cx: &mut Context<Self>) {
+        self.seen = seen;
+        if let State::Ready(doc) = &self.state {
+            if plan(&doc.sizes, seen, self.scale) != self.plan {
+                cx.notify();
+            }
         }
     }
 
@@ -299,34 +344,25 @@ impl PdfView {
         cx.notify();
     }
 
-    /// The scrolled column of pages. Works out which pages are in view from the scroll position of
-    /// the previous frame, starts the missing ones and drops the ones far away.
-    fn pages(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let viewport = self.scroll.bounds().size;
-        let top = -f32::from(self.scroll.offset().y);
-        let known = viewport.height > px(1.);
-        let width = if viewport.width > px(1.) {
-            (f32::from(viewport.width) - 2. * GAP).max(MIN_PAGE_WIDTH)
-        } else {
-            DEFAULT_WIDTH
-        };
-        let want = pixel_width(width, window.scale_factor());
+    /// The column of pages. Works out which are on screen from what the probe saw in the previous
+    /// frame, starts the missing ones and drops the ones far away. Every page has its slot, so the
+    /// column is as tall as the document from the start; only the pages near the screen are built.
+    fn pages(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        self.scale = window.scale_factor();
+        let width = page_width(self.seen);
         let size_text = human_size(self.bytes);
+        let watch = chrome::watch(self.seen, cx, Self::see);
         let State::Ready(doc) = &mut self.state else {
-            return div().into_any_element();
+            return div();
         };
 
         let n = doc.slots.len();
         let starts = slot_starts(&doc.sizes, width);
-        let (shown, current) = if known {
-            let height = f32::from(viewport.height);
-            (
-                pages_in_window(&starts, top, height),
-                page_at(&starts, top + height / 2.),
-            )
-        } else {
-            (0..FIRST_PAGES.min(n), 0)
-        };
+        let plan = plan(&doc.sizes, self.seen, self.scale);
+        self.plan = plan.clone();
+        let shown = plan
+            .as_ref()
+            .map_or(0..FIRST_PAGES.min(n), |p| p.shown.clone());
 
         let kept = widen(shown.clone(), KEEP, n);
         for (i, slot) in doc.slots.iter_mut().enumerate() {
@@ -337,26 +373,37 @@ impl PdfView {
             }
         }
 
-        let ahead = widen(shown.clone(), AHEAD, n);
+        let want = plan.as_ref().map_or(0, |p| p.want);
         let mut jobs = Vec::new();
-        for i in shown.clone().chain(ahead.filter(|i| !shown.contains(i))) {
-            if doc.inflight + jobs.len() >= MAX_INFLIGHT {
-                break;
+        if plan.is_some() {
+            let ahead = widen(shown.clone(), AHEAD, n);
+            for i in shown.clone().chain(ahead.filter(|i| !shown.contains(i))) {
+                if doc.inflight + jobs.len() >= MAX_INFLIGHT {
+                    break;
+                }
+                let slot = &mut doc.slots[i];
+                let current_bitmap = slot
+                    .bitmap
+                    .as_ref()
+                    .is_some_and(|b| !needs_redraw(b.wanted, want));
+                if !slot.busy && slot.failed.is_none() && !current_bitmap {
+                    slot.busy = true;
+                    jobs.push(i);
+                }
             }
-            let slot = &mut doc.slots[i];
-            let current_bitmap = slot
-                .bitmap
-                .as_ref()
-                .is_some_and(|b| !needs_redraw(b.wanted, want));
-            if !slot.busy && slot.failed.is_none() && !current_bitmap {
-                slot.busy = true;
-                jobs.push(i);
-            }
+            doc.inflight += jobs.len();
         }
-        doc.inflight += jobs.len();
 
-        let mut column = div().flex().flex_col().w_full();
-        column = column.child(div().flex_none().h(px(starts[shown.start])));
+        // `overflow_hidden`: for the one frame before the probe has measured the column, the pages
+        // are laid out at a guessed width.
+        let mut column = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .w_full()
+            .overflow_hidden()
+            .child(watch)
+            .child(div().flex_none().h(px(starts[shown.start])));
         for i in shown.clone() {
             let height = page_height(width, doc.sizes[i]);
             let slot = &doc.slots[i];
@@ -397,17 +444,11 @@ impl PdfView {
         for i in jobs {
             self.start_page(pdf.clone(), i, want, cx);
         }
-        chrome::framed(
-            div()
-                .id("pdf-pages")
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .child(column),
-            format!("page {} / {n} · {size_text}", current + 1),
-            PANEL,
-        )
-        .into_any_element()
+        let pages = match n {
+            1 => "1 page".to_string(),
+            _ => format!("{n} pages"),
+        };
+        chrome::framed(column, format!("{pages} · {size_text}"), PANEL)
     }
 }
 
@@ -415,8 +456,7 @@ impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match &self.state {
             State::Opening => {
-                chrome::framed(chrome::spinner("opening"), human_size(self.bytes), PANEL)
-                    .into_any_element()
+                chrome::framed(chrome::waiting("opening"), human_size(self.bytes), PANEL)
             }
             State::Failed(why) => chrome::framed(
                 chrome::notice(
@@ -426,8 +466,7 @@ impl Render for PdfView {
                 ),
                 human_size(self.bytes),
                 PANEL,
-            )
-            .into_any_element(),
+            ),
             State::Ready(_) => self.pages(window, cx),
         }
     }
@@ -560,13 +599,42 @@ mod tests {
         assert_eq!(widen(8..10, 3, 10), 5..10);
     }
 
+    /// A column 124 wide (so the pages are 100 wide) of which `top..bottom` is on screen.
+    fn seen(top: f32, bottom: f32) -> Seen {
+        Seen {
+            width: 124.,
+            top,
+            bottom,
+        }
+    }
+
     #[test]
-    fn the_current_page_is_the_one_under_a_height() {
-        let s = three();
-        assert_eq!(page_at(&s, 0.), 0);
-        assert_eq!(page_at(&s, 223.), 0);
-        assert_eq!(page_at(&s, 224.), 1);
-        assert_eq!(page_at(&s, 5000.), 2);
-        assert_eq!(page_at(&[GAP], 10.), 0);
+    fn nothing_is_planned_before_the_column_is_measured() {
+        assert_eq!(plan(&[(100., 200.); 3], Seen::default(), 1.), None);
+        assert_eq!(page_width(Seen::default()), DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn the_plan_follows_what_is_on_screen() {
+        let sizes = [(100., 200.); 10];
+        assert_eq!(page_width(seen(0., 1.)), 100.);
+        // Pages are 200 high with 12 gaps: slots start at 12, 224, 436, ...
+        let p = plan(&sizes, seen(0., 300.), 1.).unwrap();
+        assert_eq!((p.shown, p.want), (0..2, 128));
+        let p = plan(&sizes, seen(900., 1200.), 2.).unwrap();
+        assert_eq!((p.shown, p.want), (4..6, 256));
+        // Nothing on screen (the document is scrolled out of view): the first pages.
+        let p = plan(&sizes, seen(0., 0.), 1.).unwrap();
+        assert_eq!(p.shown, 0..FIRST_PAGES);
+        assert_eq!(plan(&sizes[..2], seen(0., 0.), 1.).unwrap().shown, 0..2);
+    }
+
+    #[test]
+    fn a_narrow_column_does_not_shrink_pages_below_the_minimum() {
+        let narrow = Seen {
+            width: 30.,
+            ..Seen::default()
+        };
+        assert_eq!(page_width(narrow), MIN_PAGE_WIDTH);
     }
 }
