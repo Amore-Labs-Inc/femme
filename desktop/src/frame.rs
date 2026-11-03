@@ -411,6 +411,8 @@ pub fn short_error(error: &str) -> String {
 pub enum Stop {
     /// The sessions column.
     Sidebar,
+    /// The transcript of a Claude session: PageUp, PageDown, Home and End scroll it there.
+    Transcript,
     /// The composer, or the terminal pane that fills the centre.
     Centre,
     /// The right-hand panel (the cycle opens it).
@@ -418,14 +420,18 @@ pub enum Stop {
 }
 
 /// The stop after (or, with `back`, before) `from`; without a current stop the walk starts in the
-/// centre. The sidebar is a stop whether it is open or collapsed to its strip: the strip takes keys too.
-pub fn next_stop(from: Option<Stop>, back: bool) -> Stop {
-    const STOPS: [Stop; 3] = [Stop::Sidebar, Stop::Centre, Stop::Right];
-    let Some(at) = from.and_then(|f| STOPS.iter().position(|s| *s == f)) else {
+/// centre. The sidebar is a stop whether it is open or collapsed to its strip: the strip takes keys
+/// too. The transcript is a stop only while the centre shows one (`transcript`).
+pub fn next_stop(from: Option<Stop>, back: bool, transcript: bool) -> Stop {
+    let stops: Vec<Stop> = [Stop::Sidebar, Stop::Transcript, Stop::Centre, Stop::Right]
+        .into_iter()
+        .filter(|s| transcript || *s != Stop::Transcript)
+        .collect();
+    let Some(at) = from.and_then(|f| stops.iter().position(|s| *s == f)) else {
         return Stop::Centre;
     };
-    let n = STOPS.len();
-    STOPS[if back { (at + n - 1) % n } else { (at + 1) % n }]
+    let n = stops.len();
+    stops[if back { (at + n - 1) % n } else { (at + 1) % n }]
 }
 
 #[cfg(test)]
@@ -831,12 +837,35 @@ mod tests {
     #[test]
     fn the_focus_cycle_walks_sidebar_centre_right() {
         use Stop::*;
-        assert_eq!(next_stop(Some(Sidebar), false), Centre);
-        assert_eq!(next_stop(Some(Centre), false), Right);
-        assert_eq!(next_stop(Some(Right), false), Sidebar);
-        assert_eq!(next_stop(Some(Sidebar), true), Right);
-        assert_eq!(next_stop(Some(Right), true), Centre);
-        assert_eq!(next_stop(Some(Centre), true), Sidebar);
+        assert_eq!(next_stop(Some(Sidebar), false, false), Centre);
+        assert_eq!(next_stop(Some(Centre), false, false), Right);
+        assert_eq!(next_stop(Some(Right), false, false), Sidebar);
+        assert_eq!(next_stop(Some(Sidebar), true, false), Right);
+        assert_eq!(next_stop(Some(Right), true, false), Centre);
+        assert_eq!(next_stop(Some(Centre), true, false), Sidebar);
+    }
+
+    #[test]
+    fn a_session_with_a_transcript_has_it_as_a_stop_before_the_composer() {
+        use Stop::*;
+        assert_eq!(next_stop(Some(Sidebar), false, true), Transcript);
+        assert_eq!(next_stop(Some(Transcript), false, true), Centre);
+        assert_eq!(next_stop(Some(Centre), false, true), Right);
+        assert_eq!(next_stop(Some(Right), false, true), Sidebar);
+        assert_eq!(next_stop(Some(Sidebar), true, true), Right);
+        assert_eq!(next_stop(Some(Right), true, true), Centre);
+        assert_eq!(next_stop(Some(Centre), true, true), Transcript);
+        assert_eq!(next_stop(Some(Transcript), true, true), Sidebar);
+    }
+
+    #[test]
+    fn the_transcript_is_no_stop_when_the_centre_has_none() {
+        // The keyboard was in a transcript that is gone: the walk starts again in the centre.
+        assert_eq!(
+            next_stop(Some(Stop::Transcript), false, false),
+            Stop::Centre
+        );
+        assert_eq!(next_stop(Some(Stop::Transcript), true, false), Stop::Centre);
     }
 
     #[test]
@@ -872,7 +901,9 @@ mod tests {
 
     #[test]
     fn the_focus_cycle_starts_in_the_centre() {
-        assert_eq!(next_stop(None, false), Stop::Centre);
-        assert_eq!(next_stop(None, true), Stop::Centre);
+        for transcript in [false, true] {
+            assert_eq!(next_stop(None, false, transcript), Stop::Centre);
+            assert_eq!(next_stop(None, true, transcript), Stop::Centre);
+        }
     }
 }

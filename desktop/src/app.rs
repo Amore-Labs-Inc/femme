@@ -50,7 +50,7 @@ use crate::session;
 use crate::sidebar::{CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
-use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, TOP_BAR_H};
+use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, NEON, SURFACE, TOP_BAR_H};
 use crate::transcript::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
@@ -366,6 +366,11 @@ impl FemmeApp {
             cx.on_focus_out(&right_focus, window, |t, _, window, cx| {
                 t.poke(CLOSE_AFTER, window, cx)
             }),
+            // The transcript's box shows when it has the keyboard.
+            cx.on_focus_in(&transcript.focus_handle(cx), window, |_, _, cx| cx.notify()),
+            cx.on_focus_out(&transcript.focus_handle(cx), window, |_, _, _, cx| {
+                cx.notify()
+            }),
         ];
         if let Some(net) = &net {
             subs.push(cx.observe_in(net, window, |t, _, window, cx| t.sync(window, cx)));
@@ -563,20 +568,30 @@ impl FemmeApp {
         });
     }
 
-    /// F6 and shift+F6: sidebar, centre, right-hand panel (which the cycle opens).
+    /// F6 and shift+F6: sidebar, the transcript (when the centre has one), the composer or terminal,
+    /// the right-hand panel (which the cycle opens).
     fn focus_cycle(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let transcript = matches!(self.shown.centre, Centre::Transcript(_));
         let at = if self.sidebar.focus_handle(cx).contains_focused(window, cx) {
             Some(Stop::Sidebar)
         } else if self.right.open().is_some() && self.right_focus.contains_focused(window, cx) {
             Some(Stop::Right)
+        } else if transcript
+            && self
+                .transcript
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        {
+            Some(Stop::Transcript)
         } else if self.centre_focus.contains_focused(window, cx) {
             Some(Stop::Centre)
         } else {
             None
         };
         self.want_focus = false;
-        match next_stop(at, back) {
+        match next_stop(at, back, transcript) {
             Stop::Sidebar => window.focus(&self.sidebar.focus_handle(cx), cx),
+            Stop::Transcript => window.focus(&self.transcript.focus_handle(cx), cx),
             Stop::Centre => {
                 if !self.focus_centre(window, cx) {
                     window.focus(&self.centre_focus, cx);
@@ -660,7 +675,7 @@ impl FemmeApp {
     }
 
     /// The centre: a transcript over its composer, a terminal, or a card.
-    fn centre(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn centre(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let full = StyleRefinement::default().size_full();
         // The benchmark's synthetic terminals, side by side.
         if !self.panes.is_empty() {
@@ -690,7 +705,14 @@ impl FemmeApp {
                 .flex_col()
                 .gap(GUTTER)
                 .child(
+                    // The box says when the transcript has the keyboard (F6): it takes PageUp and co.
                     ruled(div().flex_1().min_h_0().bg(SURFACE).overflow_hidden())
+                        .when(
+                            self.transcript
+                                .focus_handle(cx)
+                                .contains_focused(window, cx),
+                            |d| d.border_color(NEON),
+                        )
                         .child(self.transcript.clone().cached(full)),
                 )
                 // The composer sizes itself and draws its own box.
@@ -729,7 +751,7 @@ impl Render for FemmeApp {
                 .p(GUTTER)
                 .bg(SURFACE)
                 .text_color(INK)
-                .child(self.centre(cx))
+                .child(self.centre(window, cx))
                 .into_any_element();
         }
         // The sidebar draws its own box and says how wide it is; a cached view lays out as the style
@@ -750,7 +772,7 @@ impl Render for FemmeApp {
                     .min_w_0()
                     .h_full()
                     .track_focus(&self.centre_focus)
-                    .child(self.centre(cx))
+                    .child(self.centre(window, cx))
                     // The card is its own layer (scrim, focus, escape): it only needs a positioned parent.
                     .when(self.modal_open, |d| d.child(self.accounts.clone())),
             )
