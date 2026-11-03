@@ -4,6 +4,7 @@ pub mod attach;
 pub mod body;
 pub mod items;
 pub mod live;
+pub mod markdown;
 pub mod model;
 pub mod pacer;
 pub mod question;
