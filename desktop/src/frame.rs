@@ -165,6 +165,12 @@ impl Shown {
             _ => None,
         }
     }
+
+    /// Whether the board's picture has somewhere to go: only the composer under a transcript takes
+    /// an attachment (a shell, an agent's own TUI and a card have none).
+    pub fn takes_diagram(&self) -> bool {
+        self.transcript().is_some()
+    }
 }
 
 /// The centre for a listed session: a shell, and an agent that runs its own TUI, show their terminal
@@ -404,6 +410,19 @@ pub fn short_error(error: &str) -> String {
     cut.truncate(cut.trim_end().len());
     cut.push('…');
     cut
+}
+
+/// What the top bar says when the board's picture has nowhere to go ([`Shown::takes_diagram`]).
+pub const DIAGRAM_NEEDS_AGENT: &str = "open a claude session to send the diagram";
+
+/// The top bar's line with a note of the shell's own after it, the way a failed request is appended
+/// (`quic 2 ms | <note>`); no note leaves the line alone.
+pub fn with_note(line: &str, note: Option<&str>) -> String {
+    match note.filter(|n| !n.is_empty()) {
+        Some(note) if line.is_empty() => note.to_owned(),
+        Some(note) => format!("{line} | {note}"),
+        None => line.to_owned(),
+    }
 }
 
 /// The places the keyboard walks through with F6.
@@ -905,5 +924,30 @@ mod tests {
             assert_eq!(next_stop(None, false, transcript), Stop::Centre);
             assert_eq!(next_stop(None, true, transcript), Stop::Centre);
         }
+    }
+
+    #[test]
+    fn only_a_composer_takes_the_boards_picture() {
+        let shown = |sessions, current| Shown::of(&model(up(), current, sessions), None);
+        assert!(shown(vec![session(1, Agent::Claude, Mode::Headless)], Some(1)).takes_diagram());
+        assert!(!shown(vec![session(2, Agent::Shell, Mode::Tui)], Some(2)).takes_diagram());
+        assert!(!shown(vec![session(3, Agent::Claude, Mode::Tui)], Some(3)).takes_diagram());
+        assert!(!shown(vec![], None).takes_diagram());
+        assert!(!Shown::no_daemon().takes_diagram());
+    }
+
+    #[test]
+    fn a_note_follows_the_status_the_way_a_failed_request_does() {
+        assert_eq!(with_note("quic 2 ms", None), "quic 2 ms");
+        assert_eq!(with_note("quic 2 ms", Some("")), "quic 2 ms");
+        assert_eq!(
+            with_note("quic 2 ms", Some(DIAGRAM_NEEDS_AGENT)),
+            "quic 2 ms | open a claude session to send the diagram"
+        );
+        assert_eq!(
+            with_note("quic 2 ms | not served yet", Some("x")),
+            "quic 2 ms | not served yet | x"
+        );
+        assert_eq!(with_note("", Some("x")), "x");
     }
 }
