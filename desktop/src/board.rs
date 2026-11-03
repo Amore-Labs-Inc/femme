@@ -7,6 +7,7 @@ pub mod export;
 pub mod font;
 pub mod geom;
 pub mod geometry;
+pub mod icons;
 pub mod palette;
 pub mod scene;
 pub mod store;
