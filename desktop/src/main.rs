@@ -1,6 +1,6 @@
 //! `femme-desktop [--daemon ADDR:PORT --fingerprint HEX64] [--ssh HOST] [--identity DIR] [--show-spki]`
 //! shows a daemon's sessions; without them it runs on synthetic panes:
-//! `femme-desktop [--bench SECONDS] [--panes N] [--mode fire,cat] [--rows R] [--size WxH]`.
+//! `femme-desktop [--bench SECONDS] [--panes N] [--mode fire,cat] [--size WxH]`.
 //! `FEMME_DISPLAY` picks the display. `--bench` needs a build with `--features bench`.
 
 use std::path::PathBuf;
@@ -26,9 +26,6 @@ struct Cli {
     /// Terminal panes in the drawer.
     #[arg(long, default_value_t = 4)]
     panes: usize,
-    /// Transcript rows (0 leaves the transcript out).
-    #[arg(long, default_value_t = 50_000)]
-    rows: usize,
     /// Synthetic terminal frame rate.
     #[arg(long, default_value_t = 60)]
     hz: u32,
@@ -107,7 +104,6 @@ fn main() -> anyhow::Result<()> {
         connect,
         bench: cli.bench,
         panes: cli.panes,
-        rows: cli.rows,
         hz: cli.hz,
         modes: cli.mode,
         full_height: cli.full_height,
