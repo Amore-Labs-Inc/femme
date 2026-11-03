@@ -20,6 +20,7 @@
 //! the plan says the daemon adds under 3 ms to a keystroke and that wants a number.
 
 pub(crate) mod admin;
+mod board;
 mod fs;
 mod panes;
 mod req;

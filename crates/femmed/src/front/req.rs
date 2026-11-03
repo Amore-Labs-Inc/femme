@@ -165,7 +165,10 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
-        Req::BoardApi { .. } | Req::Caps | Req::SetCap { .. } => Err(unsupported("not served yet")),
+        Req::BoardApi { method, path, body } => {
+            super::board::call(&d.cfg, &method, &path, body).await
+        }
+        Req::Caps | Req::SetCap { .. } => Err(unsupported("not served yet")),
     }
 }
 
