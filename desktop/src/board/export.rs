@@ -232,3 +232,6 @@ fn draw_text(pixmap: &mut Pixmap, at: Point, text: &str, size: f32, tone: Tone) 
         );
     }
 }
+
+#[cfg(test)]
+mod tests;
