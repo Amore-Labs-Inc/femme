@@ -221,7 +221,6 @@ pub fn start(c: &Connect) -> anyhow::Result<Started> {
     })
 }
 
-/// The client of the daemon, as an entity the views observe.
 /// Every event of the daemon's client, re-emitted for views that keep more than [`Model`] does (the
 /// transcript's items and deltas, the composer's answers). Subscribe with `cx.subscribe(&net, …)`;
 /// `Model` has already applied the event when it arrives.
@@ -229,6 +228,7 @@ pub struct ClientEvent(pub Event);
 
 impl EventEmitter<ClientEvent> for Net {}
 
+/// The client of the daemon, as an entity the views observe.
 pub struct Net {
     /// What the daemon said.
     pub model: Model,
