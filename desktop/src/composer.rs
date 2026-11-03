@@ -680,13 +680,14 @@ impl Render for Composer {
                 )
             });
 
+        // No padding on the root: the shell's gutter is the room round the card, so that its border
+        // lines up with the panes above it (the 3px hard shadow falls into that gutter).
         div()
             .id("composer")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_escape))
             .w_full()
             .flex_none()
-            .p(px(6.))
             .child(card)
     }
 }
