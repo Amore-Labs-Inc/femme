@@ -3,6 +3,8 @@
 //! gpui-component's `Button`/`TabBar` to the 1.2 px ink rule, VT323 labels and hard shadows would take
 //! more code than it saves. Every colour comes from [`crate::theme`]; nothing here hard-codes one.
 //!
+//! [`gallery`] lays every helper out in every state: it is the style sheet of the skin.
+//!
 //! Interaction states, one rule for all controls: *hover* fills the control with the FEMME pink and
 //! leaves its label colour alone (gpui resolves a label's hover colour from the last mouse move but the
 //! fill from the live hit test, so a label that changed colour on hover could end up unreadable);
@@ -22,6 +24,9 @@ use crate::theme::{
     self, ACCENT, ACCENT_DEEP, ACCENT_SOFT, ACCENT_STRONG, BODY_SIZE, BTN_SIZE, DESK, FONT_MONO,
     FONT_PIXEL, FONT_UI, INK, MUTED, MUTED_TEXT, PANEL, PAPER, RULE, STRIP_W, TITLE_SIZE,
 };
+
+mod gallery;
+pub use gallery::gallery;
 
 /// Sets the four border widths of `el` (top, right, bottom, left) and the ink border colour.
 pub fn ruled_sides<E: Styled>(
