@@ -14,6 +14,7 @@ use super::scene::{Fill, Kind, Scene, Shape, StrokeColor, Style, Width};
 use super::textedit::TextEdit;
 use super::view::View;
 
+mod keys;
 mod pointer;
 mod tool;
 
