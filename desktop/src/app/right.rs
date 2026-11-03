@@ -1,6 +1,7 @@
 //! The right-hand side of the frame: a 28 px strip on the window's edge with two icons (terminal,
-//! files), and the panel its hover opens. The pointer and focus rules are pure and live in
-//! [`crate::frame::Right`]; this file draws, and carries them out (delays, focus, the width drag).
+//! files) and the board's button, and the panel the first two open on hover. The pointer and focus
+//! rules are pure and live in [`crate::frame::Right`]; this file draws, and carries them out (delays,
+//! focus, the width drag).
 //!
 //! The panel floats over the centre's right edge instead of taking a column, so opening it never
 //! reflows the transcript or resizes a terminal.
@@ -8,23 +9,31 @@
 use std::time::Duration;
 
 use gpui::{
-    div, px, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    div, px, relative, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty, Focusable,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window,
 };
 use gpui_component::resizable::HandleEdge;
 use gpui_component::resize_handle;
 use gpui_component::tooltip::Tooltip;
 
-use super::{FemmeApp, ToggleTerminal};
+use super::{FemmeApp, ToggleBoard, ToggleTerminal};
 use crate::frame::{self, Settle, Tab};
-use crate::theme::{self, GUTTER, STRIP_W, SURFACE, TOP_BAR_H};
+use crate::theme::{
+    self, ACCENT, ACCENT_STRONG, FONT_MONO, GUTTER, INK, STRIP_W, SURFACE, TOP_BAR_H,
+};
 use crate::ui::{self, Glyph};
 
 /// How long the pointer rests on the strip before the panel opens.
 const OPEN_AFTER: Duration = Duration::from_millis(120);
 /// How long the pointer is away before the panel closes: long enough to cross a seam or overshoot.
 pub(super) const CLOSE_AFTER: Duration = Duration::from_millis(280);
+
+/// The board button's glyph (JetBrains Mono, bold), its size in px and its vertical nudge in px (see
+/// `ui::Glyph::spec`: a font's line box is not the centre of its ink).
+const BOARD_GLYPH: &str = "◈";
+const BOARD_GLYPH_SIZE: f32 = 20.;
+const BOARD_GLYPH_DY: f32 = 0.;
 
 /// The payload of a drag of the right-hand panel's left edge.
 #[derive(Clone)]
@@ -151,6 +160,60 @@ impl FemmeApp {
             .on_click(cx.listener(move |t, _, window, cx| t.open_right(tab, true, window, cx)))
     }
 
+    /// The strip's last icon opens the drawing board. `ui` has no board glyph and the bundled fonts
+    /// have no pencil, so this is the ghost [`ui::icon_button`] drawn here with a diamond around a
+    /// dot, the flow chart's node (a plain `◇` is too thin next to the heavy `>_` and `≡`); it
+    /// becomes `ui::icon_button("board", Glyph::Board)` when `ui` has one. It occludes the strip
+    /// under it: the panel is not for this button, so the pointer passing over it must not open the
+    /// panel.
+    fn board_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let clear = theme::rgba8(0xFEFEFE, 0.);
+        let glyph = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(20.))
+            .font_family(FONT_MONO)
+            .font_weight(FontWeight::BOLD)
+            .text_size(px(BOARD_GLYPH_SIZE))
+            .line_height(relative(1.))
+            .child(
+                div()
+                    .flex_none()
+                    .relative()
+                    .top(px(BOARD_GLYPH_DY))
+                    .child(BOARD_GLYPH),
+            );
+        ui::ruled(
+            div()
+                .id("board")
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(22.)),
+        )
+        .border_color(clear)
+        .text_color(INK)
+        .cursor_pointer()
+        .occlude()
+        .hover(|s| s.bg(ACCENT).border_color(INK))
+        .active(|s| {
+            s.bg(ACCENT_STRONG)
+                .border_color(INK)
+                .top(px(2.))
+                .left(px(2.))
+        })
+        .child(glyph)
+        .tooltip(|window, cx| {
+            Tooltip::new("board")
+                .action(&ToggleBoard, None)
+                .build(window, cx)
+        })
+        .on_click(cx.listener(|t, _, _, cx| t.toggle_board(cx)))
+    }
+
     /// The strip on the right edge: hovering it opens the panel.
     pub(super) fn strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         ui::strip("strip")
@@ -160,6 +223,7 @@ impl FemmeApp {
                 t.poke(if *on { OPEN_AFTER } else { CLOSE_AFTER }, window, cx);
             }))
             .children(Tab::ALL.map(|tab| self.strip_icon(tab, cx)))
+            .child(self.board_button(cx))
     }
 
     /// The right-hand panel, floating over the centre's right edge so that opening it never
