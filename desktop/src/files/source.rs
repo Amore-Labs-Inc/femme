@@ -33,8 +33,9 @@ impl Source {
     ///
     /// The variable is a debug aid for trying the panel without a daemon that serves `FsList` and
     /// `FsRead`: the panel then lists and reads that local directory (as the session's directory,
-    /// whatever session is set, even none), with the same path rules and the same read limit
-    /// ([`MAX_READ`]) as the daemon.
+    /// whatever session is set, even none), with the daemon's rules for the path asked (relative,
+    /// no `..`) and for the size read ([`MAX_READ`]). Unlike the daemon it does not look where
+    /// symlinks lead.
     pub fn new(net: Option<Entity<Net>>) -> Self {
         match std::env::var_os("FEMME_FILES_FIXTURE").filter(|v| !v.is_empty()) {
             Some(dir) => Source::Fixture(PathBuf::from(dir)),
