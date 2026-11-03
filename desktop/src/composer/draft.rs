@@ -146,6 +146,10 @@ pub enum Block {
     Failed(usize),
 }
 
+/// What the daemon's error says when a prompt names an upload it no longer has: it sweeps the blobs
+/// no item refers to, at start and daily (`femmed`'s `uploads.rs`, "its upload is gone").
+pub const UPLOAD_GONE: &str = "its upload is gone";
+
 /// The end of the line a send blocked on unfinished uploads shows...
 const WAIT: &str = "still uploading: wait";
 /// ...and the end of the one for failed uploads.
@@ -289,6 +293,18 @@ impl Draft {
         };
         self.settle();
         moved
+    }
+
+    /// `Ready` back to `Uploading`, for an upload the daemon no longer has. False when the chip is
+    /// not ready.
+    pub fn expire(&mut self, id: ChipId) -> bool {
+        match self.chip_mut(id) {
+            Some(c) if matches!(c.upload, Upload::Ready(_)) => {
+                c.upload = Upload::Uploading;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Takes the chip off the draft.
@@ -623,6 +639,23 @@ mod tests {
         let out = d.gate("", agent()).unwrap();
         assert_eq!(out.text, "");
         assert_eq!(out.ids, [1]);
+    }
+
+    #[test]
+    fn an_upload_the_daemon_dropped_goes_up_again_before_the_next_send() {
+        let mut d = Draft::default();
+        add(&mut d, 1, "a.png", b"a");
+        add(&mut d, 2, "b.png", b"b");
+        d.uploaded(1, [1; 32]);
+        // Only a ready chip can expire; one still on its way or a stray id is left alone.
+        assert!(d.expire(1));
+        assert!(!d.expire(2));
+        assert!(!d.expire(9));
+        assert_eq!(d.chip(1).unwrap().upload, Upload::Uploading);
+        assert_eq!(d.gate("x", agent()), Err(Block::Uploading(2)));
+        d.uploaded(1, [1; 32]);
+        d.uploaded(2, [2; 32]);
+        assert!(d.gate("x", agent()).is_ok());
     }
 
     #[test]
