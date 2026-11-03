@@ -42,7 +42,7 @@ use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{Centre, Right, Shown, EDGE_W, MARGIN, SIDEBAR_W, TOP_BAR};
+use crate::frame::{next_stop, Centre, Right, Shown, Stop, EDGE_W, MARGIN, SIDEBAR_W, TOP_BAR};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
@@ -63,7 +63,14 @@ use right::CLOSE_AFTER;
 mod actions_def {
     gpui::actions!(
         femme,
-        [ToggleSidebar, ToggleTerminal, CloseRight, CloseModal]
+        [
+            ToggleSidebar,
+            ToggleTerminal,
+            CloseRight,
+            FocusNext,
+            FocusPrev,
+            CloseModal
+        ]
     );
 }
 pub use actions_def::*;
@@ -84,12 +91,14 @@ macro_rules! modkey {
 }
 
 /// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
-/// panel, escape closes the accounts overlay.
+/// panel, F6 and shift+F6 walk the focus, escape closes the accounts overlay.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
         KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
+        KeyBinding::new("f6", FocusNext, Some("Femme")),
+        KeyBinding::new("shift-f6", FocusPrev, Some("Femme")),
         KeyBinding::new("escape", CloseModal, Some("FemmeModal")),
     ]);
 }
@@ -550,6 +559,36 @@ impl FemmeApp {
         cx.notify();
     }
 
+    /// F6 and shift+F6: sidebar, centre, right-hand panel (which the cycle opens).
+    fn focus_cycle(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let at = if self.sidebar_open && self.sidebar_focus.contains_focused(window, cx) {
+            Some(Stop::Sidebar)
+        } else if self.right.open().is_some() && self.right_focus.contains_focused(window, cx) {
+            Some(Stop::Right)
+        } else if self.centre_focus.contains_focused(window, cx) {
+            Some(Stop::Centre)
+        } else {
+            None
+        };
+        self.want_focus = false;
+        match next_stop(at, self.sidebar_open, back) {
+            Stop::Sidebar => {
+                let own = focus_of!(self.sidebar.read(cx), cx);
+                window.focus(&own.unwrap_or_else(|| self.sidebar_focus.clone()), cx);
+            }
+            Stop::Centre => {
+                if !self.focus_centre(window, cx) {
+                    window.focus(&self.centre_focus, cx);
+                }
+            }
+            Stop::Right => {
+                let tab = self.right.open().unwrap_or(self.right.last());
+                self.open_right(tab, true, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     /// The top bar: the `femme` menu, then the link's status.
     fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let status: SharedString = match &self.net {
@@ -801,6 +840,8 @@ impl Render for FemmeApp {
                 cx.listener(|t, _: &ToggleTerminal, window, cx| t.toggle_terminal(window, cx)),
             )
             .on_action(cx.listener(|t, _: &CloseRight, window, cx| t.close_right(window, cx)))
+            .on_action(cx.listener(|t, _: &FocusNext, window, cx| t.focus_cycle(false, window, cx)))
+            .on_action(cx.listener(|t, _: &FocusPrev, window, cx| t.focus_cycle(true, window, cx)))
             .size_full()
             .relative()
             .font_family(FONT_UI)
