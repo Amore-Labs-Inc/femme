@@ -24,13 +24,13 @@ use hdrhistogram::Histogram;
 pub struct BenchConfig {
     /// Measured seconds (after warm-up).
     pub seconds: u64,
-    /// Terminal panes in the drawer.
+    /// Synthetic terminal panes.
     pub panes: usize,
     /// Synthetic source rate.
     pub hz: u32,
     /// What the panes show, one source per pane (`fire,fire,cat`).
     pub mode: String,
-    /// The drawer fills the window (`--full-height`) instead of sitting under the columns.
+    /// The panes fill the window (`--full-height`) instead of sitting in the app's frame.
     pub full_height: bool,
     /// `--target-ms`: the p99 target to judge against, instead of the one the display's refresh implies.
     pub target_ms: Option<f64>,
@@ -365,9 +365,9 @@ impl fmt::Display for Report {
             .window
             .map_or_else(String::new, |(w, h, s)| format!(", window {w}x{h} at {s}x"));
         let layout = if c.full_height {
-            "full-height drawer"
+            "full-height panes"
         } else {
-            "columns over drawer"
+            "panes in the frame"
         };
         writeln!(
             f,

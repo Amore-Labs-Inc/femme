@@ -6,10 +6,11 @@ An all-Rust desktop shell for FEMME on [gpui](https://crates.io/crates/gpui-pre)
 (desk pink with a dot grid, paper cards, 1.2px ink rules, black VT323 title bars, hard 3px shadows).
 It exists to measure one thing: whether frame time stays under budget (p99 <= 10 ms on a 120 Hz
 display, <= 16 ms on 60 Hz) while every terminal repaints at 60 Hz.
-By default there is no networking: the terminals are synthetic holders (`src/terminal/synth.rs`) that
-speak the real wire protocol (frames up, `Open`/`Ack`/`Resize` down) and the client cache is the real
-`femme_term::client::RowCache`. Given `--daemon`/`--ssh` (see "Talking to a daemon") the same panes
-show the real sessions of a `femmed` through the `femme-client` crate.
+The app shows the sessions of a `femmed` through the `femme-client` crate (see "The frame" and "Talking
+to a daemon"); without `--daemon`/`--ssh` it shows the same frame with "no daemon configured" and nothing
+in it. The synthetic terminals (`src/terminal/synth.rs`) exist for `--bench` only: they speak the real
+wire protocol (frames up, `Open`/`Ack`/`Resize` down) and the client cache is the real
+`femme_term::client::RowCache`.
 
 ## Build and run
 
@@ -17,10 +18,10 @@ Needs stable Rust (tested with 1.97.1) and a GPU with Vulkan (Linux) or Metal (m
 
 ```sh
 cd desktop
-cargo run --release -- [--panes 4] [--hz 60] [--mode fire,shell,cat] [--full-height] [--seed 1]
+cargo run --release -- [--daemon ADDR:PORT --fingerprint HEX64] [--ssh HOST]    # the app (see "Talking to a daemon")
 # --bench needs gpui's frame profiler, which only a `--features bench` build contains:
 cargo run --release --features bench -- --bench 20      # measure 20 s (after a 2.5 s warm-up), print the report, exit 0
-cargo run --release --features bench -- --bench 20 --panes 1            # one pane
+cargo run --release --features bench -- --bench 20 --panes 1    # one pane
 cargo run --release --features bench -- --bench 20 --target-ms 10 --panes 5 --mode fire,fire,fire,fire,cat
 cargo run --release --features bench -- --bench 20 --target-ms 10 --panes 5 --mode cat --full-height   # text-shaping stress
 ```
@@ -29,27 +30,62 @@ cargo run --release --features bench -- --bench 20 --target-ms 10 --panes 5 --mo
 |---|---|---|
 | `--bench SECONDS` | off | Measure that many seconds, print percentiles, quit. Needs a `--features bench` build (without it the flag is refused). |
 | `--target-ms MS` | the display's: 10 at >= 100 Hz, else 16 | p99 frame-work target of the verdict, whatever the display's refresh. |
-| `--panes N` | 4 | Terminal panes in the drawer. |
+| `--panes N` | 4 | Synthetic terminal panes of the benchmark. |
 | `--hz H` | 60 | Frame rate of each synthetic terminal. |
 | `--mode a,b,..` | `fire` | What the panes show, repeated over the panes (`--panes 5 --mode fire,cat` is fire, cat, fire, cat, fire). `fire`: DOOM fire on the alt screen, every cell rewritten every frame (repaint worst case). `shell`: one new line per frame (the delta path). `cat`: a screenful of new, unique text every frame (the text-shaping worst case). |
-| `--full-height` | off | The drawer takes the whole window (columns and transcript are left out): tall panes. |
+| `--full-height` | off | The benchmark's panes take the whole window (no frame around them): tall panes. |
 | `--seed S` | 1 | Seed of every synthetic source. |
 | `--size WxH` | 1440x900 | Requested window size in logical pixels. A compositor may override it; the bench report prints the real size. |
 
-Keys: `ctrl-k` palette (placeholder, `escape` closes), `ctrl-j` drawer, `ctrl-b` sidebar,
-`ctrl-alt-b` right panel (`cmd` instead of `ctrl` on macOS), `F6` focus cycle sidebar, transcript,
-composer, drawer. These chords belong to the app even when a
-terminal has the keyboard (the shell never sees `ctrl-k`, `ctrl-j`, `ctrl-b`); every other key goes to
-the terminal. The transcript, when it has the keyboard (`F6`, or a click, unless a text field such as
-the composer has it: a click on a row never takes the keyboard from a field), takes PageUp / PageDown /
-Home / End.
+`--panes`, `--hz`, `--mode`, `--full-height`, `--target-ms` and `--seed` only drive `--bench`: the app
+itself has no synthetic panes. `--bench` ignores a daemon that only the environment or the env file
+names, and refuses the `--daemon` and `--ssh` flags.
+
+## The frame
+
+```text
++--------------------------------------------------------------------+
+| femme v   quic 23 ms                                               |  top bar, 36 px
++-----------+------------------------------------------+-------------+
+| sessions <| transcript (Claude)  or  terminal (shell)| terminal    |  strip, 28 px:
+|           +------------------------------------------+ files       |  hover opens the panel
+|           | composer                                 |             |
++-----------+------------------------------------------+-------------+
+```
+
+- **Top bar**: the `femme` menu (version, check for updates, accounts, reconnect, quit) and the link's
+  status, nothing else.
+- **Sessions**: the left column. `ctrl-b` or the `‹` in its title bar collapses it to a 28 px strip of status
+  dots (a click on a dot opens that session); it draws its own box and the frame follows its width.
+- **Centre**: what the current session needs. A Claude session shows its transcript with the composer
+  under it. A shell session (and any session in TUI mode) shows its terminal filling the centre, "starting"
+  until the pane is attached; a closed one says so. With no session the centre is a card that says why:
+  `no daemon configured`, `connecting`, `offline: <reason>`, or `no session`.
+- **Right panel**: a 28 px strip on the right edge with two icons, terminal and files. The pointer resting
+  on the strip opens the panel (320 to 480 px, drag its left edge); it floats over the centre, so nothing
+  reflows and no terminal is resized. It closes when the pointer has left it and nothing inside has
+  keyboard focus, on `ctrl-k`, or on its `x`. A click on an icon opens that tab with the keyboard in it.
+- **Accounts**: femme > accounts opens a modal layer over the centre; `escape` closes it.
+- **At start**: once connected, the newest live Claude session is shown; with none, a headless Claude
+  session is started in the box's home directory; if the box cannot, a shell (`src/session.rs`). The
+  link's status line says what is being started, or why nothing could be.
+
+Keys (`cmd` instead of `ctrl` on macOS): `ctrl-b` sidebar, `ctrl-j` terminal tab (opens it with the keyboard
+in it, closes it when it is on show), `ctrl-k` closes the right panel, `F6` / `shift-F6` walk the focus
+sidebar, transcript (a Claude session has one), composer or terminal, right panel, `escape` closes the
+accounts overlay. These chords belong to the app even when a terminal has the keyboard (the shell never sees
+`ctrl-b`, `ctrl-j`, `ctrl-k`); every other key goes to whatever has the focus. The transcript, when it has
+the keyboard (F6 gives it, and so does a click unless a text field such as the composer has it: a click on a
+row never takes the keyboard from a field), takes PageUp / PageDown / Home / End; its box turns neon while
+it has it. The composer takes the keyboard when a Claude session becomes current, the terminal pane when a
+shell one does. A click on the frame's chrome (the top bar and its menu, the gutters, the strip) leaves the
+keyboard where it was. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width state
+machine, the focus cycle) and their tests.
 
 ## Talking to a daemon
 
-With a daemon the sidebar lists its real sessions, the drawer has a tab per pane and the panes are live
-shells, and the transcript shows the real items of a session (its messages, tool calls and the text as it streams in). The right panel, composer, lanes and accounts stay mock. No synthetic panes are
-created (`--panes`/`--mode` only drive the benchmark; `--bench` ignores a daemon that only the
-environment or the env file names, and refuses the `--daemon` and `--ssh` flags).
+With a daemon the sidebar lists its real sessions and the centre shows the one picked there; a Claude session's
+transcript shows the real items of the session (its messages, tool calls and the text as it streams in).
 
 ```sh
 femme-desktop --show-spki --ssh myvps          # prints this device's key and the line to run on the box:
@@ -66,23 +102,25 @@ femme-desktop --daemon 203.0.113.7:7788 --fingerprint <hex from enroll> --ssh my
 | `--show-spki` | | Print the device's SPKI hash and the exact enroll line, exit 0. Works before there is any daemon. |
 
 Flags win over the environment, which wins over the file (`KEY=value` lines, `#` comments, one pair of
-quotes dropped, no `export`). Without `--daemon` and `--ssh` (or their keys) the app runs synthetic.
+quotes dropped, no `export`). Without `--daemon` and `--ssh` (or their keys) the app shows its frame with
+"no daemon configured" and empty panels; nothing is mocked.
 
 On a PC linked to the box (`laptop/pc-setup.sh`, docs/laptop.md) the app is installed and kept at the commit
 the box runs by `femme-desktop-update.timer` (`laptop/femme-desktop-update.sh`): a build from `git archive`
 of that commit into this crate's `target/`, copied to `~/.local/bin/femme-desktop`, plus a launcher entry.
 
-- **Nav bar** shows the link: `quic 23 ms`, `ssh`, `connecting…`, `offline: <reason>`. When QUIC
-  refused this device while ssh worked it adds the enroll line to run on the box; a failed request
-  (new session, close) is appended to it.
+- **Top bar** shows the link: `quic 23 ms`, `ssh`, `connecting…`, `offline: <reason>`. When QUIC
+  refused this device while ssh worked it adds the enroll line to run on the box; the first clause of a
+  failed request (new session, close) is appended to it, and the tooltip has the whole line.
 - **Sidebar**: live sessions, newest first, dot = status (working green, blocked/asks yellow, idle or
   starting grey, interrupted/paused/crashed/failed red), title = name, else label, else the last
-  directory component, then agent and directory. The list scrolls; a click shows the session's first
-  pane (and opens the drawer).
-- **Drawer**: one tab per pane of a live session (label: the program's terminal title, else the pane
-  title, else `<session> · <no>`), `+` starts a shell session in the directory of the one on show,
-  `close` closes the session when the tab is its only pane, else the pane. Only the tab on show is
-  drawn; terminals are attached at start for up to 8 panes, else when their tab opens.
+  directory component, then agent and directory. The list scrolls; a click shows the session in the
+  centre.
+- **Right panel, terminal tab**: one tab per terminal pane of the current session except the one the
+  centre draws (label: the program's terminal title, else the pane title, else `<session> · <no>`), `+`
+  opens a shell in the session's directory, `close` closes the pane (a shell session's first pane closes
+  the session; an agent's own pane has no close). Only the tab on show is drawn; terminals are attached
+  at start for up to 8 panes, else when their session is current.
 - **Terminals**: keys (`femme_proto::term::Key`), paste (`ctrl-shift-v`, `cmd-v`), the wheel (to the program
   when it reports the mouse or is on the alternate screen, else it scrolls the holder's scrollback and
   any new output snaps back), resize, and focus in/out (for programs that ask). A holder that was
@@ -173,13 +211,23 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/lib.rs` | Builds the 2-worker tokio side runtime (time and IO), starts the daemon's client on it when asked, boots gpui, installs theme, keys, window. |
 | `src/connect.rs` | `--daemon`/`--fingerprint`/`--ssh`/`--identity` and their env and `desktop.env` keys, the device identity (dir 0700), `--show-spki`. |
 | `src/net.rs` | The daemon's state as `Model` (link, sessions, panes from `Changes{Global}`), `Net` (drains `Client::events`, runs requests), tab labels and the status line. |
-| `src/app.rs` | The shell: nav bar, three resizable columns over a bottom terminal drawer (`--full-height`: the drawer alone), palette placeholder, key bindings, F6 focus cycle, the live tabs, bench driver (`bench` feature). |
+| `src/app.rs` | The shell: top bar (menu, link), the sessions column, the centre (transcript over composer, a terminal, or a card), the right-hand strip and its hover panel, the accounts layer, key bindings, focus, the benchmark's synthetic panes and driver (`bench` feature). |
+| `src/frame.rs` | Pure and unit-tested: what the centre shows for the current session, the right panel's hover/focus/width state machine, the F6 focus cycle, the status line's error clause. |
+| `src/app/right.rs` | The right-hand strip and its panel (terminal and files tabs): opening, hover, resize, closing. |
+| `build.rs` | Stamps the binary with the commit it was built from (`FEMME_COMMIT`, else `git rev-parse`, else `dev`). |
+| `src/session.rs` | Which session the centre shows when the app opens (`pick`, pure) and `open_at_start`. |
+| `src/menu.rs` | The `femme` wordmark button and its dropdown (version, check for updates, accounts, reconnect, quit); emits `MenuEvent`. |
+| `src/sidebar.rs` | The sessions column: live sessions newest first, status dots, collapses to a strip of dots; emits `OpenSession` and `CollapsedChanged`. |
+| `src/accounts.rs`, `src/accounts/` | The accounts layer: the board's "Me" page as a card (accounts with 5 h / 7 d usage, rotation caps, API keys), through `Req::BoardApi` and `Req::Caps`. |
+| `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
+| `src/viewer.rs`, `src/viewer/` | `FileView`: images (raster, SVG), PDF pages, text and code with syntax highlighting, markdown, a hex dump for the rest. |
+| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
-| `src/ui.rs` | `win`, `tb`, `card`, `dialog`, `button`, `st` pill, `DotGrid` desk. |
-| `src/panels.rs` | Sidebar (lanes, sessions: mock or the daemon's, accounts), right panel tabs, composer, palette dialog. |
+| `src/ui.rs`, `src/ui/gallery.rs` | The skin's building blocks (window, title bar, card, buttons, icons, chips, dots, menus, the dot-grid desk); the gallery lays every helper out in every state. |
 | `src/terminal/runs.rs` | Pure: `RowPatch` to background runs and same-style text runs, palette resolve. |
 | `src/terminal/element.rs` | `TerminalElement`: batches every row, paints all backgrounds then all text (shaped every frame), keeps the bottom rows and the cursor when the pane is shorter than the grid. |
+| `src/terminal/panel.rs`, `panel/tabs.rs` | `TerminalPanel`: one `TerminalPane` per terminal pane of the live sessions, the right panel's terminal tab (tabs, `+`, close) and the centre's main pane; the tab rules are pure. |
 | `src/terminal/pane.rs` | `TerminalPane` view: owns a `femme_term::client::RowCache`, applies and acks the frames that arrived when it is drawn, re-opens the stream when one does not apply (resets the cache when the holder's epoch changed), takes keys, paste, the wheel (scrollback, `GetRows`) and focus, requests resizes; side-runtime source plumbing. |
 | `src/terminal/bridge.rs` | The pump between a pane and the client's `Term` (acks, resync re-opens, refused input counted), so a daemon pane looks like a synthetic one. |
 | `src/terminal/input.rs` | Pure: gpui keystroke to `femme_proto::term::Key`, paste chord, wheel steps, pointer to cell. |
@@ -197,9 +245,10 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 
 ## How a frame stays cheap
 
-- The sidebar, right panel, composer and transcript are separate entities mounted with
-  `Entity::cached`, so a frame where only terminals changed replays their recorded paint. Only the
-  shell (a few dozen divs) and the pane views re-render.
+- The sidebar, the transcript and the right panel's terminals and files are separate entities mounted
+  with `Entity::cached`, so a frame where only terminals changed replays their recorded paint (the
+  composer is not cached: it sizes itself, which a cached view cannot). Only the shell (a few dozen
+  divs) and the pane views re-render.
 - `TerminalElement` batches every visible row into background runs and same-style text runs, then
   paints all background quads first and all text second: two instanced draws, not two per row.
 - Text runs are shaped every frame (gpui keeps the line layouts across frames) and painted glyph by glyph
@@ -210,7 +259,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
   pane; a `cx.spawn` task moves them into the pane's inbox and notifies. The pane applies the inbox to its
   `RowCache` when it is drawn and acks the last rev, which is what lets the holder send more: at most 8 are
   unacked, and a holder that is blocked keeps parsing and sends one merged frame. A pane nobody draws (hidden
-  window, closed drawer) stops acking, so nothing is applied and the holder idles at its window. A frame that
+  window, closed right panel) stops acking, so nothing is applied and the holder idles at its window. A frame that
   does not apply (a rev gap, another holder epoch) makes the pane say `Open` again; the answer is a snapshot.
 - The transcript is `gpui::list` with `FollowMode::Tail`: only the rows near the viewport are built each frame, the
   others keep the height measured last. Text is shown as it arrives (the daemon sends it in batches of about
@@ -353,15 +402,11 @@ terminal element paints all backgrounds in one layer and all glyphs (`paint_glyp
 - Terminal panes have no selection or copy, send no mouse press or motion (only the wheel), ignore the bell, and
   hide the cursor while scrolled back. `femme-proto` has no `KeyCode` for Menu, PrintScreen, Pause or ScrollLock, so those are
   dropped (a TODO in `terminal/input.rs`), and `ctrl+shift+c` (copy) is not sent.
-- With a daemon only the first pane is chosen by a sidebar click and there is no way to open a second pane
-  of a session from the UI (`PaneOpen`); the drawer draws one tab at a time.
-- The lanes, accounts, composer and right panel are mock even with a daemon.
 - The transcript has no text selection or copy, its code blocks are not highlighted and its links do not open. A
   session joined while a message is being written shows that message from where the daemon's replay begins (marked
   with `…`) until the finished row arrives.
 - Block and box-drawing glyphs come from the font and can seam by a pixel; double/dotted/dashed underlines draw as single lines;
   combining marks on a base char drift (`force_width` is per glyph).
-- The composer input is a toy (append/backspace), the palette is a placeholder.
 - macOS (Metal, `cmd` bindings, `CGDisplayIsBuiltin`) is untested; AccessKit and IME are not wired.
 - Hidden-window numbers leave out compositing: the visible runs of the earlier matrix were 0.5-1.2 ms higher at p99 (they also
   pay vsync pacing), both far under the bar.
