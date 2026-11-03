@@ -1,5 +1,6 @@
 //! The session transcript: row model, token pacer and the virtualised list view.
 
+pub mod attach;
 pub mod body;
 pub mod live;
 pub mod model;
