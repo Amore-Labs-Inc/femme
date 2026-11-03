@@ -7,7 +7,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
-use femme_proto::rpc::Answer;
+use femme_proto::rpc::{Answer, Attachment};
 use femme_proto::state::{Attention, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
 use femmed::core::{Core, CoreError, PaneRef};
@@ -864,5 +864,77 @@ async fn a_prompt_the_agent_dropped_when_it_died_does_not_run_after_a_takeover_a
         shape(&v)
     );
     assert_eq!(held(&d), 0);
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle after the handshake", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+
+    let attach = |name: &str, data: &[u8]| Attachment {
+        name: name.into(),
+        blob: d.store.write(|tx| tx.put_blob_bytes(data)).unwrap(),
+    };
+    // two with the same name (one given as a path), and one that is not UTF-8
+    let list = [
+        attach("shot.png", b"\x89PNG one"),
+        attach("../shot.png", b"\x89PNG two"),
+        attach("my notes.bin", b"\xff\xfe\x00"),
+    ];
+    d.prompt_attached(&pane, "look", &list).await.unwrap();
+
+    let dir = b.dir.path().join("state/uploads").join(sid.to_string());
+    let paths = ["shot.png", "shot-2.png", "my notes.bin"].map(|n| dir.join(n));
+    for (path, data) in paths
+        .iter()
+        .zip([&b"\x89PNG one"[..], b"\x89PNG two", b"\xff\xfe\x00"])
+    {
+        assert_eq!(std::fs::read(path).unwrap(), data, "{}", path.display());
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{}", path.display());
+    }
+    let lines: Vec<String> = paths
+        .iter()
+        .map(|p| format!("Attached: {}", p.display()))
+        .collect();
+    let want = format!("look\n\n{}", lines.join("\n"));
+    // The user's message in the transcript is the text the agent got, lines included.
+    let v = wait_items(&d, sid, "the echo", |v| {
+        has_text(v, ItemKind::AssistantMessage, &format!("echo: {want}"))
+    })
+    .await;
+    assert!(
+        has_text(&v, ItemKind::UserMessage, &want),
+        "{:#?}",
+        shape(&v)
+    );
+
+    // A blob that is not there fails the prompt: Bad, no turn, nothing left of it on disk.
+    wait_for(&d, sid, "idle again", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let gone = Attachment {
+        name: "gone.png".into(),
+        blob: [9; 32],
+    };
+    let err = d
+        .prompt_attached(&pane, "never", &[list[0].clone(), gone])
+        .await;
+    assert!(
+        matches!(&err, Err(CoreError::Bad(m)) if m.contains("gone.png")),
+        "{err:?}"
+    );
+    assert!(!dir.join("shot-3.png").exists());
+    assert!(!has_text(&items(&d, sid), ItemKind::UserMessage, "never"));
     d.close_session(sid).await.unwrap();
 }

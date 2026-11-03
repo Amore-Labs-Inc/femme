@@ -15,12 +15,15 @@ use std::time::Duration;
 
 use common::Box_;
 use femme_proto::rpc::{
-    Cursors, Err as WireErr, ErrCode, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
+    Attachment, Cursors, Err as WireErr, ErrCode, FsEntry, IssueField, PromptHow, Req, Resp, Scope,
+    StreamKind, C2S, MAX_BLOB_PUT, S2C,
 };
-use femme_proto::state::{Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
+use femme_proto::state::{
+    Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row, SessionStatus,
+};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
 use femme_proto::{Id, OpId, PaneId, Sid, PROTO_VERSION};
-use femme_store::{auth, sessions};
+use femme_store::{auth, items, sessions};
 use femme_term::client::RowCache;
 use femme_transport::{
     command_connect, connect, mux_client, Conn, DeviceIdentity, Error, Rx, ServerIdentity, Tx,
@@ -595,28 +598,18 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
         how: femme_proto::rpc::PromptHow::Queue,
     };
     assert_eq!(code(c.call(prompt(vec![])).await), ErrCode::Busy);
-    let attached = vec![femme_proto::rpc::Attachment {
+    // An attachment whose upload is not there fails before the shell is asked: Bad.
+    let attached = vec![Attachment {
         name: "a".into(),
         blob: [0; 32],
     }];
-    assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Unsupported);
+    assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Bad);
     // M5.
-    for req in [
-        Req::Upload {
-            name: "a".into(),
-            len: 1,
-        },
-        Req::FsList {
-            sid,
-            path: "/".into(),
-        },
-        Req::FsRead {
-            sid,
-            path: "/etc/hostname".into(),
-        },
-    ] {
-        assert_eq!(code(c.call(req).await), ErrCode::Unsupported);
-    }
+    let upload = Req::Upload {
+        name: "a".into(),
+        len: 1,
+    };
+    assert_eq!(code(c.call(upload).await), ErrCode::Unsupported);
     // Replayed, an error is the same error.
     let op = OpId::new();
     let first = c.call_op(op, Req::SessionClose { sid: nobody }).await;
@@ -1940,4 +1933,347 @@ async fn enroll_lists_and_revokes_a_device_from_the_command_line() {
         assert!(!out.status.success(), "{args:?}");
         assert!(!out.stderr.is_empty(), "{args:?}");
     }
+}
+
+/// The files of a session's folder, for the desktop's file panel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sessions_folder_is_listed_and_its_files_read_relative_to_it() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    std::fs::create_dir_all(proj.join("sub/deep")).unwrap();
+    std::fs::write(proj.join("a.txt"), "alpha").unwrap();
+    std::fs::write(proj.join(".hidden"), "h").unwrap();
+    std::fs::write(proj.join("sub/b.txt"), "beta").unwrap();
+    std::fs::write(proj.join("sub/c.bin"), [0u8, 255, 7]).unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let entry = |name: &str, dir, len| FsEntry {
+        name: name.into(),
+        dir,
+        len,
+    };
+    let list = |path: &str| Req::FsList {
+        sid,
+        path: path.into(),
+    };
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+
+    // The session's own folder: folders first, then files, each by name, hidden ones too.
+    let root = Ok(Resp::FsEntries(vec![
+        entry("sub", true, 0),
+        entry(".hidden", false, 1),
+        entry("a.txt", false, 5),
+    ]));
+    assert_eq!(c.call(list("")).await, root);
+    assert_eq!(c.call(list(".")).await, root);
+    // A sub-folder, by its relative and by its absolute path.
+    let sub = Ok(Resp::FsEntries(vec![
+        entry("deep", true, 0),
+        entry("b.txt", false, 4),
+        entry("c.bin", false, 3),
+    ]));
+    assert_eq!(c.call(list("sub")).await, sub);
+    assert_eq!(c.call(list("sub/")).await, sub);
+    assert_eq!(
+        c.call(list(&proj.join("sub").display().to_string())).await,
+        sub
+    );
+    assert_eq!(c.call(list("sub/deep")).await, Ok(Resp::FsEntries(vec![])));
+    // Another folder of home, by its absolute path.
+    let from_home = c.call(list(&rig.home().display().to_string())).await;
+    assert_eq!(from_home, Ok(Resp::FsEntries(vec![entry("proj", true, 0)])));
+    // Files: what is in them, relative and absolute, binary too.
+    assert_eq!(
+        c.call(read("a.txt")).await,
+        Ok(Resp::FsData(b"alpha".to_vec()))
+    );
+    assert_eq!(
+        c.call(read(".hidden")).await,
+        Ok(Resp::FsData(b"h".to_vec()))
+    );
+    assert_eq!(
+        c.call(read("sub/c.bin")).await,
+        Ok(Resp::FsData(vec![0, 255, 7]))
+    );
+    let absolute = proj.join("sub/b.txt").display().to_string();
+    assert_eq!(
+        c.call(read(&absolute)).await,
+        Ok(Resp::FsData(b"beta".to_vec()))
+    );
+    // Reads change nothing: asked again they answer again (no op is recorded for them).
+    assert_eq!(
+        c.call(read("a.txt")).await,
+        Ok(Resp::FsData(b"alpha".to_vec()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_path_that_climbs_or_leaves_home_is_refused_and_a_missing_one_is_not_found() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    let outside = rig.b.dir.path().join("outside");
+    std::fs::create_dir_all(proj.join("sub")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(proj.join("a.txt"), "alpha").unwrap();
+    std::fs::write(outside.join("secret"), "s").unwrap();
+    std::os::unix::fs::symlink(&outside, proj.join("out")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), proj.join("leak")).unwrap();
+    std::os::unix::fs::symlink(proj.join("sub"), proj.join("in")).unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let list = |path: &str| Req::FsList {
+        sid,
+        path: path.into(),
+    };
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+    let secret = outside.join("secret").display().to_string();
+
+    // `..` anywhere, even where it would stay inside home.
+    for req in [
+        read("../outside/secret"),
+        list(".."),
+        list("sub/.."),
+        read("sub/../a.txt"),
+        read(&format!("{}/../proj/a.txt", rig.home().display())),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, ErrCode::Bad, "{tried}");
+    }
+    // Absolute paths out of home, and symlinks that lead out of it (to a folder or to a file).
+    for req in [
+        read(&secret),
+        read("/etc/hostname"),
+        list("/"),
+        list(&outside.display().to_string()),
+        list("out"),
+        read("out/secret"),
+        read("leak"),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, ErrCode::Bad, "{tried}");
+    }
+    // A symlink that stays inside home is just a folder.
+    assert_eq!(c.call(list("in")).await, Ok(Resp::FsEntries(vec![])));
+    // Missing, wrong kind, and no such session.
+    for (req, want) in [
+        (read("nope"), ErrCode::NotFound),
+        (list("nope/deeper"), ErrCode::NotFound),
+        (list("a.txt"), ErrCode::Bad),
+        (read("sub"), ErrCode::Bad),
+        (
+            Req::FsList {
+                sid: Id::new(),
+                path: String::new(),
+            },
+            ErrCode::NotFound,
+        ),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, want, "{tried}");
+    }
+    // A closed session shows nothing.
+    assert_eq!(c.call(Req::SessionClose { sid }).await, Ok(Resp::Ok));
+    assert_eq!(c.call(list("")).await.unwrap_err().code, ErrCode::NotFound);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_over_sixteen_mebibytes_is_not_sent_and_a_big_one_below_it_is() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    // Past the old one-mebibyte request limit, which only requests have.
+    let bytes: Vec<u8> = (0..3 << 20).map(|i: u32| (i % 251) as u8).collect();
+    std::fs::write(proj.join("mid"), &bytes).unwrap();
+    std::fs::File::create(proj.join("big"))
+        .unwrap()
+        .set_len((16 << 20) + 1)
+        .unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+    assert_eq!(c.call(read("mid")).await, Ok(Resp::FsData(bytes)));
+    let refused = c.call(read("big")).await.unwrap_err();
+    assert_eq!(refused.code, ErrCode::Bad, "{}", refused.msg);
+    // Still a working connection afterwards.
+    assert_eq!(
+        c.call(Req::FsList {
+            sid,
+            path: String::new()
+        })
+        .await,
+        Ok(Resp::FsEntries(vec![
+            FsEntry {
+                name: "big".into(),
+                dir: false,
+                len: (16 << 20) + 1
+            },
+            FsEntry {
+                name: "mid".into(),
+                dir: false,
+                len: 3 << 20
+            },
+        ]))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blob_put_comes_back_by_its_hash_up_to_its_cap() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let put = |data: Vec<u8>| Req::BlobPut {
+        name: "a.bin".into(),
+        data,
+    };
+    // A few bytes, none, and the most there is: a request that weighs more than any other may.
+    let most: Vec<u8> = (0..=255u8).cycle().take(MAX_BLOB_PUT).collect();
+    for data in [b"hello \xff".to_vec(), Vec::new(), most] {
+        let hash = femme_store::sha256(&data);
+        assert_eq!(c.call(put(data.clone())).await, Ok(Resp::BlobHash(hash)));
+        assert_eq!(c.call(Req::BlobGet { hash }).await, Ok(Resp::Blob(data)));
+    }
+    let over = c.call(put(vec![1; MAX_BLOB_PUT + 1])).await;
+    assert_eq!(over.unwrap_err().code, ErrCode::Bad);
+    // The connection is fine after it, and a replay under one op id stores it again: the answer
+    // is not remembered (a recorded hash could outlive its blob).
+    let op = OpId::new();
+    let hash = femme_store::sha256(b"again");
+    assert_eq!(
+        c.call_op(op, put(b"again".to_vec())).await,
+        Ok(Resp::BlobHash(hash))
+    );
+    rig.d
+        .store
+        .write(|tx| tx.execute("DELETE FROM blobs", []).map_err(Into::into))
+        .unwrap();
+    assert_eq!(
+        c.call(Req::BlobGet { hash }).await.unwrap_err().code,
+        ErrCode::NotFound
+    );
+    assert_eq!(
+        c.call_op(op, put(b"again".to_vec())).await,
+        Ok(Resp::BlobHash(hash))
+    );
+    assert_eq!(
+        c.call(Req::BlobGet { hash }).await,
+        Ok(Resp::Blob(b"again".to_vec()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_info_says_the_version_and_the_commit_deployed() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let info = |deployed: Option<&str>| {
+        Ok(Resp::ServerInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            deployed: deployed.map(String::from),
+        })
+    };
+    assert_eq!(c.call(Req::ServerInfo).await, info(None));
+    let file = rig.b.dir.path().join("state/deployed");
+    std::fs::write(&file, "0123abc\n").unwrap();
+    assert_eq!(c.call(Req::ServerInfo).await, info(Some("0123abc")));
+    std::fs::write(&file, "\n").unwrap();
+    assert_eq!(c.call(Req::ServerInfo).await, info(None));
+}
+
+/// A `Prompt` with attachments over the wire, to a headless fake claude: the uploads become files
+/// under the state folder, and the agent and the transcript get the text with their paths.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_names_its_uploads_to_the_agent_and_a_missing_one_is_refused() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let create = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+    };
+    let Ok(Resp::Session(sid)) = c.call(create).await else {
+        panic!("no session")
+    };
+    within("the agent to be idle", async {
+        loop {
+            let s = rig.d.store.read(|c| sessions::get_session(c, sid));
+            if s.unwrap().is_some_and(|s| s.status == SessionStatus::Idle) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    let mut attachments = vec![];
+    for data in [&b"one"[..], b"two"] {
+        let put = Req::BlobPut {
+            name: "a.png".into(),
+            data: data.to_vec(),
+        };
+        let Ok(Resp::BlobHash(blob)) = c.call(put).await else {
+            panic!("BlobPut")
+        };
+        attachments.push(Attachment {
+            name: "a.png".into(),
+            blob,
+        });
+    }
+    let prompt = |text: &str, attachments| Req::Prompt {
+        sid,
+        text: text.into(),
+        attachments,
+        how: PromptHow::Queue,
+    };
+    let missing = Attachment {
+        name: "x".into(),
+        blob: [3; 32],
+    };
+    let refused = c.call(prompt("no", vec![missing])).await;
+    assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+    assert_eq!(c.call(prompt("look", attachments)).await, Ok(Resp::Ok));
+
+    let dir = rig.b.dir.path().join("state/uploads").join(sid.to_string());
+    let (one, two) = (dir.join("a.png"), dir.join("a-2.png"));
+    assert_eq!(std::fs::read(&one).unwrap(), b"one");
+    assert_eq!(std::fs::read(&two).unwrap(), b"two");
+    let want = format!(
+        "look\n\nAttached: {}\nAttached: {}",
+        one.display(),
+        two.display()
+    );
+    within("the user's message in the transcript", async {
+        loop {
+            let v = rig
+                .d
+                .store
+                .read(|c| items::page_items(c, sid, None, 100))
+                .unwrap();
+            let said = |i: &Item| {
+                let body: serde_json::Value =
+                    serde_json::from_str(i.body.as_deref().unwrap_or("null")).unwrap();
+                i.kind == ItemKind::UserMessage && body["text"] == want.as_str()
+            };
+            if v.iter().any(said) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
 }
