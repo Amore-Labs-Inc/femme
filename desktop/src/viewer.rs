@@ -3,6 +3,7 @@
 //! composer's attachment previews.
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
+mod chrome;
 mod hex;
 mod kind;
 
