@@ -7,6 +7,8 @@
 //!   observer, no polling) and redraws only when a row, a dot or the link changed.
 //! - The sidebar sizes itself: [`Sidebar::width`] is [`WIDTH`] px expanded and [`STRIP`] px collapsed,
 //!   and it takes the height it is given. Mount it as a flex child (or give its column that width).
+//!   A `.cached(style)` mount lays out as that style alone, so the style must say
+//!   `.h_full().w(sidebar.width())`, and the shell must redraw on [`CollapsedChanged`].
 //! - Subscribe to [`OpenSession`] (a click on a row, Enter on the cursor) and to
 //!   [`CollapsedChanged`] (the sidebar's own `‹`/`›` button and a click on a dot of the strip change
 //!   it too, so the shell can follow with its column).
@@ -372,6 +374,14 @@ impl Sidebar {
         }
     }
 
+    /// The pointer entered or left a row or a dot. gpui paints the tint from the hit test but only
+    /// redraws a cached view when its own bookkeeping flips, which a row that appears under a
+    /// resting pointer (a click on a dot expands the list) never does: it would keep the tint after
+    /// the pointer left. Redrawing here, once per change, clears it.
+    fn hover_changed(&mut self, _: &bool, _: &mut Window, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
     /// Opens `sid`: the cursor goes to it and the shell is told.
     fn open(&mut self, sid: Sid, cx: &mut Context<Self>) {
         self.cursor = Some(sid);
@@ -470,7 +480,9 @@ impl Sidebar {
     fn title_bar(&self, cx: &Context<Self>) -> Div {
         let collapsed = self.collapsed;
         let toggle = div()
-            .id("sb-toggle")
+            // One id per form: gpui keeps a tooltip by id, and "hide sessions" must not outlive the
+            // click that turned the button into "show sessions".
+            .id(if collapsed { "sb-show" } else { "sb-hide" })
             .flex()
             .flex_none()
             .items_center()
@@ -478,6 +490,9 @@ impl Sidebar {
             .size(px(22.))
             .cursor_pointer()
             .text_color(PAPER)
+            .font_family(FONT_UI)
+            .text_size(px(20.))
+            .line_height(relative(1.))
             .hover(|s| s.bg(HOVER))
             .tooltip(move |window, cx| {
                 let text = if collapsed {
@@ -545,6 +560,7 @@ impl Sidebar {
             .cursor_pointer()
             .when(on, |d| d.bg(HOVER))
             .when(!on, |d| d.hover(|s| s.bg(hover_tint())))
+            .on_hover(cx.listener(Self::hover_changed))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
             .when(on, |d| d.child(edge()))
             .child(dot(r.dot))
@@ -585,6 +601,7 @@ impl Sidebar {
             .cursor_pointer()
             .when(on, |d| d.bg(HOVER))
             .when(!on, |d| d.hover(|s| s.bg(hover_tint())))
+            .on_hover(cx.listener(Self::hover_changed))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_collapsed(false, cx);
