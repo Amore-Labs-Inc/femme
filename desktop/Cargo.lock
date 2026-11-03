@@ -1803,6 +1803,7 @@ dependencies = [
  "gpui-pre-platform",
  "hdrhistogram",
  "mimalloc",
+ "serde_json",
  "tokio",
  "ulid",
  "unicode-width",
