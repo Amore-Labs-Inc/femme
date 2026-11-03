@@ -42,8 +42,9 @@ pub struct Config {
     pub fable_cap: u32,
     /// `AUTODEPLOY=1`: the server deploys itself when `main` moves.
     pub autodeploy: bool,
-    /// `FEMMED=1`: this daemon runs the box (the old board's files are imported); 0 keeps herdr and the board.
-    pub femmed: bool,
+    /// `FEMMED=2`: this daemon is the board (the old board's files are imported, 8787). `1`: it runs beside
+    /// the herdr board (default bind 8788, nothing imported); `0`: herdr and the board only.
+    pub replaces_board: bool,
     /// `CLAUDE_MCP`: space-separated MCP server names to copy to the server.
     pub claude_mcp: Vec<String>,
     /// `MOSH=1`: a phone terminal over mosh.
@@ -85,10 +86,15 @@ impl Config {
             "" => home.join(".local/state/femme"),
             s => PathBuf::from(s),
         };
+        let replaces_board = get("FEMMED") == "2";
         let http_bind = [get("HTTP_BIND"), get("FEMME_BOARD_ADDR")]
             .into_iter()
             .find(|s| !s.is_empty())
-            .unwrap_or("127.0.0.1:8787");
+            .unwrap_or(if replaces_board {
+                "127.0.0.1:8787"
+            } else {
+                "127.0.0.1:8788"
+            });
         Config {
             host: if get("HOST").is_empty() {
                 "agentbox".into()
@@ -110,7 +116,7 @@ impl Config {
             account_rotation: flag("ACCOUNT_ROTATION"),
             fable_cap: get("FABLE_CAP").parse().unwrap_or(96),
             autodeploy: flag("AUTODEPLOY"),
-            femmed: flag("FEMMED"),
+            replaces_board,
             claude_mcp: get("CLAUDE_MCP")
                 .split_whitespace()
                 .map(String::from)
@@ -284,7 +290,22 @@ mod tests {
             (c.parallel, c.cap, c.fable_cap, c.quic_port),
             (2, 60, 96, 7788)
         );
-        assert_eq!(c.http_bind, "127.0.0.1:8787");
+        // Beside the herdr board (FEMMED unset or 1) femmed keeps off its port; as the board it takes it.
+        assert_eq!(c.http_bind, "127.0.0.1:8788");
+        assert!(!c.replaces_board);
+        let c = Config::from_vars(vars(&[("FEMMED", "1")]));
+        assert_eq!(
+            (c.http_bind.as_str(), c.replaces_board),
+            ("127.0.0.1:8788", false)
+        );
+        let c = Config::from_vars(vars(&[("FEMMED", "2")]));
+        assert_eq!(
+            (c.http_bind.as_str(), c.replaces_board),
+            ("127.0.0.1:8787", true)
+        );
+        let c = Config::from_vars(vars(&[("FEMMED", "2"), ("HTTP_BIND", "127.0.0.1:9000")]));
+        assert_eq!(c.http_bind, "127.0.0.1:9000");
+        let c = Config::from_vars(vars(&[("HOME", "/home/me")]));
         assert_eq!(c.host, "agentbox");
         assert_eq!(c.state_dir, PathBuf::from("/home/me/.local/state/femme"));
         assert_eq!(c.work_root(), PathBuf::from("/home/me/femme-work"));

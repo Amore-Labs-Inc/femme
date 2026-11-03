@@ -104,7 +104,7 @@ pub enum DevicesCmd {
 /// [`crate::core::Core`]. The wiring replaces this with building its `Core` and calling
 /// [`crate::serve`]. Exits 2.
 /// `femmed serve`: logs to the journal (under systemd) or stderr, opens the store, imports the old
-/// board's files once when `FEMMED=1`, and serves until SIGTERM. Exits 1 with the reason otherwise.
+/// board's files once when `FEMMED=2`, and serves until SIGTERM. Exits 1 with the reason otherwise.
 async fn serve_daemon() -> anyhow::Result<()> {
     use tracing_subscriber::prelude::*;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -120,7 +120,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
     }
     let cfg = Config::load();
     let daemon = crate::daemon::Daemon::open(cfg.clone())?;
-    if cfg.femmed {
+    if cfg.replaces_board {
         let report = daemon.import_board()?;
         tracing::info!(?report, "old board files");
     }
