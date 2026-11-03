@@ -320,6 +320,55 @@ fn entering_a_directory_re_roots_and_up_stops_at_the_session_directory() {
 }
 
 #[test]
+fn the_cursor_lands_on_the_first_entry_of_a_directory_once_it_is_listed() {
+    let mut t = sample();
+    // Not listed yet: nothing to land on, the cursor waits.
+    t.set_open("src/ui", true);
+    assert!(t.enter("src/ui"));
+    assert_eq!(shape(&t), [".. src", "loading src/ui"]);
+    assert_eq!(t.selected(), None);
+    assert_eq!(t.wanted(), ["src/ui"]);
+    t.loaded("src/ui", Ok(vec![file("b.rs", 2), file("a.rs", 1)]));
+    assert_eq!(t.selected(), Some("src/ui/a.rs"), "not on the up line");
+    // Once is enough: a later answer does not pull the cursor back.
+    assert!(t.select(Some("src/ui/b.rs")));
+    t.loaded("src/ui", Ok(vec![file("a.rs", 1), file("b.rs", 3)]));
+    assert_eq!(t.selected(), Some("src/ui/b.rs"));
+}
+
+#[test]
+fn a_cursor_put_elsewhere_while_the_listing_is_out_stays() {
+    let mut t = sample();
+    t.set_open("src/ui", true);
+    t.enter("src/ui");
+    t.wanted();
+    assert_eq!(t.step(1), Some(0), "down from nowhere lands on the up line");
+    t.loaded("src/ui", Ok(vec![file("a.rs", 1)]));
+    assert_eq!(t.selected(), Some(".."));
+}
+
+#[test]
+fn an_empty_or_failed_directory_gives_the_cursor_nothing_and_forgets_it() {
+    let mut t = sample();
+    t.set_open("src/ui", true);
+    t.enter("src/ui");
+    t.wanted();
+    t.loaded("src/ui", Ok(vec![]));
+    assert_eq!(t.selected(), None);
+    // The wish is gone: files that show up later do not take the cursor.
+    t.refresh();
+    t.wanted();
+    t.loaded("src/ui", Ok(vec![file("late.rs", 1)]));
+    assert_eq!(t.selected(), None);
+    let mut t = sample();
+    t.set_open("src/ui", true);
+    t.enter("src/ui");
+    t.wanted();
+    t.loaded("src/ui", Err("Bad: permission denied".into()));
+    assert_eq!(t.selected(), None);
+}
+
+#[test]
 fn an_open_directory_keeps_its_state_while_the_view_moves() {
     let mut t = sample();
     t.set_open("src/ui", true);
@@ -422,9 +471,9 @@ fn closing_a_directory_takes_the_cursor_to_it() {
     assert!(t.select(Some("src/ui/mod.rs")));
     t.set_open("src", false);
     assert_eq!(t.selected(), Some("src"));
-    // Entering a directory takes the cursor off.
+    // Entering a directory puts the cursor on its first entry (it is listed already).
     t.enter("src");
-    assert_eq!(t.selected(), None);
+    assert_eq!(t.selected(), Some("src/ui"));
     t.select(Some(".."));
     assert_eq!(t.selected_row().map(|r| r.kind.clone()), Some(Kind::Up));
     assert!(

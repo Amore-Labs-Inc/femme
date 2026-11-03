@@ -154,6 +154,8 @@ pub struct Tree {
     dirs: HashMap<String, Dir>,
     open: HashSet<String>,
     selected: Option<String>,
+    /// The cursor is to land on the root's first entry as soon as it is listed ([`Tree::enter`]).
+    pick: bool,
     rows: Vec<Row>,
 }
 
@@ -171,6 +173,7 @@ impl Tree {
             dirs: HashMap::new(),
             open: HashSet::new(),
             selected: None,
+            pick: false,
             rows: Vec::new(),
         };
         t.dirs.insert(String::new(), Dir::default());
@@ -305,7 +308,8 @@ impl Tree {
     }
 
     /// Makes the directory `path` the view's root (the `..` line leads back up); whether the view
-    /// moved. The cursor leaves.
+    /// moved. The cursor leaves, and lands on the first entry once the directory is listed (unless
+    /// it was put somewhere else by then).
     pub fn enter(&mut self, path: &str) -> bool {
         if path.is_empty() || !clean(path) || path == self.root {
             return false;
@@ -313,6 +317,7 @@ impl Tree {
         self.dirs.entry(path.to_owned()).or_default();
         self.root = path.to_owned();
         self.selected = None;
+        self.pick = true;
         self.rebuild();
         true
     }
@@ -327,6 +332,7 @@ impl Tree {
         self.root = parent(&from).to_owned();
         self.dirs.entry(self.root.clone()).or_default();
         self.selected = Some(from);
+        self.pick = false;
         self.rebuild();
         true
     }
@@ -350,6 +356,7 @@ impl Tree {
     /// Puts the cursor on the line `key` names (see [`Row::key`]); `None` takes it off. A key that
     /// is not on show leaves the cursor where it was. Whether the cursor moved.
     pub fn select(&mut self, key: Option<&str>) -> bool {
+        self.pick = false;
         match key {
             None => self.selected.take().is_some(),
             Some(k) => {
@@ -368,6 +375,7 @@ impl Tree {
     /// either end. With no cursor yet, down lands on the first line and up on the last. Returns
     /// the index of the line it is on.
     pub fn step(&mut self, delta: isize) -> Option<usize> {
+        self.pick = false;
         let stops: Vec<usize> = (0..self.rows.len())
             .filter(|&i| self.rows[i].key().is_some())
             .collect();
@@ -462,6 +470,9 @@ impl Tree {
         }
         self.push_children(&self.root, 0, &mut rows);
         self.rows = rows;
+        if self.pick {
+            self.land();
+        }
         let Some(sel) = self.selected.clone() else {
             return;
         };
@@ -478,6 +489,27 @@ impl Tree {
             }
             above = parent(above);
         };
+    }
+
+    /// Puts the cursor on the first entry of the root once its listing (or its failure) is in.
+    fn land(&mut self) {
+        let known = self
+            .dirs
+            .get(&self.root)
+            .is_some_and(|d| d.entries.is_some() || d.error.is_some());
+        if !known {
+            return;
+        }
+        self.pick = false;
+        let first = self
+            .rows
+            .iter()
+            .find(|r| matches!(r.kind, Kind::Dir { .. } | Kind::File { .. }))
+            .and_then(Row::key)
+            .map(str::to_owned);
+        if first.is_some() {
+            self.selected = first;
+        }
     }
 
     /// The lines of `dir`'s children, `depth` steps in; open directories follow with their own.
