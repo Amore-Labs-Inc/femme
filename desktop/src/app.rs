@@ -51,7 +51,7 @@ use crate::sidebar::{CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
 use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, TOP_BAR_H};
-use crate::transcript::live::Transcript;
+use crate::transcript::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
 mod right;
@@ -213,7 +213,6 @@ fn bench_task(
         full_height: cfg.full_height,
         target_ms: cfg.target_ms,
         window: None,
-        ..BenchConfig::default()
     };
     cx.spawn(async move |_, cx| {
         let stats = |cx: &gpui::AsyncApp| -> Vec<PaneStats> {
