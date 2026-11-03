@@ -38,10 +38,11 @@ cargo run --release --features bench -- --bench 20 --target-ms 10 --panes 5 --mo
 
 Keys: `ctrl-k` palette (placeholder, `escape` closes), `ctrl-j` drawer, `ctrl-b` sidebar,
 `ctrl-alt-b` right panel (`cmd` instead of `ctrl` on macOS), `F6` focus cycle sidebar, transcript,
-composer, drawer. Transcript, when it has the keyboard (a click gives it when nothing else holds it): PageUp /
-PageDown / Home / End. These chords belong to the app even when a
+composer, drawer. These chords belong to the app even when a
 terminal has the keyboard (the shell never sees `ctrl-k`, `ctrl-j`, `ctrl-b`); every other key goes to
-the terminal.
+the terminal. The transcript, when it has the keyboard (`F6`, or a click, unless a text field such as
+the composer has it: a click on a row never takes the keyboard from a field), takes PageUp / PageDown /
+Home / End.
 
 ## Talking to a daemon
 
