@@ -522,6 +522,16 @@ impl FemmeApp {
         }
     }
 
+    /// A click that nothing inside claimed: gpui would hand the keyboard to this root, which types
+    /// nowhere (the composer's caret would vanish when the user clicks the menu). The keyboard stays
+    /// where it was; when it was nowhere, the centre takes it.
+    fn chrome_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.prevent_default();
+        if !self.focus.contains_focused(window, cx) {
+            self.land_focus(window, cx);
+        }
+    }
+
     /// The sidebar's click: show that session.
     fn open_session(&mut self, sid: femme_proto::Sid, cx: &mut Context<Self>) {
         if let Some(net) = &self.net {
@@ -781,6 +791,7 @@ impl Render for FemmeApp {
             .id("femme")
             .key_context("Femme")
             .track_focus(&self.focus)
+            .on_any_mouse_down(cx.listener(|t, _, window, cx| t.chrome_click(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
             .on_action(
                 cx.listener(|t, _: &ToggleTerminal, window, cx| t.toggle_terminal(window, cx)),
