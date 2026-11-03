@@ -35,7 +35,7 @@ use gpui::{
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme as _, Root};
+use gpui_component::Root;
 
 use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
@@ -54,8 +54,6 @@ use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, SURFACE, 
 use crate::transcript::live::Transcript;
 use crate::ui::{self, ruled, DotGrid};
 
-#[macro_use]
-mod focus;
 mod right;
 
 use right::CLOSE_AFTER;
@@ -69,8 +67,7 @@ mod actions_def {
             ToggleTerminal,
             CloseRight,
             FocusNext,
-            FocusPrev,
-            CloseModal
+            FocusPrev
         ]
     );
 }
@@ -92,7 +89,7 @@ macro_rules! modkey {
 }
 
 /// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
-/// panel, F6 and shift+F6 walk the focus, escape closes the accounts overlay.
+/// panel, F6 and shift+F6 walk the focus. (The accounts card hears escape itself.)
 pub fn bind_keys(cx: &mut App) {
     // The terminal panel's own chords (ctrl-tab, ctrl-shift-tab), in the keymap before the panel exists.
     crate::terminal::panel::bind_keys(cx);
@@ -102,7 +99,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
         KeyBinding::new("f6", FocusNext, Some("Femme")),
         KeyBinding::new("shift-f6", FocusPrev, Some("Femme")),
-        KeyBinding::new("escape", CloseModal, Some("FemmeModal")),
     ]);
 }
 
@@ -301,7 +297,6 @@ pub struct FemmeApp {
     focus: FocusHandle,
     centre_focus: FocusHandle,
     right_focus: FocusHandle,
-    modal_focus: FocusHandle,
     /// What the centre shows, and what the modules were last told.
     shown: Shown,
     right: Right,
@@ -396,7 +391,6 @@ impl FemmeApp {
             focus: cx.focus_handle(),
             centre_focus: cx.focus_handle(),
             right_focus,
-            modal_focus: cx.focus_handle(),
             cfg,
             net,
             menu,
@@ -533,7 +527,10 @@ impl FemmeApp {
 
     fn on_menu(&mut self, ev: MenuEvent, _: &mut Window, cx: &mut Context<Self>) {
         match ev {
-            MenuEvent::Accounts => self.accounts.update(cx, |a, cx| a.open(cx)),
+            MenuEvent::Accounts => {
+                self.accounts.update(cx, |a, cx| a.open(cx));
+                cx.notify();
+            }
             MenuEvent::Reconnect => {
                 if let Some(net) = &self.net {
                     net.read(cx).reconnect();
@@ -545,24 +542,18 @@ impl FemmeApp {
         }
     }
 
-    /// The accounts overlay opened or closed: it takes the keyboard while it is open (Esc closes it)
-    /// and gives it back to the centre.
+    /// The accounts card opened or closed. It takes the keyboard when it opens (and remembers who had
+    /// it) and gives it back when the user dismisses it; when nobody had it, the centre takes it.
     fn accounts_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let open = self.accounts.read(cx).is_open();
         if open != self.modal_open {
             self.modal_open = open;
-            if open {
-                let handle = focus_of!(self.accounts.read(cx), cx);
-                window.focus(&handle.unwrap_or_else(|| self.modal_focus.clone()), cx);
-            } else {
+            let card = self.accounts.focus_handle(cx);
+            if !open && window.focused(cx).is_none_or(|h| card.contains(&h, window)) {
                 self.land_focus(window, cx);
             }
             cx.notify();
         }
-    }
-
-    fn close_modal(&mut self, cx: &mut Context<Self>) {
-        self.accounts.update(cx, |a, cx| a.close(cx));
     }
 
     /// mod+b: the sessions column collapses to its strip of dots, or expands again.
@@ -723,25 +714,6 @@ impl FemmeApp {
                 .into_any_element(),
         }
     }
-
-    /// The accounts overlay: a scrim over the centre, the overlay's card in the middle of it (a card
-    /// that fills the scrim fills it).
-    fn modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("modal")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .key_context("FemmeModal")
-            .track_focus(&self.modal_focus)
-            .on_action(cx.listener(|t, _: &CloseModal, _, cx| t.close_modal(cx)))
-            .bg(cx.theme().overlay)
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(GUTTER)
-            .child(self.accounts.clone())
-    }
 }
 
 impl Render for FemmeApp {
@@ -780,7 +752,8 @@ impl Render for FemmeApp {
                     .h_full()
                     .track_focus(&self.centre_focus)
                     .child(self.centre(cx))
-                    .when(self.modal_open, |d| d.child(self.modal(cx))),
+                    // The card is its own layer (scrim, focus, escape): it only needs a positioned parent.
+                    .when(self.modal_open, |d| d.child(self.accounts.clone())),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));
         div()

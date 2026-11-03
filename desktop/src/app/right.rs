@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use gpui::{
-    div, px, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty,
+    div, px, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window,
 };
@@ -82,14 +82,14 @@ impl FemmeApp {
         }
     }
 
-    /// The keyboard goes into the panel: the tab's own handle when its module has one.
+    /// The keyboard goes into the panel: the tab's own handle.
     fn focus_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let own = match self.right.open() {
-            Some(Tab::Terminal) => focus_of!(self.terminal.read(cx), cx),
-            Some(Tab::Files) => focus_of!(self.files.read(cx), cx),
-            None => None,
+            Some(Tab::Terminal) => self.terminal.focus_handle(cx),
+            Some(Tab::Files) => self.files.focus_handle(cx),
+            None => self.right_focus.clone(),
         };
-        window.focus(&own.unwrap_or_else(|| self.right_focus.clone()), cx);
+        window.focus(&own, cx);
     }
 
     /// Decides what the pointer and the focus ask of the right-hand panel in a moment: the delay
