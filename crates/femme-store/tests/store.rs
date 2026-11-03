@@ -14,7 +14,9 @@ use femme_proto::state::{
     Row, Session, SessionStatus,
 };
 use femme_proto::{Id, PaneId, Sid};
-use femme_store::items::{BLOB_MAX, INLINE_MAX, INLINE_RAW_MAX, PREVIEW_MAX, TRUNCATED};
+use femme_store::items::{
+    BLOB_BYTES_MAX, BLOB_MAX, INLINE_MAX, INLINE_RAW_MAX, PREVIEW_MAX, TRUNCATED,
+};
 use femme_store::sync::INITIAL_ITEMS;
 use femme_store::{auth, issues, items, sessions, sha256, Caps, Error, Store};
 use rusqlite::Connection;
@@ -1360,6 +1362,65 @@ fn blobs_are_capped_at_one_mebibyte_and_say_so() {
         Some(sha256(stored.as_bytes())),
         "the hash covers what is stored"
     );
+}
+
+#[test]
+fn uploaded_bytes_are_kept_whole_up_to_their_own_cap() {
+    let s = store();
+    // empty, not UTF-8, and longer than a transcript blob may be
+    let long: Vec<u8> = (0..=255u8).cycle().take(BLOB_MAX + 123).collect();
+    let cases: [&[u8]; 3] = [b"", b"\xff\xfe not utf-8 \x00", &long];
+    for data in cases {
+        let h = s.write(|tx| tx.put_blob_bytes(data)).unwrap();
+        assert_eq!(h, sha256(data));
+        assert_eq!(
+            s.get_blob(&h).unwrap().as_deref(),
+            Some(data),
+            "{} bytes",
+            data.len()
+        );
+    }
+    let most = vec![7u8; BLOB_BYTES_MAX];
+    let h = s.write(|tx| tx.put_blob_bytes(&most)).unwrap();
+    assert_eq!(s.get_blob(&h).unwrap().unwrap().len(), BLOB_BYTES_MAX);
+
+    let over = vec![7u8; BLOB_BYTES_MAX + 1];
+    let refused = s.write(|tx| tx.put_blob_bytes(&over));
+    assert!(
+        matches!(refused, Err(Error::TooLarge { max }) if max == BLOB_BYTES_MAX),
+        "{refused:?}"
+    );
+    assert_eq!(count(&s, "blobs"), 4, "the refused one left nothing behind");
+}
+
+#[test]
+fn an_upload_is_one_row_however_often_put_and_retention_sweeps_it_as_an_orphan() {
+    let s = store();
+    let data = noise(10_000, 3).into_bytes();
+    let h = s.write_at(NOW, |tx| tx.put_blob_bytes(&data)).unwrap();
+    let again = s.write_at(NOW + 5, |tx| tx.put_blob_bytes(&data)).unwrap();
+    assert_eq!(again, h);
+    assert_eq!(count(&s, "blobs"), 1);
+    let ts: i64 = s
+        .read(|c| Ok(c.query_row("SELECT ts FROM blobs", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(ts, NOW + 5, "putting it again refreshes it");
+
+    // A transcript body of the same text is the same blob, and then an item keeps it.
+    let a = insert_session(&s, None);
+    let text = String::from_utf8(data).unwrap();
+    let put = s
+        .write(|tx| tx.put_item(&item(a.id, "same", &text)))
+        .unwrap();
+    assert_eq!(put.blob_hash, Some(h));
+    assert_eq!(s.retain(NOW + 10).unwrap().orphan_blobs, 0);
+    assert!(s.get_blob(&h).unwrap().is_some());
+
+    // Alone, it is an orphan like any blob no item refers to.
+    let lone = s.write(|tx| tx.put_blob_bytes(b"attached")).unwrap();
+    assert_eq!(s.retain(NOW + 20).unwrap().orphan_blobs, 1);
+    assert_eq!(s.get_blob(&lone).unwrap(), None);
+    assert!(s.get_blob(&h).unwrap().is_some());
 }
 
 #[test]

@@ -109,6 +109,12 @@ pub enum Error {
     /// A unique value is already taken; names what (`"name"` for a session or API-key name).
     #[error("already exists: {0}")]
     Exists(&'static str),
+    /// [`Tx::put_blob_bytes`] was given more than `max` bytes ([`items::BLOB_BYTES_MAX`]).
+    #[error("too large: at most {max} bytes")]
+    TooLarge {
+        /// What the store accepts.
+        max: usize,
+    },
 }
 
 /// The store's result type.
