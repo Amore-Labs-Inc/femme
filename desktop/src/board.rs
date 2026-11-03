@@ -6,3 +6,4 @@ pub mod geom;
 pub mod geometry;
 pub mod palette;
 pub mod scene;
+pub mod stroke;
