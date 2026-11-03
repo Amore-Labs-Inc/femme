@@ -3,6 +3,11 @@
 //! composer's attachment previews.
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
+mod hex;
+mod kind;
+
+pub use kind::{detect, Kind, Raster};
+
 use gpui::{div, Context, IntoElement, ParentElement, Render, Window};
 
 pub struct FileView {
