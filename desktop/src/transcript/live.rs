@@ -19,10 +19,11 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
     InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window,
 };
 use gpui_component::scroll::Scrollbar;
+use gpui_component::WindowExt as _;
 use tokio::sync::watch;
 
 use super::ask::Ask;
@@ -538,14 +539,18 @@ impl Render for Transcript {
             .relative()
             .bg(PAPER)
             .track_focus(&self.focus)
-            // A click takes the keyboard only when nobody has it: a click on a row must not take
-            // it from the composer. Capturing, so a field in a question row, which takes it when
-            // the click gets down to it, ends up with it.
-            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                if event.button == MouseButton::Left && window.focused(cx).is_none() {
-                    window.focus(&this.focus, cx);
-                }
-            }))
+            // A click gives the transcript the keyboard unless a text field has it: a click on a
+            // row must not take it from the composer. This listener runs after the fields in the
+            // rows (a question's answer box takes the keyboard when the click reaches it) and
+            // before gpui's own focus-on-click for this element, which it cancels.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, window, cx| {
+                    if window.has_focused_input(cx) {
+                        window.prevent_default();
+                    }
+                }),
+            )
             .on_key_down(cx.listener(Self::on_key))
             .child(
                 list(
