@@ -493,8 +493,12 @@ impl AccountsOverlay {
         ))
     }
 
-    /// The form that makes a key: a name, an optional GitHub token, `+ key`.
+    /// The form that makes a key: a name, an optional GitHub token, `+ key`. Not there while the
+    /// keys could not be read (a daemon too old for them cannot make one either).
     fn key_form(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !matches!(self.keys, Load::Ready(_)) {
+            return None;
+        }
         let f = self.fields.as_ref()?;
         Some(
             div()
