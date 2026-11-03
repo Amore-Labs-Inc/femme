@@ -3,6 +3,7 @@
 
 pub mod drawlist;
 pub mod editor;
+pub mod export;
 pub mod font;
 pub mod geom;
 pub mod geometry;
