@@ -79,6 +79,7 @@ impl Transcript {
     /// A transcript that shows nothing until [`set_session`](Self::set_session) names a session.
     /// Without a daemon (`net` is `None`) it stays empty.
     pub fn new(net: Option<Entity<Net>>, cx: &mut Context<Self>) -> Self {
+        super::faces::register(cx);
         let (want, wanted) = watch::channel(None);
         if let Some(net) = &net {
             let (client, rt) = {

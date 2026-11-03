@@ -14,6 +14,7 @@ pub mod thumb;
 pub mod turns;
 
 mod ask;
+mod faces;
 mod rows;
 
 pub use live::Transcript;
