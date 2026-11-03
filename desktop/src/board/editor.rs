@@ -136,6 +136,11 @@ impl Editor {
         }
     }
 
+    /// A drag (a shape, a move, a marquee, a pan) is going on.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     /// The view is being panned by hand: the cursor is a hand.
     pub fn is_panning(&self) -> bool {
         self.space || matches!(self.drag, Some(Drag::Pan { .. }))
@@ -159,6 +164,17 @@ impl Editor {
     /// The board has shapes to copy or send.
     pub fn has_content(&self) -> bool {
         !self.scene.is_empty()
+    }
+
+    /// Swaps in another scene (a board loaded from elsewhere): the selection, the drag and the text
+    /// being typed go, the view stays.
+    pub fn replace_scene(&mut self, scene: Scene) {
+        self.scene = scene;
+        self.selection.clear();
+        self.typing = None;
+        self.drag = None;
+        self.nudging = false;
+        self.changed();
     }
 
     // ---- view ----------------------------------------------------------------------------------
@@ -352,6 +368,13 @@ impl Editor {
         let ids = self.scene.paste(&self.clipboard, Point::new(off, off));
         self.select(ids);
         self.changed();
+    }
+
+    /// The name of the next picture sent to Claude (`diagram-1.png`, ...). The count is part of the
+    /// saved board, so this counts as an edit.
+    pub fn next_export_name(&mut self) -> String {
+        self.changed();
+        self.scene.next_export_name()
     }
 
     /// Clears the board: one undo step brings it back.
