@@ -48,7 +48,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"  # the viewer wraps its decoders in catch_unwind: a bad PDF must not take the app down
 strip = true
 
 [profile.profiling]
