@@ -44,6 +44,9 @@ pub struct Chip {
     pub upload: Upload,
 }
 
+/// The most files one prompt may name; the daemon refuses more (`femmed`'s `uploads.rs`).
+pub const MAX_CHIPS: usize = 16;
+
 /// Why a file was not attached.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -62,6 +65,11 @@ pub enum Refusal {
     /// A directory was dropped.
     Folder {
         /// The directory's name.
+        name: String,
+    },
+    /// The draft already has [`MAX_CHIPS`] files.
+    TooMany {
+        /// The file's name.
         name: String,
     },
     /// The file could not be read.
@@ -84,6 +92,12 @@ impl fmt::Display for Refusal {
             ),
             Refusal::Empty { name } => write!(f, "{name} is empty"),
             Refusal::Folder { name } => write!(f, "{name} is a folder: attach files"),
+            Refusal::TooMany { name } => {
+                write!(
+                    f,
+                    "{name} not attached: at most {MAX_CHIPS} files to a prompt"
+                )
+            }
             Refusal::Unreadable { name, why } => write!(f, "can't read {name}: {why}"),
         }
     }
@@ -205,8 +219,11 @@ impl Draft {
     }
 
     /// Attaches `data` as `name` (renamed if the draft already has that name) and starts it
-    /// `Uploading`. Over-size and empty files are refused.
+    /// `Uploading`. Over-size and empty files are refused, and so is any past [`MAX_CHIPS`].
     pub fn add(&mut self, id: ChipId, name: &str, data: Vec<u8>) -> Result<&Chip, Refusal> {
+        if self.chips.len() >= MAX_CHIPS {
+            return Err(Refusal::TooMany { name: name.into() });
+        }
         if data.is_empty() {
             return Err(Refusal::Empty { name: name.into() });
         }
@@ -639,6 +656,29 @@ mod tests {
         let out = d.gate("", agent()).unwrap();
         assert_eq!(out.text, "");
         assert_eq!(out.ids, [1]);
+    }
+
+    #[test]
+    fn a_draft_takes_sixteen_files_and_refuses_the_next() {
+        let mut d = Draft::default();
+        for id in 0..MAX_CHIPS as ChipId {
+            add(&mut d, id, "n.txt", b"x");
+        }
+        assert_eq!(d.chips.len(), MAX_CHIPS);
+        let refused = d.add(99, "one-more.txt", b"x".to_vec()).err().unwrap();
+        assert_eq!(
+            refused,
+            Refusal::TooMany {
+                name: "one-more.txt".into()
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "one-more.txt not attached: at most 16 files to a prompt"
+        );
+        // Taking one off makes room again.
+        d.remove(0);
+        add(&mut d, 100, "one-more.txt", b"x");
     }
 
     #[test]
