@@ -19,7 +19,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
     InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
+    MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
     Subscription, Window,
 };
 use gpui_component::scroll::Scrollbar;
@@ -30,7 +30,7 @@ use super::items::Items;
 use super::markdown::{self, Doc};
 use super::splice;
 use super::thumb::Thumb;
-use super::turns::{self, Layout};
+use super::turns::{self, Key, Layout};
 use crate::net::{ClientEvent, Net};
 use crate::theme::{BAD, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PAPER};
 use crate::ui::{meta, ruled};
@@ -294,8 +294,11 @@ impl Transcript {
             this.paging = false;
             match answer {
                 Ok(Resp::Page { items, next_before }) => {
+                    // The older items go above what the user was reading, which stays where it is.
+                    let place = this.place();
                     this.items.apply_page(items, next_before);
                     this.refresh(cx);
+                    this.restore(place);
                     return;
                 }
                 Ok(_) => {}
@@ -305,6 +308,33 @@ impl Transcript {
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// The row at the top of the view and how far the view starts into it; the first message
+    /// when the view is on the "older messages" header. `None` while the view is at the end.
+    fn place(&self) -> Option<(Key, Pixels)> {
+        let top = self.list.logical_scroll_top();
+        let rows = &self.layout.rows;
+        let on_header = rows.get(top.item_ix).is_some_and(|r| r.key == Key::More);
+        let (ix, offset) = if on_header {
+            (top.item_ix + 1, px(0.))
+        } else {
+            (top.item_ix, top.offset_in_item)
+        };
+        rows.get(ix).map(|r| (r.key, offset))
+    }
+
+    /// Puts the view back on the row `place` named, wherever it is now.
+    fn restore(&mut self, place: Option<(Key, Pixels)>) {
+        let Some((key, offset)) = place else {
+            return;
+        };
+        if let Some(ix) = self.layout.rows.iter().position(|r| r.key == key) {
+            self.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: offset,
+            });
+        }
     }
 
     /// Fetches the body of a long item (a blob) once.
@@ -517,7 +547,9 @@ impl Render for Transcript {
                     self.list.clone(),
                     cx.processor(|this, ix, window, cx| this.row(ix, window, cx)),
                 )
-                .size_full(),
+                .size_full()
+                .pt(px(6.))
+                .pb(px(10.)),
             )
             .child(Scrollbar::vertical(&self.list))
             .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
