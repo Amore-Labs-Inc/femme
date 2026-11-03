@@ -26,8 +26,6 @@ pub struct BenchConfig {
     pub seconds: u64,
     /// Terminal panes in the drawer.
     pub panes: usize,
-    /// Transcript rows (0 = transcript off).
-    pub rows: usize,
     /// Synthetic source rate.
     pub hz: u32,
     /// What the panes show, one source per pane (`fire,fire,cat`).
@@ -373,8 +371,8 @@ impl fmt::Display for Report {
         };
         writeln!(
             f,
-            "femme-desktop bench: {} pane(s) {}@{}Hz, {layout}, transcript {} rows, {:.1}s measured, {hz}{win}",
-            c.panes, c.mode, c.hz, c.rows, self.secs
+            "femme-desktop bench: {} pane(s) {}@{}Hz, {layout}, {:.1}s measured, {hz}{win}",
+            c.panes, c.mode, c.hz, self.secs
         )?;
         writeln!(
             f,
