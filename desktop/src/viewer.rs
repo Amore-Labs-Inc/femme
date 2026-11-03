@@ -1,7 +1,12 @@
 //! Renders one file from the box by name and bytes: images (raster and SVG), PDF pages, text and
 //! source code with syntax highlighting, markdown as highlighted text, and a hex dump for anything
 //! else. Owned by the viewer agent (docs/desktop-ui.md §viewer). Used by the files panel and by the
-//! composer's attachment previews, so it fits whatever bounds it is given and scrolls inside them.
+//! composer's attachment previews.
+//!
+//! A [`FileView`] is as wide as the space it is given and as tall as its content, so the host puts
+//! it in a vertical scroll area of its own (a long file, a PDF and a tall picture all work that
+//! way, and so does a small hover preview). Only what is wider than the space scrolls inside: code
+//! lines, a picture shown at 1:1. Pictures and PDF pages are fitted to the width.
 //!
 //! What a file is comes from its magic bytes first and its extension second ([`detect`]). Decoding
 //! and rendering never run on the UI thread: each kind has a view of its own that shows a spinner
@@ -54,8 +59,9 @@ enum Body {
 /// fitted into the view (a click toggles 1:1), a PDF as lazily rendered pages, UTF-8 text with line
 /// numbers and syntax highlighting, anything else as a notice with a hex dump of its first bytes.
 ///
-/// It fills the space it is placed in and scrolls inside it, so it works as a full panel and as a
-/// small hover preview alike.
+/// It takes the width it is placed in and is as tall as its content (at least as tall as the space,
+/// so the backdrop fills a short file's panel): put it in a vertical scroll area. Only the parts of
+/// a long file or document that are near the screen are built, so size does not slow it down.
 pub struct FileView {
     name: String,
     len: usize,
@@ -144,6 +150,6 @@ impl Render for FileView {
             )
             .into_any_element(),
         };
-        div().size_full().overflow_hidden().child(body)
+        div().w_full().min_h_full().flex().flex_col().child(body)
     }
 }

@@ -1,6 +1,6 @@
-//! Raster images and SVG: decoded off the UI thread, shown fitted on the panel colour, one click for
-//! 1:1. Also the one place a rendered buffer becomes a gpui image (`bgra_image`), which the PDF pages
-//! use too.
+//! Raster images and SVG: decoded off the UI thread, shown fitted to the width of the panel, one click
+//! for 1:1. Also the one place a rendered buffer becomes a gpui image (`bgra_image`), which the PDF
+//! pages use too.
 
 use std::fmt::Write as _;
 use std::io::Cursor;
@@ -267,37 +267,55 @@ impl ImageView {
             this.scroll.set_offset(point(px(0.), px(0.)));
             cx.notify();
         });
+        let (w, h) = natural_size(d, window.scale_factor());
         if self.one_to_one {
-            let (w, h) = natural_size(d, window.scale_factor());
+            // As big as the picture (so the scroll area reaches all of it) and at least as wide as the
+            // view (so a small picture stays centred). The host owns the vertical scroll.
             div()
-                .id("picture-1to1")
-                .size_full()
-                .overflow_scroll()
+                .id(("picture-1to1", cx.entity_id()))
+                .flex()
+                .w_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
                 .track_scroll(&self.scroll)
                 .cursor_pointer()
                 .on_click(toggle)
                 .child(
                     div()
                         .flex()
+                        .flex_none()
+                        .w(px(w))
                         .min_w_full()
-                        .min_h_full()
+                        .h(px(h))
                         .items_center()
                         .justify_center()
                         .child(img(d.image.clone()).id("pic").flex_none().w(px(w)).h(px(h))),
                 )
                 .into_any_element()
         } else {
+            // A box as wide as the view and as tall as the picture's ratio makes it, with the picture
+            // in it positioned absolutely: an in-flow image is never laid out shorter than its width
+            // over its ratio, so it could not be letterboxed by `Contain`. A raster is not blown up
+            // past its own size; a vector is drawn as big as the view.
+            let ratio = d.shown.0 as f32 / d.shown.1.max(1) as f32;
+            let frame = div().relative().w_full().mx_auto().aspect_ratio(ratio);
+            let frame = if d.vector { frame } else { frame.max_w(px(w)) };
             div()
-                .id("picture-fit")
-                .size_full()
+                .id(("picture-fit", cx.entity_id()))
+                .w_full()
                 .p(px(8.))
                 .cursor_pointer()
                 .on_click(toggle)
                 .child(
-                    img(d.image.clone())
-                        .id("pic")
-                        .object_fit(ObjectFit::Contain)
-                        .size_full(),
+                    frame.child(
+                        img(d.image.clone())
+                            .id("pic")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    ),
                 )
                 .into_any_element()
         }
@@ -308,7 +326,7 @@ impl Render for ImageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size_text = human_size(self.bytes);
         match &self.state {
-            State::Loading => chrome::framed(chrome::spinner("decoding"), size_text, PANEL),
+            State::Loading => chrome::framed(chrome::waiting("decoding"), size_text, PANEL),
             State::Failed(why) => chrome::framed(
                 chrome::notice(
                     ("viewer-notice", cx.entity_id()),
