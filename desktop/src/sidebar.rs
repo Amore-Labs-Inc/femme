@@ -708,3 +708,229 @@ impl Render for Sidebar {
             .child(body)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use femme_client::Link as Transport;
+    use femme_proto::Id;
+    use gpui::AppContext as _;
+
+    fn session(n: u128, created: i64) -> Session {
+        Session {
+            id: Id(n),
+            handle: format!("h{n}"),
+            rev: 1,
+            name: None,
+            owner: "board".into(),
+            agent: Agent::Shell,
+            mode: Mode::Tui,
+            cwd: "/home/u/work".into(),
+            label: None,
+            agent_sid: None,
+            model: None,
+            status: SessionStatus::Idle,
+            attention: Attention::None,
+            created,
+            closed: None,
+        }
+    }
+
+    fn model(sessions: Vec<Session>) -> Model {
+        let mut m = Model::default();
+        for s in sessions {
+            m.sessions.insert(s.id, s);
+        }
+        m
+    }
+
+    fn ids(rows: &[Row]) -> Vec<u128> {
+        rows.iter().map(|r| r.sid.0).collect()
+    }
+
+    fn dot_of(status: SessionStatus, attention: Attention) -> Rgba {
+        let mut s = session(1, 1);
+        s.status = status;
+        s.attention = attention;
+        status_color(&s)
+    }
+
+    #[test]
+    fn only_live_sessions_are_listed_newest_first() {
+        let mut closed = session(3, 30);
+        closed.closed = Some(31);
+        let mut ended = session(4, 40);
+        ended.status = SessionStatus::Closed;
+        let m = model(vec![
+            session(1, 10),
+            session(2, 20),
+            closed,
+            ended,
+            // Created in the same millisecond as 2: the later id is the newer.
+            session(5, 20),
+        ]);
+        assert_eq!(ids(&rows(&m)), [5, 2, 1]);
+        assert!(rows(&Model::default()).is_empty());
+    }
+
+    #[test]
+    fn a_row_has_the_title_the_agent_and_a_short_directory() {
+        let mut named = session(1, 1);
+        named.name = Some("nightly".into());
+        named.agent = Agent::Claude;
+        let mut labelled = session(2, 2);
+        labelled.label = Some("fix the build".into());
+        labelled.agent = Agent::Codex;
+        labelled.cwd = "/srv/app/".into();
+        let bare = session(3, 3);
+        let m = model(vec![named, labelled, bare]);
+        let rows = rows(&m);
+        let say = |r: &Row| (r.title.clone(), r.agent, r.dir.clone());
+        assert_eq!(say(&rows[0]), ("work".into(), "shell", "~/work".into()));
+        assert_eq!(
+            say(&rows[1]),
+            ("fix the build".into(), "codex", "/srv/app".into())
+        );
+        assert_eq!(say(&rows[2]), ("nightly".into(), "claude", "~/work".into()));
+    }
+
+    #[test]
+    fn the_dot_says_what_the_session_is_doing_or_waits_for() {
+        use SessionStatus::*;
+        assert_eq!(dot_of(Working, Attention::None), WORK);
+        assert_eq!(dot_of(Blocked, Attention::None), PAUSE);
+        assert_eq!(dot_of(Idle, Attention::Blocked), PAUSE);
+        assert_eq!(dot_of(Idle, Attention::None), QUEUE);
+        assert_eq!(dot_of(Starting, Attention::None), QUEUE);
+        for s in [Interrupted, Paused, Crashed, Failed] {
+            assert_eq!(dot_of(s, Attention::None), BAD, "{s:?}");
+        }
+        assert_eq!(dot_of(Closed, Attention::None), DONE);
+        // The row carries the colour of its session.
+        let mut s = session(1, 1);
+        s.status = Working;
+        assert_eq!(Row::of(&s).dot, WORK);
+    }
+
+    #[test]
+    fn the_home_directory_is_a_tilde() {
+        for (cwd, said) in [
+            ("/home/u/work", "~/work"),
+            ("/home/u/work/", "~/work"),
+            ("/home/u", "~"),
+            ("/home/u/", "~"),
+            ("/Users/me/x/y", "~/x/y"),
+            ("/root", "~"),
+            ("/root/a", "~/a"),
+            ("/srv/app/", "/srv/app"),
+            ("/rooted", "/rooted"),
+            ("/home", "/home"),
+            ("/home//x", "/home//x"),
+            ("/", "/"),
+            ("", ""),
+        ] {
+            assert_eq!(short_dir(cwd), said, "{cwd:?}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_steps_one_row_and_stops_at_the_ends() {
+        let ids = [Id(5), Id(4), Id(3)];
+        assert_eq!(step(&[], None, Go::Down), None);
+        assert_eq!(step(&[], Some(Id(1)), Go::Last), None);
+        // No cursor: down starts at the top, up at the bottom.
+        assert_eq!(step(&ids, None, Go::Down), Some(Id(5)));
+        assert_eq!(step(&ids, None, Go::Up), Some(Id(3)));
+        // A cursor on a session that is gone counts as none.
+        assert_eq!(step(&ids, Some(Id(9)), Go::Down), Some(Id(5)));
+        assert_eq!(step(&ids, Some(Id(5)), Go::Down), Some(Id(4)));
+        assert_eq!(step(&ids, Some(Id(4)), Go::Down), Some(Id(3)));
+        assert_eq!(step(&ids, Some(Id(3)), Go::Down), Some(Id(3)));
+        assert_eq!(step(&ids, Some(Id(4)), Go::Up), Some(Id(5)));
+        assert_eq!(step(&ids, Some(Id(5)), Go::Up), Some(Id(5)));
+        assert_eq!(step(&ids, Some(Id(4)), Go::First), Some(Id(5)));
+        assert_eq!(step(&ids, None, Go::First), Some(Id(5)));
+        assert_eq!(step(&ids, Some(Id(4)), Go::Last), Some(Id(3)));
+    }
+
+    #[test]
+    fn the_list_redraws_for_what_it_shows_and_not_for_the_round_trip() {
+        let mut m = model(vec![session(1, 1), session(2, 2)]);
+        let before = Shown::of(&m);
+        // The nav bar's round trip moves every second; the sidebar does not show it.
+        m.rtt_ms = Some(23);
+        m.current = Some(Id(1));
+        assert_eq!(Shown::of(&m), before);
+        // A rev bump alone shows nothing.
+        m.sessions.get_mut(&Id(1)).unwrap().rev = 2;
+        assert_eq!(Shown::of(&m), before);
+        // A status, a title and the link are.
+        m.sessions.get_mut(&Id(1)).unwrap().status = SessionStatus::Working;
+        assert_ne!(Shown::of(&m), before);
+        let before = Shown::of(&m);
+        m.sessions.get_mut(&Id(1)).unwrap().label = Some("x".into());
+        assert_ne!(Shown::of(&m), before);
+        let before = Shown::of(&m);
+        m.link = Link::Up(Transport::Quic);
+        assert_ne!(Shown::of(&m), before);
+        m.sessions.remove(&Id(2));
+        assert_eq!(ids(&Shown::of(&m).rows), [1]);
+    }
+
+    #[test]
+    fn the_empty_list_says_what_it_waits_for() {
+        let mut m = Model::default();
+        let say = |m: &Model| {
+            let s = Shown::of(m);
+            (s.note(), s.can_create())
+        };
+        assert_eq!(say(&m), ("connecting…", false));
+        m.link = Link::Up(Transport::Quic);
+        assert_eq!(say(&m), ("no sessions", true));
+        m.link = Link::Down("closed".into());
+        assert_eq!(say(&m), ("offline", false));
+    }
+
+    #[test]
+    fn the_sidebar_is_as_wide_as_the_list_or_the_strip() {
+        assert_eq!(extent(false), WIDTH);
+        assert_eq!(extent(true), STRIP);
+    }
+
+    /// The collapsed API on a real entity, in a headless gpui app (no display needed).
+    #[test]
+    fn collapsing_is_announced_once_per_change() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let log = seen.clone();
+        gpui_platform::headless().run(move |cx| {
+            let sidebar = cx.new(|cx| Sidebar::new(None, cx));
+            let events = log.clone();
+            cx.subscribe(&sidebar, move |_, ev: &CollapsedChanged, _| {
+                events.borrow_mut().push(ev.0)
+            })
+            .detach();
+            assert!(!sidebar.read(cx).collapsed());
+            assert_eq!(sidebar.read(cx).width(), px(WIDTH));
+            sidebar.update(cx, |s, cx| s.set_collapsed(true, cx));
+            // Already collapsed: nothing changes and nothing is announced.
+            sidebar.update(cx, |s, cx| s.set_collapsed(true, cx));
+            assert!(sidebar.read(cx).collapsed());
+            assert_eq!(sidebar.read(cx).width(), px(STRIP));
+            sidebar.update(cx, |s, cx| s.set_collapsed(false, cx));
+            assert!(!sidebar.read(cx).collapsed());
+            assert_eq!(sidebar.read(cx).width(), px(WIDTH));
+            // Selecting is idempotent and has no side effect on the form.
+            sidebar.update(cx, |s, cx| s.set_selected(Some(Id(7)), cx));
+            assert_eq!(sidebar.read(cx).selected, Some(Id(7)));
+            assert_eq!(sidebar.read(cx).cursor, Some(Id(7)));
+            sidebar.update(cx, |s, cx| s.set_selected(None, cx));
+            assert_eq!(sidebar.read(cx).selected, None);
+            // The platform loop clears a stop request made before it starts, so quit from a task.
+            cx.spawn(async move |cx| cx.update(|cx| cx.quit())).detach();
+        });
+        assert_eq!(*seen.borrow(), [true, false]);
+    }
+}
