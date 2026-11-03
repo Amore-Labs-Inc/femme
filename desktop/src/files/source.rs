@@ -20,8 +20,8 @@ pub const MAX_READ: u64 = (femme_proto::codec::MAX_FRAME - 4096) as u64;
 pub enum Source {
     /// No daemon and no fixture: every request fails and says so.
     Offline,
-    /// The daemon, through [`Net::run`]: `Req::FsList` and `Req::FsRead`, paths relative to the
-    /// session's directory.
+    /// The daemon, through [`Net`]'s client: `Req::FsList` and `Req::FsRead`, paths relative to
+    /// the session's directory.
     Daemon(Entity<Net>),
     /// A directory on this machine, listed and read directly: `FEMME_FILES_FIXTURE`.
     Fixture(PathBuf),
@@ -119,19 +119,20 @@ fn unexpected() -> String {
     "the daemon answered with something else than asked".to_owned()
 }
 
-/// Runs `req` through [`Net::run`]; on failure the reason [`Net`] kept for it.
+/// Sends `req` with [`Net`]'s client and waits for the answer. Not through [`Net::run`]: that one
+/// keeps the reason of a failure in a single place for the nav bar, and the answer to any other
+/// request that lands before this one is read (the sessions, the board and the transcripts all
+/// ask) wipes it, so the panel would say "the request failed" for a refusal the daemon explained.
 async fn ask(net: &Entity<Net>, req: Req, cx: &mut AsyncApp) -> Result<Resp, String> {
     // Through a weak handle: it answers with an error, not a panic, once the app is gone.
-    let net = net.downgrade();
-    let sent = net
-        .update(cx, |n, cx| n.run(req, cx))
+    let (client, rt) = net
+        .downgrade()
+        .read_with(cx, |n, _| (n.client(), n.rt()))
         .map_err(|_| "the app is closing".to_owned())?;
-    match sent.await {
-        Some(resp) => Ok(resp),
-        None => {
-            let why = net.read_with(cx, |n, _| n.error.clone()).ok().flatten();
-            Err(why.unwrap_or_else(|| "the request failed".to_owned()))
-        }
+    match rt.spawn(async move { client.request(req).await }).await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(why)) => Err(why.to_string()),
+        Err(why) => Err(why.to_string()),
     }
 }
 
