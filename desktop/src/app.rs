@@ -23,7 +23,6 @@
 //! `.cached(..)`, so a frame in which only a terminal pane changed replays their recorded paint.
 //! Only the shell itself (a few dozen divs) and the pane views re-render.
 
-#[cfg(feature = "bench")]
 use std::time::Duration;
 
 use femme_client::Event;
@@ -40,10 +39,13 @@ use gpui_component::Root;
 use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
+use crate::board::{Board, BoardEvent};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{next_stop, short_error, Centre, Right, Shown, Stop};
+use crate::frame::{
+    next_stop, short_error, with_note, Centre, Right, Shown, Stop, DIAGRAM_NEEDS_AGENT,
+};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
@@ -67,7 +69,8 @@ mod actions_def {
             ToggleTerminal,
             CloseRight,
             FocusNext,
-            FocusPrev
+            FocusPrev,
+            ToggleBoard
         ]
     );
 }
@@ -89,7 +92,10 @@ macro_rules! modkey {
 }
 
 /// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
-/// panel, F6 and shift+F6 walk the focus. (The accounts card hears escape itself.)
+/// panel, F6 and shift+F6 walk the focus, mod+shift+d the drawing board. (The accounts card and the
+/// board hear escape themselves.) The board has the keyboard while it is open, so the "Femme"
+/// context, which holds all of these but the last, is off then; the board's key has no context, so it
+/// closes the board too.
 pub fn bind_keys(cx: &mut App) {
     // The terminal panel's own chords (ctrl-tab, ctrl-shift-tab), in the keymap before the panel exists.
     crate::terminal::panel::bind_keys(cx);
@@ -99,6 +105,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
         KeyBinding::new("f6", FocusNext, Some("Femme")),
         KeyBinding::new("shift-f6", FocusPrev, Some("Femme")),
+        KeyBinding::new(modkey!("shift-d"), ToggleBoard, None),
     ]);
 }
 
@@ -262,6 +269,9 @@ fn bench_task(
     })
 }
 
+/// How long a note of the shell's own stays in the top bar.
+const NOTE_FOR: Duration = Duration::from_secs(6);
+
 /// What the app says about having no session: what it is starting, or why that failed.
 fn note_of(net: &Net) -> Option<&str> {
     net.starting().or(net.error.as_deref())
@@ -290,6 +300,8 @@ pub struct FemmeApp {
     terminal: Entity<TerminalPanel>,
     files: Entity<FilesPanel>,
     accounts: Entity<AccountsOverlay>,
+    /// The drawing board: a layer over the whole window, empty while it is closed.
+    board: Entity<Board>,
     /// The benchmark's synthetic terminals; empty otherwise.
     panes: Vec<Entity<TerminalPane>>,
     /// The window's own stop: the key context of the shell is always in the dispatch path.
@@ -307,6 +319,9 @@ pub struct FemmeApp {
     check_focus: bool,
     /// The pending open/close decision of the right-hand panel.
     settle: Option<Task<()>>,
+    /// A line of the shell's own after the link's status in the top bar, and the timer that takes it away.
+    note: Option<SharedString>,
+    note_timer: Option<Task<()>>,
     _subs: Vec<Subscription>,
     _bench: Option<Task<()>>,
 }
@@ -327,6 +342,7 @@ impl FemmeApp {
         let terminal = cx.new(|cx| TerminalPanel::new(net.clone(), cx));
         let files = cx.new(|cx| FilesPanel::new(net.clone(), cx));
         let accounts = cx.new(|cx| AccountsOverlay::new(net.clone(), cx));
+        let board = cx.new(Board::new);
         // Synthetic terminals exist for the benchmark only; the app itself has no mock.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
             .filter(|_| cfg.bench.is_some())
@@ -358,6 +374,9 @@ impl FemmeApp {
             cx.subscribe(&sidebar, |_, _, _: &CollapsedChanged, cx| cx.notify()),
             cx.observe_in(&accounts, window, |t, _, window, cx| {
                 t.accounts_changed(window, cx)
+            }),
+            cx.subscribe_in(&board, window, |t, _, ev: &BoardEvent, window, cx| {
+                t.on_board(ev, window, cx)
             }),
             cx.observe_in(&terminal, window, |t, _, window, cx| {
                 t.terminal_changed(window, cx)
@@ -404,6 +423,7 @@ impl FemmeApp {
             terminal,
             files,
             accounts,
+            board,
             panes,
             shown,
             right: Right::new(),
@@ -411,6 +431,8 @@ impl FemmeApp {
             want_focus: false,
             check_focus: false,
             settle: None,
+            note: None,
+            note_timer: None,
             _subs: subs,
             _bench: bench,
         }
@@ -570,6 +592,71 @@ impl FemmeApp {
         }
     }
 
+    /// mod+shift+d and the strip's button: the board opens (it takes the keyboard), or closes when it is
+    /// showing (the keyboard lands in the centre).
+    fn toggle_board(&mut self, cx: &mut Context<Self>) {
+        self.board.update(cx, |board, cx| {
+            if board.is_open() {
+                board.close(cx)
+            } else {
+                board.open(cx)
+            }
+        });
+        cx.notify();
+    }
+
+    /// The board's say. A picture goes to the composer of the session on show; with no composer to take
+    /// it (a shell, no session) the board opens again, drawing and all, and the top bar says why.
+    fn on_board(&mut self, ev: &BoardEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            // The `Closed` that follows brings the keyboard to the composer, to type the message.
+            BoardEvent::Send { name, png } if self.shown.takes_diagram() => {
+                let (name, png) = (name.clone(), png.clone());
+                self.composer
+                    .update(cx, |c, cx| c.add_attachment(name, png, cx));
+            }
+            BoardEvent::Send { .. } => {
+                self.board.update(cx, |board, cx| board.open(cx));
+                self.say(DIAGRAM_NEEDS_AGENT, cx);
+            }
+            BoardEvent::Closed => self.board_closed(window, cx),
+        }
+    }
+
+    /// The board closed. When the user dismissed it, it gave the keyboard back to whoever had it (make
+    /// sure that one is still drawn); a send, or a close from here, leaves it on the board, and then
+    /// the centre takes it.
+    fn board_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Opened again by a send that had nowhere to go: this `Closed` is already stale.
+        if self.board.read(cx).is_open() {
+            return;
+        }
+        let board = self.board.focus_handle(cx);
+        if window
+            .focused(cx)
+            .is_none_or(|h| board.contains(&h, window))
+        {
+            self.land_focus(window, cx);
+        } else {
+            self.check_focus = true;
+        }
+        cx.notify();
+    }
+
+    /// Says `note` in the top bar for a few seconds.
+    fn say(&mut self, note: &str, cx: &mut Context<Self>) {
+        self.note = Some(note.to_owned().into());
+        self.note_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTE_FOR).await;
+            this.update(cx, |t, cx| {
+                t.note = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     /// mod+b: the sessions column collapses to its strip of dots, or expands again.
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |s, cx| {
@@ -617,13 +704,15 @@ impl FemmeApp {
 
     /// The top bar: the `femme` menu, then the link's status.
     fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (status, tip): (SharedString, SharedString) = match &self.net {
-            Some(net) => {
-                let (line, whole) = status_of(net.read(cx));
-                (line.into(), whole.into())
-            }
+        let (status, tip): (String, String) = match &self.net {
+            Some(net) => status_of(net.read(cx)),
             None => ("no daemon configured".into(), "no daemon configured".into()),
         };
+        let note = self.note.as_deref();
+        let (status, tip): (SharedString, SharedString) = (
+            with_note(&status, note).into(),
+            with_note(&tip, note).into(),
+        );
         ruled(
             div()
                 .flex_none()
@@ -787,9 +876,15 @@ impl Render for FemmeApp {
                     .when(self.modal_open, |d| d.child(self.accounts.clone())),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));
+        // The board has the keyboard while it is open: the shell's own chords are off then.
+        let context = if self.board.read(cx).is_open() {
+            "FemmeBoard"
+        } else {
+            "Femme"
+        };
         div()
             .id("femme")
-            .key_context("Femme")
+            .key_context(context)
             .track_focus(&self.focus)
             .on_any_mouse_down(cx.listener(|t, _, window, cx| t.chrome_click(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
@@ -799,6 +894,7 @@ impl Render for FemmeApp {
             .on_action(cx.listener(|t, _: &CloseRight, window, cx| t.close_right(window, cx)))
             .on_action(cx.listener(|t, _: &FocusNext, window, cx| t.focus_cycle(false, window, cx)))
             .on_action(cx.listener(|t, _: &FocusPrev, window, cx| t.focus_cycle(true, window, cx)))
+            .on_action(cx.listener(|t, _: &ToggleBoard, _, cx| t.toggle_board(cx)))
             .size_full()
             .relative()
             .font_family(FONT_UI)
@@ -828,6 +924,9 @@ impl Render for FemmeApp {
             .when_some(self.right.open(), |d, tab| {
                 d.child(self.right_panel(tab, cx))
             })
+            // Last, so that it paints over everything: the board's layer is as big as the window (and
+            // empty while the board is closed).
+            .child(self.board.clone())
             .into_any_element()
     }
 }
