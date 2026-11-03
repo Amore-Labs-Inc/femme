@@ -109,16 +109,17 @@ the box runs by `femme-desktop-update.timer` (`laptop/femme-desktop-update.sh`):
 of that commit into this crate's `target/`, copied to `~/.local/bin/femme-desktop`, plus a launcher entry.
 
 - **Top bar** shows the link: `quic 23 ms`, `ssh`, `connecting…`, `offline: <reason>`. When QUIC
-  refused this device while ssh worked it adds the enroll line to run on the box; a failed request
-  (new session, close) is appended to it.
+  refused this device while ssh worked it adds the enroll line to run on the box; the first clause of a
+  failed request (new session, close) is appended to it, and the tooltip has the whole line.
 - **Sidebar**: live sessions, newest first, dot = status (working green, blocked/asks yellow, idle or
   starting grey, interrupted/paused/crashed/failed red), title = name, else label, else the last
-  directory component, then agent and directory. The list scrolls; a click shows the session's first
-  pane (and opens the drawer).
-- **Drawer**: one tab per pane of a live session (label: the program's terminal title, else the pane
-  title, else `<session> · <no>`), `+` starts a shell session in the directory of the one on show,
-  `close` closes the session when the tab is its only pane, else the pane. Only the tab on show is
-  drawn; terminals are attached at start for up to 8 panes, else when their tab opens.
+  directory component, then agent and directory. The list scrolls; a click shows the session in the
+  centre.
+- **Right panel, terminal tab**: one tab per terminal pane of the current session except the one the
+  centre draws (label: the program's terminal title, else the pane title, else `<session> · <no>`), `+`
+  opens a shell in the session's directory, `close` closes the pane (a shell session's first pane closes
+  the session; an agent's own pane has no close). Only the tab on show is drawn; terminals are attached
+  at start for up to 8 panes, else when their session is current.
 - **Terminals**: keys (`femme_proto::term::Key`), paste (`ctrl-shift-v`, `cmd-v`), the wheel (to the program
   when it reports the mouse or is on the alternate screen, else it scrolls the holder's scrollback and
   any new output snaps back), resize, and focus in/out (for programs that ask). A holder that was
@@ -209,13 +210,23 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/lib.rs` | Builds the 2-worker tokio side runtime (time and IO), starts the daemon's client on it when asked, boots gpui, installs theme, keys, window. |
 | `src/connect.rs` | `--daemon`/`--fingerprint`/`--ssh`/`--identity` and their env and `desktop.env` keys, the device identity (dir 0700), `--show-spki`. |
 | `src/net.rs` | The daemon's state as `Model` (link, sessions, panes from `Changes{Global}`), `Net` (drains `Client::events`, runs requests), tab labels and the status line. |
-| `src/app.rs` | The shell: top bar (menu, link), sessions column and its edge handle, the centre (transcript over composer, a terminal, or a card), the right-hand strip and its hover panel, the accounts layer, key bindings, focus, the benchmark's synthetic panes and driver (`bench` feature). |
-| `src/frame.rs` | Pure and unit-tested: what the centre shows for the current session, the right panel's hover/focus/width state machine, the F6 focus cycle. |
+| `src/app.rs` | The shell: top bar (menu, link), the sessions column, the centre (transcript over composer, a terminal, or a card), the right-hand strip and its hover panel, the accounts layer, key bindings, focus, the benchmark's synthetic panes and driver (`bench` feature). |
+| `src/frame.rs` | Pure and unit-tested: what the centre shows for the current session, the right panel's hover/focus/width state machine, the F6 focus cycle, the status line's error clause. |
+| `src/app/right.rs` | The right-hand strip and its panel (terminal and files tabs): opening, hover, resize, closing. |
+| `build.rs` | Stamps the binary with the commit it was built from (`FEMME_COMMIT`, else `git rev-parse`, else `dev`). |
+| `src/session.rs` | Which session the centre shows when the app opens (`pick`, pure) and `open_at_start`. |
+| `src/menu.rs` | The `femme` wordmark button and its dropdown (version, check for updates, accounts, reconnect, quit); emits `MenuEvent`. |
+| `src/sidebar.rs` | The sessions column: live sessions newest first, status dots, collapses to a strip of dots; emits `OpenSession` and `CollapsedChanged`. |
+| `src/accounts.rs`, `src/accounts/` | The accounts layer: the board's "Me" page as a card (accounts with 5 h / 7 d usage, rotation caps, API keys), through `Req::BoardApi` and `Req::Caps`. |
+| `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
+| `src/viewer.rs`, `src/viewer/` | `FileView`: images (raster, SVG), PDF pages, text and code with syntax highlighting, markdown, a hex dump for the rest. |
+| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
-| `src/ui.rs` | `win`, `tb`, `card`, `dialog`, `button`, `st` pill, `DotGrid` desk. |
+| `src/ui.rs`, `src/ui/gallery.rs` | The skin's building blocks (window, title bar, card, buttons, icons, chips, dots, menus, the dot-grid desk); the gallery lays every helper out in every state. |
 | `src/terminal/runs.rs` | Pure: `RowPatch` to background runs and same-style text runs, palette resolve. |
 | `src/terminal/element.rs` | `TerminalElement`: batches every row, paints all backgrounds then all text (shaped every frame), keeps the bottom rows and the cursor when the pane is shorter than the grid. |
+| `src/terminal/panel.rs`, `panel/tabs.rs` | `TerminalPanel`: one `TerminalPane` per terminal pane of the live sessions, the right panel's terminal tab (tabs, `+`, close) and the centre's main pane; the tab rules are pure. |
 | `src/terminal/pane.rs` | `TerminalPane` view: owns a `femme_term::client::RowCache`, applies and acks the frames that arrived when it is drawn, re-opens the stream when one does not apply (resets the cache when the holder's epoch changed), takes keys, paste, the wheel (scrollback, `GetRows`) and focus, requests resizes; side-runtime source plumbing. |
 | `src/terminal/bridge.rs` | The pump between a pane and the client's `Term` (acks, resync re-opens, refused input counted), so a daemon pane looks like a synthetic one. |
 | `src/terminal/input.rs` | Pure: gpui keystroke to `femme_proto::term::Key`, paste chord, wheel steps, pointer to cell. |
@@ -247,7 +258,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
   pane; a `cx.spawn` task moves them into the pane's inbox and notifies. The pane applies the inbox to its
   `RowCache` when it is drawn and acks the last rev, which is what lets the holder send more: at most 8 are
   unacked, and a holder that is blocked keeps parsing and sends one merged frame. A pane nobody draws (hidden
-  window, closed drawer) stops acking, so nothing is applied and the holder idles at its window. A frame that
+  window, closed right panel) stops acking, so nothing is applied and the holder idles at its window. A frame that
   does not apply (a rev gap, another holder epoch) makes the pane say `Open` again; the answer is a snapshot.
 - The transcript is `gpui::list` with `FollowMode::Tail`: only the rows near the viewport are built each frame, the
   others keep the height measured last. Text is shown as it arrives (the daemon sends it in batches of about
@@ -390,15 +401,11 @@ terminal element paints all backgrounds in one layer and all glyphs (`paint_glyp
 - Terminal panes have no selection or copy, send no mouse press or motion (only the wheel), ignore the bell, and
   hide the cursor while scrolled back. `femme-proto` has no `KeyCode` for Menu, PrintScreen, Pause or ScrollLock, so those are
   dropped (a TODO in `terminal/input.rs`), and `ctrl+shift+c` (copy) is not sent.
-- With a daemon only the first pane is chosen by a sidebar click and there is no way to open a second pane
-  of a session from the UI (`PaneOpen`); the drawer draws one tab at a time.
-- The lanes, accounts, composer and right panel are mock even with a daemon.
 - The transcript has no text selection or copy, its code blocks are not highlighted and its links do not open. A
   session joined while a message is being written shows that message from where the daemon's replay begins (marked
   with `…`) until the finished row arrives.
 - Block and box-drawing glyphs come from the font and can seam by a pixel; double/dotted/dashed underlines draw as single lines;
   combining marks on a base char drift (`force_width` is per glyph).
-- The composer input is a toy (append/backspace), the palette is a placeholder.
 - macOS (Metal, `cmd` bindings, `CGDisplayIsBuiltin`) is untested; AccessKit and IME are not wired.
 - Hidden-window numbers leave out compositing: the visible runs of the earlier matrix were 0.5-1.2 ms higher at p99 (they also
   pay vsync pacing), both far under the bar.
