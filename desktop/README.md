@@ -46,16 +46,17 @@ names, and refuses the `--daemon` and `--ssh` flags.
 ```text
 +--------------------------------------------------------------------+
 | femme v   quic 23 ms                                               |  top bar, 36 px
-+-----------+-+-------------------------------------------+----------+
-| sessions  |<| transcript (Claude)  or  terminal (shell) | terminal |  strip, 28 px:
-|           | +-------------------------------------------+ files    |  hover opens the panel
-|           | | composer                                  |          |
-+-----------+-+-------------------------------------------+----------+
++-----------+------------------------------------------+-------------+
+| sessions <| transcript (Claude)  or  terminal (shell)| terminal    |  strip, 28 px:
+|           +------------------------------------------+ files       |  hover opens the panel
+|           | composer                                 |             |
++-----------+------------------------------------------+-------------+
 ```
 
 - **Top bar**: the `femme` menu (version, check for updates, accounts, reconnect, quit) and the link's
   status, nothing else.
-- **Sessions**: the left column, `ctrl-b` or the thin handle beside it collapses it.
+- **Sessions**: the left column. `ctrl-b` or the `‹` in its title bar collapses it to a 28 px strip of status
+  dots (a click on a dot opens that session); it draws its own box and the frame follows its width.
 - **Centre**: what the current session needs. A Claude session shows its transcript with the composer
   under it. A shell session (and any session in TUI mode) shows its terminal filling the centre, "starting"
   until the pane is attached; a closed one says so. With no session the centre is a card that says why:
