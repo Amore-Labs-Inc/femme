@@ -702,3 +702,6 @@ impl Scene {
         Ok(scene)
     }
 }
+
+#[cfg(test)]
+mod tests;
