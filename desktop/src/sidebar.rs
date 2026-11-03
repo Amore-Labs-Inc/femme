@@ -35,10 +35,10 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::net::{self, Link, Model, Net};
 use crate::theme::{
-    BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED,
-    PAPER, PAUSE, QUEUE, RULE, TB_SIZE, WORK,
+    BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
+    PAUSE, QUEUE, RULE, TB_SIZE, WORK,
 };
-use crate::ui::{button, dot, meta, ruled, ruled_sides, tb};
+use crate::ui::{button, dot, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph};
 
 /// Width of the expanded sidebar, in logical pixels.
 pub const WIDTH: f32 = 240.;
@@ -212,23 +212,6 @@ fn extent(collapsed: bool) -> f32 {
     } else {
         WIDTH
     }
-}
-
-/// The pink of a row under the pointer: the selection's colour, lighter, so the selected row stays
-/// the strongest.
-fn hover_tint() -> Rgba {
-    Rgba { a: 0.4, ..HOVER }
-}
-
-/// The 3px ink bar on the left edge of the selected row.
-fn edge() -> Div {
-    div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left_0()
-        .w(px(3.))
-        .bg(INK)
 }
 
 /// The ink outline of the keyboard cursor.
@@ -477,44 +460,37 @@ impl Sidebar {
     }
 
     /// The black bar: "sessions" and the button that collapses, or just the button that expands.
-    fn title_bar(&self, cx: &Context<Self>) -> Div {
+    fn header(&self, cx: &Context<Self>) -> Div {
         let collapsed = self.collapsed;
-        let toggle = div()
+        let toggle = title_button(
             // One id per form: gpui keeps a tooltip by id, and "hide sessions" must not outlive the
             // click that turned the button into "show sessions".
-            .id(if collapsed { "sb-show" } else { "sb-hide" })
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .size(px(22.))
-            .cursor_pointer()
-            .text_color(PAPER)
-            .font_family(FONT_UI)
-            .text_size(px(20.))
-            .line_height(relative(1.))
-            .hover(|s| s.bg(HOVER))
-            .tooltip(move |window, cx| {
-                let text = if collapsed {
-                    "show sessions"
-                } else {
-                    "hide sessions"
-                };
-                Tooltip::new(text).build(window, cx)
-            })
-            .on_click(cx.listener(|this, _, _, cx| this.set_collapsed(!this.collapsed, cx)))
-            .child(if collapsed { "›" } else { "‹" });
+            if collapsed { "sb-show" } else { "sb-hide" },
+            if collapsed {
+                Glyph::Forward
+            } else {
+                Glyph::Back
+            },
+        )
+        .tooltip(move |window, cx| {
+            let text = if collapsed {
+                "show sessions"
+            } else {
+                "hide sessions"
+            };
+            Tooltip::new(text).build(window, cx)
+        })
+        .on_click(cx.listener(|this, _, _, cx| this.set_collapsed(!this.collapsed, cx)));
         if collapsed {
             bare_bar().justify_center().child(toggle)
         } else {
-            tb("sessions").child(div().flex_1()).child(toggle)
+            title_bar("sessions").child(toggle)
         }
     }
 
     /// The `+ shell` button.
     fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
         let b = button("sb-new", "+ shell")
-            .h(px(28.))
             .on_click(cx.listener(|this, _, _, cx| this.create_shell(cx)));
         if self.creating {
             b.opacity(0.5)
@@ -524,7 +500,7 @@ impl Sidebar {
     }
 
     /// A row of the expanded list: status dot, title, and agent and directory below it.
-    fn row(&self, r: &Row, focused: bool, cx: &Context<Self>) -> Stateful<Div> {
+    fn entry(&self, r: &Row, focused: bool, cx: &Context<Self>) -> Stateful<Div> {
         let sid = r.sid;
         let on = self.selected == Some(sid);
         let cursor = focused && self.cursor == Some(sid);
@@ -546,23 +522,15 @@ impl Sidebar {
                     .text_ellipsis_start()
                     .child(r.dir.clone()),
             );
-        div()
-            .id(SharedString::from(format!("sb-{sid}")))
-            .relative()
-            .flex()
+        row(SharedString::from(format!("sb-{sid}")), on)
             .flex_none()
-            .items_center()
             .gap(px(9.))
             .w_full()
             .h(px(ROW_H))
             .pl(px(13.))
             .pr(px(8.))
-            .cursor_pointer()
-            .when(on, |d| d.bg(HOVER))
-            .when(!on, |d| d.hover(|s| s.bg(hover_tint())))
             .on_hover(cx.listener(Self::hover_changed))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
-            .when(on, |d| d.child(edge()))
             .child(dot(r.dot))
             .child(
                 div()
@@ -589,25 +557,20 @@ impl Sidebar {
         let on = self.selected == Some(sid);
         let cursor = focused && self.cursor == Some(sid);
         let tip = SharedString::from(format!("{} ({} {})", r.title, r.agent, r.dir));
-        div()
-            .id(SharedString::from(format!("sbd-{sid}")))
-            .relative()
-            .flex()
+        row(SharedString::from(format!("sbd-{sid}")), on)
             .flex_none()
-            .items_center()
             .justify_center()
             .w_full()
             .h(px(CELL_H))
-            .cursor_pointer()
-            .when(on, |d| d.bg(HOVER))
-            .when(!on, |d| d.hover(|s| s.bg(hover_tint())))
+            .min_h(px(CELL_H))
+            .px_0()
+            .py_0()
             .on_hover(cx.listener(Self::hover_changed))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_collapsed(false, cx);
                 this.open(sid, cx);
             }))
-            .when(on, |d| d.child(edge()))
             .child(dot(r.dot))
             .when(cursor, |d| d.child(ring()))
     }
@@ -647,7 +610,7 @@ impl Sidebar {
         let rows = shown
             .rows
             .iter()
-            .map(|r| self.row(r, focused, cx))
+            .map(|r| self.entry(r, focused, cx))
             .collect();
         let foot = ruled_sides(div(), RULE, px(0.), px(0.), px(0.))
             .flex()
@@ -721,7 +684,7 @@ impl Render for Sidebar {
             .text_size(BODY_SIZE)
             .line_height(relative(1.3))
             .text_color(INK)
-            .child(self.title_bar(cx))
+            .child(self.header(cx))
             .child(body)
     }
 }
