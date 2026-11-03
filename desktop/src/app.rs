@@ -43,7 +43,7 @@ use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{next_stop, Centre, Right, Shown, Stop};
+use crate::frame::{next_stop, short_error, Centre, Right, Shown, Stop};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
@@ -270,6 +270,17 @@ fn bench_task(
 /// What the app says about having no session: what it is starting, or why that failed.
 fn note_of(net: &Net) -> Option<&str> {
     net.starting().or(net.error.as_deref())
+}
+
+/// The top bar's line and the whole text behind it: the link's status as [`Net::status_line`] says it,
+/// with the failed request it ends in cut to its first clause (the tooltip has it whole).
+fn status_of(net: &Net) -> (String, String) {
+    let whole = net.status_line();
+    let cut = net.error.as_deref().and_then(|error| {
+        let head = whole.strip_suffix(&format!(" | {error}"))?;
+        Some(format!("{head} | {}", short_error(error)))
+    });
+    (cut.unwrap_or_else(|| whole.clone()), whole)
 }
 
 /// The shell view.
@@ -591,12 +602,13 @@ impl FemmeApp {
 
     /// The top bar: the `femme` menu, then the link's status.
     fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let status: SharedString = match &self.net {
-            Some(net) => net.read(cx).status_line(),
-            None => "no daemon configured".to_owned(),
-        }
-        .into();
-        let tip = status.clone();
+        let (status, tip): (SharedString, SharedString) = match &self.net {
+            Some(net) => {
+                let (line, whole) = status_of(net.read(cx));
+                (line.into(), whole.into())
+            }
+            None => ("no daemon configured".into(), "no daemon configured".into()),
+        };
         ruled(
             div()
                 .flex_none()

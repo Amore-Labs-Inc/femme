@@ -378,6 +378,34 @@ pub fn width_for(pointer_x: f32, viewport: f32) -> f32 {
     viewport - MARGIN - STRIP_W - pointer_x
 }
 
+/// The longest a failed request's text gets in the top bar.
+const ERROR_MAX: usize = 56;
+
+/// A failed request's text as the top bar shows it: the message without its `Kind: ` prefix, cut at
+/// its first clause (a stop, a comma, a colon, `at ...`, a bracket), and no longer than a line of the
+/// bar can spare. The tooltip keeps the whole text.
+pub fn short_error(error: &str) -> String {
+    let error = error.trim();
+    let message = match error.split_once(": ") {
+        Some((kind, rest)) if !kind.contains(' ') && !rest.trim().is_empty() => rest.trim(),
+        _ => error,
+    };
+    let end = [". ", ", ", ": ", " at ", " (", " - ", " | "]
+        .iter()
+        .filter_map(|stop| message.find(stop))
+        .min()
+        .unwrap_or(message.len());
+    let clause = message[..end].trim_end_matches(['.', ',', ':', ' ']);
+    let clause = if clause.is_empty() { message } else { clause };
+    if clause.chars().count() <= ERROR_MAX {
+        return clause.to_owned();
+    }
+    let mut cut: String = clause.chars().take(ERROR_MAX - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
 /// The places the keyboard walks through with F6.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
@@ -809,6 +837,37 @@ mod tests {
         assert_eq!(next_stop(Some(Sidebar), true), Right);
         assert_eq!(next_stop(Some(Right), true), Centre);
         assert_eq!(next_stop(Some(Centre), true), Sidebar);
+    }
+
+    #[test]
+    fn a_failed_request_shows_its_first_clause() {
+        assert_eq!(
+            short_error(
+                "Internal: the board is not answering at http://127.0.0.1:8787/api/accounts"
+            ),
+            "the board is not answering"
+        );
+        assert_eq!(short_error("Unsupported: not served yet"), "not served yet");
+        assert_eq!(
+            short_error("request failed: connection reset by peer"),
+            "request failed"
+        );
+        assert_eq!(short_error("timed out after 10 s"), "timed out after 10 s");
+        assert_eq!(
+            short_error("Bad: path outside, nothing read"),
+            "path outside"
+        );
+    }
+
+    #[test]
+    fn a_failed_request_never_shows_nothing_or_too_much() {
+        // Nothing before the first stop: the whole message stands.
+        assert_eq!(short_error(", odd"), ", odd");
+        assert_eq!(short_error(""), "");
+        let long = "x".repeat(200);
+        let short = short_error(&format!("Internal: {long}"));
+        assert_eq!(short.chars().count(), ERROR_MAX);
+        assert!(short.ends_with('…'));
     }
 
     #[test]
