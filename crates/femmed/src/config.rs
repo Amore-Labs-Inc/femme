@@ -53,6 +53,11 @@ pub struct Config {
     pub quic_port: u16,
     /// `HTTP_BIND` (default `127.0.0.1:8787`; the board's old `FEMME_BOARD_ADDR` is the fallback): the compat HTTP layer.
     pub http_bind: String,
+    /// `FEMME_BOARD_API` (a base URL such as `http://127.0.0.1:8787`, no trailing slash): where the
+    /// desktop's `BoardApi` calls go, when that is not where the board is: by default `http://127.0.0.1:8787`
+    /// beside the herdr board (`FEMMED=1`) and `http://<http_bind>` when this daemon is the board
+    /// (`FEMMED=2`). For a box whose board listens elsewhere, and for tests that stand a stub in for it.
+    pub board_api: Option<String>,
     /// `PATH` handed to every tool the daemon spawns (`git`, `gh`, `claude`, `cswap`, `aws`); `None`
     /// inherits the daemon's own. Tests point it at a directory of fake tools.
     pub tool_path: Option<String>,
@@ -124,6 +129,9 @@ impl Config {
             mosh: flag("MOSH"),
             quic_port: get("QUIC_PORT").parse().unwrap_or(7788),
             http_bind: http_bind.into(),
+            board_api: Some(get("FEMME_BOARD_API").trim_end_matches('/'))
+                .filter(|u| !u.is_empty())
+                .map(String::from),
             tool_path: None,
             resend_url: DEFAULT_RESEND.into(),
             runtime_dir: match get("XDG_RUNTIME_DIR") {
@@ -311,6 +319,7 @@ mod tests {
         assert_eq!(c.work_root(), PathBuf::from("/home/me/femme-work"));
         assert!(!c.autodeploy && !c.account_rotation && !c.mosh && !c.board_public);
         assert!(c.board_emails.is_empty() && c.claude_mcp.is_empty() && c.tool_path.is_none());
+        assert_eq!(c.board_api, None);
         // An empty value (`PARALLEL=` in .env) is the default, like ${PARALLEL:-2}.
         let c = Config::from_vars(vars(&[("PARALLEL", ""), ("CAP", "x")]));
         assert_eq!((c.parallel, c.cap), (2, 60));
@@ -346,6 +355,21 @@ mod tests {
             ("HTTP_BIND", "0.0.0.0:1"),
         ]));
         assert_eq!(c.http_bind, "0.0.0.0:1"); // HTTP_BIND wins
+    }
+
+    #[test]
+    fn the_board_api_override_is_a_base_url() {
+        let api = |v: &str| Config::from_vars(vars(&[("FEMME_BOARD_API", v)])).board_api;
+        assert_eq!(
+            api("http://127.0.0.1:9999/"),
+            Some("http://127.0.0.1:9999".into())
+        );
+        assert_eq!(
+            api(" http://127.0.0.1:9999 "),
+            Some("http://127.0.0.1:9999".into())
+        );
+        assert_eq!(api(""), None);
+        assert_eq!(api("/"), None);
     }
 
     #[test]

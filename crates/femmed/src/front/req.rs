@@ -42,7 +42,14 @@ fn wire(e: CoreError) -> WireErr {
 /// replayed `Subscribe` must subscribe the *new* connection, and a page is not worth a row. A
 /// `BlobPut` is not remembered either: the same bytes are the same blob, and a recorded hash could
 /// outlive the blob (retention sweeps what no item refers to), where running it again stores it.
+/// Nor is a `BoardApi` GET: it reads, and its answer (the accounts and their emails, up to 1 MiB
+/// each time the desktop polls) would sit in the `ops` table for a day for nothing. A POST or
+/// DELETE is, so a retry gets what the first try got (a new key's secret is shown once, and a
+/// second `POST /api/keys` would only say the name is taken).
 pub(crate) fn mutates(req: &Req) -> bool {
+    if let Req::BoardApi { method, .. } = req {
+        return !method.eq_ignore_ascii_case("GET");
+    }
     !matches!(
         req,
         Req::Subscribe { .. }
@@ -162,10 +169,17 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
         Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
-        // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
-        Req::BoardApi { .. } | Req::Caps | Req::SetCap { .. } => Err(unsupported("not served yet")),
+        Req::BoardApi { method, path, body } => {
+            super::board::call(&d.cfg, &method, &path, body).await
+        }
+        Req::Caps => super::caps::caps(&d.cfg).await,
+        Req::SetCap {
+            account,
+            five_hour,
+            weekly,
+        } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
     }
 }
 

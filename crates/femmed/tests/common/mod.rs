@@ -105,6 +105,15 @@ impl Box_ {
         &self,
         port: Option<u16>,
     ) -> (Arc<Daemon>, tokio::sync::oneshot::Sender<()>) {
+        self.start_with(port, |_| {}).await
+    }
+
+    /// [`Box_::start`] with `tweak` applied to the box's config first.
+    pub async fn start_with(
+        &self,
+        port: Option<u16>,
+        tweak: impl FnOnce(&mut Config),
+    ) -> (Arc<Daemon>, tokio::sync::oneshot::Sender<()>) {
         // The port of a daemon just stopped frees a moment after its stop signal.
         let listener = loop {
             match tokio::net::TcpListener::bind(("127.0.0.1", port.unwrap_or(0))).await {
@@ -115,7 +124,8 @@ impl Box_ {
                 Err(e) => panic!("bind: {e}"),
             }
         };
-        let cfg = self.config(listener.local_addr().unwrap().to_string());
+        let mut cfg = self.config(listener.local_addr().unwrap().to_string());
+        tweak(&mut cfg);
         let daemon = Daemon::open(cfg).unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let core: Arc<dyn Core> = daemon.clone();

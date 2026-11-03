@@ -28,6 +28,7 @@ use femme_term::client::RowCache;
 use femme_transport::{
     command_connect, connect, mux_client, Conn, DeviceIdentity, Error, Rx, ServerIdentity, Tx,
 };
+use femmed::config::Config;
 use femmed::core::{Core, CreateSession};
 use femmed::daemon::Daemon;
 use femmed::front::{serve_front_with, FrontHandle, Waits};
@@ -71,6 +72,11 @@ async fn rig() -> Rig {
 
 impl Rig {
     async fn new(alone: bool, waits: Waits) -> Rig {
+        Rig::with_config(alone, waits, |_| {}).await
+    }
+
+    /// [`Rig::new`] with `tweak` applied to the daemon's config first.
+    async fn with_config(alone: bool, waits: Waits, tweak: impl FnOnce(&mut Config)) -> Rig {
         pin_shell();
         let quiet: Box<dyn Send> = if alone {
             Box::new(QUIET.write().await)
@@ -78,7 +84,7 @@ impl Rig {
             Box::new(QUIET.read().await)
         };
         let b = Box_::new();
-        let (d, stop) = b.start(None).await;
+        let (d, stop) = b.start_with(None, tweak).await;
         let front = serve_front_with(d.clone(), SocketAddr::from(([127, 0, 0, 1], 0)), waits)
             .await
             .expect("the front starts");
@@ -2276,4 +2282,154 @@ async fn a_prompt_names_its_uploads_to_the_agent_and_a_missing_one_is_refused() 
         }
     })
     .await;
+}
+
+/// `BoardApi` over the wire, against a stub standing in for the board (`FEMME_BOARD_API`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_api_call_is_made_with_the_owner_token_and_answered_as_the_board_did() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+
+    // The board: answers each call with what it saw of it, and counts them.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = hits.clone();
+    let app = axum::Router::new().fallback(
+        move |method: Method, uri: Uri, headers: HeaderMap, body: axum::body::Bytes| {
+            let counted = counted.clone();
+            async move {
+                counted.fetch_add(1, SeqCst);
+                let auth = headers.get("authorization").and_then(|v| v.to_str().ok());
+                if uri.path().ends_with("/missing") {
+                    return (StatusCode::NOT_FOUND, "no such account".to_string());
+                }
+                let body = String::from_utf8_lossy(&body).into_owned();
+                (
+                    StatusCode::OK,
+                    format!("{method} {uri} {} {body}", auth.unwrap_or("-")),
+                )
+            }
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let rig = Rig::with_config(false, Waits::default(), |c| c.board_api = Some(url)).await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let call = |method: &str, path: &str, body: &str| Req::BoardApi {
+        method: method.into(),
+        path: path.into(),
+        body: body.into(),
+    };
+    let answer = |status, body: &str| {
+        Ok(Resp::BoardApi {
+            status,
+            body: body.into(),
+        })
+    };
+
+    // No owner token on the box yet: the board cannot be called, and the desktop is told why.
+    let e = c.call(call("GET", "/api/accounts", "")).await.unwrap_err();
+    assert_eq!(e.code, ErrCode::Internal);
+    assert!(e.msg.contains("worker.token"), "{}", e.msg);
+    assert_eq!(hits.load(SeqCst), 0);
+
+    std::fs::write(rig.b.dir.path().join("state/worker.token"), "owner-token\n").unwrap();
+    assert_eq!(
+        c.call(call("GET", "/api/accounts", "")).await,
+        answer(200, "GET /api/accounts Bearer owner-token ")
+    );
+    assert_eq!(
+        c.call(call("POST", "/api/keys", r#"{"name":"k"}"#)).await,
+        answer(200, r#"POST /api/keys Bearer owner-token {"name":"k"}"#)
+    );
+    // What the board says is the answer, whatever its status.
+    assert_eq!(
+        c.call(call("GET", "/api/accounts/missing", "")).await,
+        answer(404, "no such account")
+    );
+
+    // Anything else is refused before the board hears of it.
+    let calls = hits.load(SeqCst);
+    for (method, path) in [("GET", "/api/issues"), ("PUT", "/api/accounts")] {
+        let refused = c.call(call(method, path, "")).await;
+        assert_eq!(refused.unwrap_err().code, ErrCode::Bad, "{method} {path}");
+    }
+    assert_eq!(hits.load(SeqCst), calls);
+
+    // A POST changes things, so it is made once per op id: a replay gets the first answer.
+    let op = OpId::new();
+    let first = c
+        .call_op(op, call("POST", "/api/accounts/2/disable", ""))
+        .await;
+    assert!(first.is_ok(), "{first:?}");
+    let calls = hits.load(SeqCst);
+    assert_eq!(
+        c.call_op(op, call("POST", "/api/accounts/2/disable", ""))
+            .await,
+        first
+    );
+    assert_eq!(hits.load(SeqCst), calls, "the board was asked again");
+    let device = rig.d.store.read(auth::list_devices).unwrap()[0].id;
+    let kept = |op| {
+        rig.d
+            .store
+            .read(|c| auth::op_lookup(c, device, op))
+            .unwrap()
+    };
+    assert!(kept(op).is_some(), "the POST's answer was not kept");
+
+    // A GET only reads: it is made each time, and its answer (accounts, emails) is not kept.
+    let op = OpId::new();
+    let first = c.call_op(op, call("GET", "/api/accounts", "")).await;
+    assert!(first.is_ok(), "{first:?}");
+    let calls = hits.load(SeqCst);
+    assert_eq!(c.call_op(op, call("get", "/api/accounts", "")).await, first);
+    assert_eq!(hits.load(SeqCst), calls + 1, "a read is not replayed");
+    assert_eq!(kept(op), None, "a GET's answer was kept");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_caps_are_set_listed_cleared_and_kept_in_caps_json() {
+    use femme_proto::rpc::AccountCap;
+
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let set = |account, five_hour, weekly| Req::SetCap {
+        account,
+        five_hour,
+        weekly,
+    };
+    let cap = |account, five_hour, weekly| AccountCap {
+        account,
+        five_hour,
+        weekly,
+    };
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(vec![])));
+    assert_eq!(c.call(set(10, Some(80), None)).await, Ok(Resp::Ok));
+    assert_eq!(c.call(set(2, Some(60), Some(90))).await, Ok(Resp::Ok));
+    let want = vec![cap(2, Some(60), Some(90)), cap(10, Some(80), None)];
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(want)));
+    // the file `server/fable-cap.sh` reads
+    let text = std::fs::read_to_string(rig.b.dir.path().join("state/caps.json")).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        file,
+        serde_json::json!({"2": {"five_hour": 60, "weekly": 90}, "10": {"five_hour": 80}})
+    );
+
+    for bad in [
+        set(2, Some(49), None),
+        set(2, None, Some(100)),
+        set(0, Some(60), None),
+    ] {
+        assert_eq!(c.call(bad).await.unwrap_err().code, ErrCode::Bad);
+    }
+    // both None clears the account
+    assert_eq!(c.call(set(2, None, None)).await, Ok(Resp::Ok));
+    let left = vec![cap(10, Some(80), None)];
+    assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(left)));
 }
