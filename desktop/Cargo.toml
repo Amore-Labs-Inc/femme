@@ -34,6 +34,13 @@ femme-term = { path = "../crates/femme-term", default-features = false }
 femme-client = { path = "../crates/femme-client" }
 femme-transport = { path = "../crates/femme-transport" }
 ulid = "3"
+# The drawing board (src/board): tiny-skia strokes and fills the exported PNG with no GPU (it is already in the
+# graph through gpui's resvg, same version), ttf-parser gives the outlines of the bundled body font for the
+# labels, serde keeps the scene as JSON on disk.
+tiny-skia = { version = "0.11.4", features = ["png-format"] }
+ttf-parser = "0.25.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time", "macros"] }
 mimalloc = "0.1"
 hdrhistogram = "7"
