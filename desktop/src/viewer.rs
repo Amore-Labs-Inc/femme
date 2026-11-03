@@ -6,6 +6,7 @@
 mod bitmap;
 mod chrome;
 mod hex;
+mod highlight;
 mod kind;
 
 pub use kind::{detect, Kind, Raster};
