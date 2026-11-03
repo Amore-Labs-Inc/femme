@@ -5,10 +5,12 @@ pub mod body;
 pub mod items;
 pub mod live;
 pub mod markdown;
+pub mod md_view;
 pub mod model;
 pub mod pacer;
 pub mod question;
 pub mod splice;
+pub mod thumb;
 pub mod turns;
 pub mod view;
 
