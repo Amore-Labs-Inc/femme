@@ -607,10 +607,11 @@ impl Ctx {
     /// first attempt's answer is recorded (and shared with a retry that arrives while it runs), and
     /// every later one gets that answer back. Reads are just run.
     async fn run(&self, op: OpId, req: Req) -> Outcome {
+        let max = req::body_max(&req);
         let wire = match codec::encode(&req) {
-            Ok(bytes) if bytes.len() <= BODY_MAX => bytes,
+            Ok(bytes) if bytes.len() <= max => bytes,
             _ => {
-                let why = format!("a request is at most {BODY_MAX} bytes");
+                let why = format!("a request is at most {max} bytes");
                 return Err(req::err(ErrCode::Bad, why));
             }
         };

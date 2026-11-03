@@ -15,12 +15,15 @@ use std::time::Duration;
 
 use common::Box_;
 use femme_proto::rpc::{
-    Cursors, Err as WireErr, ErrCode, FsEntry, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
+    Attachment, Cursors, Err as WireErr, ErrCode, FsEntry, IssueField, PromptHow, Req, Resp, Scope,
+    StreamKind, C2S, MAX_BLOB_PUT, S2C,
 };
-use femme_proto::state::{Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
+use femme_proto::state::{
+    Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row, SessionStatus,
+};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
 use femme_proto::{Id, OpId, PaneId, Sid, PROTO_VERSION};
-use femme_store::{auth, sessions};
+use femme_store::{auth, items, sessions};
 use femme_term::client::RowCache;
 use femme_transport::{
     command_connect, connect, mux_client, Conn, DeviceIdentity, Error, Rx, ServerIdentity, Tx,
@@ -595,11 +598,12 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
         how: femme_proto::rpc::PromptHow::Queue,
     };
     assert_eq!(code(c.call(prompt(vec![])).await), ErrCode::Busy);
-    let attached = vec![femme_proto::rpc::Attachment {
+    // An attachment whose upload is not there fails before the shell is asked: Bad.
+    let attached = vec![Attachment {
         name: "a".into(),
         blob: [0; 32],
     }];
-    assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Unsupported);
+    assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Bad);
     // M5.
     let upload = Req::Upload {
         name: "a".into(),
@@ -2122,4 +2126,154 @@ async fn a_file_over_sixteen_mebibytes_is_not_sent_and_a_big_one_below_it_is() {
             },
         ]))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blob_put_comes_back_by_its_hash_up_to_its_cap() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let put = |data: Vec<u8>| Req::BlobPut {
+        name: "a.bin".into(),
+        data,
+    };
+    // A few bytes, none, and the most there is: a request that weighs more than any other may.
+    let most: Vec<u8> = (0..=255u8).cycle().take(MAX_BLOB_PUT).collect();
+    for data in [b"hello \xff".to_vec(), Vec::new(), most] {
+        let hash = femme_store::sha256(&data);
+        assert_eq!(c.call(put(data.clone())).await, Ok(Resp::BlobHash(hash)));
+        assert_eq!(c.call(Req::BlobGet { hash }).await, Ok(Resp::Blob(data)));
+    }
+    let over = c.call(put(vec![1; MAX_BLOB_PUT + 1])).await;
+    assert_eq!(over.unwrap_err().code, ErrCode::Bad);
+    // The connection is fine after it, and a replay under one op id stores it again: the answer
+    // is not remembered (a recorded hash could outlive its blob).
+    let op = OpId::new();
+    let hash = femme_store::sha256(b"again");
+    assert_eq!(
+        c.call_op(op, put(b"again".to_vec())).await,
+        Ok(Resp::BlobHash(hash))
+    );
+    rig.d
+        .store
+        .write(|tx| tx.execute("DELETE FROM blobs", []).map_err(Into::into))
+        .unwrap();
+    assert_eq!(
+        c.call(Req::BlobGet { hash }).await.unwrap_err().code,
+        ErrCode::NotFound
+    );
+    assert_eq!(
+        c.call_op(op, put(b"again".to_vec())).await,
+        Ok(Resp::BlobHash(hash))
+    );
+    assert_eq!(
+        c.call(Req::BlobGet { hash }).await,
+        Ok(Resp::Blob(b"again".to_vec()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_info_says_the_version_and_the_commit_deployed() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let info = |deployed: Option<&str>| {
+        Ok(Resp::ServerInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            deployed: deployed.map(String::from),
+        })
+    };
+    assert_eq!(c.call(Req::ServerInfo).await, info(None));
+    let file = rig.b.dir.path().join("state/deployed");
+    std::fs::write(&file, "0123abc\n").unwrap();
+    assert_eq!(c.call(Req::ServerInfo).await, info(Some("0123abc")));
+    std::fs::write(&file, "\n").unwrap();
+    assert_eq!(c.call(Req::ServerInfo).await, info(None));
+}
+
+/// A `Prompt` with attachments over the wire, to a headless fake claude: the uploads become files
+/// under the state folder, and the agent and the transcript get the text with their paths.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_names_its_uploads_to_the_agent_and_a_missing_one_is_refused() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let create = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+    };
+    let Ok(Resp::Session(sid)) = c.call(create).await else {
+        panic!("no session")
+    };
+    within("the agent to be idle", async {
+        loop {
+            let s = rig.d.store.read(|c| sessions::get_session(c, sid));
+            if s.unwrap().is_some_and(|s| s.status == SessionStatus::Idle) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    let mut attachments = vec![];
+    for data in [&b"one"[..], b"two"] {
+        let put = Req::BlobPut {
+            name: "a.png".into(),
+            data: data.to_vec(),
+        };
+        let Ok(Resp::BlobHash(blob)) = c.call(put).await else {
+            panic!("BlobPut")
+        };
+        attachments.push(Attachment {
+            name: "a.png".into(),
+            blob,
+        });
+    }
+    let prompt = |text: &str, attachments| Req::Prompt {
+        sid,
+        text: text.into(),
+        attachments,
+        how: PromptHow::Queue,
+    };
+    let missing = Attachment {
+        name: "x".into(),
+        blob: [3; 32],
+    };
+    let refused = c.call(prompt("no", vec![missing])).await;
+    assert_eq!(refused.unwrap_err().code, ErrCode::Bad);
+    assert_eq!(c.call(prompt("look", attachments)).await, Ok(Resp::Ok));
+
+    let dir = rig.b.dir.path().join("state/uploads").join(sid.to_string());
+    let (one, two) = (dir.join("a.png"), dir.join("a-2.png"));
+    assert_eq!(std::fs::read(&one).unwrap(), b"one");
+    assert_eq!(std::fs::read(&two).unwrap(), b"two");
+    let want = format!(
+        "look\n\nAttached: {}\nAttached: {}",
+        one.display(),
+        two.display()
+    );
+    within("the user's message in the transcript", async {
+        loop {
+            let v = rig
+                .d
+                .store
+                .read(|c| items::page_items(c, sid, None, 100))
+                .unwrap();
+            let said = |i: &Item| {
+                let body: serde_json::Value =
+                    serde_json::from_str(i.body.as_deref().unwrap_or("null")).unwrap();
+                i.kind == ItemKind::UserMessage && body["text"] == want.as_str()
+            };
+            if v.iter().any(said) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
 }
