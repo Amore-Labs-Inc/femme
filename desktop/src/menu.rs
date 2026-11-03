@@ -55,6 +55,10 @@ const CARD_W: Pixels = px(300.);
 const ROW_H: Pixels = px(30.);
 /// Wordmark size: the old nav's 32 px in a bar that is 36 px tall instead of 52.
 const MARK_SIZE: Pixels = px(26.);
+/// How far the wordmark is lifted, in px. Kaushan Script's `f` is 27.5 px from hook to tail at that
+/// size and the button is 27.6 px inside its border, but centring the line box leaves the tail 3 px
+/// below the button.
+const MARK_LIFT: f32 = 3.;
 
 /// What the menu asks the shell to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -464,11 +468,14 @@ impl FemmeMenu {
     }
 
     /// The wordmark: neon Kaushan Script over the 2 px ink copy the board draws as its shadow (gpui
-    /// has no text-shadow, so it is drawn twice).
+    /// has no text-shadow, so it is drawn twice). The copies must not wrap: the shadow sits 2 px in,
+    /// so it has 2 px less room than its text and would move its last letter to a second line.
     fn wordmark(face: Rgba) -> Div {
         let word = |color: Rgba| div().text_color(color).child("femme");
         div()
             .relative()
+            .top(px(-MARK_LIFT))
+            .whitespace_nowrap()
             .font_family(FONT_BRAND)
             .text_size(MARK_SIZE)
             .line_height(relative(1.1))
@@ -489,6 +496,8 @@ impl FemmeMenu {
                 .gap(px(6.))
                 .h(BUTTON_H)
                 .px(px(10.))
+                // Nothing of the wordmark draws outside the button, whatever the rasteriser does.
+                .overflow_hidden()
                 .bg(if pink { HOVER } else { PAPER }),
         );
         face.style().box_shadow = Some(if down { Vec::new() } else { shadow(2.) });
