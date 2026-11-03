@@ -42,7 +42,7 @@ use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
-use crate::frame::{Centre, Shown, EDGE_W, MARGIN, SIDEBAR_W, TOP_BAR};
+use crate::frame::{Centre, Right, Shown, EDGE_W, MARGIN, SIDEBAR_W, TOP_BAR};
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
@@ -55,10 +55,16 @@ use crate::ui::{self, ruled, DotGrid};
 
 #[macro_use]
 mod focus;
+mod right;
+
+use right::CLOSE_AFTER;
 
 #[allow(missing_docs)]
 mod actions_def {
-    gpui::actions!(femme, [ToggleSidebar, CloseModal]);
+    gpui::actions!(
+        femme,
+        [ToggleSidebar, ToggleTerminal, CloseRight, CloseModal]
+    );
 }
 pub use actions_def::*;
 
@@ -77,10 +83,13 @@ macro_rules! modkey {
     };
 }
 
-/// Binds the shell's keys: mod+b sidebar, escape closes the accounts overlay.
+/// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
+/// panel, escape closes the accounts overlay.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
+        KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
+        KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
         KeyBinding::new("escape", CloseModal, Some("FemmeModal")),
     ]);
 }
@@ -270,16 +279,20 @@ pub struct FemmeApp {
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
     centre_focus: FocusHandle,
+    right_focus: FocusHandle,
     modal_focus: FocusHandle,
     /// What the centre shows, and what the modules were last told.
     shown: Shown,
     sidebar_open: bool,
+    right: Right,
     /// The accounts overlay was open at the last look.
     modal_open: bool,
     /// The centre should take the keyboard as soon as there is something to take it.
     want_focus: bool,
     /// A module's handle took the keyboard: `verify_focus` looks once the frame that carries it is drawn.
     check_focus: bool,
+    /// The pending open/close decision of the right-hand panel.
+    settle: Option<Task<()>>,
     _subs: Vec<Subscription>,
     _bench: Option<Task<()>>,
 }
@@ -319,6 +332,7 @@ impl FemmeApp {
         #[cfg(not(feature = "bench"))]
         let bench = None;
 
+        let right_focus = cx.focus_handle();
         let mut subs = vec![
             cx.subscribe_in(&menu, window, |t, _, ev: &MenuEvent, window, cx| {
                 t.on_menu(*ev, window, cx)
@@ -331,6 +345,10 @@ impl FemmeApp {
             }),
             cx.observe_in(&terminal, window, |t, _, window, cx| {
                 t.terminal_changed(window, cx)
+            }),
+            // Clicking away from the panel, or F6, leaves it open until the pointer is gone too.
+            cx.on_focus_out(&right_focus, window, |t, _, window, cx| {
+                t.poke(CLOSE_AFTER, window, cx)
             }),
         ];
         if let Some(net) = &net {
@@ -355,6 +373,7 @@ impl FemmeApp {
             focus: cx.focus_handle(),
             sidebar_focus: cx.focus_handle(),
             centre_focus: cx.focus_handle(),
+            right_focus,
             modal_focus: cx.focus_handle(),
             cfg,
             net,
@@ -368,9 +387,11 @@ impl FemmeApp {
             panes,
             shown,
             sidebar_open: true,
+            right: Right::new(),
             modal_open: false,
             want_focus: false,
             check_focus: false,
+            settle: None,
             _subs: subs,
             _bench: bench,
         }
@@ -735,6 +756,8 @@ impl Render for FemmeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::bench::probe::frame();
         self.verify_focus(window);
+        let viewport = f32::from(window.viewport_size().width);
+        self.right.fit(viewport);
         // The benchmark's `--full-height`: the synthetic terminals alone, no frame.
         if self.cfg.full_height && !self.panes.is_empty() {
             return div()
@@ -761,12 +784,23 @@ impl Render for FemmeApp {
                     .track_focus(&self.centre_focus)
                     .child(self.centre(cx))
                     .when(self.modal_open, |d| d.child(self.modal(cx))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h_full()
+                    .ml(px(MARGIN))
+                    .child(self.strip(cx)),
             );
         div()
             .id("femme")
             .key_context("Femme")
             .track_focus(&self.focus)
             .on_action(cx.listener(|t, _: &ToggleSidebar, window, cx| t.toggle_sidebar(window, cx)))
+            .on_action(
+                cx.listener(|t, _: &ToggleTerminal, window, cx| t.toggle_terminal(window, cx)),
+            )
+            .on_action(cx.listener(|t, _: &CloseRight, window, cx| t.close_right(window, cx)))
             .size_full()
             .relative()
             .font_family(FONT_UI)
@@ -793,6 +827,9 @@ impl Render for FemmeApp {
                     .child(body)
                     .child(self.top_bar(cx)),
             )
+            .when_some(self.right.open(), |d, tab| {
+                d.child(self.right_panel(tab, cx))
+            })
             .into_any_element()
     }
 }
