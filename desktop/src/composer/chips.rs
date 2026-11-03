@@ -11,16 +11,17 @@ use std::time::Duration;
 use gpui::{
     div, img, prelude::FluentBuilder as _, px, relative, Anchor, Animation, AnimationExt as _,
     AnyElement, App, AppContext as _, Context, Div, Entity, Image, InteractiveElement as _,
-    IntoElement, ObjectFit, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _,
+    IntoElement, ObjectFit, ParentElement as _, Pixels, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _,
 };
 use gpui_component::hover_card::HoverCard;
+use gpui_component::scroll::ScrollableElement as _;
 
 use super::draft::{Chip, ChipId, Upload};
 use super::sniff;
 use super::Composer;
 use crate::theme::{
-    BAD, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED, PANEL, PAPER,
+    BAD, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED, PANEL, PAPER, RULE,
 };
 use crate::ui::{dialog, meta, ruled};
 use crate::viewer::FileView;
@@ -32,10 +33,21 @@ pub(super) type Previews = Rc<RefCell<HashMap<ChipId, Entity<FileView>>>>;
 /// The widest a previewed image is drawn.
 const PREVIEW_MAX: f32 = 480.;
 
-/// The most the chips take of the screen before they scroll: three rows of them.
-const ROWS_MAX: f32 = 196.;
+/// The gap between chips, across and down.
+const GAP: f32 = 6.;
 
-/// The chips, left to right, wrapping onto more lines when they do not fit.
+/// How much of a third row shows under the two whole ones when there are more chips than that: the
+/// cut-off row is what tells the user that the box scrolls.
+const PEEK: f32 = 22.;
+
+/// The most the chips take of the screen before they scroll: two rows and the top of a third. A chip
+/// is its 48px thumbnail, 4px of padding on each side and the rule round it.
+fn rows_max() -> Pixels {
+    (px(48. + 2. * 4.) + RULE * 2.) * 2. + px(GAP) * 2. + px(PEEK)
+}
+
+/// The chips, left to right, wrapping onto more lines when they do not fit. Past [`rows_max`] the
+/// box scrolls, with the scrollbar the theme shows (while the wheel moves, on this platform).
 pub(super) fn row(
     chips: &[Chip],
     previews: &Previews,
@@ -45,9 +57,9 @@ pub(super) fn row(
         .id("composer-chips")
         .flex()
         .flex_wrap()
-        .gap(px(6.))
-        .max_h(px(ROWS_MAX))
-        .overflow_y_scroll()
+        .gap(px(GAP))
+        .max_h(rows_max())
+        .overflow_y_scrollbar()
         .children(chips.iter().map(|c| chip(c, previews, cx)))
 }
 
@@ -116,7 +128,9 @@ fn button(id: impl Into<gpui::ElementId>, label: &'static str) -> gpui::Stateful
         .child(label)
 }
 
-/// The 48px square: the picture cropped to fill it, or the file's extension.
+/// The 48px square: the picture cropped to fill it, or the file's extension. The tile does not clip
+/// (`overflow_hidden`): the image crops itself to its box (`Cover`), and a tile that also clips
+/// makes gpui paint the top pixel row of every thumbnail the scroll box has pushed out of sight.
 fn thumb(c: &Chip) -> impl IntoElement {
     let label = sniff::ext_label(&c.name);
     let tile = ruled(
@@ -127,7 +141,6 @@ fn thumb(c: &Chip) -> impl IntoElement {
             .justify_center()
             .size(px(48.))
             .bg(PANEL)
-            .overflow_hidden()
             .font_family(FONT_PIXEL)
             .text_size(px(20.))
             .line_height(relative(1.))
