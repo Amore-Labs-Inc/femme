@@ -2,10 +2,10 @@
 
 An all-Rust desktop shell for FEMME on [gpui](https://crates.io/crates/gpui-pre) and
 [gpui-component](https://crates.io/crates/gpui-component): N terminal panes fed by
-`femme_proto::term::Frame`s next to a 50 000-row streaming transcript, in FEMME's retro skin
+`femme_proto::term::Frame`s next to the transcript of a session, in FEMME's retro skin
 (desk pink with a dot grid, paper cards, 1.2px ink rules, black VT323 title bars, hard 3px shadows).
 It exists to measure one thing: whether frame time stays under budget (p99 <= 10 ms on a 120 Hz
-display, <= 16 ms on 60 Hz) while every terminal repaints at 60 Hz and the transcript streams.
+display, <= 16 ms on 60 Hz) while every terminal repaints at 60 Hz.
 The app shows the sessions of a `femmed` through the `femme-client` crate (see "The frame" and "Talking
 to a daemon"); without `--daemon`/`--ssh` it shows the same frame with "no daemon configured" and nothing
 in it. The synthetic terminals (`src/terminal/synth.rs`) exist for `--bench` only: they speak the real
@@ -74,13 +74,16 @@ Keys (`cmd` instead of `ctrl` on macOS): `ctrl-b` sidebar, `ctrl-j` terminal tab
 keyboard in it, closes it when it is on show), `ctrl-k` closes the right panel, `F6` / `shift-F6` walk the
 focus sidebar, centre, right panel, `escape` closes the accounts overlay. These chords belong to the app even
 when a terminal has the keyboard (the shell never sees `ctrl-b`, `ctrl-j`, `ctrl-k`); every other key goes to
-whatever has the focus. The composer takes the keyboard when a Claude session becomes current, the terminal
+whatever has the focus. The transcript, when it has the keyboard (a click gives it, unless a text field such as
+the composer has it: a click on a row never takes the keyboard from a field), takes PageUp / PageDown / Home / End.
+The composer takes the keyboard when a Claude session becomes current, the terminal
 pane when a shell one does. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width
 state machine, the focus cycle) and their tests.
 
 ## Talking to a daemon
 
-With a daemon the sidebar lists its real sessions and the centre shows the one picked there.
+With a daemon the sidebar lists its real sessions and the centre shows the one picked there; a Claude session's
+transcript shows the real items of the session (its messages, tool calls and the text as it streams in).
 
 ```sh
 femme-desktop --show-spki --ssh myvps          # prints this device's key and the line to run on the box:
@@ -216,9 +219,13 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/terminal/bridge.rs` | The pump between a pane and the client's `Term` (acks, resync re-opens, refused input counted), so a daemon pane looks like a synthetic one. |
 | `src/terminal/input.rs` | Pure: gpui keystroke to `femme_proto::term::Key`, paste chord, wheel steps, pointer to cell. |
 | `src/terminal/synth.rs` | Synthetic holders: `Holder` speaks the wire protocol (silent until `Open`, at most 8 unacked frames, merges while blocked) over `Fire` (60 Hz full redraw), `ShellScroll` (one new line per frame) and its `cat` mode (a screenful of new text per frame). |
-| `src/transcript/model.rs` | Row types, 50k fake rows, bursty word stream. |
-| `src/transcript/pacer.rs` | Token pacer: bursts in, 12-20 words/s out. |
-| `src/transcript/view.rs` | `list()` view, streaming last row (a new row every 200 words), reveal loop driven by gpui's frame scheduler, scrollbar. |
+| `src/transcript/live.rs` | `Transcript` view: joins the session's scope, applies rows and deltas, the `list()` pinned to the end (with a "new" pill when the user has scrolled up), older pages on scrolling to the top, the requests for long items, pictures and answers. |
+| `src/transcript/items.rs` | Pure: the items of a session by `seq` (newest rev wins, tombstones), the text of the item in progress merged from deltas by offset (replays, late joins, out-of-order), fetched blobs. |
+| `src/transcript/turns.rs` | Pure: which rows the list shows: a result shares its call's row, a finished turn's thinking and tool calls fold behind one line ("worked for 3m · 12 tools"). |
+| `src/transcript/{body,question,attach}.rs` | Pure: item bodies (JSON, also the cut ones of the blob tier), questions and their answers, `Attached:` lines. |
+| `src/transcript/{markdown,md_view}.rs` | pulldown-cmark folded into a block model (pure), and the block model as elements. |
+| `src/transcript/faces.rs`, `faces/` | The bold, italic and bold-italic faces of Schibsted Grotesk (static instances cut from the family's variable files; gpui draws a variable file at its default weight only, so `**bold**` and `*italic*` came out plain), registered once by `Transcript::new`. |
+| `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (the viewer's `FileView`); the list diff (pure). |
 | `src/bench.rs` | Frame-time histograms from gpui's profiler (`bench` feature), probes, the report. |
 | `assets/fonts/` | VT323, JetBrains Mono NL (no ligatures), Schibsted Grotesk, Kaushan Script (all OFL). |
 | `assets/dots-{1x,2x}.png` | Desk dot-grid tiles (192 logical px, a multiple of the board's 6px period). |
@@ -241,11 +248,11 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
   unacked, and a holder that is blocked keeps parsing and sends one merged frame. A pane nobody draws (hidden
   window, closed drawer) stops acking, so nothing is applied and the holder idles at its window. A frame that
   does not apply (a rev gap, another holder epoch) makes the pane say `Open` again; the answer is a snapshot.
-- The transcript is `gpui::list` with a uniform height hint and `FollowMode::Tail`. Words arrive from the side
-  runtime in bursts and are revealed at 12-20 words/s by a pacer that gpui's frame scheduler ticks
-  (`on_next_frame`) only while words are waiting: no timer runs on the UI side and a caught-up transcript asks
-  for no frames. A message ends after 200 words and the next one starts as a new row, so no row grows
-  without bound.
+- The transcript is `gpui::list` with `FollowMode::Tail`: only the rows near the viewport are built each frame, the
+  others keep the height measured last. Text is shown as it arrives (the daemon sends it in batches of about
+  16 ms, nothing paces it); a delta changes the version of one row, so the list measures that row again and no
+  other, and a message's markdown is parsed once per version. A turn's thinking and tool calls fold behind one
+  line, so a long session is a few rows per turn.
 
 ## What the benchmark measures
 
@@ -264,6 +271,9 @@ The synthetic terminals are phase-staggered (pane i starts i/N of a period late)
 terminals do not tick in the same instant, and aligned ones would halve the number of frames drawn.
 
 ## Results
+
+The runs below were made with the synthetic 50 000-row streaming transcript that has since been replaced by the
+session's real one (`src/transcript/`): the terminal numbers stand, the transcript's share of them is not measured again.
 
 The PC from the plan: Omarchy Linux 7.2.8, Hyprland 0.56.2 on Wayland, Intel Alder Lake iGPU plus NVIDIA
 RTX 4050 Laptop (Hyprland composites on the NVIDIA GPU; the app renders on it through Vulkan, wgpu, Fifo),
@@ -285,8 +295,8 @@ interval therefore measure that timer, not a display, and a hidden window leaves
   `--target-ms 10`, which only the user can allow; nobody has run one.
 - Frame work, the pass metric, is the app's own main-thread time and does not depend on who ticks the window.
 
-Current build, hidden window, 4 fire panes + 1 `cat` pane (a screenful of new text every frame) + the 50 000-row
-streaming transcript, `--target-ms 10` (the grid size and applied-frame counts are in the report so nobody has to guess):
+Current build, hidden window, 4 fire panes + 1 `cat` pane (a screenful of new text every frame) + the (since removed)
+synthetic 50 000-row streaming transcript, `--target-ms 10` (the grid size and applied-frame counts are in the report so nobody has to guess):
 
 | | |
 |---|---|
@@ -381,10 +391,13 @@ terminal element paints all backgrounds in one layer and all glyphs (`paint_glyp
   dropped (a TODO in `terminal/input.rs`), and `ctrl+shift+c` (copy) is not sent.
 - With a daemon only the first pane is chosen by a sidebar click and there is no way to open a second pane
   of a session from the UI (`PaneOpen`); the drawer draws one tab at a time.
-- The lanes, accounts, transcript, composer and right panel are mock even with a daemon.
+- The lanes, accounts, composer and right panel are mock even with a daemon.
+- The transcript has no text selection or copy, its code blocks are not highlighted and its links do not open. A
+  session joined while a message is being written shows that message from where the daemon's replay begins (marked
+  with `…`) until the finished row arrives.
 - Block and box-drawing glyphs come from the font and can seam by a pixel; double/dotted/dashed underlines draw as single lines;
   combining marks on a base char drift (`force_width` is per glyph).
-- The composer input is a toy (append/backspace), transcript bodies are plain text, the palette is a placeholder.
+- The composer input is a toy (append/backspace), the palette is a placeholder.
 - macOS (Metal, `cmd` bindings, `CGDisplayIsBuiltin`) is untested; AccessKit and IME are not wired.
 - Hidden-window numbers leave out compositing: the visible runs of the earlier matrix were 0.5-1.2 ms higher at p99 (they also
   pay vsync pacing), both far under the bar.
