@@ -384,13 +384,15 @@ fn keys_from(v: &Value) -> Vec<Key> {
         .collect()
 }
 
-/// Parses the body of `GET /api/keys` (and of revoke and the GitHub sign-in calls).
+/// Parses the body of `GET /api/keys` (and of revoke and the GitHub sign-in calls): a list of
+/// keys, or an object holding one as `keys`, as the page reads it (`d.keys || d`).
 pub fn parse_keys(body: &str) -> Result<Vec<Key>, String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("not JSON: {e}"))?;
-    if !v.is_array() {
+    let list = v.get("keys").unwrap_or(&v);
+    if !list.is_array() {
         return Err("not a list".into());
     }
-    Ok(keys_from(&v))
+    Ok(keys_from(list))
 }
 
 /// The answer to `POST /api/keys`: the key, shown once, and the list as it is now.
@@ -754,6 +756,10 @@ mod tests {
         assert!(parse_keys("{}").is_err());
         assert!(parse_keys("").is_err());
         assert_eq!(parse_keys("[]").unwrap(), vec![]);
+        // An object holding the list is read as well, as the page does.
+        let wrapped = format!(r#"{{"keys": {}}}"#, body("keys"));
+        assert_eq!(parse_keys(&wrapped).unwrap(), keys);
+        assert!(parse_keys(r#"{"keys": 3}"#).is_err());
     }
 
     #[test]
