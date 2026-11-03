@@ -8,6 +8,7 @@ pub mod markdown;
 pub mod model;
 pub mod pacer;
 pub mod question;
+pub mod splice;
 pub mod turns;
 pub mod view;
 
