@@ -28,6 +28,7 @@ pub mod session;
 pub mod takeover;
 #[cfg(test)]
 mod testutil;
+mod uploads;
 pub mod worker;
 
 use std::future::Future;
