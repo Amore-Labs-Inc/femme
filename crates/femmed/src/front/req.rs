@@ -4,18 +4,21 @@
 
 use std::path::Path;
 
-use femme_proto::rpc::{Err as WireErr, ErrCode, IssueField, Req, Resp};
+use femme_proto::rpc::{Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT};
 use femme_proto::state::{Agent, Mode};
 use femme_proto::Sid;
 use femme_store::{items, sessions};
 
-use super::Ctx;
+use super::{Ctx, BODY_MAX};
 use crate::core::{Core, CoreError, CreateSession, PaneRef};
 use crate::daemon::{core_err, Daemon};
 use crate::session::MAIN;
 
 /// The most rows a transcript page returns, whatever the client asked for.
 const PAGE_MAX: usize = 500;
+
+// What `BlobPut` may carry must be storable (and `BlobGet` readable) whole.
+const _: () = assert!(MAX_BLOB_PUT <= femme_store::items::BLOB_BYTES_MAX);
 
 pub(crate) fn err(code: ErrCode, msg: impl Into<String>) -> WireErr {
     WireErr {
@@ -36,19 +39,38 @@ fn wire(e: CoreError) -> WireErr {
 }
 
 /// Whether running `req` twice would do something twice. Only those are remembered per op id: a
-/// replayed `Subscribe` must subscribe the *new* connection, and a page is not worth a row.
+/// replayed `Subscribe` must subscribe the *new* connection, and a page is not worth a row. A
+/// `BlobPut` is not remembered either: the same bytes are the same blob, and a recorded hash could
+/// outlive the blob (retention sweeps what no item refers to), where running it again stores it.
+/// Nor is a `BoardApi` GET: it reads, and its answer (the accounts and their emails, up to 1 MiB
+/// each time the desktop polls) would sit in the `ops` table for a day for nothing. A POST or
+/// DELETE is, so a retry gets what the first try got (a new key's secret is shown once, and a
+/// second `POST /api/keys` would only say the name is taken).
 pub(crate) fn mutates(req: &Req) -> bool {
+    if let Req::BoardApi { method, .. } = req {
+        return !method.eq_ignore_ascii_case("GET");
+    }
     !matches!(
         req,
         Req::Subscribe { .. }
             | Req::Unsubscribe { .. }
             | Req::TranscriptPage { .. }
             | Req::BlobGet { .. }
+            | Req::BlobPut { .. }
             | Req::FsList { .. }
             | Req::FsRead { .. }
             | Req::Caps
             | Req::ServerInfo
     )
+}
+
+/// The most a request may weigh on the wire: [`BODY_MAX`], and for a `BlobPut` the blob's own cap
+/// besides (its name and framing take the `BODY_MAX` part).
+pub(crate) fn body_max(req: &Req) -> usize {
+    match req {
+        Req::BlobPut { .. } => MAX_BLOB_PUT + BODY_MAX,
+        _ => BODY_MAX,
+    }
 }
 
 fn done(r: Result<(), CoreError>) -> Result<Resp, WireErr> {
@@ -97,14 +119,11 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             attachments,
             ..
         } => {
-            if !attachments.is_empty() {
-                return Err(unsupported("attachments come with uploads (M5)"));
-            }
             // ponytail: `how` is not looked at: every prompt is a Queue (the core's `prompt` goes
             // after the running turn). Steer and InterruptThenSend want the headless driver's inject
             // and an interrupt-first, which `Core` has no call for yet.
             let pane = main_pane(d, sid)?;
-            done(d.prompt(&pane, &text).await)
+            done(d.prompt_attached(&pane, &text, &attachments).await)
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
         Req::AnswerQuestion {
@@ -147,15 +166,48 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
                 .map_err(wire)
         }
         Req::IssueDelete { id } => done(d.issue_delete(id).await),
-        Req::Upload { .. } | Req::FsList { .. } | Req::FsRead { .. } => {
-            Err(unsupported("uploads and file access arrive with M5"))
+        Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
+        Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
+        Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
+        Req::BlobPut { data, .. } => blob_put(d, data).await,
+        Req::ServerInfo => Ok(server_info(d).await),
+        Req::BoardApi { method, path, body } => {
+            super::board::call(&d.cfg, &method, &path, body).await
         }
-        // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
-        Req::BoardApi { .. }
-        | Req::BlobPut { .. }
-        | Req::Caps
-        | Req::SetCap { .. }
-        | Req::ServerInfo => Err(unsupported("not served yet")),
+        Req::Caps => super::caps::caps(&d.cfg).await,
+        Req::SetCap {
+            account,
+            five_hour,
+            weekly,
+        } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
+    }
+}
+
+/// Stores an upload as a blob and answers its hash. The request's `name` is not kept: a `Prompt`
+/// names its attachments itself, and the blob is its bytes.
+async fn blob_put(d: &Daemon, data: Vec<u8>) -> Result<Resp, WireErr> {
+    if data.len() > MAX_BLOB_PUT {
+        let why = format!("a blob is at most {MAX_BLOB_PUT} bytes");
+        return Err(err(ErrCode::Bad, why));
+    }
+    let store = d.store.clone();
+    match tokio::task::spawn_blocking(move || store.write(|tx| tx.put_blob_bytes(&data))).await {
+        Ok(Ok(hash)) => Ok(Resp::BlobHash(hash)),
+        Ok(Err(e)) => Err(wire(core_err(e))),
+        Err(e) => Err(err(ErrCode::Internal, format!("blob write: {e}"))),
+    }
+}
+
+/// What this daemon is: its version, and the commit `server/deploy.sh` left in `<state>/deployed`.
+async fn server_info(d: &Daemon) -> Resp {
+    let deployed = tokio::fs::read_to_string(d.cfg.state_path("deployed"))
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Resp::ServerInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        deployed,
     }
 }
 
