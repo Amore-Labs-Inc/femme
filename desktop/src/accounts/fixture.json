@@ -1,0 +1,98 @@
+{
+  "accounts": {
+    "cswap": {
+      "schemaVersion": 1,
+      "activeAccountNumber": 1,
+      "accounts": [
+        {
+          "number": 1,
+          "email": "ada@example.test",
+          "organizationName": "",
+          "organizationUuid": "",
+          "isOrganization": false,
+          "active": true,
+          "usageStatus": "ok",
+          "usage": {
+            "fiveHour": {"pct": 31.0, "resetsAt": "2026-11-03T13:00:00+00:00", "countdown": "3h 0m", "clock": "13:00"},
+            "sevenDay": {"pct": 48.0, "resetsAt": "2026-11-08T06:59:59+00:00", "countdown": "4d 20h", "clock": "Nov 8 06:59", "expectedPct": 44.1, "aheadOfPace": true},
+            "scoped": [
+              {"name": "Fable", "pct": 71.0, "resetsAt": "2026-11-05T02:59:59+00:00", "countdown": "1d 17h", "clock": "Nov 5 02:59", "expectedPct": 60.2, "aheadOfPace": true}
+            ]
+          },
+          "usageFetchedAt": "2026-11-03T09:59:30Z",
+          "usageAgeSeconds": 30.0
+        },
+        {
+          "number": 2,
+          "email": "grace@example.test",
+          "organizationName": "Example Lab",
+          "organizationUuid": "00000000-0000-4000-8000-000000000002",
+          "isOrganization": true,
+          "active": false,
+          "alias": "grace (lab)",
+          "usageStatus": "ok",
+          "usage": {
+            "fiveHour": {"pct": 86.0, "resetsAt": "2026-11-03T11:30:00+00:00", "countdown": "1h 30m", "clock": "11:30"},
+            "sevenDay": {"pct": 62.0, "resetsAt": "2026-11-07T20:00:00+00:00", "countdown": "4d 10h", "clock": "Nov 7 20:00"},
+            "scoped": [
+              {"name": "Fable", "pct": 95.0, "resetsAt": "2026-11-06T09:00:00+00:00", "countdown": "2d 23h", "clock": "Nov 6 09:00"}
+            ]
+          },
+          "usageFetchedAt": "2026-11-03T09:59:30Z",
+          "usageAgeSeconds": 30.0
+        },
+        {
+          "number": 3,
+          "email": "linus@example.test",
+          "organizationName": "",
+          "organizationUuid": "",
+          "isOrganization": false,
+          "active": false,
+          "disabled": true,
+          "usageStatus": "ok",
+          "usage": {
+            "fiveHour": {"pct": 12.0, "resetsAt": "2026-11-03T14:45:00+00:00", "countdown": "4h 45m", "clock": "14:45"},
+            "sevenDay": {"pct": 99.0, "resetsAt": "2026-11-04T01:00:00+00:00", "countdown": "15h 0m", "clock": "Nov 4 01:00"}
+          },
+          "usageFetchedAt": "2026-11-03T09:59:30Z",
+          "usageAgeSeconds": 30.0
+        },
+        {
+          "number": 4,
+          "email": "margaret@example.test",
+          "organizationName": "",
+          "organizationUuid": "",
+          "isOrganization": false,
+          "active": false,
+          "usageStatus": "unavailable",
+          "usage": null,
+          "lastGoodUsage": {
+            "fiveHour": {"pct": 5.0, "resetsAt": "2026-11-03T08:30:00+00:00", "countdown": "0m", "clock": "08:30"},
+            "sevenDay": {"pct": 20.0, "resetsAt": "2026-11-09T12:00:00+00:00", "countdown": "5d 4h", "clock": "Nov 9 12:00"}
+          },
+          "lastGoodFetchedAt": "2026-11-03T07:00:00Z",
+          "lastGoodAgeSeconds": 10800.0,
+          "usageError": "http-429",
+          "usageRetryAt": "2026-11-03T10:05:00Z"
+        }
+      ]
+    },
+    "aws": {
+      "UserId": "AROAEXAMPLEEXAMPLE:i-0example",
+      "Account": "123456789012",
+      "Arn": "arn:aws:sts::123456789012:assumed-role/femme-box/i-0example"
+    },
+    "login": {}
+  },
+  "keys": [
+    {"name": "instinct", "created": 1793500000, "hint": "a1b2", "account": "the box", "github": null, "error": null},
+    {"name": "ci-bot", "created": 1793000000, "hint": "9f3c", "account": "Ada Lovelace (ada-l)", "github": null, "error": null},
+    {"name": "review", "created": 1793690000, "hint": "77de", "account": "its own token", "github": {"code": "ABCD-1234", "url": "https://github.com/login/device"}, "error": null},
+    {"name": "old-bot", "created": 1700000000, "hint": "0f0f", "account": "the box", "github": null, "error": "GitHub did not accept that token"}
+  ],
+  "caps": [
+    {"account": 1, "five_hour": 80, "weekly": null},
+    {"account": 2, "five_hour": null, "weekly": 90}
+  ],
+  "meta": {"state": "working (31% used, pause at 60%)", "cap": 60, "repos": ["example-org/femme"], "deploy": null}
+}

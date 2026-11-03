@@ -1897,6 +1897,7 @@ dependencies = [
  "hdrhistogram",
  "image",
  "mimalloc",
+ "serde_json",
  "syntect",
  "tokio",
  "two-face",
