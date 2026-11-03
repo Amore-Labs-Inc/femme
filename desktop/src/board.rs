@@ -9,6 +9,7 @@ pub mod font;
 pub mod geom;
 pub mod geometry;
 pub mod icons;
+pub mod paint;
 pub mod palette;
 pub mod scene;
 pub mod store;
