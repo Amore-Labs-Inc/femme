@@ -1,12 +1,14 @@
 //! FEMME desktop client: a gpui app that shows a daemon's sessions (transcript and composer, or a
-//! terminal, with files and terminals in a right-hand panel), plus a frame-time benchmark on
-//! synthetic panes. See `desktop/README.md` and `docs/desktop-ui.md`.
+//! terminal, with files and terminals in a right-hand panel and a drawing board that sends a diagram
+//! to Claude), plus a frame-time benchmark on synthetic panes. See `desktop/README.md` and
+//! `docs/desktop-ui.md`.
 
 #![warn(missing_docs)]
 
 pub mod accounts;
 pub mod app;
 pub mod bench;
+pub mod board;
 pub mod composer;
 pub mod connect;
 pub mod display;
