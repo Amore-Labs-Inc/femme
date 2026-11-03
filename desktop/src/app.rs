@@ -93,6 +93,8 @@ macro_rules! modkey {
 /// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
 /// panel, F6 and shift+F6 walk the focus, escape closes the accounts overlay.
 pub fn bind_keys(cx: &mut App) {
+    // The terminal panel's own chords (ctrl-tab, ctrl-shift-tab), in the keymap before the panel exists.
+    crate::terminal::panel::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
         KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
