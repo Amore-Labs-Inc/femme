@@ -26,7 +26,7 @@ use gpui::{
 use gpui_component::input::{Escape, InputEvent, Textarea, TextareaState};
 
 use self::chips::Previews;
-use self::draft::{Chip, ChipId, Drafts, Outgoing, Target};
+use self::draft::{Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE};
 use crate::net::Net;
 use crate::theme::{self, BAD, BODY_SIZE, FONT_MONO, META_SIZE, MUTED, NEON, PANEL, PAPER};
 use crate::ui::{button, button_dark, ruled};
@@ -316,8 +316,20 @@ impl Composer {
         };
         draft.sending = false;
         match result {
-            // The text stays, and what went wrong is shown under it.
-            Err(why) => draft.notice = Some(why),
+            // The text stays, and what went wrong is shown under it. An upload the daemon has
+            // dropped since goes up again, so the next send has it.
+            Err(why) => {
+                let dropped = why.contains(UPLOAD_GONE);
+                draft.notice = Some(why);
+                let again: Vec<ChipId> = if dropped {
+                    ids.into_iter().filter(|id| draft.expire(*id)).collect()
+                } else {
+                    Vec::new()
+                };
+                for id in again {
+                    self.upload(sid, id, cx);
+                }
+            }
             Ok(_) => {
                 draft.notice = None;
                 let gone = draft.sent(&ids);
