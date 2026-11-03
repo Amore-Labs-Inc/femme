@@ -9,6 +9,7 @@ mod hex;
 mod highlight;
 mod kind;
 mod pdf;
+mod text;
 
 pub use kind::{detect, Kind, Raster};
 
