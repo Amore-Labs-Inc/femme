@@ -6,7 +6,9 @@
 use gpui::Rgba;
 
 use super::scene::Tone;
-use crate::theme::{self, ACCENT, ACCENT_SOFT, DANGER, INK, NEON, PANEL, PAPER, SUCCESS, WARN};
+use crate::theme::{
+    self, ACCENT, ACCENT_DEEP, ACCENT_SOFT, DANGER, INK, NEON, PANEL, PAPER, SUCCESS, WARN,
+};
 
 /// The theme token of a tone.
 pub fn token(tone: Tone) -> Rgba {
@@ -30,6 +32,12 @@ pub fn paper() -> Rgba {
 /// The faint dots of the grid: ink a long way towards paper.
 pub fn grid() -> Rgba {
     theme::mix(PAPER, INK, 0.22)
+}
+
+/// The selection's box and the marquee: deep pink, which neither paper nor any stroke colour but
+/// the pink accent resembles, and that one only by its dashes.
+pub fn selection() -> Rgba {
+    ACCENT_DEEP
 }
 
 /// A token as 8-bit `[r, g, b, a]`, for the export.
