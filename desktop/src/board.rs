@@ -12,6 +12,7 @@ pub mod icons;
 pub mod paint;
 pub mod palette;
 pub mod scene;
+pub mod skin;
 pub mod store;
 pub mod stroke;
 pub mod textedit;
