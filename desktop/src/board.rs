@@ -21,18 +21,21 @@
 //!     BoardEvent::Send { name, png } => this
 //!         .composer
 //!         .update(cx, |c, cx| c.add_attachment(name.clone(), png.clone(), cx)),
-//!     // The board closed by itself (Esc, `‹`, a click outside, after a send): focus goes back.
+//!     // The board closed. After a send nothing gave the keyboard back: the composer takes it, so
+//!     // the message can be typed.
 //!     BoardEvent::Closed => this.focus_composer(cx),
 //! })
 //! ```
 //!
-//! The board takes the keyboard when it opens and gives it back to whatever had it when it closes
-//! by itself. Its keys (all handled while it is open, none leak to the shell): `1`-`7` or
-//! `v r o a l p t` pick a tool, `esc` goes back (a drag, then the tool, then the selection, then
-//! closes), `ctrl-z` / `ctrl-shift-z` undo and redo, `ctrl-a` `ctrl-d` `ctrl-x` `ctrl-c` `ctrl-v`
-//! select all, duplicate, cut, copy and paste shapes (`ctrl-c` with nothing selected copies the
-//! picture), `delete`, the arrows nudge (`shift` by ten), `ctrl-enter` sends, `ctrl-0` `ctrl-+`
-//! `ctrl--` `shift-1` zoom and fit, `space`-drag or the wheel pans, `ctrl`-wheel zooms.
+//! The board takes the keyboard when it opens. When the user closes it (Esc, `‹`, a click outside)
+//! or the shell calls [`Board::dismiss`], the keyboard goes back to whatever had it before the
+//! board opened; [`Board::close`] leaves it where it is. Its keys (all handled while it is open,
+//! none leak to the shell): `1`-`7` or `v r o a l p t` pick a tool, `esc` goes back (a drag, then
+//! the tool, then the selection, then closes), `ctrl-z` / `ctrl-shift-z` undo and redo, `ctrl-a`
+//! `ctrl-d` `ctrl-x` `ctrl-c` `ctrl-v` select all, duplicate, cut, copy and paste shapes (`ctrl-c`
+//! with nothing selected copies the picture), `delete`, the arrows nudge (`shift` by ten),
+//! `ctrl-enter` sends, `ctrl-0` `ctrl-+` `ctrl--` `shift-1` zoom and fit, `space`-drag or the wheel
+//! pans, `ctrl`-wheel zooms.
 //!
 //! # How it is built
 //!
@@ -90,7 +93,7 @@ pub enum BoardEvent {
         png: Vec<u8>,
     },
     /// The board closed: by itself (Esc, `‹`, a click outside, after a send) or through
-    /// [`Board::close`]. The shell hides its layer.
+    /// [`Board::close`] or [`Board::dismiss`]. The shell hides its layer.
     Closed,
 }
 
@@ -220,8 +223,14 @@ impl Board {
         self.open
     }
 
-    /// Closes the board on the user's say-so and gives the keyboard back.
-    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Closes the board the way Esc, `‹` and a click outside do: as [`Board::close`], and the
+    /// keyboard goes back to whatever had it before the board opened. Does nothing when the board
+    /// is closed. [`Board::close`] alone leaves the keyboard where it is, for a shell that has
+    /// somewhere else in mind.
+    pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         let back = self.restore.take();
         self.close(cx);
         if let Some(handle) = back {
