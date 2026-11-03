@@ -80,7 +80,7 @@ impl Daemon {
     }
 
     /// The store's retention ([`Store::retain`]), once at start and then daily: what it drops is
-    /// published like any change, the purged sessions' spools and snapshots go with them, and the
+    /// published like any change, the purged sessions' spools, snapshots and uploads go with them, and the
     /// phone hears when the database passes 1 GiB.
     pub async fn retain_daily(daemon: Weak<Daemon>) {
         loop {
@@ -98,6 +98,7 @@ impl Daemon {
                 for sid in &r.purged_sessions {
                     let _ = std::fs::remove_file(self.sessions.dirs.spool(*sid));
                     let _ = std::fs::remove_file(self.sessions.dirs.snap(*sid));
+                    self.forget_uploads(*sid);
                 }
                 tracing::info!(
                     sessions = r.sessions,
@@ -192,6 +193,7 @@ pub(crate) fn core_err(e: femme_store::Error) -> CoreError {
     match e {
         E::NotFound => CoreError::NotFound,
         E::Conflict { .. } | E::Exists(_) => CoreError::Conflict(e.to_string()),
+        E::TooLarge { .. } => CoreError::Bad(e.to_string()),
         E::Sqlite(_) | E::Corrupt(_) | E::Io(_) | E::Json(_) => CoreError::Internal(e.to_string()),
     }
 }
