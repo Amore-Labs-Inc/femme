@@ -7,6 +7,7 @@ pub mod geom;
 pub mod geometry;
 pub mod palette;
 pub mod scene;
+pub mod store;
 pub mod stroke;
 pub mod textedit;
 pub mod view;
