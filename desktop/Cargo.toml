@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 description = "FEMME desktop client: gpui app with FEMME-skinned panes, transcript and terminal drawer."
 publish = false
+build = "build.rs"
 
 # Own workspace: the server workspace (../Cargo.toml) must never resolve gpui, which needs a GPU
 # toolchain and builds on the laptop only.
