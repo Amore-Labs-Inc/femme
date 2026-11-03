@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use common::Box_;
 use femme_proto::rpc::{
-    Cursors, Err as WireErr, ErrCode, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
+    Cursors, Err as WireErr, ErrCode, FsEntry, IssueField, Req, Resp, Scope, StreamKind, C2S, S2C,
 };
 use femme_proto::state::{Agent, Entity, Item, ItemKind, ItemStatus, Mode, PaneKind, Row};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
@@ -601,22 +601,11 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
     }];
     assert_eq!(code(c.call(prompt(attached)).await), ErrCode::Unsupported);
     // M5.
-    for req in [
-        Req::Upload {
-            name: "a".into(),
-            len: 1,
-        },
-        Req::FsList {
-            sid,
-            path: "/".into(),
-        },
-        Req::FsRead {
-            sid,
-            path: "/etc/hostname".into(),
-        },
-    ] {
-        assert_eq!(code(c.call(req).await), ErrCode::Unsupported);
-    }
+    let upload = Req::Upload {
+        name: "a".into(),
+        len: 1,
+    };
+    assert_eq!(code(c.call(upload).await), ErrCode::Unsupported);
     // Replayed, an error is the same error.
     let op = OpId::new();
     let first = c.call_op(op, Req::SessionClose { sid: nobody }).await;
@@ -1940,4 +1929,197 @@ async fn enroll_lists_and_revokes_a_device_from_the_command_line() {
         assert!(!out.status.success(), "{args:?}");
         assert!(!out.stderr.is_empty(), "{args:?}");
     }
+}
+
+/// The files of a session's folder, for the desktop's file panel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sessions_folder_is_listed_and_its_files_read_relative_to_it() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    std::fs::create_dir_all(proj.join("sub/deep")).unwrap();
+    std::fs::write(proj.join("a.txt"), "alpha").unwrap();
+    std::fs::write(proj.join(".hidden"), "h").unwrap();
+    std::fs::write(proj.join("sub/b.txt"), "beta").unwrap();
+    std::fs::write(proj.join("sub/c.bin"), [0u8, 255, 7]).unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let entry = |name: &str, dir, len| FsEntry {
+        name: name.into(),
+        dir,
+        len,
+    };
+    let list = |path: &str| Req::FsList {
+        sid,
+        path: path.into(),
+    };
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+
+    // The session's own folder: folders first, then files, each by name, hidden ones too.
+    let root = Ok(Resp::FsEntries(vec![
+        entry("sub", true, 0),
+        entry(".hidden", false, 1),
+        entry("a.txt", false, 5),
+    ]));
+    assert_eq!(c.call(list("")).await, root);
+    assert_eq!(c.call(list(".")).await, root);
+    // A sub-folder, by its relative and by its absolute path.
+    let sub = Ok(Resp::FsEntries(vec![
+        entry("deep", true, 0),
+        entry("b.txt", false, 4),
+        entry("c.bin", false, 3),
+    ]));
+    assert_eq!(c.call(list("sub")).await, sub);
+    assert_eq!(c.call(list("sub/")).await, sub);
+    assert_eq!(
+        c.call(list(&proj.join("sub").display().to_string())).await,
+        sub
+    );
+    assert_eq!(c.call(list("sub/deep")).await, Ok(Resp::FsEntries(vec![])));
+    // Another folder of home, by its absolute path.
+    let from_home = c.call(list(&rig.home().display().to_string())).await;
+    assert_eq!(from_home, Ok(Resp::FsEntries(vec![entry("proj", true, 0)])));
+    // Files: what is in them, relative and absolute, binary too.
+    assert_eq!(
+        c.call(read("a.txt")).await,
+        Ok(Resp::FsData(b"alpha".to_vec()))
+    );
+    assert_eq!(
+        c.call(read(".hidden")).await,
+        Ok(Resp::FsData(b"h".to_vec()))
+    );
+    assert_eq!(
+        c.call(read("sub/c.bin")).await,
+        Ok(Resp::FsData(vec![0, 255, 7]))
+    );
+    let absolute = proj.join("sub/b.txt").display().to_string();
+    assert_eq!(
+        c.call(read(&absolute)).await,
+        Ok(Resp::FsData(b"beta".to_vec()))
+    );
+    // Reads change nothing: asked again they answer again (no op is recorded for them).
+    assert_eq!(
+        c.call(read("a.txt")).await,
+        Ok(Resp::FsData(b"alpha".to_vec()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_path_that_climbs_or_leaves_home_is_refused_and_a_missing_one_is_not_found() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    let outside = rig.b.dir.path().join("outside");
+    std::fs::create_dir_all(proj.join("sub")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(proj.join("a.txt"), "alpha").unwrap();
+    std::fs::write(outside.join("secret"), "s").unwrap();
+    std::os::unix::fs::symlink(&outside, proj.join("out")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), proj.join("leak")).unwrap();
+    std::os::unix::fs::symlink(proj.join("sub"), proj.join("in")).unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let list = |path: &str| Req::FsList {
+        sid,
+        path: path.into(),
+    };
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+    let secret = outside.join("secret").display().to_string();
+
+    // `..` anywhere, even where it would stay inside home.
+    for req in [
+        read("../outside/secret"),
+        list(".."),
+        list("sub/.."),
+        read("sub/../a.txt"),
+        read(&format!("{}/../proj/a.txt", rig.home().display())),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, ErrCode::Bad, "{tried}");
+    }
+    // Absolute paths out of home, and symlinks that lead out of it (to a folder or to a file).
+    for req in [
+        read(&secret),
+        read("/etc/hostname"),
+        list("/"),
+        list(&outside.display().to_string()),
+        list("out"),
+        read("out/secret"),
+        read("leak"),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, ErrCode::Bad, "{tried}");
+    }
+    // A symlink that stays inside home is just a folder.
+    assert_eq!(c.call(list("in")).await, Ok(Resp::FsEntries(vec![])));
+    // Missing, wrong kind, and no such session.
+    for (req, want) in [
+        (read("nope"), ErrCode::NotFound),
+        (list("nope/deeper"), ErrCode::NotFound),
+        (list("a.txt"), ErrCode::Bad),
+        (read("sub"), ErrCode::Bad),
+        (
+            Req::FsList {
+                sid: Id::new(),
+                path: String::new(),
+            },
+            ErrCode::NotFound,
+        ),
+    ] {
+        let tried = format!("{req:?}");
+        assert_eq!(c.call(req).await.unwrap_err().code, want, "{tried}");
+    }
+    // A closed session shows nothing.
+    assert_eq!(c.call(Req::SessionClose { sid }).await, Ok(Resp::Ok));
+    assert_eq!(c.call(list("")).await.unwrap_err().code, ErrCode::NotFound);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_over_sixteen_mebibytes_is_not_sent_and_a_big_one_below_it_is() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let proj = rig.home().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    // Past the old one-mebibyte request limit, which only requests have.
+    let bytes: Vec<u8> = (0..3 << 20).map(|i: u32| (i % 251) as u8).collect();
+    std::fs::write(proj.join("mid"), &bytes).unwrap();
+    std::fs::File::create(proj.join("big"))
+        .unwrap()
+        .set_len((16 << 20) + 1)
+        .unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let sid = c.session(&proj).await;
+    let read = |path: &str| Req::FsRead {
+        sid,
+        path: path.into(),
+    };
+    assert_eq!(c.call(read("mid")).await, Ok(Resp::FsData(bytes)));
+    let refused = c.call(read("big")).await.unwrap_err();
+    assert_eq!(refused.code, ErrCode::Bad, "{}", refused.msg);
+    // Still a working connection afterwards.
+    assert_eq!(
+        c.call(Req::FsList {
+            sid,
+            path: String::new()
+        })
+        .await,
+        Ok(Resp::FsEntries(vec![
+            FsEntry {
+                name: "big".into(),
+                dir: false,
+                len: (16 << 20) + 1
+            },
+            FsEntry {
+                name: "mid".into(),
+                dir: false,
+                len: 3 << 20
+            },
+        ]))
+    );
 }

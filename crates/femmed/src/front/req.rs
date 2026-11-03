@@ -147,9 +147,9 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
                 .map_err(wire)
         }
         Req::IssueDelete { id } => done(d.issue_delete(id).await),
-        Req::Upload { .. } | Req::FsList { .. } | Req::FsRead { .. } => {
-            Err(unsupported("uploads and file access arrive with M5"))
-        }
+        Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
+        Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
+        Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
         Req::BoardApi { .. }
         | Req::BlobPut { .. }
