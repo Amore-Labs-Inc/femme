@@ -226,7 +226,9 @@ impl FilesPanel {
                 }
                 match &answer {
                     Err(why) => {
-                        let text = format!("can't list {}: {why}", tree::under(&t.cwd, &path));
+                        // The header has the session's directory; a line is short in a narrow panel.
+                        let what = if path.is_empty() { &t.cwd } else { &path };
+                        let text = format!("can't list {what}: {why}");
                         t.notice = Some(Notice::ListFailed {
                             path: path.clone(),
                             text,
