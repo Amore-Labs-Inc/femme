@@ -1,6 +1,8 @@
 //! Text and source files: monospace, line numbers, syntax highlighting. The file is split into lines
 //! in the background and shown at once as plain text; highlighting then arrives chunk by chunk
-//! (the top of the file first) and the lines it covers are recoloured as it comes.
+//! (the top of the file first) and the lines it covers are recoloured as it comes. The view is as
+//! tall as the file has lines, but only the lines near the screen are built: what is on screen comes
+//! from a probe, because whoever hosts the view owns the vertical scroll.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -8,12 +10,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    div, font, px, uniform_list, AnyElement, Context, HighlightStyle, IntoElement,
-    ListHorizontalSizingBehavior, ParentElement as _, Pixels, Render, SharedString, Styled as _,
-    StyledText, UniformListScrollHandle, Window,
+    div, font, px, AnyElement, Context, HighlightStyle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledText, Window,
 };
 
-use super::chrome;
+use super::chrome::{self, Seen};
 use super::guarded;
 use super::hex::human_size;
 use super::highlight::{color, Highlighter, Span, Spans};
@@ -36,6 +38,10 @@ const MAX_HIGHLIGHT_BYTES: usize = 2 << 20;
 const FIRST_CHUNK_BYTES: usize = 24 << 10;
 /// ...and every later one.
 const CHUNK_BYTES: usize = 256 << 10;
+/// Lines built above and below the ones on screen.
+const MARGIN: usize = 30;
+/// Lines built before the probe has said what is on screen.
+const FIRST_ROWS: usize = 60;
 
 /// A file's text, cut into lines once.
 struct Doc {
@@ -157,6 +163,25 @@ fn digits(n: usize) -> usize {
     n.max(1).ilog10() as usize + 1
 }
 
+/// The lines to build for what the probe saw: those on screen and [`MARGIN`] more on each side. The
+/// `current` ones are kept while they still cover the screen with half a margin to spare, so that
+/// scrolling a line does not rebuild anything.
+fn rows_for(seen: Seen, current: &Range<usize>, count: usize) -> Range<usize> {
+    if seen.is_empty() {
+        return current.clone();
+    }
+    let first = ((seen.top / LINE_HEIGHT) as usize).min(count.saturating_sub(1));
+    let last = ((seen.bottom / LINE_HEIGHT).ceil() as usize).clamp(first + 1, count.max(1));
+    let slack = MARGIN / 2;
+    let top_ok = current.start == 0 || current.start + slack <= first;
+    let bottom_ok = current.end >= count || last + slack <= current.end;
+    if top_ok && bottom_ok {
+        current.clone()
+    } else {
+        first.saturating_sub(MARGIN)..(last + MARGIN).min(count)
+    }
+}
+
 /// The result of highlighting a stretch of lines.
 struct Chunk {
     /// The state to continue from; `None` once the end is reached or when there is nothing to do.
@@ -230,7 +255,10 @@ pub(crate) struct TextView {
     name: String,
     bytes: usize,
     state: State,
-    scroll: UniformListScrollHandle,
+    /// What the probe saw of the line column in the last frame.
+    seen: Seen,
+    /// The lines that are built: the ones on screen and a margin.
+    rows: Range<usize>,
     /// Width of the line-number column, measured from the font on every render.
     gutter: Pixels,
 }
@@ -255,6 +283,9 @@ impl TextView {
                     })),
                     Err(why) => State::Failed(why),
                 };
+                if let State::Ready(r) = &this.state {
+                    this.rows = 0..FIRST_ROWS.min(r.doc.lines.len());
+                }
                 this.next_chunk(cx);
                 cx.notify();
             })
@@ -265,8 +296,23 @@ impl TextView {
             name,
             bytes,
             state: State::Loading,
-            scroll: UniformListScrollHandle::new(),
+            seen: Seen::default(),
+            rows: 0..0,
             gutter: px(40.),
+        }
+    }
+
+    /// Takes in what the probe saw of the line column, and asks for a frame if other lines have to
+    /// be built.
+    fn see(&mut self, seen: Seen, cx: &mut Context<Self>) {
+        self.seen = seen;
+        let State::Ready(r) = &self.state else {
+            return;
+        };
+        let rows = rows_for(seen, &self.rows, r.doc.lines.len());
+        if rows != self.rows {
+            self.rows = rows;
+            cx.notify();
         }
     }
 
@@ -340,51 +386,42 @@ impl TextView {
         s
     }
 
-    /// The rows `range` of the list: line number, then the line, coloured as far as highlighted.
-    fn rows(&self, range: Range<usize>) -> Vec<AnyElement> {
+    /// The line-number cells and the text lines of `range`, coloured as far as highlighted.
+    fn rows(&self, range: Range<usize>) -> (Vec<AnyElement>, Vec<AnyElement>) {
         let State::Ready(r) = &self.state else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
-        range
-            .map(|i| {
-                let (text, runs) = layout_line(r.doc.line(i), r.spans.line(i));
-                let line = if runs.is_empty() {
-                    div().child(text).into_any_element()
-                } else {
-                    div()
-                        .child(StyledText::new(text).with_highlights(runs))
-                        .into_any_element()
-                };
+        let mut numbers = Vec::with_capacity(range.len());
+        let mut lines = Vec::with_capacity(range.len());
+        for i in range {
+            numbers.push(
                 div()
-                    .flex()
                     .flex_none()
                     .h(px(LINE_HEIGHT))
-                    .child(
-                        ui::ruled_sides(
-                            div()
-                                .flex_none()
-                                .w(self.gutter)
-                                .px(px(8.))
-                                .text_right()
-                                .text_color(MUTED),
-                            px(0.),
-                            RULE,
-                            px(0.),
-                            px(0.),
-                        )
-                        .child(format!("{}", i + 1)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .pl(px(10.))
-                            .pr(px(16.))
-                            .whitespace_nowrap()
-                            .child(line),
-                    )
+                    .px(px(8.))
+                    .child(format!("{}", i + 1))
+                    .into_any_element(),
+            );
+            let (text, runs) = layout_line(r.doc.line(i), r.spans.line(i));
+            let line = if runs.is_empty() {
+                div().child(text).into_any_element()
+            } else {
+                div()
+                    .child(StyledText::new(text).with_highlights(runs))
                     .into_any_element()
-            })
-            .collect()
+            };
+            lines.push(
+                div()
+                    .flex_none()
+                    .h(px(LINE_HEIGHT))
+                    .pl(px(10.))
+                    .pr(px(16.))
+                    .whitespace_nowrap()
+                    .child(line)
+                    .into_any_element(),
+            );
+        }
+        (numbers, lines)
     }
 }
 
@@ -392,7 +429,7 @@ impl Render for TextView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (count, longest) = match &self.state {
             State::Loading => {
-                return chrome::framed(chrome::spinner("reading"), human_size(self.bytes), PAPER);
+                return chrome::framed(chrome::waiting("reading"), human_size(self.bytes), PAPER);
             }
             State::Failed(why) => {
                 return chrome::framed(
@@ -405,7 +442,15 @@ impl Render for TextView {
                     PAPER,
                 );
             }
-            State::Ready(r) => (r.doc.lines.len(), r.doc.longest),
+            State::Ready(r) => {
+                let count = r.doc.lines.len();
+                let longest = if count == 0 {
+                    SharedString::default()
+                } else {
+                    layout_line(r.doc.line(r.doc.longest), &[]).0
+                };
+                (count, longest)
+            }
         };
         if count == 0 {
             return chrome::framed(
@@ -420,20 +465,71 @@ impl Render for TextView {
             .unwrap_or(px(8.));
         self.gutter = ch * digits(count) as f32 + px(16.) + RULE;
 
-        let list = uniform_list(
-            "text-lines",
-            count,
-            cx.processor(|this, range: Range<usize>, _, _| this.rows(range)),
+        let rows = self.rows.start.min(count)..self.rows.end.min(count);
+        let (numbers, lines) = self.rows(rows.clone());
+        let total = px(count as f32 * LINE_HEIGHT);
+        let gap = |lines: usize| div().flex_none().h(px(lines as f32 * LINE_HEIGHT));
+        // The numbers stay put when the lines scroll sideways. The column is as tall as the file;
+        // the probe in it tells which lines the host's scroll area shows.
+        let gutter = ui::ruled_sides(
+            div()
+                .relative()
+                .flex_none()
+                .w(self.gutter)
+                .h(total)
+                .flex()
+                .flex_col()
+                .text_right()
+                .text_color(MUTED),
+            px(0.),
+            RULE,
+            px(0.),
+            px(0.),
         )
-        .track_scroll(&self.scroll)
-        .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-        .with_width_from_item(Some(longest))
-        .size_full()
-        .font_family(FONT_MONO)
-        .text_size(px(TEXT_SIZE))
-        .line_height(px(LINE_HEIGHT))
-        .text_color(INK);
-        chrome::framed(list, self.caption(), PAPER)
+        .child(chrome::watch(self.seen, cx, Self::see))
+        .child(gap(rows.start))
+        .children(numbers)
+        .child(gap(count - rows.end));
+        // The longest line has a row of no height at the end, so that the sideways scroll reaches as
+        // far whichever lines are built.
+        let lines = div()
+            .id(("text-x", cx.entity_id()))
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .child(
+                div()
+                    .flex_none()
+                    .min_w_full()
+                    .h(total)
+                    .flex()
+                    .flex_col()
+                    .child(gap(rows.start))
+                    .children(lines)
+                    .child(gap(count - rows.end))
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(px(0.))
+                            .overflow_hidden()
+                            .pl(px(10.))
+                            .pr(px(16.))
+                            .whitespace_nowrap()
+                            .child(longest),
+                    ),
+            );
+        let area = div()
+            .flex()
+            .w_full()
+            .font_family(FONT_MONO)
+            .text_size(px(TEXT_SIZE))
+            .line_height(px(LINE_HEIGHT))
+            .text_color(INK)
+            .child(gutter)
+            .child(lines);
+        chrome::framed(area, self.caption(), PAPER)
     }
 }
 
@@ -549,5 +645,35 @@ mod tests {
             highlight_chunk(&doc, 0, None, "notes.txt").done,
             "plain text is done at once"
         );
+    }
+
+    /// `top..bottom` lines of a file on screen.
+    fn on_screen(top: usize, bottom: usize) -> Seen {
+        Seen {
+            width: 500.,
+            top: top as f32 * LINE_HEIGHT,
+            bottom: bottom as f32 * LINE_HEIGHT,
+        }
+    }
+
+    #[test]
+    fn the_built_rows_follow_the_screen_with_a_margin() {
+        // 50 lines on screen from line 100: those and a margin of 30 each side.
+        assert_eq!(rows_for(on_screen(100, 150), &(0..60), 1000), 70..180);
+        // A few lines of scrolling change nothing while half a margin is spare...
+        assert_eq!(rows_for(on_screen(105, 155), &(70..180), 1000), 70..180);
+        // ...but near the edge of what is built, other rows are chosen.
+        assert_eq!(rows_for(on_screen(160, 210), &(70..180), 1000), 130..240);
+        // The rows stop at the ends of the file.
+        assert_eq!(rows_for(on_screen(0, 50), &(100..200), 1000), 0..80);
+        assert_eq!(rows_for(on_screen(960, 1000), &(0..60), 1000), 930..1000);
+        // Nothing on screen: nothing changes.
+        assert_eq!(rows_for(on_screen(0, 0), &(5..9), 1000), 5..9);
+    }
+
+    #[test]
+    fn a_short_file_is_built_whole_and_kept() {
+        assert_eq!(rows_for(on_screen(0, 5), &(0..10), 10), 0..10);
+        assert_eq!(rows_for(on_screen(0, 5), &(0..0), 0), 0..0);
     }
 }
