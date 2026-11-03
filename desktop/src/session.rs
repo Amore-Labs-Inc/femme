@@ -1,15 +1,397 @@
-//! Which session the centre shows, and how the app opens one at start: the newest live Claude
-//! session, else a new headless Claude session in the home directory, else (no `claude` on the
-//! box) a shell. Owned by the sessions agent (docs/desktop-ui.md §sessions), together with
-//! `net.rs`.
-#![allow(missing_docs)] // stub: the owning agent documents what it fills in
+//! Which session the centre shows when the app opens, and the rules for choosing it.
+//!
+//! The user wants Claude in the centre as soon as the app is up: the newest live agent session when
+//! there is one (Claude before Codex before Pi), else a new headless Claude session in the box's
+//! home directory, else (`claude` is not on the box, or the daemon refuses) a shell. [`pick`] is the
+//! pure rule; [`open_at_start`] waits for the daemon's list of sessions, applies the rule and talks
+//! to the daemon. What stays on show afterwards is [`Model::current`]'s business: it follows its
+//! session when that closes (`net.rs`).
 
-use gpui::{Context, Entity};
+use std::time::{Duration, Instant};
 
-use crate::net::Net;
+use femme_proto::rpc::{Req, Resp};
+use femme_proto::state::{Agent, Mode};
+use femme_proto::Sid;
+use gpui::{App, AsyncApp, Entity, WeakEntity};
 
-/// Called once by the shell after the first `Connected`: picks or creates the session to show and
-/// sets it as current on `Net`.
-pub fn open_at_start(_net: &Entity<Net>, _cx: &mut Context<Net>) {
-    // stub
+use crate::net::{Link, Load, Model, Net};
+
+/// How long the daemon's list of sessions is waited for once the link is up. The first `Changes`
+/// comes a round trip after `Connected`; an old Claude session must not be missed, or it is duplicated.
+const SETTLE: Duration = Duration::from_secs(2);
+/// How long a link that does not come up is waited for before giving up (a later `Connected` asks again).
+const LINK_WAIT: Duration = Duration::from_secs(30);
+/// How often the wait looks at the model.
+const TICK: Duration = Duration::from_millis(50);
+
+/// What to show when the app opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// This agent session, which is already live on the box.
+    Show(Sid),
+    /// There is none: start a headless Claude session.
+    CreateClaude,
+}
+
+/// Claude, then Codex, then Pi; a shell is not an agent.
+fn rank(agent: Agent) -> Option<u8> {
+    match agent {
+        Agent::Claude => Some(0),
+        Agent::Codex => Some(1),
+        Agent::Pi => Some(2),
+        Agent::Shell => None,
+    }
+}
+
+/// The session to show at start: the newest live one of the best-ranked agent (Claude, else Codex,
+/// else Pi), else `CreateClaude`. Closed sessions and shells do not count.
+pub fn pick(model: &Model) -> Choice {
+    // `live` is newest first, and `min_by_key` keeps the first of equals: the newest of the agent.
+    model
+        .live()
+        .into_iter()
+        .filter_map(|s| Some((rank(s.agent)?, s.id)))
+        .min_by_key(|&(rank, _)| rank)
+        .map_or(Choice::CreateClaude, |(_, sid)| Choice::Show(sid))
+}
+
+/// The terminal to fall back on when Claude cannot be started: the newest live shell session, so
+/// that a box without `claude` does not collect one more shell at every start.
+pub fn pick_shell(model: &Model) -> Option<Sid> {
+    model
+        .live()
+        .into_iter()
+        .find(|s| s.agent == Agent::Shell)
+        .map(|s| s.id)
+}
+
+/// A new session of `agent` in the daemon's home directory (an empty `cwd` is what `femmed` takes as
+/// "your home": `~` is refused as not absolute).
+fn create(agent: Agent, mode: Mode) -> Req {
+    Req::SessionCreate {
+        cwd: String::new(),
+        agent,
+        mode,
+        label: None,
+        name: None,
+        prompt: None,
+    }
+}
+
+/// Whether to stop waiting for the daemon's list: it is in, or the link has been up for [`SETTLE`]
+/// without it.
+fn ready(listed: bool, up_for: Option<Duration>) -> bool {
+    listed || up_for.is_some_and(|d| d >= SETTLE)
+}
+
+/// What the app says when Claude could not be started and a shell stands in.
+fn shell_note(why: &str) -> String {
+    format!("claude did not start, a shell is open instead: {why}")
+}
+
+/// What the app says when not even a shell could be started.
+fn no_session(claude: &str, shell: &str) -> String {
+    format!("no session could be started: claude: {claude}; shell: {shell}")
+}
+
+/// Called by the shell once connected (again after a reconnect: only the first call does anything
+/// until it has decided): shows the newest live agent session; else starts a headless Claude
+/// session in the home directory and shows that; else, when that fails (no `claude` on the box, the
+/// daemon refuses), a shell, reusing a live one if there is one. If nothing at all can be started,
+/// [`Net::error`] says why and no session is on show.
+///
+/// It waits for the daemon's list of sessions (the first `Changes`, at most 2 s after the link is
+/// up) before it decides, and leaves alone what the user has already put on show. It returns at
+/// once: the work runs as a task, so this may be called from inside an update of `net`.
+pub fn open_at_start(net: &Entity<Net>, cx: &mut App) {
+    let net = net.downgrade();
+    cx.spawn(async move |cx| {
+        if !net.update(cx, |n, _| n.opening.begin()).unwrap_or(false) {
+            return;
+        }
+        let done = open(&net, cx).await;
+        net.update(cx, |n, _| n.opening.end(done)).ok();
+    })
+    .detach();
+}
+
+/// The opening itself; whether it decided (a session is on show or was made).
+async fn open(net: &WeakEntity<Net>, cx: &mut AsyncApp) -> bool {
+    if !wait_for_list(net, cx).await {
+        return false;
+    }
+    let chosen = net.update(cx, |n, cx| {
+        // Somebody has put a session on show meanwhile: that is the choice.
+        if n.model.current_session().is_some() {
+            return Some(true);
+        }
+        match pick(&n.model) {
+            Choice::Show(sid) => {
+                n.set_current(Some(sid), cx);
+                Some(true)
+            }
+            Choice::CreateClaude => None,
+        }
+    });
+    match chosen {
+        Ok(Some(done)) => return done,
+        Ok(None) => {}
+        Err(_) => return false,
+    }
+    let claude = match make(net, cx, "claude", Agent::Claude, Mode::Headless).await {
+        Ok(sid) => return show(net, cx, sid, None).await,
+        Err(why) => why,
+    };
+    // A terminal that is already there is as good as a new one.
+    let have = net.update(cx, |n, _| pick_shell(&n.model)).ok().flatten();
+    let shell = match have {
+        Some(sid) => Ok(sid),
+        None => make(net, cx, "a shell", Agent::Shell, Mode::Tui).await,
+    };
+    match shell {
+        Ok(sid) => show(net, cx, sid, Some(shell_note(&claude))).await,
+        Err(shell) => {
+            net.update(cx, |n, cx| {
+                n.error = Some(no_session(&claude, &shell));
+                cx.notify();
+            })
+            .ok();
+            false
+        }
+    }
+}
+
+/// Waits until the daemon's list of sessions is as complete as it will be soon (see [`ready`]).
+/// False when the link did not come up in time or `net` is gone.
+async fn wait_for_list(net: &WeakEntity<Net>, cx: &mut AsyncApp) -> bool {
+    let begun = Instant::now();
+    let mut up_since: Option<Instant> = None;
+    loop {
+        let Ok((up, listed)) = net.read_with(cx, |n, _| {
+            (
+                matches!(n.model.link, Link::Up(_)),
+                n.model.load == Load::Done,
+            )
+        }) else {
+            return false;
+        };
+        up_since = match (up, up_since) {
+            (true, since) => since.or_else(|| Some(Instant::now())),
+            (false, _) => None,
+        };
+        if ready(listed, up_since.map(|t| t.elapsed())) {
+            return true;
+        }
+        if begun.elapsed() >= LINK_WAIT {
+            return false;
+        }
+        cx.background_executor().timer(TICK).await;
+    }
+}
+
+/// Asks the daemon for a new session, and says so in the status line until it answers.
+async fn make(
+    net: &WeakEntity<Net>,
+    cx: &mut AsyncApp,
+    what: &str,
+    agent: Agent,
+    mode: Mode,
+) -> Result<Sid, String> {
+    let sent = net
+        .update(cx, |n, cx| {
+            n.set_starting(Some(format!("starting {what}…")), cx);
+            n.try_run(create(agent, mode), cx)
+        })
+        .map_err(|e| e.to_string())?;
+    let answer = sent.await;
+    net.update(cx, |n, cx| n.set_starting(None, cx)).ok();
+    match answer {
+        Ok(Resp::Session(sid)) => Ok(sid),
+        Ok(other) => Err(format!("unexpected answer {other:?}")),
+        Err(why) => Err(why),
+    }
+}
+
+/// Puts `sid` on show, with `note` in the status line, unless the user has put something on show
+/// while it was being made. True: the opening is decided.
+async fn show(net: &WeakEntity<Net>, cx: &mut AsyncApp, sid: Sid, note: Option<String>) -> bool {
+    net.update(cx, |n, cx| {
+        if n.model.current_session().is_none() {
+            n.set_current(Some(sid), cx);
+        }
+        if note.is_some() {
+            n.error = note;
+            cx.notify();
+        }
+    })
+    .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use femme_client::Event;
+    use femme_proto::rpc::Scope;
+    use femme_proto::state::{Attention, Row, Session, SessionStatus};
+    use femme_proto::Id;
+
+    fn session(n: u128, agent: Agent, created: i64) -> Session {
+        Session {
+            id: Id(n),
+            handle: format!("h{n}"),
+            rev: 1,
+            name: None,
+            owner: "board".into(),
+            agent,
+            mode: if agent == Agent::Shell {
+                Mode::Tui
+            } else {
+                Mode::Headless
+            },
+            cwd: "/home/u".into(),
+            label: None,
+            agent_sid: None,
+            model: None,
+            status: SessionStatus::Idle,
+            attention: Attention::None,
+            created,
+            closed: None,
+        }
+    }
+
+    fn model(sessions: Vec<Session>) -> Model {
+        let mut m = Model::default();
+        m.apply(&Event::Changes {
+            scope: Scope::Global,
+            rev: 1,
+            rows: sessions.into_iter().map(Row::Session).collect(),
+        });
+        m
+    }
+
+    #[test]
+    fn nothing_live_means_a_new_claude_session() {
+        assert_eq!(pick(&Model::default()), Choice::CreateClaude);
+        assert_eq!(pick(&model(vec![])), Choice::CreateClaude);
+    }
+
+    #[test]
+    fn shells_and_closed_sessions_do_not_count() {
+        let mut closed = session(2, Agent::Claude, 20);
+        closed.closed = Some(21);
+        let mut ended = session(3, Agent::Claude, 30);
+        ended.status = SessionStatus::Closed;
+        let m = model(vec![session(1, Agent::Shell, 10), closed, ended]);
+        assert_eq!(pick(&m), Choice::CreateClaude);
+    }
+
+    #[test]
+    fn the_newest_live_claude_session_is_shown() {
+        let m = model(vec![
+            session(1, Agent::Claude, 10),
+            session(3, Agent::Claude, 30),
+            session(2, Agent::Claude, 20),
+            session(4, Agent::Shell, 40),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(3)));
+    }
+
+    #[test]
+    fn claude_beats_a_newer_codex_and_codex_beats_pi() {
+        let m = model(vec![
+            session(1, Agent::Claude, 10),
+            session(2, Agent::Codex, 20),
+            session(3, Agent::Pi, 30),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(1)));
+        let m = model(vec![
+            session(2, Agent::Codex, 20),
+            session(3, Agent::Pi, 30),
+            session(5, Agent::Codex, 50),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(5)));
+        let m = model(vec![
+            session(3, Agent::Pi, 30),
+            session(4, Agent::Shell, 40),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(3)));
+    }
+
+    #[test]
+    fn a_closed_claude_gives_way_to_a_live_codex() {
+        let mut closed = session(1, Agent::Claude, 10);
+        closed.closed = Some(11);
+        let m = model(vec![closed, session(2, Agent::Codex, 20)]);
+        assert_eq!(pick(&m), Choice::Show(Id(2)));
+    }
+
+    #[test]
+    fn equal_creation_times_fall_back_on_the_id() {
+        let m = model(vec![
+            session(7, Agent::Claude, 10),
+            session(9, Agent::Claude, 10),
+            session(8, Agent::Claude, 10),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(9)));
+    }
+
+    #[test]
+    fn the_fallback_terminal_is_the_newest_live_shell() {
+        assert_eq!(pick_shell(&Model::default()), None);
+        let mut closed = session(4, Agent::Shell, 40);
+        closed.closed = Some(41);
+        let m = model(vec![
+            session(1, Agent::Shell, 10),
+            session(3, Agent::Shell, 30),
+            session(2, Agent::Claude, 20),
+            closed,
+        ]);
+        assert_eq!(pick_shell(&m), Some(Id(3)));
+        assert_eq!(
+            pick_shell(&model(vec![session(2, Agent::Claude, 20)])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wait_ends_with_the_list_or_after_the_settle_time() {
+        assert!(!ready(false, None), "the link is not even up");
+        assert!(!ready(false, Some(Duration::from_millis(1999))));
+        assert!(ready(false, Some(SETTLE)));
+        assert!(
+            ready(true, None),
+            "the list came: no reason to wait for a link"
+        );
+        assert!(ready(true, Some(Duration::ZERO)));
+    }
+
+    #[test]
+    fn new_sessions_start_in_the_home_directory_unnamed() {
+        // `femmed` takes an empty `cwd` as its home; `~` or a relative path is `Bad`.
+        assert_eq!(
+            create(Agent::Claude, Mode::Headless),
+            Req::SessionCreate {
+                cwd: String::new(),
+                agent: Agent::Claude,
+                mode: Mode::Headless,
+                label: None,
+                name: None,
+                prompt: None,
+            }
+        );
+        let Req::SessionCreate { agent, mode, .. } = create(Agent::Shell, Mode::Tui) else {
+            panic!("not a create")
+        };
+        assert_eq!((agent, mode), (Agent::Shell, Mode::Tui));
+    }
+
+    #[test]
+    fn the_notes_name_the_reason() {
+        let note = shell_note("Internal: claude did not start");
+        assert!(
+            note.contains("a shell is open") && note.ends_with("Internal: claude did not start")
+        );
+        let none = no_session("a", "b");
+        assert!(none.contains("claude: a") && none.contains("shell: b"));
+    }
 }

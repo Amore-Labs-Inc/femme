@@ -314,6 +314,37 @@ pub struct ClientEvent(pub Event);
 
 impl EventEmitter<ClientEvent> for Net {}
 
+/// Where the choice of a first session ([`crate::session::open_at_start`]) stands: it is made once,
+/// however many times the shell asks (every reconnect says `Connected` again).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// Not started, or given up on before anything was decided or made: the next call may start.
+    #[default]
+    Idle,
+    /// A call is waiting for the daemon's list or for the daemon's answer.
+    Running,
+    /// Decided; a session is on show or was made. Later calls do nothing.
+    Done,
+}
+
+impl Opening {
+    /// Claims the opening: true for the first caller only, until it [`end`](Opening::end)s without
+    /// having decided.
+    pub(crate) fn begin(&mut self) -> bool {
+        let first = *self == Opening::Idle;
+        if first {
+            *self = Opening::Running;
+        }
+        first
+    }
+
+    /// The caller is through: `done` when it decided, else (it gave up, or nothing could be made)
+    /// the next call may try again.
+    pub(crate) fn end(&mut self, done: bool) {
+        *self = if done { Opening::Done } else { Opening::Idle };
+    }
+}
+
 /// The client of the daemon, as an entity the views observe.
 pub struct Net {
     /// What the daemon said.
@@ -324,6 +355,8 @@ pub struct Net {
     pub enroll: String,
     /// What the app is waiting for the daemon to do for it ("starting claude…"): in the status line.
     starting: Option<String>,
+    /// How far the choice of a first session has got.
+    pub(crate) opening: Opening,
     client: Arc<Client>,
     rt: tokio::runtime::Handle,
     _tasks: [Task<()>; 2],
@@ -372,6 +405,7 @@ impl Net {
             error: None,
             enroll,
             starting: None,
+            opening: Opening::default(),
             client,
             rt,
             _tasks: [drain, poll],
@@ -949,5 +983,23 @@ mod tests {
             status_line_with(&m, "", None, None),
             status_line(&m, "", None)
         );
+    }
+
+    #[test]
+    fn the_opening_runs_once_until_it_gives_up() {
+        let mut o = Opening::default();
+        assert!(o.begin());
+        assert!(
+            !o.begin(),
+            "a second call while the first runs does nothing"
+        );
+        o.end(false);
+        assert!(
+            o.begin(),
+            "it gave up before deciding: a reconnect may try again"
+        );
+        o.end(true);
+        assert!(!o.begin(), "decided: never again");
+        assert_eq!(o, Opening::Done);
     }
 }
