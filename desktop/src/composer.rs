@@ -6,6 +6,8 @@
 #[allow(dead_code)]
 mod draft;
 #[allow(dead_code)]
+mod files;
+#[allow(dead_code)]
 mod sniff;
 
 use femme_proto::Sid;
