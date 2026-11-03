@@ -78,7 +78,8 @@ accounts overlay. These chords belong to the app even when a terminal has the ke
 the keyboard (F6 gives it, and so does a click unless a text field such as the composer has it: a click on a
 row never takes the keyboard from a field), takes PageUp / PageDown / Home / End; its box turns neon while
 it has it. The composer takes the keyboard when a Claude session becomes current, the terminal pane when a
-shell one does. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width state
+shell one does. A click on the frame's chrome (the top bar and its menu, the gutters, the strip) leaves the
+keyboard where it was. `src/frame.rs` holds the pure rules (centre choice, the panel's hover and width state
 machine, the focus cycle) and their tests.
 
 ## Talking to a daemon
