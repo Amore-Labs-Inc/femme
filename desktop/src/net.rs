@@ -11,7 +11,7 @@ use femme_client::{Client, Event, Link as Transport};
 use femme_proto::rpc::{Req, Resp, Scope};
 use femme_proto::state::{Entity as Kind, Pane, Row, Session, SessionStatus};
 use femme_proto::{PaneId, Sid};
-use gpui::{Context, Task};
+use gpui::{Context, EventEmitter, Task};
 
 use crate::connect::{self, Connect};
 
@@ -222,6 +222,13 @@ pub fn start(c: &Connect) -> anyhow::Result<Started> {
 }
 
 /// The client of the daemon, as an entity the views observe.
+/// Every event of the daemon's client, re-emitted for views that keep more than [`Model`] does (the
+/// transcript's items and deltas, the composer's answers). Subscribe with `cx.subscribe(&net, …)`;
+/// `Model` has already applied the event when it arrives.
+pub struct ClientEvent(pub Event);
+
+impl EventEmitter<ClientEvent> for Net {}
+
 pub struct Net {
     /// What the daemon said.
     pub model: Model,
@@ -250,6 +257,7 @@ impl Net {
                         if n.model.apply(&ev) {
                             cx.notify();
                         }
+                        cx.emit(ClientEvent(ev));
                     })
                     .is_ok();
                 if !alive {
