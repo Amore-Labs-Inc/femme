@@ -4,6 +4,8 @@
 #![allow(missing_docs)] // stub: the owning agent documents what it fills in
 
 #[allow(dead_code)]
+mod draft;
+#[allow(dead_code)]
 mod sniff;
 
 use femme_proto::Sid;
