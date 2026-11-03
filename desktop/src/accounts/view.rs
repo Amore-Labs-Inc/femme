@@ -16,9 +16,9 @@ use super::model::{Account, AccountList, Key, Meta, Usage};
 use super::{clock, AccountsOverlay, CapStatus, Load};
 use crate::theme::{
     self, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PANEL, PAPER, PAUSE,
-    TB_SIZE, WORK,
+    RULE, TB_SIZE, WORK,
 };
-use crate::ui::{button, button_dark, card, dialog, meta, ruled, st};
+use crate::ui::{button, button_dark, card, dialog, meta, ruled, ruled_sides, st};
 
 /// The footer: where the box moves off an account, and what its scheduler says.
 pub(super) fn usage_line(meta: &Meta) -> String {
@@ -177,8 +177,10 @@ impl AccountsOverlay {
         offset: i64,
         cx: &mut Context<Self>,
     ) -> Div {
-        // The title bar is about 34px; the card keeps a margin of 4% of the window top and bottom.
-        let body_max = viewport.height * 0.92 - px(34.);
+        // The title bar is about 34px and the notice strip under it about 24px; the card keeps a
+        // margin of 4% of the window top and bottom.
+        let strip = px(if self.notice.is_some() { 24. } else { 0. });
+        let body_max = viewport.height * 0.92 - px(34.) - strip;
         dialog()
             .w(px(760.))
             .max_w(relative(0.95))
@@ -186,6 +188,7 @@ impl AccountsOverlay {
             .flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.title_bar(cx))
+            .children(self.notice_line())
             .child(
                 div()
                     .id("accounts-body")
@@ -201,7 +204,6 @@ impl AccountsOverlay {
                             .children(self.aws_card())
                             .child(self.keys_card(now, cx))
                             .children(self.login_card(cx))
-                            .children(self.notice_line())
                             .child(self.footer()),
                     ),
             )
@@ -555,13 +557,23 @@ impl AccountsOverlay {
         )
     }
 
-    /// The last refusal or confirmation, in red or green.
+    /// The last refusal or confirmation, in red or green, pinned under the title bar so it shows
+    /// wherever the list is scrolled to.
     fn notice_line(&self) -> Option<Div> {
         self.notice.as_ref().map(|n| {
-            div()
-                .px(px(4.))
-                .text_color(if n.bad { BAD } else { WORK })
-                .child(n.text.clone())
+            ruled_sides(
+                div()
+                    .flex_none()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .bg(PAPER)
+                    .text_color(if n.bad { BAD } else { WORK })
+                    .child(n.text.clone()),
+                px(0.),
+                px(0.),
+                RULE,
+                px(0.),
+            )
         })
     }
 
