@@ -4,6 +4,7 @@
 //! `Req::Caps`. Owned by the accounts agent (docs/desktop-ui.md §accounts).
 
 pub mod clock;
+pub mod model;
 
 use gpui::{div, Context, Entity, IntoElement, ParentElement, Render, Window};
 
