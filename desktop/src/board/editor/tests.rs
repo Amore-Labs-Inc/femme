@@ -715,3 +715,5 @@ fn the_edit_count_moves_with_the_scene_and_not_with_the_view_or_the_selection() 
     assert_eq!(e.selection(), [id]);
     assert_eq!(e.edits(), n);
 }
+
+mod text_and_view;
