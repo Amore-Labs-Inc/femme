@@ -84,14 +84,28 @@ fn ready(listed: bool, up_for: Option<Duration>) -> bool {
     listed || up_for.is_some_and(|d| d >= SETTLE)
 }
 
+/// The daemon's reason without its error kind ("Internal: ") and its own lead-in ("Claude did not
+/// start: "), which the notes below say themselves.
+fn reason(why: &str) -> &str {
+    let why = why.strip_prefix("Internal: ").unwrap_or(why);
+    why.strip_prefix("Claude did not start: ").unwrap_or(why)
+}
+
 /// What the app says when Claude could not be started and a shell stands in.
 fn shell_note(why: &str) -> String {
-    format!("claude did not start, a shell is open instead: {why}")
+    format!(
+        "claude did not start ({}), a shell is open instead",
+        reason(why)
+    )
 }
 
 /// What the app says when not even a shell could be started.
 fn no_session(claude: &str, shell: &str) -> String {
-    format!("no session could be started: claude: {claude}; shell: {shell}")
+    format!(
+        "no session could be started: claude did not start ({}), nor did a shell ({})",
+        reason(claude),
+        reason(shell)
+    )
 }
 
 /// Called by the shell once connected (again after a reconnect: only the first call does anything
@@ -386,12 +400,18 @@ mod tests {
     }
 
     #[test]
-    fn the_notes_name_the_reason() {
-        let note = shell_note("Internal: claude did not start");
-        assert!(
-            note.contains("a shell is open") && note.ends_with("Internal: claude did not start")
+    fn the_notes_name_the_reason_once() {
+        // What femmed says when `claude` is not on the box, as the client prints it.
+        let note = shell_note("Internal: Claude did not start: claude: not found on PATH");
+        assert_eq!(
+            note,
+            "claude did not start (claude: not found on PATH), a shell is open instead"
         );
-        let none = no_session("a", "b");
-        assert!(none.contains("claude: a") && none.contains("shell: b"));
+        // Other words are kept as they are.
+        let none = no_session("connection closed", "Internal: no holder");
+        assert_eq!(
+            none,
+            "no session could be started: claude did not start (connection closed), nor did a shell (no holder)"
+        );
     }
 }
