@@ -18,17 +18,19 @@ use femme_proto::rpc::{PromptHow, Req, Resp};
 use femme_proto::state::SessionStatus;
 use femme_proto::Sid;
 use gpui::{
-    div, prelude::FluentBuilder as _, px, App, AppContext as _, ClipboardEntry, ClipboardItem,
-    Context, Div, Entity, ExternalPaths, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
+    ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
 };
 use gpui_component::input::{Escape, InputEvent, Textarea, TextareaState};
 
 use self::chips::Previews;
 use self::draft::{Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE};
 use crate::net::Net;
-use crate::theme::{self, BAD, BODY_SIZE, FONT_MONO, META_SIZE, MUTED, NEON, PANEL, PAPER};
+use crate::theme::{
+    self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
+};
 use crate::ui::{button, button_dark, ruled};
 
 /// The input is this many lines tall when empty...
@@ -514,12 +516,26 @@ fn request(net: &Entity<Net>, req: Req, cx: &mut Context<Composer>) -> Task<Resu
     })
 }
 
-/// A button that cannot be pressed now: panel grey, muted label, no hover.
-fn dim(b: Stateful<Div>) -> Stateful<Div> {
-    b.bg(PANEL)
-        .text_color(MUTED)
-        .hover(|s| s.bg(PANEL))
-        .cursor_default()
+/// A button that cannot be pressed now: [`button`]'s box in panel grey with a muted label, and no
+/// hover (gpui takes one hover style per element, and `button` has set its own).
+fn disabled_button(id: &'static str, label: &'static str) -> Stateful<Div> {
+    ruled(
+        div()
+            .id(id)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .h(px(34.))
+            .px(px(10.))
+            .font_family(FONT_PIXEL)
+            .text_size(BTN_SIZE)
+            .line_height(relative(1.))
+            .bg(PANEL)
+            .text_color(MUTED)
+            .cursor_default(),
+    )
+    .child(label)
 }
 
 impl Focusable for Composer {
@@ -546,19 +562,17 @@ impl Render for Composer {
         let sending = draft.is_some_and(|d| d.sending);
         let can_send = takes && !sending && (!self.input_empty || !chips.is_empty());
 
-        let attach = button("c-attach", "+");
         let attach = if takes {
-            attach.on_click(cx.listener(|this, _, _, cx| this.pick(cx)))
+            button("c-attach", "+").on_click(cx.listener(|this, _, _, cx| this.pick(cx)))
         } else {
-            dim(attach)
+            disabled_button("c-attach", "+")
         };
-        let send = button_dark("c-send", "send");
         let send = if can_send {
-            send.on_click(
+            button_dark("c-send", "send").on_click(
                 cx.listener(|this, _, window, cx| this.send(PromptHow::Queue, window, cx)),
             )
         } else {
-            dim(send)
+            disabled_button("c-send", "send")
         };
 
         let this = cx.entity().downgrade();
