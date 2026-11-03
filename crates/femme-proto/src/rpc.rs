@@ -112,6 +112,28 @@ pub enum Req {
     Upload { name: String, len: u64 },
     FsList { sid: Sid, path: String },
     FsRead { sid: Sid, path: String },
+    /// One call of the web app's JSON API (`/api/accounts`, `/api/keys`, …) made by the daemon
+    /// on the desktop's behalf, as the owner: the accounts overlay shows what the board shows.
+    /// `method` is GET, POST or DELETE; `body` is the JSON to send (empty for none).
+    BoardApi {
+        method: String,
+        path: String,
+        body: String,
+    },
+    /// Stores `data` as a blob and answers its hash: what a `Prompt` attachment names. At most
+    /// [`MAX_BLOB_PUT`] bytes.
+    BlobPut { name: String, data: Vec<u8> },
+    /// The per-account rotation caps (percent of the 5-hour and the 7-day window at which the
+    /// box moves off an account); accounts without one use the box's `CAP` / `FABLE_CAP`.
+    Caps,
+    /// Sets (or with both `None`, clears) an account's caps. `account` is cswap's number.
+    SetCap {
+        account: u32,
+        five_hour: Option<u8>,
+        weekly: Option<u8>,
+    },
+    /// What the daemon is: its version and the commit the box was deployed from.
+    ServerInfo,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +141,18 @@ pub struct FsEntry {
     pub name: String,
     pub dir: bool,
     pub len: u64,
+}
+
+/// The most a `BlobPut` carries: an attachment, not a transfer (M5 brings `Upload`).
+pub const MAX_BLOB_PUT: usize = 8 << 20;
+
+/// One account's rotation caps, in percent of the window; `None` means the box's default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountCap {
+    /// cswap's account number.
+    pub account: u32,
+    pub five_hour: Option<u8>,
+    pub weekly: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +166,16 @@ pub enum Resp {
     UploadStream(u64),
     FsEntries(Vec<FsEntry>),
     FsData(Vec<u8>),
+    /// The web app's answer to `BoardApi`: its HTTP status and body (JSON, or an error text).
+    BoardApi { status: u16, body: String },
+    /// The hash `BlobPut` stored under.
+    BlobHash([u8; 32]),
+    Caps(Vec<AccountCap>),
+    ServerInfo {
+        version: String,
+        /// `<state>/deployed`: the commit the box runs, when the file is there.
+        deployed: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

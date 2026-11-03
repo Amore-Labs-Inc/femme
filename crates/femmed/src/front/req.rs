@@ -46,6 +46,8 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::BlobGet { .. }
             | Req::FsList { .. }
             | Req::FsRead { .. }
+            | Req::Caps
+            | Req::ServerInfo
     )
 }
 
@@ -148,6 +150,12 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::Upload { .. } | Req::FsList { .. } | Req::FsRead { .. } => {
             Err(unsupported("uploads and file access arrive with M5"))
         }
+        // The desktop redesign (docs/desktop-ui.md): the daemon agent fills these in.
+        Req::BoardApi { .. }
+        | Req::BlobPut { .. }
+        | Req::Caps
+        | Req::SetCap { .. }
+        | Req::ServerInfo => Err(unsupported("not served yet")),
     }
 }
 
