@@ -258,9 +258,23 @@ impl Model {
 /// The nav bar's line: the link, then what to do when QUIC refused this device (the hint names the
 /// command that enrolls it) and the last request that failed.
 pub fn status_line(model: &Model, enroll: &str, error: Option<&str>) -> String {
+    status_line_with(model, enroll, None, error)
+}
+
+/// [`status_line`] with what a request in flight is doing ("starting claude…") between the hint and
+/// the error.
+pub fn status_line_with(
+    model: &Model,
+    enroll: &str,
+    busy: Option<&str>,
+    error: Option<&str>,
+) -> String {
     let mut line = model.status();
     if model.quic_error.is_some() {
         line.push_str(&format!(" | quic refused this device, enroll it: {enroll}"));
+    }
+    if let Some(b) = busy {
+        line.push_str(&format!(" | {b}"));
     }
     if let Some(e) = error {
         line.push_str(&format!(" | {e}"));
@@ -308,6 +322,8 @@ pub struct Net {
     pub error: Option<String>,
     /// The line that enrolls this device, for the hint when QUIC refuses it.
     pub enroll: String,
+    /// What the app is waiting for the daemon to do for it ("starting claude…"): in the status line.
+    starting: Option<String>,
     client: Arc<Client>,
     rt: tokio::runtime::Handle,
     _tasks: [Task<()>; 2],
@@ -355,6 +371,7 @@ impl Net {
             model: Model::default(),
             error: None,
             enroll,
+            starting: None,
             client,
             rt,
             _tasks: [drain, poll],
@@ -393,27 +410,51 @@ impl Net {
         }
     }
 
+    /// Connects again, now (the menu's "reconnect"): QUIC moves to a fresh UDP socket and the
+    /// connection, its streams and the terminals on them carry on; on ssh the connection is dropped
+    /// and dialled at once; while down it stops waiting out the back-off. The client keeps its
+    /// subscriptions and resubscribes by itself, so nothing here is forgotten. A hard drop of a
+    /// healthy QUIC connection is not something the client offers.
+    pub fn reconnect(&self) {
+        // The new socket is registered with the side runtime's reactor, which the UI thread is not in.
+        let _in_rt = self.rt.enter();
+        self.client.rebind();
+    }
+
     /// The side runtime the client lives on.
     pub fn rt(&self) -> tokio::runtime::Handle {
         self.rt.clone()
     }
 
-    /// The nav bar's line.
+    /// The nav bar's line: the link, what the app is starting, the last request that failed.
     pub fn status_line(&self) -> String {
-        status_line(&self.model, &self.enroll, self.error.as_deref())
+        status_line_with(
+            &self.model,
+            &self.enroll,
+            self.starting.as_deref(),
+            self.error.as_deref(),
+        )
+    }
+
+    /// What the app has asked the daemon to start and waits for ("starting claude…"), if anything.
+    pub fn starting(&self) -> Option<&str> {
+        self.starting.as_deref()
+    }
+
+    /// Says what the app waits for (`None`: nothing), in the status line.
+    pub fn set_starting(&mut self, what: Option<String>, cx: &mut Context<Self>) {
+        if self.starting != what {
+            self.starting = what;
+            cx.notify();
+        }
     }
 
     /// Runs `req` on the side runtime. The answer is `None` when the request failed, and the
     /// reason waits in [`Net::error`] for the nav bar.
     pub fn run(&mut self, req: Req, cx: &mut Context<Self>) -> Task<Option<Resp>> {
-        let c = self.client.clone();
-        let sent = self.rt.spawn(async move { c.request(req).await });
+        let sent = self.try_run(req, cx);
         cx.spawn(async move |this, cx| {
-            let answer = match sent.await {
-                Ok(Ok(resp)) => Ok(resp),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
+            let answer = sent.await;
             let error = answer.as_ref().err().cloned();
             this.update(cx, |n, cx| {
                 n.error = error;
@@ -421,6 +462,18 @@ impl Net {
             })
             .ok()?;
             answer.ok()
+        })
+    }
+
+    /// Runs `req` on the side runtime and gives the answer or the reason it failed, leaving
+    /// [`Net::error`] alone: for a caller that has another plan when this one fails.
+    pub fn try_run(&mut self, req: Req, cx: &mut Context<Self>) -> Task<Result<Resp, String>> {
+        let c = self.client.clone();
+        let sent = self.rt.spawn(async move { c.request(req).await });
+        cx.spawn(async move |_, _| match sent.await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(e.to_string()),
         })
     }
 }
@@ -873,5 +926,28 @@ mod tests {
             rows: vec![],
         });
         assert_eq!(m.load, Load::Waiting);
+    }
+
+    #[test]
+    fn the_status_line_says_what_is_being_started() {
+        let mut m = Model::default();
+        m.apply(&Event::Connected {
+            link: Transport::Ssh,
+            server_version: "1".into(),
+            epoch: 1,
+            quic_error: None,
+        });
+        assert_eq!(
+            status_line_with(&m, "", Some("starting claude…"), None),
+            "ssh | starting claude…"
+        );
+        assert_eq!(
+            status_line_with(&m, "", Some("starting a shell…"), Some("boom")),
+            "ssh | starting a shell… | boom"
+        );
+        assert_eq!(
+            status_line_with(&m, "", None, None),
+            status_line(&m, "", None)
+        );
     }
 }
