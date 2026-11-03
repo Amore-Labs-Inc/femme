@@ -24,7 +24,7 @@ gpui-component = "0.8.1"
 # viewer (ui/viewer): `hayro` is a pure-Rust PDF rasteriser (no pdfium, no system libs); `image` decodes
 # rasters with the 8192 px cap (the same 0.25 gpui already links); `syntect` + `two-face` highlight code.
 hayro = "=0.8.0"
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "=0.5.2", default-features = false, features = ["syntect-fancy"] }
 femme-proto = { path = "../crates/femme-proto" }
