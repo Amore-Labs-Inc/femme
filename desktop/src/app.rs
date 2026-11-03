@@ -29,9 +29,9 @@ use femme_client::Event;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, px, relative, size, AnyElement, App, AppContext as _, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
+    Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::tooltip::Tooltip;
 use gpui_component::Root;
@@ -260,9 +260,15 @@ pub struct FemmeApp {
     panes: Vec<Entity<TerminalPane>>,
     /// The window's own stop: the key context of the shell is always in the dispatch path.
     focus: FocusHandle,
+    sidebar_focus: FocusHandle,
+    centre_focus: FocusHandle,
     /// What the centre shows, and what the modules were last told.
     shown: Shown,
     sidebar_open: bool,
+    /// The centre should take the keyboard as soon as there is something to take it.
+    want_focus: bool,
+    /// A module's handle took the keyboard: `verify_focus` looks once the frame that carries it is drawn.
+    check_focus: bool,
     _subs: Vec<Subscription>,
     _bench: Option<Task<()>>,
 }
@@ -308,6 +314,9 @@ impl FemmeApp {
             cx.subscribe_in(&sidebar, window, |t, _, ev: &OpenSession, _, cx| {
                 t.open_session(ev.0, cx)
             }),
+            cx.observe_in(&terminal, window, |t, _, window, cx| {
+                t.terminal_changed(window, cx)
+            }),
         ];
         if let Some(net) = &net {
             subs.push(cx.observe_in(net, window, |t, _, window, cx| t.sync(window, cx)));
@@ -329,6 +338,8 @@ impl FemmeApp {
         Self {
             dots: DotGrid::new(window.scale_factor(), cx),
             focus: cx.focus_handle(),
+            sidebar_focus: cx.focus_handle(),
+            centre_focus: cx.focus_handle(),
             cfg,
             net,
             menu,
@@ -340,6 +351,8 @@ impl FemmeApp {
             panes,
             shown,
             sidebar_open: true,
+            want_focus: false,
+            check_focus: false,
             _subs: subs,
             _bench: bench,
         }
@@ -354,12 +367,14 @@ impl FemmeApp {
         }
     }
 
-    /// Brings the modules in line with the session the daemon's state says is current.
-    fn sync(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    /// Brings the modules in line with the session the daemon's state says is current, and tells
+    /// the keyboard where to go when it changed.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown = match &self.net {
             Some(net) => shown_of(net.read(cx)),
             None => Shown::no_daemon(),
         };
+        let mut new_session = false;
         if shown != self.shown {
             let old = std::mem::replace(&mut self.shown, shown);
             let (sid, cwd, transcript) = (
@@ -370,6 +385,7 @@ impl FemmeApp {
             if old.sid != sid {
                 self.sidebar.update(cx, |s, cx| s.set_selected(sid, cx));
                 self.terminal.update(cx, |t, cx| t.set_session(sid, cx));
+                new_session = sid.is_some();
             }
             if old.transcript() != transcript {
                 self.transcript
@@ -381,7 +397,68 @@ impl FemmeApp {
                 self.files.update(cx, |f, cx| f.set_session(sid, &cwd, cx));
             }
         }
+        if new_session {
+            self.land_focus(window, cx);
+        } else if self.want_focus {
+            self.focus_centre(window, cx);
+        }
         cx.notify();
+    }
+
+    /// The terminal panel attached or dropped a pane: the centre may have its pane now.
+    fn terminal_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.want_focus {
+            self.focus_centre(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The keyboard goes to the composer, or to the terminal that fills the centre. False when the
+    /// centre has nothing to type into yet (a card, a terminal that is not attached): `want_focus`
+    /// stays set, and the panel's next change retries.
+    fn focus_centre(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let handle = match self.shown.centre.clone() {
+            Centre::Transcript(_) => Some(self.composer.focus_handle(cx)),
+            Centre::Terminal(sid) => self
+                .terminal
+                .read(cx)
+                .main_pane(sid)
+                .map(|pane| pane.focus_handle(cx)),
+            Centre::Card(_) => None,
+        };
+        let Some(handle) = handle else {
+            return false;
+        };
+        window.focus(&handle, cx);
+        self.want_focus = false;
+        self.check_focus = true;
+        true
+    }
+
+    /// Called from `render`. A handle that no element carries leaves the keyboard on nothing, and then
+    /// every key of the shell (ctrl-b, F6, ...) is dead until a click. So when a module's
+    /// handle has just taken the keyboard, look once the frame that should carry it is out: if the
+    /// shell does not contain the focus, the centre's own stop takes it back.
+    fn verify_focus(&mut self, window: &mut Window) {
+        if !std::mem::take(&mut self.check_focus) {
+            return;
+        }
+        let (root, centre) = (self.focus.clone(), self.centre_focus.clone());
+        window.on_next_frame(move |window, cx| {
+            if !root.contains_focused(window, cx) {
+                window.focus(&centre, cx);
+            }
+        });
+    }
+
+    /// The keyboard lost its owner (a panel closed, a session changed): the centre takes it. A centre
+    /// with nothing to type into gets its region handle, because a focused handle that is not drawn
+    /// leaves every key of the shell (ctrl-b, F6, ...) without its context.
+    fn land_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.want_focus = true;
+        if !self.focus_centre(window, cx) {
+            window.focus(&self.centre_focus, cx);
+        }
     }
 
     /// The sidebar's click: show that session.
@@ -405,8 +482,12 @@ impl FemmeApp {
         }
     }
 
-    fn toggle_sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
+        // A hidden column must not keep the keyboard.
+        if !self.sidebar_open && self.sidebar_focus.contains_focused(window, cx) {
+            self.land_focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -453,7 +534,8 @@ impl FemmeApp {
                 .w(px(SIDEBAR_W))
                 .h_full()
                 .bg(PAPER)
-                .overflow_hidden(),
+                .overflow_hidden()
+                .track_focus(&self.sidebar_focus),
         )
         .child(
             self.sidebar
@@ -593,8 +675,9 @@ impl FemmeApp {
 }
 
 impl Render for FemmeApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::bench::probe::frame();
+        self.verify_focus(window);
         // The benchmark's `--full-height`: the synthetic terminals alone, no frame.
         if self.cfg.full_height && !self.panes.is_empty() {
             return div()
@@ -618,6 +701,7 @@ impl Render for FemmeApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .track_focus(&self.centre_focus)
                     .child(self.centre(cx)),
             );
         div()
