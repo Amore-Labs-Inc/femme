@@ -304,7 +304,9 @@ fn the_text_being_typed_has_a_frame_the_text_and_a_caret_and_hides_the_shape_it_
         unreachable!()
     };
     assert_eq!(*byte, 4);
-    assert!(frames(&ops).iter().any(|(_, _, e)| e.unwrap().dashed));
+    let frames = frames(&ops);
+    assert_eq!(frames.len(), 1, "one frame, not also the old text's box");
+    assert!(frames[0].2.unwrap().dashed);
 }
 
 #[test]

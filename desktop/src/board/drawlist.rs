@@ -223,7 +223,13 @@ fn selection(ed: &Editor, ops: &mut Vec<Op>) {
     };
     // Room all round, so even a flat line gets a box with some height.
     let padded = |r: Rect| to_screen(&view, r).expand(SELECTION_PAD);
+    // A text being typed has its own frame, around what is typed so far; the box of the old text
+    // under it would only be a second, stale frame.
+    let typed = ed.typing().and_then(|t| t.target);
     for id in ed.selection() {
+        if Some(*id) == typed {
+            continue;
+        }
         if let Some(shape) = ed.scene().get(*id) {
             ops.push(Op::Frame {
                 rect: padded(shape.bounds()),
