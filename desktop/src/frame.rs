@@ -8,15 +8,16 @@ use femme_proto::Sid;
 
 use crate::net::{Link, Load, Model};
 
-/// The desk margin around the frame, and the gutter between its surfaces.
+/// The desk margin around the frame, and the gutter between its surfaces ([`crate::theme::GUTTER`]).
+/// The width rules below are pure, so they hold the sizes as `f32`; a test pins them to the theme's.
 pub const MARGIN: f32 = 6.0;
-/// Height of the top bar.
+/// Height of the top bar ([`crate::theme::TOP_BAR_H`]).
 pub const TOP_BAR: f32 = 36.0;
 /// Width of the sessions column while it is open.
 pub const SIDEBAR_W: f32 = 264.0;
 /// Width of the gutter that holds the sidebar's collapse handle.
 pub const EDGE_W: f32 = 14.0;
-/// Width of the right-hand hover strip.
+/// Width of the right-hand hover strip ([`crate::theme::STRIP_W`]).
 pub const STRIP_W: f32 = 28.0;
 /// Narrowest the right-hand panel gets.
 pub const RIGHT_MIN: f32 = 320.0;
@@ -414,6 +415,15 @@ mod tests {
     use femme_client::Link as Transport;
     use femme_proto::state::Attention;
     use femme_proto::Id;
+
+    use crate::theme;
+
+    #[test]
+    fn the_sizes_are_the_themes() {
+        assert_eq!(MARGIN, f32::from(theme::GUTTER));
+        assert_eq!(TOP_BAR, f32::from(theme::TOP_BAR_H));
+        assert_eq!(STRIP_W, f32::from(theme::STRIP_W));
+    }
 
     fn session(n: u128, agent: Agent, mode: Mode) -> Session {
         Session {
