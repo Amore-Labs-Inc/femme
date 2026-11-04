@@ -35,7 +35,9 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
    most once per frame: under budget, so it stays as it is; `markdown::tests::parse_time`.)
 8. [x] Smooth scroll to the end when the pill is clicked (one 200 ms ease-out, not a jump).
 9. [x] Sidebar collapse: 160 ms width transition (the column alone moves; the frame follows it).
-10. [ ] Bench before/after; `docs/desktop-ui.md` gets the motion rules above.
+10. [x] Bench before/after (`--bench 15 --panes 4`, Xvfb + lavapipe on the box, quick profile):
+    frame work p50 3.01 → 3.06 ms, p99 5.67 → 5.91 ms, max 7.46 → 6.13 ms (noise; both PASS the
+    10 ms target). `docs/desktop-ui.md` has the motion rules.
 
 Skipped: a pulse on the working line (would re-render the transcript every frame, for a signal the
 star already gives); per-word text fades (none of the four apps does it); any spring with bounce.
