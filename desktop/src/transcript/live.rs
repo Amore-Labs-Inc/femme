@@ -313,7 +313,7 @@ impl Transcript {
         let Some((start, from)) = self.glide else {
             return;
         };
-        let t = start.elapsed().as_secs_f32() / GLIDE.as_secs_f32();
+        let t = start.elapsed().as_secs_f32() / crate::motion::scaled(GLIDE).as_secs_f32();
         if t >= 1. {
             self.glide = None;
             self.list.set_follow_mode(FollowMode::Tail);

@@ -17,7 +17,7 @@ const SLIDE: Duration = Duration::from_millis(160);
 
 /// `d` stretched by `FEMME_MOTION_SCALE` (a headful check sets 10 to watch a transition frame by
 /// frame; unset, it is 1).
-fn scaled(d: Duration) -> Duration {
+pub(crate) fn scaled(d: Duration) -> Duration {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     let scale = *SCALE.get_or_init(|| {
         std::env::var("FEMME_MOTION_SCALE")

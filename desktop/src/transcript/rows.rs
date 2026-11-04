@@ -166,7 +166,7 @@ impl Transcript {
                 at
             }
         };
-        if first.elapsed() > FADING {
+        if first.elapsed() > crate::motion::scaled(FADING) {
             return row;
         }
         let Some(a) = appear(("row", seq), true, window, cx) else {
