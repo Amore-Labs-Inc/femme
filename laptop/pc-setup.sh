@@ -11,9 +11,11 @@ command -v mutagen >/dev/null && systemctl --user is-enabled -q mutagen \
   || { echo "pc-setup: install mutagen and enable mutagen.service first (./laptop/laptop-setup.sh)" >&2; exit 1; }
 
 [ "$(uname -s)" = Linux ] || { echo "pc-setup: pc needs a Linux laptop for now" >&2; exit 1; }
-if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm openssh
-elif command -v apt-get >/dev/null; then sudo apt-get install -y -qq openssh-server
-elif command -v dnf >/dev/null; then sudo dnf install -y -q openssh-server
+# mold and rsync are for femme-desktop-update.sh: the app links in a second or two, and only the
+# files a commit touched get rebuilt.
+if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm openssh mold rsync
+elif command -v apt-get >/dev/null; then sudo apt-get install -y -qq openssh-server mold rsync
+elif command -v dnf >/dev/null; then sudo dnf install -y -q openssh-server mold rsync
 else echo "pc-setup: install the OpenSSH server yourself, then rerun" >&2; command -v sshd >/dev/null || exit 1; fi
 grep -q '^Include /etc/ssh/sshd_config.d/\*\.conf' /etc/ssh/sshd_config \
   || sudo sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
