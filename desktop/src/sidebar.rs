@@ -20,6 +20,8 @@
 //! `+ shell` and `+ claude` (the empty state and the foot of the list) create a shell session, or a
 //! headless Claude session, in the daemon's default directory and make it the current one on [`Net`].
 
+use std::collections::HashSet;
+
 use femme_proto::rpc::{Req, Resp};
 use femme_proto::state::{Agent, Attention, Mode, Session, SessionStatus};
 use femme_proto::Sid;
@@ -36,11 +38,11 @@ use gpui_component::tooltip::Tooltip;
 use crate::net::{self, Link, Model, Net};
 use crate::session;
 use crate::theme::{
-    BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
+    ACCENT_SOFT, BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
     PAUSE, QUEUE, RULE, TB_SIZE, WORK,
 };
 use crate::ui::{
-    button, dot, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
+    button, dot, icon, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
 };
 
 /// Width of the expanded sidebar, in logical pixels.
@@ -68,6 +70,9 @@ pub struct OpenSession(pub Sid);
 /// own `‹`/`›` button, or by a click on a dot of the strip. It is [`Sidebar::width`] that changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CollapsedChanged(pub bool);
+
+/// The title bar's add project button: the shell opens the folder picker.
+pub struct AddProject;
 
 /// The status colour of a session's dot: what it is doing, or what it waits for.
 pub fn status_color(s: &Session) -> Rgba {
@@ -125,6 +130,37 @@ fn short_dir(cwd: &str) -> String {
     }
 }
 
+/// The name a project goes by: its folder's last part (`~` for home).
+fn project_name(dir: &str) -> String {
+    dir.rsplit('/').find(|p| !p.is_empty()).unwrap_or(dir).to_string()
+}
+
+/// One project: a folder and the live sessions in it, newest first.
+#[derive(Clone, Debug, PartialEq)]
+struct Group {
+    cwd: String,
+    name: String,
+    dir: String,
+    rows: Vec<Row>,
+}
+
+/// The rows by folder, the project of the newest session first (t3code's sidebar).
+fn groups(rows: &[Row]) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
+    for r in rows {
+        match groups.iter_mut().find(|g| g.cwd == r.cwd) {
+            Some(g) => g.rows.push(r.clone()),
+            None => groups.push(Group {
+                cwd: r.cwd.clone(),
+                name: project_name(&r.dir),
+                dir: r.dir.clone(),
+                rows: vec![r.clone()],
+            }),
+        }
+    }
+    groups
+}
+
 /// What one row shows, worked out from the model so the order and the words are testable without
 /// a window.
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +170,8 @@ struct Row {
     title: String,
     agent: &'static str,
     dir: String,
+    /// The folder as the daemon has it: what the project groups by.
+    cwd: String,
 }
 
 impl Row {
@@ -144,6 +182,7 @@ impl Row {
             title: net::title(s),
             agent: agent_name(s.agent),
             dir: short_dir(&s.cwd),
+            cwd: s.cwd.trim_end_matches('/').to_string(),
         }
     }
 }
@@ -247,6 +286,8 @@ pub struct Sidebar {
     /// The keyboard cursor.
     cursor: Option<Sid>,
     collapsed: bool,
+    /// The projects folded shut, by folder.
+    folded: HashSet<String>,
     /// A `+ shell` or `+ claude` request is out: a second click would queue a second session.
     creating: bool,
     focus: FocusHandle,
@@ -258,6 +299,7 @@ pub struct Sidebar {
 
 impl EventEmitter<OpenSession> for Sidebar {}
 impl EventEmitter<CollapsedChanged> for Sidebar {}
+impl EventEmitter<AddProject> for Sidebar {}
 
 impl Sidebar {
     /// A sidebar with its own focus stop, listing the live sessions `net` knows of (none without
@@ -276,6 +318,7 @@ impl Sidebar {
             selected: None,
             cursor: None,
             collapsed: false,
+            folded: HashSet::new(),
             creating: false,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -354,10 +397,30 @@ impl Sidebar {
 
     /// Scrolls the list so `sid`, if it is a row, is in view (at the next frame).
     fn reveal(&self, sid: Option<Sid>) {
-        let at = sid.and_then(|s| self.shown.rows.iter().position(|r| r.sid == s));
+        let at = sid.and_then(|s| self.place(s));
         if let Some(ix) = at {
             self.scroll.scroll_to_item(ix);
         }
+    }
+
+    /// Where `sid` is among the children of the scroller: the strip has one dot per session, the
+    /// list a header per project before its rows (none for a folded one's).
+    fn place(&self, sid: Sid) -> Option<usize> {
+        if self.collapsed {
+            return self.shown.rows.iter().position(|r| r.sid == sid);
+        }
+        let mut ix = 0;
+        for g in groups(&self.shown.rows) {
+            ix += 1;
+            if self.folded.contains(&g.cwd) {
+                continue;
+            }
+            if let Some(i) = g.rows.iter().position(|r| r.sid == sid) {
+                return Some(ix + i);
+            }
+            ix += g.rows.len();
+        }
+        None
     }
 
     /// The pointer entered or left a row or a dot. gpui paints the tint from the hit test but only
@@ -375,9 +438,18 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// The sessions on the list, in its order: the folded projects' are not.
+    fn visible(&self) -> Vec<Sid> {
+        groups(&self.shown.rows)
+            .into_iter()
+            .filter(|g| self.collapsed || !self.folded.contains(&g.cwd))
+            .flat_map(|g| g.rows.into_iter().map(|r| r.sid))
+            .collect()
+    }
+
     /// Moves the cursor, from where it is, else from the selected session.
     fn go(&mut self, go: Go, cx: &mut Context<Self>) {
-        let ids: Vec<Sid> = self.shown.rows.iter().map(|r| r.sid).collect();
+        let ids = self.visible();
         if let Some(to) = step(&ids, self.cursor.or(self.selected), go) {
             self.cursor = Some(to);
             self.reveal(Some(to));
@@ -417,14 +489,21 @@ impl Sidebar {
 
     /// `+ shell` / `+ claude`: a session of `agent` in the daemon's default directory, which becomes
     /// the current one.
-    fn create(&mut self, agent: Agent, mode: Mode, model: Option<&str>, cx: &mut Context<Self>) {
+    fn create(
+        &mut self,
+        cwd: &str,
+        agent: Agent,
+        mode: Mode,
+        model: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| n.run(session::create(agent, mode, model), cx));
+        let sent = net.update(cx, |n, cx| n.run(session::create_in(cwd, agent, mode, model), cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -484,7 +563,10 @@ impl Sidebar {
         if collapsed {
             bare_bar().justify_center().child(toggle)
         } else {
-            title_bar("sessions").child(toggle)
+            let add = title_button("sb-add-project", Glyph::Plus)
+                .tooltip(|window, cx| Tooltip::new("Add project").build(window, cx))
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(AddProject)));
+            title_bar("sessions").child(add).child(toggle)
         }
     }
 
@@ -496,7 +578,7 @@ impl Sidebar {
                    mode: Mode,
                    model: Option<&'static str>| {
             let b = button(id, label)
-                .on_click(cx.listener(move |this, _, _, cx| this.create(agent, mode, model, cx)));
+                .on_click(cx.listener(move |this, _, _, cx| this.create("", agent, mode, model, cx)));
             if self.creating {
                 b.opacity(0.5)
             } else {
@@ -537,17 +619,8 @@ impl Sidebar {
             .text_size(META_SIZE)
             .line_height(px(16.))
             .text_color(if on { INK } else { MUTED })
-            .child(div().flex_none().child(r.agent))
-            // The end of a path says more than its start: when it does not fit, the start goes.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .child(r.dir.clone()),
-            );
+            // The folder is the project's header above.
+            .child(div().flex_none().child(r.agent));
         row(SharedString::from(format!("sb-{sid}")), on)
             .flex_none()
             .gap(px(9.))
@@ -583,6 +656,60 @@ impl Sidebar {
                 ),
             )
             .when(cursor, |d| d.child(ring()))
+    }
+
+    /// A project's header: the chevron, its folder's name, and on hover `+` for a new Claude
+    /// session there. A click folds it; a folded one says how many sessions it hides.
+    fn project(&self, g: &Group, folded: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let cwd = g.cwd.clone();
+        let fold = cwd.clone();
+        let hover = SharedString::from(format!("sbp-g-{}", g.cwd));
+        let tip = SharedString::from(g.dir.clone());
+        let new_tip = SharedString::from(format!("New session in {}", g.name));
+        div()
+            .id(SharedString::from(format!("sbp-{}", g.cwd)))
+            .group(hover.clone())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .w_full()
+            .h(px(32.))
+            .mt(px(6.))
+            .pl(px(8.))
+            .pr(px(8.))
+            .cursor_pointer()
+            .hover(|s| s.bg(ACCENT_SOFT))
+            .on_hover(cx.listener(Self::hover_changed))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.folded.remove(&fold) {
+                    this.folded.insert(fold.clone());
+                }
+                cx.notify();
+            }))
+            .child(icon(if folded { Glyph::Right } else { Glyph::Down }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(FONT_MONO)
+                    .text_size(META_SIZE)
+                    .text_color(INK)
+                    .child(g.name.clone()),
+            )
+            .when(folded, |d| d.child(meta(g.rows.len().to_string())))
+            .child(
+                icon_button(SharedString::from(format!("sbp-new-{}", g.cwd)), Glyph::Plus)
+                    .opacity(0.)
+                    .group_hover(hover, |s| s.opacity(1.))
+                    .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.create(&cwd, Agent::Claude, Mode::Headless, None, cx);
+                    })),
+            )
     }
 
     /// A dot of the collapsed strip. A click opens the session and expands the sidebar.
@@ -641,11 +768,14 @@ impl Sidebar {
                 .child(div().text_color(MUTED).child(self.note()))
                 .when(self.can_create(), |d| d.child(self.new_buttons(cx)));
         }
-        let rows = shown
-            .rows
-            .iter()
-            .map(|r| self.entry(r, focused, cx))
-            .collect();
+        let mut rows = Vec::new();
+        for g in groups(&shown.rows) {
+            let folded = self.folded.contains(&g.cwd);
+            rows.push(self.project(&g, folded, cx));
+            if !folded {
+                rows.extend(g.rows.iter().map(|r| self.entry(r, focused, cx)));
+            }
+        }
         let foot = ruled_sides(div(), RULE, px(0.), px(0.), px(0.))
             .flex()
             .flex_none()
@@ -806,6 +936,24 @@ mod tests {
             ("fix the build".into(), "codex", "/srv/app".into())
         );
         assert_eq!(say(&rows[2]), ("nightly".into(), "claude", "~/work".into()));
+    }
+
+    #[test]
+    fn sessions_group_by_folder_newest_project_first() {
+        let mut a = session(1, 10);
+        a.cwd = "/home/u/femme".into();
+        let mut b = session(2, 20);
+        b.cwd = "/home/u/work/".into();
+        let mut c = session(3, 30);
+        c.cwd = "/home/u/femme/".into();
+        let mut home = session(4, 5);
+        home.cwd = "/home/u".into();
+        let g = groups(&rows(&model(vec![a, b, c, home])));
+        let say: Vec<(&str, Vec<u128>)> = g
+            .iter()
+            .map(|g| (g.name.as_str(), ids(&g.rows)))
+            .collect();
+        assert_eq!(say, [("femme", vec![3, 1]), ("work", vec![2]), ("~", vec![4])]);
     }
 
     #[test]
