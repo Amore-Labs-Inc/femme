@@ -693,4 +693,26 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["h", "p", "l", "c", "q", "p"]);
     }
+
+    /// How long one re-parse of a long streamed message takes (it runs per delta on the UI
+    /// thread). Run with `cargo test --release -- --ignored --nocapture parse_time`.
+    #[test]
+    #[ignore]
+    fn parse_time() {
+        let unit = "## A heading\n\nSome **bold** and *italic* text with `code` and a \
+                    [link](https://example.com) in a paragraph that runs on for a while.\n\n\
+                    - one item\n- two item with `x`\n- three\n\n\
+                    ```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\n\
+                    | a | b |\n|---|---|\n| 1 | 2 |\n\n> a quote line\n\n";
+        let mut text = String::new();
+        while text.len() < 40_000 {
+            text.push_str(unit);
+        }
+        let runs = 50;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(parse(std::hint::black_box(&text)));
+        }
+        println!("parse of {} bytes: {:?}", text.len(), start.elapsed() / runs);
+    }
 }

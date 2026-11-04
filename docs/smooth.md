@@ -30,8 +30,9 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 4. [x] Accounts card and add-project palette: scrim fades, card rises 6 px and fades.
 5. [ ] Transcript "↓" pill: 150 ms show debounce, fade in, instant hide.
 6. [ ] Transcript: rows of items created in the last second fade in (whole row).
-7. [ ] Transcript: measure the markdown re-parse per delta; only move it off the UI thread if it
-   is over a frame's budget on a long message.
+7. [x] Transcript: measure the markdown re-parse per delta; only move it off the UI thread if it
+   is over a frame's budget on a long message. (40 KB message: 1.75 ms release, 6.5 ms debug, at
+   most once per frame: under budget, so it stays as it is; `markdown::tests::parse_time`.)
 8. [ ] Smooth scroll to the end when the pill is clicked (one 200 ms ease-out, not a jump).
 9. [x] Sidebar collapse: 160 ms width transition (the column alone moves; the frame follows it).
 10. [ ] Bench before/after; `docs/desktop-ui.md` gets the motion rules above.
