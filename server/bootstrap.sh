@@ -73,6 +73,8 @@ esac
 install -m755 server/pc.sh ~/.local/bin/pc
 # `claude` typed in a FEMME shell pane opens a daemon session (claude-shim.sh); anywhere else it is the real claude.
 install -m755 server/claude-shim.sh ~/.local/bin/claude
+# `claude-deepseek`: Claude Code on DeepSeek through OpenGateway, once ~/.config/opengateway/key exists.
+install -m755 server/claude-deepseek.sh ~/.local/bin/claude-deepseek
 # The same rule for every agent: Claude reads ~/.claude/rules, Codex its global ~/.codex/AGENTS.md.
 mkdir -p ~/.claude/rules && cp server/rules/pc.md ~/.claude/rules/femme-pc.md
 { [ -f ~/.codex/AGENTS.md ] && sed '/^<!-- femme pc start -->$/,/^<!-- femme pc end -->$/d' ~/.codex/AGENTS.md
