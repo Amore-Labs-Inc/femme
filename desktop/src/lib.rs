@@ -15,6 +15,7 @@ pub mod display;
 pub mod files;
 pub mod frame;
 pub mod menu;
+pub mod motion;
 pub mod net;
 pub mod projects;
 pub mod rng;
