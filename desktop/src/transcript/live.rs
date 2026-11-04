@@ -22,6 +22,7 @@ use gpui::{
     MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, Window,
 };
+use gpui_base::animation::cubic_bezier;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::WindowExt as _;
 use tokio::sync::watch;
@@ -47,6 +48,9 @@ const RETRY: Duration = Duration::from_secs(3);
 /// How long the user has to be away from the end before the "↓" pill shows: a short scroll up
 /// and back does not make it blink.
 const PILL_AFTER: Duration = Duration::from_millis(150);
+
+/// How long the scroll back to the end takes when the pill is clicked.
+const GLIDE: Duration = Duration::from_millis(200);
 
 /// The transcript of one session: build it once with [`Transcript::new`], point it at a session
 /// with [`Transcript::set_session`].
@@ -81,6 +85,8 @@ pub struct Transcript {
     unseen: Option<Instant>,
     /// Redraws once the pill's wait is over.
     pill_timer: Option<Task<()>>,
+    /// The scroll back to the end under way: when it started and from how far down.
+    glide: Option<(Instant, Pixels)>,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
     /// Redraws once a second while the session works, for the clock in the working line.
@@ -142,6 +148,7 @@ impl Transcript {
             fresh: HashMap::new(),
             unseen: None,
             pill_timer: None,
+            glide: None,
             note: None,
             ticker: None,
             _events: events,
@@ -167,6 +174,7 @@ impl Transcript {
         (self.paging, self.page_failed) = (false, false);
         self.unseen = None;
         self.pill_timer = None;
+        self.glide = None;
         self.note = None;
         self.generation += 1;
         self.list.reset(0);
@@ -239,6 +247,8 @@ impl Transcript {
 
     /// The list was scrolled by the user: to the top (older items are wanted), or back to the end.
     fn scrolled(&mut self, top: bool, following: bool, cx: &mut Context<Self>) {
+        // The user's own scroll wins over the glide to the end.
+        self.glide = None;
         if top {
             self.page_failed = false;
             self.load_older(cx);
@@ -265,9 +275,57 @@ impl Transcript {
 
     /// Scrolls to the end and follows the text as it arrives again.
     fn follow(&mut self, cx: &mut Context<Self>) {
+        self.glide = None;
         self.list.set_follow_mode(FollowMode::Tail);
         self.seen();
         cx.notify();
+    }
+
+    /// How far down the view is, and how far down the end is, as far as the list has measured.
+    fn scroll_span(&self) -> (Pixels, Pixels) {
+        (
+            -self.list.scroll_px_offset_for_scrollbar().y,
+            self.list.max_offset_for_scrollbar().y,
+        )
+    }
+
+    /// Glides to the end over 200 ms, then follows the text again; a jump under "reduce motion".
+    /// From far up it first jumps to a screen above the end, so the glide never sweeps through
+    /// pages of rows.
+    fn glide_to_end(&mut self, cx: &mut Context<Self>) {
+        if cx.reduce_motion() {
+            return self.follow(cx);
+        }
+        self.seen();
+        let (now, end) = self.scroll_span();
+        let screen = self.list.viewport_bounds().size.height;
+        if end - now > screen * 2. {
+            self.list.scroll_by(end - screen - now);
+        }
+        self.glide = Some((Instant::now(), self.scroll_span().0));
+        cx.notify();
+    }
+
+    /// One frame of the glide, before the list is laid out. The end is read again every frame:
+    /// rows below the view are measured only as they come into it, so it moves while the glide
+    /// runs, and following the tail at the end lands exactly on it whatever was left.
+    fn glide_step(&mut self, window: &mut Window) {
+        let Some((start, from)) = self.glide else {
+            return;
+        };
+        let t = start.elapsed().as_secs_f32() / GLIDE.as_secs_f32();
+        if t >= 1. {
+            self.glide = None;
+            self.list.set_follow_mode(FollowMode::Tail);
+            return;
+        }
+        let (now, end) = self.scroll_span();
+        let ease = cubic_bezier(0.32, 0.72, 0., 1.);
+        let want = from + (end - from) * ease(t);
+        if want > now {
+            self.list.scroll_by(want - now);
+        }
+        window.request_animation_frame();
     }
 
     /// The markdown of the message `seq` (whose text is `text`), read again only when the item
@@ -454,6 +512,7 @@ impl Transcript {
             }
             _ => return,
         }
+        self.glide = None;
         window.refresh();
         cx.notify();
     }
@@ -509,7 +568,7 @@ impl Transcript {
                         .cursor_pointer()
                         .hover(|s| s.bg(HOVER)),
                 )
-                .on_click(cx.listener(|this, _, _, cx| this.follow(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.glide_to_end(cx)))
                 .child(div().font_family(FONT_MONO).text_size(px(12.)).child("↓"))
                 .child(
                     div()
@@ -614,6 +673,7 @@ impl Render for Transcript {
                 .ok();
             });
         }
+        self.glide_step(window);
         let working = self.working_line(cx);
         let pill = self.pill(window, cx);
         div()
