@@ -874,7 +874,8 @@ impl Render for FemmeApp {
         // it is given alone.
         let column = StyleRefinement::default()
             .h_full()
-            .w(self.sidebar.read(cx).width());
+            // Collapsing and expanding slide the column over 160 ms; the frame follows it each frame.
+            .w(motion::slide("sidebar-w", self.sidebar.read(cx).width(), window, cx));
         let body = div()
             .flex_1()
             .min_h_0()

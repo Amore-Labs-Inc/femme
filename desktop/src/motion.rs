@@ -40,3 +40,15 @@ pub fn appear(id: impl Into<ElementId>, present: bool, window: &mut Window, cx: 
         .sample(window, cx);
     s.should_render().then_some(Appear { t: s.progress })
 }
+
+/// A width (or any length) on its way to `target`: 160 ms ease-out, the same curve. The value is
+/// `target` at once under reduce motion.
+pub fn slide(id: impl Into<ElementId>, target: Pixels, window: &mut Window, cx: &mut App) -> Pixels {
+    gpui_base::transition(
+        id.into(),
+        target,
+        Transition::new(Duration::from_millis(160)).ease(cubic_bezier(0.32, 0.72, 0., 1.)),
+        window,
+        cx,
+    )
+}
