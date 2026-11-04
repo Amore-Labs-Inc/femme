@@ -4,6 +4,8 @@
 //! - `femmed proxy`: `ssh -T host femmed proxy` turns the SSH channel into a byte pipe to the
 //!   daemon's unix socket ([`config::sock_path`]); the client speaks the same frames over it as
 //!   over QUIC.
+//! - `femmed open`: asks the daemon for a headless Claude session in this directory and prints its id.
+//!   A bare `claude` typed in a FEMME shell pane runs it (`server/claude-shim.sh`).
 //! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
 //!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
@@ -22,9 +24,13 @@ use std::time::Duration;
 
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
+use femme_proto::rpc::{Req, Resp};
+use femme_proto::state::{Agent, Mode};
+use femme_transport::DeviceIdentity;
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
+use ulid::Ulid;
 
 use crate::config::{self, Config};
 
@@ -37,6 +43,8 @@ const HOOK_BUDGET: Duration = Duration::from_secs(5);
 /// How long a hook keeps trying a daemon that refuses connections: a restart (every deploy) is a
 /// second or two, and a status lost in that gap would leave the session stale until the next hook.
 const RETRY_WINDOW: Duration = Duration::from_secs(3);
+/// How long `femmed open` waits for the daemon to create the session (it starts the agent first).
+const ANSWER_WAIT: Duration = Duration::from_secs(20);
 
 /// `femmed`'s command line.
 #[derive(Debug, Parser)]
@@ -59,6 +67,12 @@ pub enum Command {
     Serve,
     /// Relay stdin and stdout to the daemon's local socket (the SSH fallback: `ssh -T host femmed proxy`).
     Proxy,
+    /// Start a headless Claude session in the daemon, in `--cwd` (default: here), and print its id.
+    Open {
+        /// The directory to start in.
+        #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+        cwd: Option<String>,
+    },
     /// Report a PTY-mode agent's status to the daemon (Claude hooks, Codex notify, the pi extension).
     Hook {
         /// The agent reporting.
@@ -302,6 +316,7 @@ pub async fn run(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Open { cwd } => finish("open", open(cwd).await),
         Command::Hook {
             agent,
             event,
@@ -339,6 +354,35 @@ pub async fn run(cli: Cli) -> ExitCode {
             "devices",
             crate::front::admin::revoke(&Config::load(), &device),
         ),
+    }
+}
+
+/// `femmed open`: asks the daemon, over the socket `femmed proxy` connects to, for a headless Claude
+/// session in `cwd` (default: here) and returns its id. The desktop lists the session like any other.
+async fn open(cwd: Option<String>) -> anyhow::Result<String> {
+    let cwd = match cwd {
+        Some(cwd) => cwd,
+        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+    };
+    // The client would wait out ANSWER_WAIT for a daemon that is not there; the shim falls back at once.
+    let sock = config::sock_path();
+    anyhow::ensure!(sock.exists(), "no daemon at {}", sock.display());
+    let mut proxy = tokio::process::Command::new(std::env::current_exe()?);
+    proxy.arg("proxy");
+    let mut cfg = femme_client::Config::new(DeviceIdentity::generate("femmed open"), Ulid::generate());
+    cfg.ssh_command = Some(proxy);
+    let client = femme_client::Client::start(cfg);
+    let req = Req::SessionCreate {
+        cwd,
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+    };
+    match client.request_timeout(req, ANSWER_WAIT).await? {
+        Resp::Session(sid) => Ok(sid.to_string()),
+        other => anyhow::bail!("unexpected answer {other:?}"),
     }
 }
 
