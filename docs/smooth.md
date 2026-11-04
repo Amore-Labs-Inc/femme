@@ -9,8 +9,11 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 - Appear: 180 ms ease-out (`cubic-bezier(.32,.72,0,1)`, T3's drawer curve), fade plus a short move
   (a panel slides from its edge, a menu drops 4 px, a card rises 6 px). Leave: same curve back,
   from wherever the appearance was. Nothing longer than 200 ms, nothing bouncy.
-- Motion runs at the display's own rate: no frame caps on a transition, and a transition only
-  dirties what it moves (panels are `.cached` leaves), so it is cheap enough to stay at full rate.
+- Motion runs at the display's own rate, as high as the display goes: a transition asks for the
+  next frame every frame (`request_animation_frame`), nothing caps it (the only `with_max_fps` in
+  the app are the two tiny spinners, 10 and 12 fps on purpose), and it dirties only what it moves
+  (panels are `.cached` leaves). Budget: 120 Hz ProMotion is 8.3 ms a frame; the bench's frame
+  work is p99 5.9 ms *software-rendered* on the box (no GPU), so a MacBook has headroom to spare.
 - Hover, selection, tab switch, typing: instant. Motion never blocks input; it can be reversed
   mid-way (`Presence` does this).
 - Streamed text appends; nothing per token is animated, laid out again, or re-scrolled by hand. The
@@ -41,3 +44,12 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 
 Skipped: a pulse on the working line (would re-render the transcript every frame, for a signal the
 star already gives); per-word text fades (none of the four apps does it); any spring with bounce.
+
+## Seen, not only tested
+
+Under Xvfb + lavapipe with `FEMME_MOTION_SCALE=10` (burst screenshots ~120 ms apart): the menu
+half-transparent as it drops, the panel half-transparent as it slides, the sidebar box shrinking with
+its column; against a scratch daemon and the fake `claude` (`slow`: 50 lines over 10 s): the user
+card and the streamed rows faint on their first frame and settled on the next, the view holding
+after a wheel-up mid-stream while the "↓ new" pill fades in, and after a click on it the list at the
+end with the pill fading out. The 200 ms glide itself is between two captures at that cadence.
