@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
@@ -33,6 +33,7 @@ use super::splice;
 use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
 use super::working;
+use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
 use crate::theme::{BAD, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PAPER};
 use crate::ui::{meta, ruled};
@@ -42,6 +43,10 @@ const PAGE: u16 = 100;
 
 /// How long to wait before joining a scope again after the daemon refused.
 const RETRY: Duration = Duration::from_secs(3);
+
+/// How long the user has to be away from the end before the "↓" pill shows: a short scroll up
+/// and back does not make it blink.
+const PILL_AFTER: Duration = Duration::from_millis(150);
 
 /// The transcript of one session: build it once with [`Transcript::new`], point it at a session
 /// with [`Transcript::set_session`].
@@ -70,8 +75,10 @@ pub struct Transcript {
     pub(super) asks: HashMap<u64, Ask>,
     /// The markdown of the messages, read once per version of the item.
     docs: HashMap<u64, (u64, Arc<Doc>)>,
-    /// Rows came in at the end while the user was reading further up.
-    unseen: bool,
+    /// Rows came in at the end while the user was reading further up, since when.
+    unseen: Option<Instant>,
+    /// Redraws once the pill's wait is over.
+    pill_timer: Option<Task<()>>,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
     /// Redraws once a second while the session works, for the clock in the working line.
@@ -130,7 +137,8 @@ impl Transcript {
             thumbs: HashMap::new(),
             asks: HashMap::new(),
             docs: HashMap::new(),
-            unseen: false,
+            unseen: None,
+            pill_timer: None,
             note: None,
             ticker: None,
             _events: events,
@@ -152,7 +160,9 @@ impl Transcript {
         self.thumbs.clear();
         self.fetching.clear();
         self.failed.clear();
-        (self.paging, self.page_failed, self.unseen) = (false, false, false);
+        (self.paging, self.page_failed) = (false, false);
+        self.unseen = None;
+        self.pill_timer = None;
         self.note = None;
         self.generation += 1;
         self.list.reset(0);
@@ -203,8 +213,15 @@ impl Transcript {
         for i in plan.remeasure {
             self.list.remeasure_items(i..i + 1);
         }
-        if self.layout.rows.last() != next.rows.last() && !self.list.is_following_tail() {
-            self.unseen = true;
+        if self.layout.rows.last() != next.rows.last()
+            && !self.list.is_following_tail()
+            && self.unseen.is_none()
+        {
+            self.unseen = Some(Instant::now());
+            self.pill_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(PILL_AFTER).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }));
         }
         self.layout = next;
         let items = &self.items;
@@ -222,8 +239,8 @@ impl Transcript {
             self.page_failed = false;
             self.load_older(cx);
         }
-        if following && self.unseen {
-            self.unseen = false;
+        if following && self.unseen.is_some() {
+            self.seen();
             cx.notify();
         }
     }
@@ -236,10 +253,16 @@ impl Transcript {
         self.refresh(cx);
     }
 
+    /// The user is back at the end: the pill goes at once.
+    fn seen(&mut self) {
+        self.unseen = None;
+        self.pill_timer = None;
+    }
+
     /// Scrolls to the end and follows the text as it arrives again.
     fn follow(&mut self, cx: &mut Context<Self>) {
         self.list.set_follow_mode(FollowMode::Tail);
-        self.unseen = false;
+        self.seen();
         cx.notify();
     }
 
@@ -423,7 +446,7 @@ impl Transcript {
             }),
             "end" => {
                 self.list.set_follow_mode(FollowMode::Tail);
-                self.unseen = false;
+                self.seen();
             }
             _ => return,
         }
@@ -454,11 +477,16 @@ impl Transcript {
             .child(word)
     }
 
-    /// The pill that brings the user back to the end of the text.
-    fn pill(&self, cx: &Context<Self>) -> Div {
-        div()
+    /// The pill that brings the user back to the end of the text, rising 6 px as it fades in.
+    fn pill(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let shown = self.unseen.is_some_and(|t| t.elapsed() >= PILL_AFTER);
+        // Keyed by the session shown, so a pill left over from the last session does not fade
+        // out over the next one.
+        let a = appear(("to-end", self.generation), shown, window, cx)?;
+        Some(div()
             .absolute()
-            .bottom(px(12.))
+            .bottom(px(12.) - a.offset(6.))
+            .opacity(a.opacity())
             .left_0()
             .right_0()
             .flex()
@@ -486,7 +514,7 @@ impl Transcript {
                         .line_height(relative(1.))
                         .child("new"),
                 ),
-            )
+            ))
     }
 }
 
@@ -565,17 +593,17 @@ impl Transcript {
 
 impl Render for Transcript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.unseen && self.list.is_following_tail() {
-            self.unseen = false;
+        if self.unseen.is_some() && self.list.is_following_tail() {
+            self.seen();
         }
-        if self.unseen {
+        if self.unseen.is_some() {
             // The list takes up following again while it is laid out, after this render: look
             // once more when the frame is done, so the pill goes when the user is back at the end.
             let this = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 this.update(cx, |t, cx| {
                     if t.list.is_following_tail() {
-                        t.unseen = false;
+                        t.seen();
                         cx.notify();
                     }
                 })
@@ -583,6 +611,7 @@ impl Render for Transcript {
             });
         }
         let working = self.working_line(cx);
+        let pill = self.pill(window, cx);
         div()
             .size_full()
             .relative()
@@ -624,7 +653,7 @@ impl Render for Transcript {
                 )
             })
             .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
-            .when(self.unseen, |d| d.child(self.pill(cx)))
+            .children(pill)
             .when_some(self.note.clone(), |d, note| {
                 d.child(
                     ruled(
