@@ -19,6 +19,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::Sizable as _;
 
+use crate::motion;
 use crate::net::Net;
 use crate::session;
 use crate::theme::{self, BAD, BODY_SIZE, FONT_MONO, FONT_UI, INK, PAPER};
@@ -436,10 +437,13 @@ impl Focusable for Picker {
 
 impl Render for Picker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.open {
+        // The layer fades and the card rises 6 px into place; both go the same way, drawn until gone.
+        let Some(a) = motion::appear("picker-layer", self.open, window, cx) else {
             return div().into_any_element();
+        };
+        if self.open {
+            self.sync(window, cx);
         }
-        self.sync(window, cx);
         div()
             .absolute()
             .inset_0()
@@ -448,6 +452,7 @@ impl Render for Picker {
             .items_start()
             .pt(relative(0.12))
             .bg(theme::rgba8(0x000000, 0.25))
+            .opacity(a.opacity())
             .occlude()
             .key_context("Picker")
             .track_focus(&self.focus)
@@ -458,7 +463,7 @@ impl Render for Picker {
             // Before the field: Enter, Tab and the arrows are the palette's, not the field's.
             .capture_key_down(cx.listener(Self::on_key))
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, _, cx| t.close(cx)))
-            .child(self.card(cx))
+            .child(div().mt(a.offset(6.)).child(self.card(cx)))
             .into_any_element()
     }
 }

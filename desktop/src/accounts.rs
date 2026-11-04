@@ -448,11 +448,14 @@ impl AccountsOverlay {
 
 impl Render for AccountsOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.open {
+        // The layer fades and the card rises into place; both go the same way, drawn until gone.
+        let Some(a) = crate::motion::appear("accounts-layer", self.open, window, cx) else {
             return div().into_any_element();
+        };
+        if self.open {
+            self.sync(window, cx);
         }
-        self.sync(window, cx);
-        self.layer(window.viewport_size(), cx)
+        self.layer(window.viewport_size(), a, cx)
     }
 }
 

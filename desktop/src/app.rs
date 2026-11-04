@@ -889,9 +889,10 @@ impl Render for FemmeApp {
                     .h_full()
                     .track_focus(&self.centre_focus)
                     .child(self.centre(window, cx))
-                    // The card is its own layer (scrim, focus, escape): it only needs a positioned parent.
-                    .when(self.modal_open, |d| d.child(self.accounts.clone()))
-                    .when(self.picker.read(cx).is_open(), |d| d.child(self.picker.clone())),
+                    // Each card is its own layer (scrim, focus, escape): it only needs a positioned
+                    // parent. Always mounted: closed, it draws nothing, and it fades itself out.
+                    .child(self.accounts.clone())
+                    .child(self.picker.clone()),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));
         // The board has the keyboard while it is open: the shell's own chords are off then.

@@ -14,6 +14,7 @@ use gpui_component::Sizable as _;
 
 use super::model::{Account, AccountList, Key, Meta, Usage};
 use super::{clock, AccountsOverlay, CapStatus, Load};
+use crate::motion::Appear;
 use crate::theme::{
     self, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PANEL, PAPER, PAUSE,
     RULE, TB_SIZE, WORK,
@@ -139,7 +140,12 @@ fn cap_box(state: &Entity<InputState>) -> Div {
 impl AccountsOverlay {
     /// The whole layer: the dimmed window and the card in its middle. `viewport` is the window's
     /// size, which the card's height is kept under.
-    pub(super) fn layer(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn layer(
+        &self,
+        viewport: Size<Pixels>,
+        a: Appear,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let now = clock::now();
         let offset = clock::local_offset(now);
         div()
@@ -149,6 +155,7 @@ impl AccountsOverlay {
             .items_center()
             .justify_center()
             .bg(theme::rgba8(0x000000, 0.25))
+            .opacity(a.opacity())
             .occlude()
             .key_context("Accounts")
             .track_focus(&self.focus)
@@ -166,7 +173,8 @@ impl AccountsOverlay {
                 MouseButton::Left,
                 cx.listener(|t, _, window, cx| t.dismiss(window, cx)),
             )
-            .child(self.card_el(viewport, now, offset, cx))
+            // Centred, so a top margin moves the card by half of it: 12 px of margin is a 6 px rise.
+            .child(self.card_el(viewport, now, offset, cx).mt(a.offset(12.)))
             .into_any_element()
     }
 
