@@ -40,6 +40,7 @@ use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::board::{Board, BoardEvent};
+use crate::motion;
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
@@ -857,6 +858,7 @@ impl Render for FemmeApp {
         self.verify_focus(window);
         let viewport = f32::from(window.viewport_size().width);
         self.right.fit(viewport);
+        let right = motion::appear("right-panel", self.right.open().is_some(), window, cx);
         // The benchmark's `--full-height`: the synthetic terminals alone, no frame.
         if self.cfg.full_height && !self.panes.is_empty() {
             return div()
@@ -937,8 +939,10 @@ impl Render for FemmeApp {
                     .child(body)
                     .child(self.top_bar(cx)),
             )
-            .when_some(self.right.open(), |d, tab| {
-                d.child(self.right_panel(tab, cx))
+            // Drawn while it leaves too: the last tab fades out on its way back to the edge.
+            .when_some(right, |d, a| {
+                let tab = self.right.open().unwrap_or(self.right.last());
+                d.child(self.right_panel(tab, a, cx))
             })
             // Last, so that it paints over everything: the board's layer is as big as the window (and
             // empty while the board is closed).
