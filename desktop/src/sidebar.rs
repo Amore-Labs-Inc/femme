@@ -417,14 +417,14 @@ impl Sidebar {
 
     /// `+ shell` / `+ claude`: a session of `agent` in the daemon's default directory, which becomes
     /// the current one.
-    fn create(&mut self, agent: Agent, mode: Mode, cx: &mut Context<Self>) {
+    fn create(&mut self, agent: Agent, mode: Mode, model: Option<&str>, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| n.run(session::create(agent, mode), cx));
+        let sent = net.update(cx, |n, cx| n.run(session::create(agent, mode, model), cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -488,26 +488,40 @@ impl Sidebar {
         }
     }
 
-    /// The `+ shell` and `+ claude` buttons, side by side.
+    /// The `+ shell`, `+ claude` and `+ deepseek` buttons, side by side.
     fn new_buttons(&self, cx: &Context<Self>) -> Div {
-        let new = |id: &'static str, label: &'static str, agent: Agent, mode: Mode| {
+        let new = |id: &'static str,
+                   label: &'static str,
+                   agent: Agent,
+                   mode: Mode,
+                   model: Option<&'static str>| {
             let b = button(id, label)
-                .on_click(cx.listener(move |this, _, _, cx| this.create(agent, mode, cx)));
+                .on_click(cx.listener(move |this, _, _, cx| this.create(agent, mode, model, cx)));
             if self.creating {
                 b.opacity(0.5)
             } else {
                 b
             }
         };
+        // Three buttons outgrow the 240 px sidebar's foot: they wrap rather than clip.
         div()
             .flex()
+            .flex_wrap()
             .gap(px(6.))
-            .child(new("sb-new", "+ shell", Agent::Shell, Mode::Tui))
+            .child(new("sb-new", "+ shell", Agent::Shell, Mode::Tui, None))
             .child(new(
                 "sb-new-claude",
                 "+ claude",
                 Agent::Claude,
                 Mode::Headless,
+                None,
+            ))
+            .child(new(
+                "sb-new-deepseek",
+                "+ deepseek",
+                Agent::Claude,
+                Mode::Headless,
+                Some(session::DEEPSEEK),
             ))
     }
 

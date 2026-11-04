@@ -68,9 +68,14 @@ pub fn pick_shell(model: &Model) -> Option<Sid> {
         .map(|s| s.id)
 }
 
+/// The sidebar's `+ deepseek`: a Claude session on this model, which `femmed` runs through
+/// OpenGateway (the box needs `~/.config/opengateway/key`).
+pub(crate) const DEEPSEEK: &str = "deepseek/deepseek-v4.1-flash-ultrafast";
+
 /// A new session of `agent` in the daemon's home directory (an empty `cwd` is what `femmed` takes as
-/// "your home": `~` is refused as not absolute). The sidebar's `+ shell` and `+ claude` send it too.
-pub(crate) fn create(agent: Agent, mode: Mode) -> Req {
+/// "your home": `~` is refused as not absolute), on `model` (`None`: the agent's default). The
+/// sidebar's `+ shell`, `+ claude` and `+ deepseek` send it too.
+pub(crate) fn create(agent: Agent, mode: Mode, model: Option<&str>) -> Req {
     Req::SessionCreate {
         cwd: String::new(),
         agent,
@@ -78,6 +83,7 @@ pub(crate) fn create(agent: Agent, mode: Mode) -> Req {
         label: None,
         name: None,
         prompt: None,
+        model: model.map(str::to_owned),
     }
 }
 
@@ -217,7 +223,7 @@ async fn make(
     let sent = net
         .update(cx, |n, cx| {
             n.set_starting(Some(format!("starting {what}…")), cx);
-            n.try_run(create(agent, mode), cx)
+            n.try_run(create(agent, mode, None), cx)
         })
         .map_err(|e| e.to_string())?;
     let answer = sent.await;
@@ -420,7 +426,7 @@ mod tests {
     fn new_sessions_start_in_the_home_directory_unnamed() {
         // `femmed` takes an empty `cwd` as its home; `~` or a relative path is `Bad`.
         assert_eq!(
-            create(Agent::Claude, Mode::Headless),
+            create(Agent::Claude, Mode::Headless, None),
             Req::SessionCreate {
                 cwd: String::new(),
                 agent: Agent::Claude,
@@ -428,9 +434,10 @@ mod tests {
                 label: None,
                 name: None,
                 prompt: None,
+                model: None,
             }
         );
-        let Req::SessionCreate { agent, mode, .. } = create(Agent::Shell, Mode::Tui) else {
+        let Req::SessionCreate { agent, mode, .. } = create(Agent::Shell, Mode::Tui, None) else {
             panic!("not a create")
         };
         assert_eq!((agent, mode), (Agent::Shell, Mode::Tui));
