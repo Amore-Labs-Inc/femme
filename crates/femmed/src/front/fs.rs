@@ -6,6 +6,9 @@
 //! when `FEMME_STATE` is). A `..` anywhere in the path is refused before anything is looked at,
 //! and an absolute path outside home is refused before the disk is asked whether it exists, so
 //! the answer is no oracle for the rest of the box. All the I/O runs on the blocking pool.
+//!
+//! `Folders` looks the same way at home alone, before any session runs there: the desktop picks
+//! a project's folder with it, and may have it made.
 
 use std::io::{ErrorKind, Read};
 use std::path::{Component, Path, PathBuf};
@@ -61,8 +64,30 @@ impl Scope {
             .any(|r| p.starts_with(r))
     }
 
+    /// A scope of home alone, for a request no session is behind: the uploads slot repeats home.
+    fn home(d: &Daemon) -> Scope {
+        let home = [resolved(&d.cfg.home), d.cfg.home.clone()];
+        Scope {
+            uploads: home.clone(),
+            home,
+            cwd: d.cfg.home.clone(),
+        }
+    }
+
     /// The real path `path` names, if it is one the desktop may see.
     fn resolve(&self, path: &str) -> Result<PathBuf, WireErr> {
+        // Every symlink on the way is followed here: what is left is where the bytes are.
+        let real = std::fs::canonicalize(self.join(path)?).map_err(io_err)?;
+        if self.holds(&real) {
+            Ok(real)
+        } else {
+            Err(outside())
+        }
+    }
+
+    /// `path` against the session's folder, refused if it climbs or names a place out of scope,
+    /// before the disk is asked anything.
+    fn join(&self, path: &str) -> Result<PathBuf, WireErr> {
         if path.len() > PATH_MAX || path.contains('\0') {
             return Err(bad("not a path"));
         }
@@ -73,23 +98,34 @@ impl Scope {
         {
             return Err(bad("`..` is not allowed in a path"));
         }
-        let outside = || bad("that path is outside the home folder");
-        let joined = if asked.is_absolute() {
+        if asked.is_absolute() {
             if !self.holds(asked) {
                 return Err(outside());
             }
-            asked.to_path_buf()
+            Ok(asked.to_path_buf())
         } else {
-            self.cwd.join(asked)
-        };
-        // Every symlink on the way is followed here: what is left is where the bytes are.
-        let real = std::fs::canonicalize(joined).map_err(io_err)?;
-        if self.holds(&real) {
-            Ok(real)
-        } else {
-            Err(outside())
+            Ok(self.cwd.join(asked))
         }
     }
+
+    /// Makes the folder `path` names, with any folders missing on the way. The deepest part that
+    /// is already there is resolved first and must lie in scope, so a symlink on the way cannot
+    /// have the folders made somewhere else.
+    fn make(&self, path: &str) -> Result<(), WireErr> {
+        let joined = self.join(path)?;
+        let there = joined
+            .ancestors()
+            .find_map(|a| std::fs::canonicalize(a).ok())
+            .ok_or_else(outside)?;
+        if !self.holds(&there) {
+            return Err(outside());
+        }
+        std::fs::create_dir_all(&joined).map_err(io_err)
+    }
+}
+
+fn outside() -> WireErr {
+    bad("that path is outside the home folder")
 }
 
 /// The answer to an I/O failure. Every call here is about the path the desktop sent, so what is
@@ -136,6 +172,32 @@ pub(crate) async fn read(d: &Daemon, sid: Sid, path: String) -> Result<Resp, Wir
     blocking(move || read_file(&scope.resolve(&path)?))
         .await
         .map(Resp::FsData)
+}
+
+/// `Folders`: the folders in a folder of home, for picking a project's folder. `~`, `~/` and a
+/// relative path start at home; with `make` a missing folder is made first.
+pub(crate) async fn folders(d: &Daemon, path: String, make: bool) -> Result<Resp, WireErr> {
+    let scope = Scope::home(d);
+    blocking(move || {
+        let path = match path.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => rest.trim_start_matches('/'),
+            _ => path.as_str(),
+        };
+        if make {
+            scope.make(path)?;
+        }
+        let real = scope.resolve(path)?;
+        let names = list_dir(&real)?
+            .into_iter()
+            .filter(|e| e.dir)
+            .map(|e| e.name)
+            .collect();
+        Ok(Resp::Folders {
+            path: real.to_string_lossy().into_owned(),
+            names,
+        })
+    })
+    .await
 }
 
 fn list_dir(dir: &Path) -> Result<Vec<FsEntry>, WireErr> {
@@ -288,6 +350,23 @@ mod tests {
             let r = s.resolve(&no.display().to_string());
             assert_eq!(r.unwrap_err().code, ErrCode::Bad, "{}", no.display());
         }
+    }
+
+    #[test]
+    fn a_folder_is_not_made_through_a_symlink_out_of_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, outside) = (dir.path().join("home"), dir.path().join("outside"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, home.join("out")).unwrap();
+        symlink(outside.join("gone"), home.join("dangling")).unwrap();
+        let s = scope_in(&home, &home);
+        for path in ["out/x", "out/x/y", "dangling/x"] {
+            assert_eq!(s.make(path).unwrap_err().code, ErrCode::Bad, "{path}");
+        }
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        s.make("a/b").unwrap();
+        assert!(home.join("a/b").is_dir());
     }
 
     #[test]

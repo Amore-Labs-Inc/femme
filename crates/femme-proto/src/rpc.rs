@@ -115,6 +115,10 @@ pub enum Req {
     Upload { name: String, len: u64 },
     FsList { sid: Sid, path: String },
     FsRead { sid: Sid, path: String },
+    /// The folders inside `path`, for picking a project's folder before any session runs there:
+    /// `~` and a relative path mean the home folder, and the folder must lie under it. With
+    /// `make` a missing folder is created first. Answered with `Resp::Folders`.
+    Folders { path: String, make: bool },
     /// One call of the web app's JSON API (`/api/accounts`, `/api/keys`, …) made by the daemon
     /// on the desktop's behalf, as the owner: the accounts overlay shows what the board shows.
     /// `method` is GET, POST or DELETE; `body` is the JSON to send (empty for none).
@@ -169,6 +173,8 @@ pub enum Resp {
     UploadStream(u64),
     FsEntries(Vec<FsEntry>),
     FsData(Vec<u8>),
+    /// The answer to `Folders`: the folder as an absolute path, and the names of the folders in it.
+    Folders { path: String, names: Vec<String> },
     /// The web app's answer to `BoardApi`: its HTTP status and body (JSON, or an error text).
     BoardApi { status: u16, body: String },
     /// The hash `BlobPut` stored under.

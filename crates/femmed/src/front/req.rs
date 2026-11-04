@@ -59,6 +59,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::BlobPut { .. }
             | Req::FsList { .. }
             | Req::FsRead { .. }
+            | Req::Folders { make: false, .. }
             | Req::Caps
             | Req::ServerInfo
     )
@@ -169,6 +170,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::IssueDelete { id } => done(d.issue_delete(id).await),
         Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
         Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
+        Req::Folders { path, make } => super::fs::folders(d, path, make).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),

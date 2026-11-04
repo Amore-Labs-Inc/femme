@@ -2096,6 +2096,68 @@ async fn a_path_that_climbs_or_leaves_home_is_refused_and_a_missing_one_is_not_f
     assert_eq!(c.call(list("")).await.unwrap_err().code, ErrCode::NotFound);
 }
 
+/// The folders of home, for picking a project's folder before any session runs there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn folders_lists_the_folders_of_home_and_makes_a_missing_one_on_request() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let home = std::fs::canonicalize(rig.home()).unwrap();
+    std::fs::create_dir_all(home.join("work/one")).unwrap();
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::fs::write(home.join("notes.txt"), "n").unwrap();
+    std::fs::write(home.join("work/file"), "f").unwrap();
+    let outside = rig.b.dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let ask = |path: &str, make| Req::Folders {
+        path: path.into(),
+        make,
+    };
+    let folders = |path: &Path, names: &[&str]| {
+        Ok(Resp::Folders {
+            path: path.display().to_string(),
+            names: names.iter().map(|n| n.to_string()).collect(),
+        })
+    };
+
+    // Home's folders only, hidden ones too, whichever way home is written.
+    let top = folders(&home, &[".config", "work"]);
+    for path in ["", "~", "~/"] {
+        assert_eq!(c.call(ask(path, false)).await, top, "{path:?}");
+    }
+    // A relative path and `~/x` both start at home; an absolute one is taken as written.
+    let work = folders(&home.join("work"), &["one"]);
+    assert_eq!(c.call(ask("work", false)).await, work);
+    assert_eq!(c.call(ask("~/work/", false)).await, work);
+    let absolute = home.join("work").display().to_string();
+    assert_eq!(c.call(ask(&absolute, false)).await, work);
+    // Climbing, leaving home, a file, and a missing folder.
+    for (path, want) in [
+        ("..", ErrCode::Bad),
+        ("~/work/../..", ErrCode::Bad),
+        ("/etc", ErrCode::Bad),
+        (&*outside.display().to_string(), ErrCode::Bad),
+        ("notes.txt", ErrCode::Bad),
+        ("~/nope", ErrCode::NotFound),
+    ] {
+        let got = c.call(ask(path, false)).await.unwrap_err().code;
+        assert_eq!(got, want, "{path}");
+    }
+    assert!(!home.join("nope").exists());
+    // With `make` a missing folder is made, folders on the way too, and its absolute path given.
+    let made = home.join("new/deeper");
+    assert_eq!(c.call(ask("~/new/deeper", true)).await, folders(&made, &[]));
+    assert!(made.is_dir());
+    // Making a folder that is there already just lists it; out of home nothing is made.
+    assert_eq!(c.call(ask("work", true)).await, work);
+    let away = outside.join("made").display().to_string();
+    assert_eq!(
+        c.call(ask(&away, true)).await.unwrap_err().code,
+        ErrCode::Bad
+    );
+    assert!(!outside.join("made").exists());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_over_sixteen_mebibytes_is_not_sent_and_a_big_one_below_it_is() {
     let rig = rig().await;
