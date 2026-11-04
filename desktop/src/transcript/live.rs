@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
-use femme_proto::state::ItemStatus;
+use femme_proto::state::{ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
     InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
     MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    Subscription, Task, Window,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::WindowExt as _;
@@ -32,6 +32,7 @@ use super::markdown::{self, Doc};
 use super::splice;
 use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
+use super::working;
 use crate::net::{ClientEvent, Net};
 use crate::theme::{BAD, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PAPER};
 use crate::ui::{meta, ruled};
@@ -73,7 +74,10 @@ pub struct Transcript {
     unseen: bool,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
+    /// Redraws once a second while the session works, for the clock in the working line.
+    ticker: Option<Task<()>>,
     _events: Option<Subscription>,
+    _status: Option<Subscription>,
 }
 
 impl Transcript {
@@ -102,6 +106,14 @@ impl Transcript {
                 this.event(&event.0, cx);
             })
         });
+        // The working line comes and goes with the session's status, which lives in the model.
+        let status = net.as_ref().map(|net| {
+            cx.observe(net, |this, _, cx| {
+                if this.busy(cx) != this.ticker.is_some() {
+                    cx.notify();
+                }
+            })
+        });
         Self {
             net,
             items: Items::new(None),
@@ -120,7 +132,9 @@ impl Transcript {
             docs: HashMap::new(),
             unseen: false,
             note: None,
+            ticker: None,
             _events: events,
+            _status: status,
         }
     }
 
@@ -515,6 +529,40 @@ impl Focusable for Transcript {
     }
 }
 
+impl Transcript {
+    /// The "✻ Thinking… (42s · ↓ 1.2k tokens)" line while the session shown works, and a ticker
+    /// that redraws it every second; `None` (and no ticker) otherwise.
+    fn busy(&self, cx: &App) -> bool {
+        let (Some(sid), Some(net)) = (self.items.sid(), &self.net) else {
+            return false;
+        };
+        net.read(cx)
+            .model
+            .sessions
+            .get(&sid)
+            .is_some_and(|s| s.status == SessionStatus::Working)
+    }
+
+    fn working_line(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        if !self.busy(cx) {
+            self.ticker = None;
+            return None;
+        }
+        if self.ticker.is_none() {
+            self.ticker = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        Some(working::line(&working::working(&self.items), now))
+    }
+}
+
 impl Render for Transcript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.unseen && self.list.is_following_tail() {
@@ -534,6 +582,7 @@ impl Render for Transcript {
                 .ok();
             });
         }
+        let working = self.working_line(cx);
         div()
             .size_full()
             .relative()
@@ -559,9 +608,21 @@ impl Render for Transcript {
                 )
                 .size_full()
                 .pt(px(6.))
-                .pb(px(10.)),
+                .pb(px(if working.is_some() { 28. } else { 10. })),
             )
             .child(Scrollbar::vertical(&self.list))
+            .when_some(working.filter(|_| self.note.is_none()), |d, line| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom(px(6.))
+                        .left(px(14.))
+                        .font_family(FONT_MONO)
+                        .text_size(px(12.))
+                        .text_color(MUTED)
+                        .child(line),
+                )
+            })
             .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
             .when(self.unseen, |d| d.child(self.pill(cx)))
             .when_some(self.note.clone(), |d, note| {
