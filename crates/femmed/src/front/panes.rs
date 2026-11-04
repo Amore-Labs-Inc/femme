@@ -116,11 +116,15 @@ impl Daemon {
         if known.is_none() {
             return Err(CoreError::NotFound);
         }
-        let holder = self.holder(pane.sid).await?;
-        match holder.close_pane(pane.no).await {
-            // "no pane": its shell already left the holder; the row is all that remains.
-            Ok(()) | Err(HolderError::Holder(_)) => {}
-            Err(e) => return Err(holder_err(e)),
+        match self.holder(pane.sid).await {
+            Ok(holder) => match holder.close_pane(pane.no).await {
+                // "no pane": its shell already left the holder; the row is all that remains.
+                Ok(()) | Err(HolderError::Holder(_)) => {}
+                Err(e) => return Err(holder_err(e)),
+            },
+            // The holder is gone (a crashed session): its shells went with it, only the row is left.
+            Err(CoreError::NotFound) => {}
+            Err(e) => return Err(e),
         }
         // The holder's `ChildExited` makes `follow` delete the row too, and it may get there first.
         match self.write(|tx, _| tx.delete_pane(pane)) {
