@@ -54,7 +54,8 @@ pub struct Model {
     /// Every session of the global scope (closed ones too, until the daemon forgets them).
     pub sessions: BTreeMap<Sid, Session>,
     /// The session the centre shows (docs/desktop-ui.md §sessions). It follows the session it names:
-    /// when that one closes it moves to the newest live session, or to `None` ([`Model::apply`]).
+    /// when that one closes it moves to the newest live session, or to `None`; a Claude session that
+    /// appears while a shell is on show (`claude` typed in it) takes its place ([`Model::apply`]).
     /// It may name a session the daemon has not listed yet: the answer to creating one comes first.
     pub current: Option<Sid>,
     /// Every pane of the global scope.
@@ -129,9 +130,21 @@ impl Model {
                 ..
             } => {
                 let rebuilt = self.load == Load::Rebuilding;
+                // Sessions new to the list. The first list and the full set after a `Reset` are what
+                // was there already, not arrivals.
+                let listed = self.load == Load::Done;
+                let arrived: Vec<Sid> = rows
+                    .iter()
+                    .filter_map(|r| match r {
+                        Row::Session(s) if listed && !self.sessions.contains_key(&s.id) => {
+                            Some(s.id)
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 let changed = rows.iter().fold(false, |any, row| self.row(row) | any);
                 self.load = Load::Done;
-                self.keep_current(rows, rebuilt) | changed
+                self.keep_current(rows, rebuilt) | self.follow_claude(&arrived) | changed
             }
             // The daemon cannot vouch for what we hold: its full set follows. The session on show
             // stays named, and stays if the full set lists it.
@@ -193,6 +206,29 @@ impl Model {
             self.current = self.live().first().map(|s| s.id);
         }
         gone
+    }
+
+    /// A Claude session that has just `arrived` takes the centre when it shows a live shell: the user
+    /// typed `claude` there, and `femmed open` made it. Any other session on show, or none (the
+    /// opening at start decides that), is left alone. An arrival happens once per session, so a
+    /// session the user moves away from is not shown again. Whether `current` changed.
+    fn follow_claude(&mut self, arrived: &[Sid]) -> bool {
+        if !self
+            .current_session()
+            .is_some_and(|s| s.agent == Agent::Shell && is_live(s))
+        {
+            return false;
+        }
+        let claude = arrived
+            .iter()
+            .filter_map(|sid| self.sessions.get(sid))
+            .filter(|s| s.agent == Agent::Claude && is_running(s))
+            .max_by_key(|s| (s.created, s.id))
+            .map(|s| s.id);
+        if claude.is_some() {
+            self.current = claude;
+        }
+        claude.is_some()
     }
 
     /// The session the centre shows, when the daemon has listed it.
@@ -897,6 +933,64 @@ mod tests {
         // A tombstone for it, once it is known, does move on.
         assert!(m.apply(&changes(vec![tombstone(Kind::Session, Id(7).to_string())])));
         assert_eq!(m.current, Some(Id(2)));
+    }
+
+    #[test]
+    fn a_claude_session_that_appears_while_a_shell_is_on_show_takes_the_centre() {
+        // `claude` typed in shell 1: `femmed open` makes Claude session 5 and the daemon lists it.
+        let mut m = showing(1, vec![session(1, 1, 10), agent(2, Agent::Claude, 20)]);
+        assert!(m.apply(&changes(vec![Row::Session(agent(5, Agent::Claude, 50))])));
+        assert_eq!(m.current, Some(Id(5)));
+        // Once only: back on the shell, a newer row of the same session does not take it again.
+        m.select(Some(Id(1)));
+        let mut again = agent(5, Agent::Claude, 50);
+        again.rev = 2;
+        assert!(m.apply(&changes(vec![Row::Session(again)])));
+        assert_eq!(m.current, Some(Id(1)));
+        // Nor does one already known (2), nor a new one that crashed, nor a new Codex.
+        let mut dead = agent(6, Agent::Claude, 60);
+        dead.status = SessionStatus::Crashed;
+        assert!(m.apply(&changes(vec![
+            Row::Session(dead),
+            Row::Session(agent(7, Agent::Codex, 70)),
+        ])));
+        assert_eq!(m.current, Some(Id(1)));
+    }
+
+    #[test]
+    fn a_new_claude_session_leaves_an_agent_or_an_empty_centre_alone() {
+        let mut m = showing(2, vec![session(1, 1, 10), agent(2, Agent::Codex, 20)]);
+        assert!(m.apply(&changes(vec![Row::Session(agent(5, Agent::Claude, 50))])));
+        assert_eq!(m.current, Some(Id(2)), "an agent session on show stays");
+        let mut m = showing(3, vec![agent(3, Agent::Claude, 30)]);
+        assert!(m.apply(&changes(vec![Row::Session(agent(5, Agent::Claude, 50))])));
+        assert_eq!(m.current, Some(Id(3)));
+        // Nothing on show: the opening at start chooses, not this rule.
+        let mut m = Model::default();
+        m.apply(&changes(vec![Row::Session(session(1, 1, 10))]));
+        assert!(m.apply(&changes(vec![Row::Session(agent(5, Agent::Claude, 50))])));
+        assert_eq!(m.current, None);
+    }
+
+    #[test]
+    fn the_first_list_and_the_set_after_a_reset_are_not_arrivals() {
+        // A shell made before the list came is on show: the old Claude sessions in it stay put.
+        let mut m = Model::default();
+        m.select(Some(Id(1)));
+        m.apply(&changes(vec![
+            Row::Session(session(1, 1, 10)),
+            Row::Session(agent(2, Agent::Claude, 20)),
+        ]));
+        assert_eq!(m.current, Some(Id(1)));
+        // After a reset the full set lists them again: still not new.
+        m.apply(&Event::Reset {
+            scope: Scope::Global,
+        });
+        m.apply(&changes(vec![
+            Row::Session(session(1, 1, 10)),
+            Row::Session(agent(2, Agent::Claude, 20)),
+        ]));
+        assert_eq!(m.current, Some(Id(1)));
     }
 
     #[test]
