@@ -20,7 +20,7 @@
 //! `+ shell` and `+ claude` (the empty state and the foot of the list) create a shell session, or a
 //! headless Claude session, in the daemon's default directory and make it the current one on [`Net`].
 
-use femme_proto::rpc::Resp;
+use femme_proto::rpc::{Req, Resp};
 use femme_proto::state::{Agent, Attention, Mode, Session, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
@@ -39,7 +39,9 @@ use crate::theme::{
     BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
     PAUSE, QUEUE, RULE, TB_SIZE, WORK,
 };
-use crate::ui::{button, dot, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph};
+use crate::ui::{
+    button, dot, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
+};
 
 /// Width of the expanded sidebar, in logical pixels.
 pub const WIDTH: f32 = 240.;
@@ -437,6 +439,14 @@ impl Sidebar {
         .detach();
     }
 
+    /// The row's `×`: closes the session (any agent; a crashed one too, whose holder is gone). The
+    /// daemon's row change takes it off the list, and the centre moves on if it was on show.
+    fn close(&mut self, sid: Sid, cx: &mut Context<Self>) {
+        let Some(net) = self.net.clone() else { return };
+        net.update(cx, |n, cx| n.run(Req::SessionClose { sid }, cx))
+            .detach();
+    }
+
     /// Subscribes to focus in and out, once the window is known: the cursor shows while the
     /// keyboard is on the sidebar.
     fn watch_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -549,6 +559,14 @@ impl Sidebar {
                             .child(r.title.clone()),
                     )
                     .child(second),
+            )
+            .child(
+                icon_button(SharedString::from(format!("sb-x-{sid}")), Glyph::Close).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close(sid, cx);
+                    }),
+                ),
             )
             .when(cursor, |d| d.child(ring()))
     }
