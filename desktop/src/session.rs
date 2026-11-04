@@ -69,8 +69,8 @@ pub fn pick_shell(model: &Model) -> Option<Sid> {
 }
 
 /// A new session of `agent` in the daemon's home directory (an empty `cwd` is what `femmed` takes as
-/// "your home": `~` is refused as not absolute).
-fn create(agent: Agent, mode: Mode) -> Req {
+/// "your home": `~` is refused as not absolute). The sidebar's `+ shell` and `+ claude` send it too.
+pub(crate) fn create(agent: Agent, mode: Mode) -> Req {
     Req::SessionCreate {
         cwd: String::new(),
         agent,

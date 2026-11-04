@@ -17,10 +17,10 @@
 //! - The sidebar is [`Focusable`]: with the keyboard on it, Up/Down/Home/End move a cursor and Enter
 //!   opens the session under it.
 //!
-//! `+ shell` (the empty state and the foot of the list) creates a shell session in the daemon's
-//! default directory and makes it the current one on [`Net`].
+//! `+ shell` and `+ claude` (the empty state and the foot of the list) create a shell session, or a
+//! headless Claude session, in the daemon's default directory and make it the current one on [`Net`].
 
-use femme_proto::rpc::{Req, Resp};
+use femme_proto::rpc::Resp;
 use femme_proto::state::{Agent, Attention, Mode, Session, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
@@ -34,6 +34,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
 use crate::net::{self, Link, Model, Net};
+use crate::session;
 use crate::theme::{
     BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
     PAUSE, QUEUE, RULE, TB_SIZE, WORK,
@@ -244,7 +245,7 @@ pub struct Sidebar {
     /// The keyboard cursor.
     cursor: Option<Sid>,
     collapsed: bool,
-    /// A `+ shell` request is out: a second click would queue a second session.
+    /// A `+ shell` or `+ claude` request is out: a second click would queue a second session.
     creating: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
@@ -326,7 +327,7 @@ impl Sidebar {
         }
     }
 
-    /// Whether `+ shell` is offered: there is a daemon and it is connected.
+    /// Whether `+ shell` and `+ claude` are offered: there is a daemon and it is connected.
     fn can_create(&self) -> bool {
         self.net.is_some() && self.shown.can_create()
     }
@@ -412,27 +413,16 @@ impl Sidebar {
         cx.stop_propagation();
     }
 
-    /// `+ shell`: a shell session in the daemon's default directory, which becomes the current one.
-    fn create_shell(&mut self, cx: &mut Context<Self>) {
+    /// `+ shell` / `+ claude`: a session of `agent` in the daemon's default directory, which becomes
+    /// the current one.
+    fn create(&mut self, agent: Agent, mode: Mode, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| {
-            n.run(
-                Req::SessionCreate {
-                    cwd: String::new(),
-                    agent: Agent::Shell,
-                    mode: Mode::Tui,
-                    label: None,
-                    name: None,
-                    prompt: None,
-                },
-                cx,
-            )
-        });
+        let sent = net.update(cx, |n, cx| n.run(session::create(agent, mode), cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -488,15 +478,27 @@ impl Sidebar {
         }
     }
 
-    /// The `+ shell` button.
-    fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let b = button("sb-new", "+ shell")
-            .on_click(cx.listener(|this, _, _, cx| this.create_shell(cx)));
-        if self.creating {
-            b.opacity(0.5)
-        } else {
-            b
-        }
+    /// The `+ shell` and `+ claude` buttons, side by side.
+    fn new_buttons(&self, cx: &Context<Self>) -> Div {
+        let new = |id: &'static str, label: &'static str, agent: Agent, mode: Mode| {
+            let b = button(id, label)
+                .on_click(cx.listener(move |this, _, _, cx| this.create(agent, mode, cx)));
+            if self.creating {
+                b.opacity(0.5)
+            } else {
+                b
+            }
+        };
+        div()
+            .flex()
+            .gap(px(6.))
+            .child(new("sb-new", "+ shell", Agent::Shell, Mode::Tui))
+            .child(new(
+                "sb-new-claude",
+                "+ claude",
+                Agent::Claude,
+                Mode::Headless,
+            ))
     }
 
     /// A row of the expanded list: status dot, title, and agent and directory below it.
@@ -594,7 +596,7 @@ impl Sidebar {
             .vertical_scrollbar(&self.scroll)
     }
 
-    /// The expanded body: the rows and the foot with `+ shell`, or the empty state.
+    /// The expanded body: the rows and the foot with `+ shell` and `+ claude`, or the empty state.
     fn list(&self, focused: bool, cx: &Context<Self>) -> Div {
         let shown = &self.shown;
         if shown.rows.is_empty() {
@@ -605,7 +607,7 @@ impl Sidebar {
                 .gap(px(8.))
                 .p(px(12.))
                 .child(div().text_color(MUTED).child(self.note()))
-                .when(self.can_create(), |d| d.child(self.new_button(cx)));
+                .when(self.can_create(), |d| d.child(self.new_buttons(cx)));
         }
         let rows = shown
             .rows
@@ -619,7 +621,7 @@ impl Sidebar {
             .justify_between()
             .gap(px(8.))
             .p(px(6.))
-            .when(self.can_create(), |d| d.child(self.new_button(cx)))
+            .when(self.can_create(), |d| d.child(self.new_buttons(cx)))
             .child(meta(TOGGLE_KEY));
         div()
             .flex()
