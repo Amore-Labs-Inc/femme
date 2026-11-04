@@ -49,7 +49,8 @@ use crate::frame::{
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::net::{ClientEvent, Net, Started};
 use crate::session;
-use crate::sidebar::{CollapsedChanged, OpenSession, Sidebar};
+use crate::projects::{self, Picker};
+use crate::sidebar::{AddProject, CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
 use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, NEON, SURFACE, TOP_BAR_H};
@@ -300,6 +301,8 @@ pub struct FemmeApp {
     terminal: Entity<TerminalPanel>,
     files: Entity<FilesPanel>,
     accounts: Entity<AccountsOverlay>,
+    /// The add project palette (the sidebar's `+`).
+    picker: Entity<Picker>,
     /// The drawing board: a layer over the whole window, empty while it is closed.
     board: Entity<Board>,
     /// The benchmark's synthetic terminals; empty otherwise.
@@ -342,6 +345,7 @@ impl FemmeApp {
         let terminal = cx.new(|cx| TerminalPanel::new(net.clone(), cx));
         let files = cx.new(|cx| FilesPanel::new(net.clone(), cx));
         let accounts = cx.new(|cx| AccountsOverlay::new(net.clone(), cx));
+        let picker = cx.new(|cx| Picker::new(net.clone(), cx));
         let board = cx.new(Board::new);
         // Synthetic terminals exist for the benchmark only; the app itself has no mock.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
@@ -372,6 +376,14 @@ impl FemmeApp {
             }),
             // The column's width is the sidebar's to say: collapsing it resizes the frame.
             cx.subscribe(&sidebar, |_, _, _: &CollapsedChanged, cx| cx.notify()),
+            cx.subscribe(&sidebar, |t, _, _: &AddProject, cx| {
+                t.picker.update(cx, |p, cx| p.open(cx));
+                cx.notify();
+            }),
+            cx.subscribe_in(&picker, window, |t, _, _: &projects::Closed, window, cx| {
+                t.land_focus(window, cx);
+                cx.notify();
+            }),
             cx.observe_in(&accounts, window, |t, _, window, cx| {
                 t.accounts_changed(window, cx)
             }),
@@ -423,6 +435,7 @@ impl FemmeApp {
             terminal,
             files,
             accounts,
+            picker,
             board,
             panes,
             shown,
@@ -873,7 +886,8 @@ impl Render for FemmeApp {
                     .track_focus(&self.centre_focus)
                     .child(self.centre(window, cx))
                     // The card is its own layer (scrim, focus, escape): it only needs a positioned parent.
-                    .when(self.modal_open, |d| d.child(self.accounts.clone())),
+                    .when(self.modal_open, |d| d.child(self.accounts.clone()))
+                    .when(self.picker.read(cx).is_open(), |d| d.child(self.picker.clone())),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));
         // The board has the keyboard while it is open: the shell's own chords are off then.
