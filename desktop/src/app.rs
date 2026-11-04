@@ -40,6 +40,7 @@ use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::board::{Board, BoardEvent};
+use crate::motion;
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
@@ -857,6 +858,7 @@ impl Render for FemmeApp {
         self.verify_focus(window);
         let viewport = f32::from(window.viewport_size().width);
         self.right.fit(viewport);
+        let right = motion::appear("right-panel", self.right.open().is_some(), window, cx);
         // The benchmark's `--full-height`: the synthetic terminals alone, no frame.
         if self.cfg.full_height && !self.panes.is_empty() {
             return div()
@@ -872,7 +874,8 @@ impl Render for FemmeApp {
         // it is given alone.
         let column = StyleRefinement::default()
             .h_full()
-            .w(self.sidebar.read(cx).width());
+            // Collapsing and expanding slide the column over 160 ms; the frame follows it each frame.
+            .w(motion::slide("sidebar-w", self.sidebar.read(cx).width(), window, cx));
         let body = div()
             .flex_1()
             .min_h_0()
@@ -887,9 +890,10 @@ impl Render for FemmeApp {
                     .h_full()
                     .track_focus(&self.centre_focus)
                     .child(self.centre(window, cx))
-                    // The card is its own layer (scrim, focus, escape): it only needs a positioned parent.
-                    .when(self.modal_open, |d| d.child(self.accounts.clone()))
-                    .when(self.picker.read(cx).is_open(), |d| d.child(self.picker.clone())),
+                    // Each card is its own layer (scrim, focus, escape): it only needs a positioned
+                    // parent. Always mounted: closed, it draws nothing, and it fades itself out.
+                    .child(self.accounts.clone())
+                    .child(self.picker.clone()),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));
         // The board has the keyboard while it is open: the shell's own chords are off then.
@@ -937,8 +941,10 @@ impl Render for FemmeApp {
                     .child(body)
                     .child(self.top_bar(cx)),
             )
-            .when_some(self.right.open(), |d, tab| {
-                d.child(self.right_panel(tab, cx))
+            // Drawn while it leaves too: the last tab fades out on its way back to the edge.
+            .when_some(right, |d, a| {
+                let tab = self.right.open().unwrap_or(self.right.last());
+                d.child(self.right_panel(tab, a, cx))
             })
             // Last, so that it paints over everything: the board's layer is as big as the window (and
             // empty while the board is closed).

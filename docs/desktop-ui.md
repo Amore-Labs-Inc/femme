@@ -90,6 +90,26 @@ Usage JSON: `GET /api/accounts` → `{"cswap": <cswap list --json>, "aws": {...}
 entries such as Fable), `usageFetchedAt`. See `crates/femmed/src/compat/accounts.rs` and the board's
 renderer in `assets/index.html` (search `accts`). Keys: `GET /api/keys` → the list the board shows.
 
+## Motion
+
+One curve for everything that appears or goes: 180 ms ease-out (`cubic-bezier(.32,.72,0,1)`),
+a fade with a short move, through `desktop/src/motion.rs` (`appear` for presence, `slide` for a
+length) over gpui-base's `Presence`/`transition`. The rules, from the Apple HIG and T3 Code / Zed /
+VS Code (`docs/smooth.md` has the sources):
+
+- A panel slides in 16 px from its edge; a menu drops 4 px; a card rises 6 px with its scrim; the
+  sidebar column slides over 160 ms. Each leaves the way it came, drawn until it is gone, and can be
+  reversed mid-way. Nothing is longer than 200 ms and nothing bounces.
+- Motion runs at the display's own rate: never cap a transition's frame rate, and let it dirty only
+  what it moves (the panels are `.cached` leaves). A leaving element keeps no hover handler.
+- Hover, selection, tab switches and typing are instant. Motion never blocks input.
+- Streamed text appends; nothing is animated, re-laid out or scrolled by hand per token. The list
+  follows the tail; any upward scroll by the user releases it; the "↓" pill shows 150 ms later and
+  goes at once when they are back at the end. New rows of the current turn fade in once, whole.
+- The working line is the 1 Hz star, nothing faster or brighter.
+- Under the OS's "reduce motion", every one of these is an instant change (`Presence` sees
+  `cx.reduce_motion()`).
+
 ## Working rules
 
 - Your worktree is `~/Documents/Web_Apps/femme-ui-<agent>` on branch `ui/<agent>`, from the

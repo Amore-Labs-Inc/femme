@@ -3,6 +3,8 @@
 //! single lines that open on a click, a finished turn's work hides behind one thin line, and a
 //! question that waits is a dialog the user answers in.
 
+use std::time::{Duration, Instant};
+
 use femme_proto::rpc::Answer;
 use femme_proto::state::{ItemKind, ItemStatus};
 use gpui::prelude::FluentBuilder as _;
@@ -19,6 +21,7 @@ use super::md_view;
 use super::question::QuestionBody;
 use super::thumb;
 use super::turns::{self, Key, ToolLine};
+use crate::motion::appear;
 use crate::theme::{
     self, rgba8, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED,
     PANEL, PAPER, PAUSE, WORK,
@@ -33,6 +36,12 @@ const SHOWN_BYTES: usize = 24_000;
 
 /// The most lines of a tool's input or output shown when its row is open.
 const SHOWN_LINES: usize = 400;
+
+/// An item younger than this when its row is first drawn fades in; older ones (history) do not.
+const FRESH_MS: i64 = 1000;
+
+/// How long after its first draw a fresh row is still sampled: its fade (180 ms) and a margin.
+const FADING: Duration = Duration::from_millis(400);
 
 /// `inner` in the text column, centred.
 fn column(inner: impl IntoElement) -> AnyElement {
@@ -122,12 +131,53 @@ impl Transcript {
         let Some(key) = self.layout.rows.get(ix).map(|r| r.key) else {
             return div().into_any_element();
         };
-        match key {
-            Key::More => self.more_row(cx),
-            Key::Fold(seq) => self.fold_row(seq, cx),
-            Key::Tool(seq) => self.tool_row(seq, cx),
-            Key::Item(seq) => self.item_row(seq, window, cx),
+        let (row, seq) = match key {
+            Key::More => return self.more_row(cx),
+            Key::Fold(seq) => return self.fold_row(seq, cx),
+            Key::Tool(seq) => (self.tool_row(seq, cx), seq),
+            Key::Item(seq) => (self.item_row(seq, window, cx), seq),
+        };
+        self.fade_in(seq, row, window, cx)
+    }
+
+    /// The row of an item made in the last second fades in and rises 4 px, once. History is drawn
+    /// as it is, without keeping any state for it.
+    fn fade_in(
+        &mut self,
+        seq: u64,
+        row: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let first = match self.fresh.get(&seq) {
+            Some(at) => *at,
+            None => {
+                let Some(ts) = self.items.get(seq).map(|e| e.item.ts) else {
+                    return row;
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as i64);
+                if now - ts >= FRESH_MS {
+                    return row;
+                }
+                let at = Instant::now();
+                self.fresh.insert(seq, at);
+                at
+            }
+        };
+        if first.elapsed() > crate::motion::scaled(FADING) {
+            return row;
         }
+        let Some(a) = appear(("row", seq), true, window, cx) else {
+            return row;
+        };
+        div()
+            .relative()
+            .top(a.offset(4.))
+            .opacity(a.opacity())
+            .child(row)
+            .into_any_element()
     }
 
     fn item_row(&mut self, seq: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, px, AnyElement, AppContext as _, Axis, Context, DragMoveEvent, Empty, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
@@ -19,6 +20,7 @@ use gpui_component::tooltip::Tooltip;
 
 use super::{FemmeApp, ToggleBoard, ToggleTerminal};
 use crate::frame::{self, Settle, Tab};
+use crate::motion::Appear;
 use crate::theme::{self, GUTTER, STRIP_W, SURFACE, TOP_BAR_H};
 use crate::ui::{self, Glyph};
 
@@ -179,7 +181,14 @@ impl FemmeApp {
 
     /// The right-hand panel, floating over the centre's right edge so that opening it never
     /// reflows the transcript or resizes a terminal.
-    pub(super) fn right_panel(&self, tab: Tab, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn right_panel(
+        &self,
+        tab: Tab,
+        a: Appear,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // A leaving panel is past hovering: the pointer on it must not bring it back.
+        let leaving = self.right.open().is_none();
         let full = StyleRefinement::default().size_full();
         let body: AnyElement = match tab {
             Tab::Terminal => self.terminal.clone().cached(full).into_any_element(),
@@ -206,14 +215,18 @@ impl FemmeApp {
             .absolute()
             .top(GUTTER + TOP_BAR_H + GUTTER)
             .bottom(GUTTER)
-            .right(GUTTER + STRIP_W)
+            // It slides in from the strip, fading up, and goes the same way.
+            .right(GUTTER + STRIP_W - a.offset(16.))
+            .opacity(a.opacity())
             .w(px(self.right.width()))
             .occlude()
             .track_focus(&self.right_focus)
-            .on_hover(cx.listener(|t, on: &bool, window, cx| {
-                t.right.hover_panel(*on);
-                t.poke(CLOSE_AFTER, window, cx);
-            }));
+            .when(!leaving, |p| {
+                p.on_hover(cx.listener(|t, on: &bool, window, cx| {
+                    t.right.hover_panel(*on);
+                    t.poke(CLOSE_AFTER, window, cx);
+                }))
+            });
         panel.style().box_shadow = Some(theme::hard_shadow());
         panel
             .child(

@@ -840,7 +840,9 @@ impl Render for Sidebar {
             .flex()
             .flex_col()
             .flex_none()
-            .w(self.width())
+            // The shell's column says how wide (it slides when the sidebar collapses or expands);
+            // the box fills it, so nothing shows between it and the centre on the way.
+            .w_full()
             .h_full()
             .overflow_hidden()
             .bg(PAPER)

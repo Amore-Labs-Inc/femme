@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
@@ -22,6 +22,7 @@ use gpui::{
     MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, Window,
 };
+use gpui_base::animation::cubic_bezier;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::WindowExt as _;
 use tokio::sync::watch;
@@ -33,6 +34,7 @@ use super::splice;
 use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
 use super::working;
+use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
 use crate::theme::{BAD, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PAPER};
 use crate::ui::{meta, ruled};
@@ -42,6 +44,13 @@ const PAGE: u16 = 100;
 
 /// How long to wait before joining a scope again after the daemon refused.
 const RETRY: Duration = Duration::from_secs(3);
+
+/// How long the user has to be away from the end before the "↓" pill shows: a short scroll up
+/// and back does not make it blink.
+const PILL_AFTER: Duration = Duration::from_millis(150);
+
+/// How long the scroll back to the end takes when the pill is clicked.
+const GLIDE: Duration = Duration::from_millis(200);
 
 /// The transcript of one session: build it once with [`Transcript::new`], point it at a session
 /// with [`Transcript::set_session`].
@@ -70,8 +79,14 @@ pub struct Transcript {
     pub(super) asks: HashMap<u64, Ask>,
     /// The markdown of the messages, read once per version of the item.
     docs: HashMap<u64, (u64, Arc<Doc>)>,
-    /// Rows came in at the end while the user was reading further up.
-    unseen: bool,
+    /// The rows of items made in the last second, and when each was first drawn: they fade in.
+    pub(super) fresh: HashMap<u64, Instant>,
+    /// Rows came in at the end while the user was reading further up, since when.
+    unseen: Option<Instant>,
+    /// Redraws once the pill's wait is over.
+    pill_timer: Option<Task<()>>,
+    /// The scroll back to the end under way: when it started and from how far down.
+    glide: Option<(Instant, Pixels)>,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
     /// Redraws once a second while the session works, for the clock in the working line.
@@ -130,7 +145,10 @@ impl Transcript {
             thumbs: HashMap::new(),
             asks: HashMap::new(),
             docs: HashMap::new(),
-            unseen: false,
+            fresh: HashMap::new(),
+            unseen: None,
+            pill_timer: None,
+            glide: None,
             note: None,
             ticker: None,
             _events: events,
@@ -149,10 +167,14 @@ impl Transcript {
         self.open.clear();
         self.asks.clear();
         self.docs.clear();
+        self.fresh.clear();
         self.thumbs.clear();
         self.fetching.clear();
         self.failed.clear();
-        (self.paging, self.page_failed, self.unseen) = (false, false, false);
+        (self.paging, self.page_failed) = (false, false);
+        self.unseen = None;
+        self.pill_timer = None;
+        self.glide = None;
         self.note = None;
         self.generation += 1;
         self.list.reset(0);
@@ -203,8 +225,15 @@ impl Transcript {
         for i in plan.remeasure {
             self.list.remeasure_items(i..i + 1);
         }
-        if self.layout.rows.last() != next.rows.last() && !self.list.is_following_tail() {
-            self.unseen = true;
+        if self.layout.rows.last() != next.rows.last()
+            && !self.list.is_following_tail()
+            && self.unseen.is_none()
+        {
+            self.unseen = Some(Instant::now());
+            self.pill_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(PILL_AFTER).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }));
         }
         self.layout = next;
         let items = &self.items;
@@ -218,12 +247,14 @@ impl Transcript {
 
     /// The list was scrolled by the user: to the top (older items are wanted), or back to the end.
     fn scrolled(&mut self, top: bool, following: bool, cx: &mut Context<Self>) {
+        // The user's own scroll wins over the glide to the end.
+        self.glide = None;
         if top {
             self.page_failed = false;
             self.load_older(cx);
         }
-        if following && self.unseen {
-            self.unseen = false;
+        if following && self.unseen.is_some() {
+            self.seen();
             cx.notify();
         }
     }
@@ -236,11 +267,65 @@ impl Transcript {
         self.refresh(cx);
     }
 
+    /// The user is back at the end: the pill goes at once.
+    fn seen(&mut self) {
+        self.unseen = None;
+        self.pill_timer = None;
+    }
+
     /// Scrolls to the end and follows the text as it arrives again.
     fn follow(&mut self, cx: &mut Context<Self>) {
+        self.glide = None;
         self.list.set_follow_mode(FollowMode::Tail);
-        self.unseen = false;
+        self.seen();
         cx.notify();
+    }
+
+    /// How far down the view is, and how far down the end is, as far as the list has measured.
+    fn scroll_span(&self) -> (Pixels, Pixels) {
+        (
+            -self.list.scroll_px_offset_for_scrollbar().y,
+            self.list.max_offset_for_scrollbar().y,
+        )
+    }
+
+    /// Glides to the end over 200 ms, then follows the text again; a jump under "reduce motion".
+    /// From far up it first jumps to a screen above the end, so the glide never sweeps through
+    /// pages of rows.
+    fn glide_to_end(&mut self, cx: &mut Context<Self>) {
+        if cx.reduce_motion() {
+            return self.follow(cx);
+        }
+        self.seen();
+        let (now, end) = self.scroll_span();
+        let screen = self.list.viewport_bounds().size.height;
+        if end - now > screen * 2. {
+            self.list.scroll_by(end - screen - now);
+        }
+        self.glide = Some((Instant::now(), self.scroll_span().0));
+        cx.notify();
+    }
+
+    /// One frame of the glide, before the list is laid out. The end is read again every frame:
+    /// rows below the view are measured only as they come into it, so it moves while the glide
+    /// runs, and following the tail at the end lands exactly on it whatever was left.
+    fn glide_step(&mut self, window: &mut Window) {
+        let Some((start, from)) = self.glide else {
+            return;
+        };
+        let t = start.elapsed().as_secs_f32() / crate::motion::scaled(GLIDE).as_secs_f32();
+        if t >= 1. {
+            self.glide = None;
+            self.list.set_follow_mode(FollowMode::Tail);
+            return;
+        }
+        let (now, end) = self.scroll_span();
+        let ease = cubic_bezier(0.32, 0.72, 0., 1.);
+        let want = from + (end - from) * ease(t);
+        if want > now {
+            self.list.scroll_by(want - now);
+        }
+        window.request_animation_frame();
     }
 
     /// The markdown of the message `seq` (whose text is `text`), read again only when the item
@@ -423,10 +508,11 @@ impl Transcript {
             }),
             "end" => {
                 self.list.set_follow_mode(FollowMode::Tail);
-                self.unseen = false;
+                self.seen();
             }
             _ => return,
         }
+        self.glide = None;
         window.refresh();
         cx.notify();
     }
@@ -454,11 +540,16 @@ impl Transcript {
             .child(word)
     }
 
-    /// The pill that brings the user back to the end of the text.
-    fn pill(&self, cx: &Context<Self>) -> Div {
-        div()
+    /// The pill that brings the user back to the end of the text, rising 6 px as it fades in.
+    fn pill(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let shown = self.unseen.is_some_and(|t| t.elapsed() >= PILL_AFTER);
+        // Keyed by the session shown, so a pill left over from the last session does not fade
+        // out over the next one.
+        let a = appear(("to-end", self.generation), shown, window, cx)?;
+        Some(div()
             .absolute()
-            .bottom(px(12.))
+            .bottom(px(12.) - a.offset(6.))
+            .opacity(a.opacity())
             .left_0()
             .right_0()
             .flex()
@@ -477,7 +568,7 @@ impl Transcript {
                         .cursor_pointer()
                         .hover(|s| s.bg(HOVER)),
                 )
-                .on_click(cx.listener(|this, _, _, cx| this.follow(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.glide_to_end(cx)))
                 .child(div().font_family(FONT_MONO).text_size(px(12.)).child("↓"))
                 .child(
                     div()
@@ -486,7 +577,7 @@ impl Transcript {
                         .line_height(relative(1.))
                         .child("new"),
                 ),
-            )
+            ))
     }
 }
 
@@ -565,24 +656,26 @@ impl Transcript {
 
 impl Render for Transcript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.unseen && self.list.is_following_tail() {
-            self.unseen = false;
+        if self.unseen.is_some() && self.list.is_following_tail() {
+            self.seen();
         }
-        if self.unseen {
+        if self.unseen.is_some() {
             // The list takes up following again while it is laid out, after this render: look
             // once more when the frame is done, so the pill goes when the user is back at the end.
             let this = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 this.update(cx, |t, cx| {
                     if t.list.is_following_tail() {
-                        t.unseen = false;
+                        t.seen();
                         cx.notify();
                     }
                 })
                 .ok();
             });
         }
+        self.glide_step(window);
         let working = self.working_line(cx);
+        let pill = self.pill(window, cx);
         div()
             .size_full()
             .relative()
@@ -624,7 +717,7 @@ impl Render for Transcript {
                 )
             })
             .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
-            .when(self.unseen, |d| d.child(self.pill(cx)))
+            .children(pill)
             .when_some(self.note.clone(), |d, note| {
                 d.child(
                     ruled(

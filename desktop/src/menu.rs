@@ -27,6 +27,7 @@ use gpui::{
     Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
 };
 
+use crate::motion;
 use crate::net::{Link, Net};
 use crate::theme::{
     self, BAD, BODY_SIZE, DONE, FONT_BRAND, FONT_MONO, FONT_UI, HOVER, INK, NEON, PANEL, PAPER,
@@ -642,6 +643,7 @@ impl Render for FemmeMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.window = Some(window.window_handle());
         let measured = self.button.clone();
+        let card = motion::appear("femme-menu-card", self.open, window, cx);
         div()
             .id("femme-menu")
             .relative()
@@ -678,13 +680,15 @@ impl Render for FemmeMenu {
                     .left_0()
                     .size_full(),
             )
-            .when(self.open, |d| {
+            // The card drops 4 px into place and fades, and goes the same way (drawn while it does).
+            .when_some(card, |d, a| {
                 d.child(deferred(
                     div()
                         .absolute()
                         .top_full()
-                        .mt(px(6.))
+                        .mt(px(6.) - a.offset(4.))
                         .left_0()
+                        .opacity(a.opacity())
                         .child(self.card(cx)),
                 ))
             })
