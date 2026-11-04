@@ -1,9 +1,9 @@
 [Unit]
-Description=Check every 10 minutes whether the box moved to a new commit
+Description=Check every 2 minutes whether the box moved to a new commit
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=10min
+OnUnitActiveSec=2min
 Persistent=true
 
 [Install]
