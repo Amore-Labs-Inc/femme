@@ -90,6 +90,9 @@ pub enum Req {
         label: Option<String>,
         name: Option<String>,
         prompt: Option<String>,
+        /// The agent's model (`None`: its default). A Claude model that names its maker
+        /// (`deepseek/deepseek-v4.1-flash-ultrafast`) runs through OpenGateway.
+        model: Option<String>,
     },
     SessionClose { sid: Sid },
     Prompt {

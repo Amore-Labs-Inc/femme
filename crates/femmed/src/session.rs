@@ -243,6 +243,47 @@ fn interrupted(s: &mut Session) {
 }
 
 /// `name` as an absolute path: itself when it has a slash, else the first match on `path`.
+/// OpenGateway's Anthropic-compatible endpoint (https://opengateway.ai/docs/coding-agents/claude-code).
+const GATEWAY: &str = "https://apis.opengateway.ai";
+
+/// What a Claude process needs on top of its usual environment when its `model` names its maker
+/// (`deepseek/deepseek-v4.1-flash-ultrafast`): the gateway as its API, the key from
+/// `<home>/.config/opengateway/key`, and that model in every slot (subagents too). Nothing for
+/// Anthropic's own models or none. `server/claude-deepseek.sh` does the same for a terminal.
+pub(crate) fn gateway_env(
+    home: &Path,
+    model: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(model) = model.filter(|m| m.contains('/')) else {
+        return Ok(Vec::new());
+    };
+    let file = home.join(".config/opengateway/key");
+    let key = std::fs::read_to_string(&file)
+        .map(|k| k.trim().to_owned())
+        .ok()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "{model} runs through OpenGateway: no key in {}",
+                file.display()
+            )
+        })?;
+    let mut env = vec![
+        ("ANTHROPIC_BASE_URL".to_owned(), GATEWAY.to_owned()),
+        ("ANTHROPIC_AUTH_TOKEN".to_owned(), key),
+    ];
+    for slot in [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ] {
+        env.push((slot.to_owned(), model.to_owned()));
+    }
+    Ok(env)
+}
+
 pub(crate) fn find_on_path(name: &str, path: &str) -> Option<String> {
     if name.contains('/') {
         return Path::new(name).is_file().then(|| name.to_string());
@@ -592,7 +633,7 @@ impl Daemon {
                 cwd: req.cwd.clone(),
                 label: req.label.clone(),
                 agent_sid: None,
-                model: None,
+                model: req.model.clone(),
                 status,
                 attention: Attention::None,
                 created: now,
@@ -882,5 +923,25 @@ mod tests {
             ..cfg
         };
         assert_eq!(s.path(&cfg), "/fake");
+    }
+
+    #[test]
+    fn a_model_that_names_its_maker_runs_through_opengateway() {
+        let home = tempfile::tempdir().unwrap();
+        // Anthropic's models, or none: nothing changes.
+        assert_eq!(gateway_env(home.path(), None), Ok(vec![]));
+        assert_eq!(gateway_env(home.path(), Some("opus")), Ok(vec![]));
+        // A gateway model without a key fails with where the key goes.
+        let m = "deepseek/deepseek-v4.1-flash-ultrafast";
+        let err = gateway_env(home.path(), Some(m)).unwrap_err();
+        assert!(err.contains(".config/opengateway/key"), "{err}");
+        std::fs::create_dir_all(home.path().join(".config/opengateway")).unwrap();
+        std::fs::write(home.path().join(".config/opengateway/key"), "sk-test\n").unwrap();
+        let env = gateway_env(home.path(), Some(m)).unwrap();
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("ANTHROPIC_BASE_URL"), Some(GATEWAY));
+        assert_eq!(get("ANTHROPIC_AUTH_TOKEN"), Some("sk-test"));
+        assert_eq!(get("CLAUDE_CODE_SUBAGENT_MODEL"), Some(m));
+        assert_eq!(get("ANTHROPIC_DEFAULT_HAIKU_MODEL"), Some(m));
     }
 }

@@ -379,6 +379,7 @@ impl TerminalPanel {
                 label: None,
                 name: None,
                 prompt: None,
+                model: None,
             },
         };
         let sent = net.update(cx, |n, cx| n.run(req, cx));

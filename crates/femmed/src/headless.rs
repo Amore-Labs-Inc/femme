@@ -41,7 +41,9 @@ use crate::core::CoreError;
 use crate::daemon::{core_err, now_ms, Daemon};
 use crate::holder_client::{Holder, SpoolLines};
 use crate::scheduler::UsageSnapshot;
-use crate::session::{agent_label, find_on_path, gone, holder_err, label, COLS, MAIN, ROWS};
+use crate::session::{
+    agent_label, find_on_path, gateway_env, gone, holder_err, label, COLS, MAIN, ROWS,
+};
 use crate::takeover::{Act, Ev, Phase, Takeover};
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
@@ -959,11 +961,13 @@ impl Actor {
     async fn spawn_process(&mut self, d: &Daemon, resume: Option<String>) -> Result<(), String> {
         let s = d.session(self.sid).map_err(|e| e.to_string())?;
         let path = d.sessions.path(&d.cfg);
+        let mut extra_env = d.sessions.child_env(&d.cfg, &path);
+        extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
         let launch = Launch {
             cwd: s.cwd,
             model: s.model,
             resume,
-            extra_env: d.sessions.child_env(&d.cfg, &path),
+            extra_env,
             // the stream is the status here; the hooks are for the TUI
             hooks_path: None,
         };
@@ -988,11 +992,13 @@ impl Actor {
     async fn spawn_tui(&mut self, d: &Daemon) -> Result<(), String> {
         let s = d.session(self.sid).map_err(|e| e.to_string())?;
         let path = d.sessions.path(&d.cfg);
+        let mut extra_env = d.sessions.child_env(&d.cfg, &path);
+        extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
         let launch = Launch {
             cwd: s.cwd,
             model: s.model,
             resume: s.agent_sid,
-            extra_env: d.sessions.child_env(&d.cfg, &path),
+            extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
         };
         let mut sp = self

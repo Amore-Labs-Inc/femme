@@ -328,6 +328,7 @@ async fn open_agent(
         label: Some(name.into()),
         name: Some(name.into()),
         owner,
+        model: None,
     };
     let session = app.core.create_session(req).await.map_err(core_err)?;
     let pane = tagged(&session)?;

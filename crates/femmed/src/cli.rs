@@ -369,7 +369,8 @@ async fn open(cwd: Option<String>) -> anyhow::Result<String> {
     anyhow::ensure!(sock.exists(), "no daemon at {}", sock.display());
     let mut proxy = tokio::process::Command::new(std::env::current_exe()?);
     proxy.arg("proxy");
-    let mut cfg = femme_client::Config::new(DeviceIdentity::generate("femmed open"), Ulid::generate());
+    let mut cfg =
+        femme_client::Config::new(DeviceIdentity::generate("femmed open"), Ulid::generate());
     cfg.ssh_command = Some(proxy);
     let client = femme_client::Client::start(cfg);
     let req = Req::SessionCreate {
@@ -379,6 +380,7 @@ async fn open(cwd: Option<String>) -> anyhow::Result<String> {
         label: None,
         name: None,
         prompt: None,
+        model: None,
     };
     match client.request_timeout(req, ANSWER_WAIT).await? {
         Resp::Session(sid) => Ok(sid.to_string()),

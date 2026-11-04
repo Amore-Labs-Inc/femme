@@ -150,6 +150,7 @@ impl Rig {
                 label: None,
                 name: None,
                 owner: "board".into(),
+                model: None,
             })
             .await
             .expect("a shell opens");
@@ -201,6 +202,7 @@ fn shell_req(home: &Path) -> Req {
         label: None,
         name: None,
         prompt: None,
+        model: None,
     }
 }
 

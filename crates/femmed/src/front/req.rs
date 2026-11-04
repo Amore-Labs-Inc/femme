@@ -111,7 +111,8 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             label,
             name,
             prompt,
-        } => create(ctx, cwd, agent, mode, label, name, prompt).await,
+            model,
+        } => create(ctx, cwd, agent, mode, label, name, prompt, model).await,
         Req::SessionClose { sid } => done(d.close_session(sid).await),
         Req::Prompt {
             sid,
@@ -278,6 +279,7 @@ fn main_pane(d: &Daemon, sid: Sid) -> Result<PaneRef, WireErr> {
     })
 }
 
+#[allow(clippy::too_many_arguments)] // the request's own fields, one each
 async fn create(
     ctx: &Ctx,
     cwd: String,
@@ -286,6 +288,7 @@ async fn create(
     label: Option<String>,
     name: Option<String>,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> Result<Resp, WireErr> {
     let d = &ctx.daemon;
     // A name is for an agent: `/api/agents/<name>` finds the session by it and types into it.
@@ -327,6 +330,7 @@ async fn create(
             label,
             name,
             owner,
+            model: model.filter(|m| !m.trim().is_empty()),
         })
         .await
         .map_err(wire)?;

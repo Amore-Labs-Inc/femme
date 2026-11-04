@@ -181,6 +181,7 @@ pub fn claude(home: &Path) -> CreateSession {
         label: Some("t".into()),
         name: None,
         owner: "board".into(),
+        model: None,
     }
 }
 

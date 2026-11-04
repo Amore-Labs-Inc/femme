@@ -269,6 +269,8 @@ pub struct CreateSession {
     pub name: Option<String>,
     /// `board`, or `key:<name>` for agents-API sessions.
     pub owner: String,
+    /// The agent's model, `None` for its default (see [`crate::session::gateway_env`]).
+    pub model: Option<String>,
 }
 
 /// A pane's screen and the status of the agent in it.
