@@ -29,7 +29,7 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 3. [x] Top-bar menu: drops 4 px and fades; leaves the same way.
 4. [x] Accounts card and add-project palette: scrim fades, card rises 6 px and fades.
 5. [x] Transcript "↓" pill: 150 ms show debounce, fade in, instant hide.
-6. [ ] Transcript: rows of items created in the last second fade in (whole row).
+6. [x] Transcript: rows of items created in the last second fade in (whole row).
 7. [x] Transcript: measure the markdown re-parse per delta; only move it off the UI thread if it
    is over a frame's budget on a long message. (40 KB message: 1.75 ms release, 6.5 ms debug, at
    most once per frame: under budget, so it stays as it is; `markdown::tests::parse_time`.)

@@ -75,6 +75,8 @@ pub struct Transcript {
     pub(super) asks: HashMap<u64, Ask>,
     /// The markdown of the messages, read once per version of the item.
     docs: HashMap<u64, (u64, Arc<Doc>)>,
+    /// The rows of items made in the last second, and when each was first drawn: they fade in.
+    pub(super) fresh: HashMap<u64, Instant>,
     /// Rows came in at the end while the user was reading further up, since when.
     unseen: Option<Instant>,
     /// Redraws once the pill's wait is over.
@@ -137,6 +139,7 @@ impl Transcript {
             thumbs: HashMap::new(),
             asks: HashMap::new(),
             docs: HashMap::new(),
+            fresh: HashMap::new(),
             unseen: None,
             pill_timer: None,
             note: None,
@@ -157,6 +160,7 @@ impl Transcript {
         self.open.clear();
         self.asks.clear();
         self.docs.clear();
+        self.fresh.clear();
         self.thumbs.clear();
         self.fetching.clear();
         self.failed.clear();
