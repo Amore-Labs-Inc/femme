@@ -52,4 +52,9 @@ half-transparent as it drops, the panel half-transparent as it slides, the sideb
 its column; against a scratch daemon and the fake `claude` (`slow`: 50 lines over 10 s): the user
 card and the streamed rows faint on their first frame and settled on the next, the view holding
 after a wheel-up mid-stream while the "↓ new" pill fades in, and after a click on it the list at the
-end with the pill fading out. The 200 ms glide itself is between two captures at that cadence.
+end with the pill fading out; with the glide on the same scale, the eight frames after the click
+show it moving fast then settling (ease-out) with the pill fading over it.
+
+Not yet measured: frame time at a real 120 Hz display. The box has no GPU, so the bench above is
+lavapipe at ~19 fps; on the MacBook, `cargo build --profile quick --features bench` in `desktop/`
+and `target/quick/femme-desktop --bench 15` gives the number against the 8.3 ms budget.
