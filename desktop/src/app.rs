@@ -440,10 +440,12 @@ impl FemmeApp {
 
     /// A connection is up, the first or a later one: `open_at_start` picks or creates the session to
     /// show. It decides once, and does nothing more unless a try that found nothing to show or to
-    /// start is asked again.
+    /// start is asked again. The menu also checks the box's commit: a deploy restarts femmed, so the
+    /// reconnect after a merge is when a new commit is there, and the updater starts at once.
     fn on_client_event(&mut self, net: &Entity<Net>, ev: &ClientEvent, cx: &mut Context<Self>) {
         if matches!(ev.0, Event::Connected { .. }) {
             session::open_at_start(net, cx);
+            self.menu.update(cx, |m, cx| m.check_updates(cx));
         }
     }
 

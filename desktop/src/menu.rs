@@ -11,7 +11,8 @@
 //!   keeps its caret) and a hover-opened menu can be driven too.
 //! - "Check for updates" asks the daemon which commit the box runs, compares it with this build's
 //!   ([`COMMIT`], stamped by `build.rs`) and shows the [`Verdict`] in a row under the item for
-//!   [`RESULT_FOR`]; the comparison itself is pure ([`judge`], [`compare`]) and tested.
+//!   [`RESULT_FOR`]; the comparison itself is pure ([`judge`], [`compare`]) and tested. Behind, it
+//!   starts the PC's updater ([`start_updater`]); the shell runs the same check on every connection.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -82,7 +83,8 @@ pub enum Verdict {
         /// This build's commit.
         commit: String,
     },
-    /// The box runs another commit: the update timer on the PC installs it.
+    /// The box runs another commit: the updater on the PC is started to build it (else its timer
+    /// does, within two minutes).
     Behind {
         /// The commit the box runs.
         deployed: String,
@@ -158,7 +160,7 @@ impl Verdict {
         match self {
             Verdict::Current { commit } => format!("up to date ({})", short(commit)),
             Verdict::Behind { deployed } => format!(
-                "box runs {}: femme-desktop-update.timer installs it within 10 min, then restart",
+                "box runs {}: building it now (femme-desktop-update), then restart",
                 short(deployed)
             ),
             Verdict::Unstamped { deployed } => format!(
@@ -395,8 +397,10 @@ impl FemmeMenu {
         cx.emit(event);
     }
 
-    /// Asks the box which commit it runs and shows what that means for this build.
-    fn check_updates(&mut self, cx: &mut Context<Self>) {
+    /// Asks the box which commit it runs and shows what that means for this build; when the box is
+    /// ahead, starts the PC's updater. The shell calls it on every connection too, so a merge to
+    /// main (the box deploys and restarts femmed) builds the new app without anyone clicking.
+    pub fn check_updates(&mut self, cx: &mut Context<Self>) {
         self.check = Some(Phase::Asking);
         self.fading = None;
         cx.notify();
@@ -423,13 +427,29 @@ impl FemmeMenu {
                     Ok(answer) => judge(COMMIT, answer, error.as_deref()),
                     Err(_) => Verdict::Failed("the box did not answer".into()),
                 };
+                if matches!(verdict, Verdict::Behind { .. }) {
+                    Self::start_updater();
+                }
                 t.finish(verdict, cx);
             })
             .ok();
         }));
     }
 
-    /// Shows `verdict` under the item for [`RESULT_FOR`].
+    /// Starts the PC's updater now (`laptop/femme-desktop-update.sh`, the unit its timer runs) instead
+/// of waiting for the timer's next tick. Best effort: no systemd (macOS), no unit (the checkout
+/// was not set up with pc-setup.sh), a build already running: nothing happens and the timer still
+/// does its work.
+fn start_updater() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "start", "--no-block", "femme-desktop-update.service"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Shows `verdict` under the item for [`RESULT_FOR`].
     fn finish(&mut self, verdict: Verdict, cx: &mut Context<Self>) {
         self.check = Some(Phase::Done(verdict));
         cx.notify();
@@ -717,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn another_commit_says_what_the_timer_will_do() {
+    fn another_commit_says_the_updater_builds_it_now() {
         let v = compare("8b23d2d", Some("1f2e3d4c5b6a79880011223344556677889900aa"));
         assert_eq!(
             v,
@@ -727,7 +747,7 @@ mod tests {
         );
         assert_eq!(
             v.text(),
-            "box runs 1f2e3d4: femme-desktop-update.timer installs it within 10 min, then restart"
+            "box runs 1f2e3d4: building it now (femme-desktop-update), then restart"
         );
         // A different eighth character is a different commit: the prefix is not just seven long.
         assert!(matches!(
