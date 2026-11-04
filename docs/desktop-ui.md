@@ -45,9 +45,10 @@ Keep it current: when your module's public API changes, edit your section in the
   time, and **two editable caps** (5 h %, 7 d %) at which the box rotates off that account; an AWS
   line; API keys with revoke / connect GitHub / add (name + optional GitHub token); sign-out is NOT
   shown (the desktop has no cookie). `Esc` or the `‹` button closes it.
-- **At start** (once connected): the newest live Claude session is shown; none → a new headless
-  Claude session in the home directory is created and shown; `claude` missing on the box (the
-  create fails) → a shell session. The user never sees an empty centre for longer than the connect.
+- **At start** (once connected): the newest live Claude session is shown (one that crashed, failed
+  or lost its holder does not count); none → a new headless Claude session in the home directory is
+  created and shown; `claude` missing on the box (the create fails) → a shell session. The user
+  never sees an empty centre for longer than the connect.
 
 Skin: keep FEMME's identity (fonts VT323 / JetBrains Mono / Schibsted Grotesk, ink borders, black
 title bars, the logo) but the work surface is paper, not pink: pink is the desk margin and accents.

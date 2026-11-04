@@ -69,6 +69,18 @@ fn is_live(s: &Session) -> bool {
     s.closed.is_none() && s.status != SessionStatus::Closed
 }
 
+/// Whether something runs in `s`, or will again (a Claude restarting after an exit is `Starting`):
+/// it is live, and its program has not crashed, failed or lost its holder. The daemon starts nothing
+/// in such a session again; it stays listed (and on show, if it was) until the user closes it, but
+/// it is not a session to open at start or to put on show by itself.
+pub(crate) fn is_running(s: &Session) -> bool {
+    is_live(s)
+        && !matches!(
+            s.status,
+            SessionStatus::Interrupted | SessionStatus::Crashed | SessionStatus::Failed
+        )
+}
+
 /// The pane a tombstone names: its id is `<sid>:<no>`.
 fn pane_id(text: &str) -> Option<PaneId> {
     let (sid, no) = text.rsplit_once(':')?;

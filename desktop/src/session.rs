@@ -1,8 +1,9 @@
 //! Which session the centre shows when the app opens, and the rules for choosing it.
 //!
 //! The user wants Claude in the centre as soon as the app is up: the newest live agent session when
-//! there is one (Claude before Codex before Pi), else a new headless Claude session in the box's
-//! home directory, else (`claude` is not on the box, or the daemon refuses) a shell. [`pick`] is the
+//! there is one (Claude before Codex before Pi; one that crashed or failed does not count), else a
+//! new headless Claude session in the box's home directory, else (`claude` is not on the box, or the
+//! daemon refuses) a shell. [`pick`] is the
 //! pure rule; [`open_at_start`] waits for the daemon's list of sessions, applies the rule and talks
 //! to the daemon. What stays on show afterwards is [`Model::current`]'s business: it follows its
 //! session when that closes (`net.rs`).
@@ -14,7 +15,7 @@ use femme_proto::state::{Agent, Mode};
 use femme_proto::Sid;
 use gpui::{App, AsyncApp, Entity, WeakEntity};
 
-use crate::net::{Link, Load, Model, Net};
+use crate::net::{is_running, Link, Load, Model, Net};
 
 /// How long the daemon's list of sessions is waited for once the link is up. The first `Changes`
 /// comes a round trip after `Connected`; an old Claude session must not be missed, or it is duplicated.
@@ -44,24 +45,26 @@ fn rank(agent: Agent) -> Option<u8> {
 }
 
 /// The session to show at start: the newest live one of the best-ranked agent (Claude, else Codex,
-/// else Pi), else `CreateClaude`. Closed sessions and shells do not count.
+/// else Pi), else `CreateClaude`. Closed sessions, shells, and sessions whose agent crashed, failed
+/// or lost its holder ([`is_running`]) do not count: a dead Claude must not stand in for a new one.
 pub fn pick(model: &Model) -> Choice {
     // `live` is newest first, and `min_by_key` keeps the first of equals: the newest of the agent.
     model
         .live()
         .into_iter()
+        .filter(|s| is_running(s))
         .filter_map(|s| Some((rank(s.agent)?, s.id)))
         .min_by_key(|&(rank, _)| rank)
         .map_or(Choice::CreateClaude, |(_, sid)| Choice::Show(sid))
 }
 
-/// The terminal to fall back on when Claude cannot be started: the newest live shell session, so
-/// that a box without `claude` does not collect one more shell at every start.
+/// The terminal to fall back on when Claude cannot be started: the newest live shell session that
+/// still runs, so that a box without `claude` does not collect one more shell at every start.
 pub fn pick_shell(model: &Model) -> Option<Sid> {
     model
         .live()
         .into_iter()
-        .find(|s| s.agent == Agent::Shell)
+        .find(|s| s.agent == Agent::Shell && is_running(s))
         .map(|s| s.id)
 }
 
@@ -340,6 +343,34 @@ mod tests {
     }
 
     #[test]
+    fn a_crashed_claude_gives_way_to_a_new_one() {
+        // The box's `kn0iyl`: Claude was killed, "starting it again in 2 s", and did not come back.
+        // Nothing runs in it any more, but the daemon lists it (not closed) until the user closes it.
+        let dead = |n: u128, status| Session {
+            status,
+            ..session(n, Agent::Claude, n as i64 * 10)
+        };
+        let m = model(vec![
+            dead(1, SessionStatus::Crashed),
+            dead(2, SessionStatus::Failed),
+            dead(3, SessionStatus::Interrupted),
+        ]);
+        assert_eq!(pick(&m), Choice::CreateClaude);
+        // A live Claude beside it is shown, though the dead one is newer.
+        let m = model(vec![
+            session(1, Agent::Claude, 10),
+            dead(5, SessionStatus::Crashed),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(1)));
+        // One that is being started again still counts.
+        let m = model(vec![
+            session(1, Agent::Claude, 10),
+            dead(5, SessionStatus::Starting),
+        ]);
+        assert_eq!(pick(&m), Choice::Show(Id(5)));
+    }
+
+    #[test]
     fn equal_creation_times_fall_back_on_the_id() {
         let m = model(vec![
             session(7, Agent::Claude, 10),
@@ -365,6 +396,12 @@ mod tests {
             pick_shell(&model(vec![session(2, Agent::Claude, 20)])),
             None
         );
+        // A shell that lost its holder (a reboot) is a dead terminal: an older live one is reused.
+        let mut lost = session(5, Agent::Shell, 50);
+        lost.status = SessionStatus::Interrupted;
+        let m = model(vec![session(1, Agent::Shell, 10), lost.clone()]);
+        assert_eq!(pick_shell(&m), Some(Id(1)));
+        assert_eq!(pick_shell(&model(vec![lost])), None);
     }
 
     #[test]
