@@ -23,17 +23,17 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 
 ## Items
 
-1. [ ] `desktop/src/motion.rs`: one `appear(id, present)` helper over gpui-base `Presence`.
-2. [ ] Right panel: slides in 16 px from the right and fades; closes the same way (the tab stays
+1. [x] `desktop/src/motion.rs`: one `appear(id, present)` helper over gpui-base `Presence`.
+2. [x] Right panel: slides in 16 px from the right and fades; closes the same way (the tab stays
    drawn while it leaves).
-3. [ ] Top-bar menu: drops 4 px and fades; leaves the same way.
-4. [ ] Accounts card and add-project palette: scrim fades, card rises 6 px and fades.
+3. [x] Top-bar menu: drops 4 px and fades; leaves the same way.
+4. [x] Accounts card and add-project palette: scrim fades, card rises 6 px and fades.
 5. [ ] Transcript "↓" pill: 150 ms show debounce, fade in, instant hide.
 6. [ ] Transcript: rows of items created in the last second fade in (whole row).
 7. [ ] Transcript: measure the markdown re-parse per delta; only move it off the UI thread if it
    is over a frame's budget on a long message.
 8. [ ] Smooth scroll to the end when the pill is clicked (one 200 ms ease-out, not a jump).
-9. [ ] Sidebar collapse: 160 ms width transition if the bench shows no cost; else stays instant.
+9. [x] Sidebar collapse: 160 ms width transition (the column alone moves; the frame follows it).
 10. [ ] Bench before/after; `docs/desktop-ui.md` gets the motion rules above.
 
 Skipped: a pulse on the working line (would re-render the transcript every frame, for a signal the
