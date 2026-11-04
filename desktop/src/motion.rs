@@ -12,6 +12,22 @@ use gpui_base::{Presence, Transition};
 /// Appear: 180 ms (T3 Code's drawer curve, `cubic-bezier(.32,.72,0,1)`, settles fast, no bounce).
 const APPEAR: Duration = Duration::from_millis(180);
 
+/// A slide: 160 ms, the same curve.
+const SLIDE: Duration = Duration::from_millis(160);
+
+/// `d` stretched by `FEMME_MOTION_SCALE` (a headful check sets 10 to watch a transition frame by
+/// frame; unset, it is 1).
+fn scaled(d: Duration) -> Duration {
+    static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let scale = *SCALE.get_or_init(|| {
+        std::env::var("FEMME_MOTION_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.)
+    });
+    d.mul_f32(scale)
+}
+
 /// Where an element is in its appearance, this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Appear {
@@ -36,9 +52,11 @@ impl Appear {
 /// while it enters, stays or leaves. Draw the element whenever it is `Some`.
 pub fn appear(id: impl Into<ElementId>, present: bool, window: &mut Window, cx: &mut App) -> Option<Appear> {
     let s = Presence::new(id.into(), present)
-        .transition(Transition::new(APPEAR).ease(cubic_bezier(0.32, 0.72, 0., 1.)))
+        .transition(Transition::new(scaled(APPEAR)).ease(cubic_bezier(0.32, 0.72, 0., 1.)))
         .sample(window, cx);
-    s.should_render().then_some(Appear { t: s.progress })
+    // Presence counts its first 180 ms as a transition even when nothing was ever there: an
+    // absent element that has not moved (t at 0) is gone, not leaving.
+    (s.should_render() && (present || s.progress > 0.)).then_some(Appear { t: s.progress })
 }
 
 /// A width (or any length) on its way to `target`: 160 ms ease-out, the same curve. The value is
@@ -47,7 +65,7 @@ pub fn slide(id: impl Into<ElementId>, target: Pixels, window: &mut Window, cx: 
     gpui_base::transition(
         id.into(),
         target,
-        Transition::new(Duration::from_millis(160)).ease(cubic_bezier(0.32, 0.72, 0., 1.)),
+        Transition::new(scaled(SLIDE)).ease(cubic_bezier(0.32, 0.72, 0., 1.)),
         window,
         cx,
     )
