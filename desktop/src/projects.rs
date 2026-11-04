@@ -387,7 +387,7 @@ impl Picker {
                 Some("Press Enter to create this folder and add it as a project.".into())
             }
             Listing::Failed(e) => Some(e.clone()),
-            Listing::Folders(_) if rows.is_empty() && creates => {
+            Listing::Folders(_) if creates && rows.iter().all(|r| r == "..") => {
                 Some("Press Enter to create this folder and add it as a project.".into())
             }
             Listing::Folders(_) => None,
@@ -445,6 +445,7 @@ impl Render for Picker {
             .inset_0()
             .flex()
             .justify_center()
+            .items_start()
             .pt(relative(0.12))
             .bg(theme::rgba8(0x000000, 0.25))
             .occlude()
