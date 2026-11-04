@@ -1,0 +1,15 @@
+# gitleaks (CI's `secrets` job scans the whole history) with its default rules, minus known
+# false positives. Anything real still fails the job.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "recorded Claude transcripts and made-up test values"
+# Claude stream-json captured for the driver tests: their `api_message_id`s (msg_...) look like keys.
+paths = ['''crates/femme-agents/fixtures/claude/.*\.jsonl''']
+regexes = [
+  # The accounts model's unit test key.
+  '''0123456789abcdef''',
+  # Omarchy's public package-signing key fingerprint (desktop/test/omarchy).
+  '''40DFB630FF42BCFFB047046CF0134EE680CAC571''',
+]
