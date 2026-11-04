@@ -29,7 +29,8 @@ Keep it current: when your module's public API changes, edit your section in the
   updates, accounts, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
   The link status stays next to it. No lanes, no palette button, no panel buttons.
 - **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
-  handle collapse/expand it. Nothing else on the left (no accounts, no lanes).
+  handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
+  and show it. Nothing else on the left (no accounts, no lanes).
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
