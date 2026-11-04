@@ -16,6 +16,7 @@ pub mod files;
 pub mod frame;
 pub mod menu;
 pub mod net;
+pub mod projects;
 pub mod rng;
 pub mod session;
 pub mod sidebar;

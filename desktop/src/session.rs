@@ -76,8 +76,13 @@ pub(crate) const DEEPSEEK: &str = "deepseek/deepseek-v4.1-flash-ultrafast";
 /// "your home": `~` is refused as not absolute), on `model` (`None`: the agent's default). The
 /// sidebar's `+ shell`, `+ claude` and `+ deepseek` send it too.
 pub(crate) fn create(agent: Agent, mode: Mode, model: Option<&str>) -> Req {
+    create_in("", agent, mode, model)
+}
+
+/// [`create`] in the folder `cwd` (absolute; empty is the daemon's home).
+pub(crate) fn create_in(cwd: &str, agent: Agent, mode: Mode, model: Option<&str>) -> Req {
     Req::SessionCreate {
-        cwd: String::new(),
+        cwd: cwd.to_owned(),
         agent,
         mode,
         label: None,
