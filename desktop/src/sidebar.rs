@@ -38,8 +38,8 @@ use gpui_component::tooltip::Tooltip;
 use crate::net::{self, Link, Model, Net};
 use crate::session;
 use crate::theme::{
-    ACCENT_SOFT, BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, PAPER,
-    PAUSE, QUEUE, RULE, TB_SIZE, WORK,
+    ACCENT_SOFT, BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED,
+    PAPER, PAUSE, QUEUE, RULE, TB_SIZE, WORK,
 };
 use crate::ui::{
     button, dot, icon, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
@@ -132,7 +132,10 @@ fn short_dir(cwd: &str) -> String {
 
 /// The name a project goes by: its folder's last part (`~` for home).
 fn project_name(dir: &str) -> String {
-    dir.rsplit('/').find(|p| !p.is_empty()).unwrap_or(dir).to_string()
+    dir.rsplit('/')
+        .find(|p| !p.is_empty())
+        .unwrap_or(dir)
+        .to_string()
 }
 
 /// One project: a folder and the live sessions in it, newest first.
@@ -168,7 +171,8 @@ struct Row {
     sid: Sid,
     dot: Rgba,
     title: String,
-    agent: &'static str,
+    /// The agent, or the provider of a model run through OpenGateway (`deepseek`).
+    agent: String,
     dir: String,
     /// The folder as the daemon has it: what the project groups by.
     cwd: String,
@@ -180,7 +184,10 @@ impl Row {
             sid: s.id,
             dot: status_color(s),
             title: net::title(s),
-            agent: agent_name(s.agent),
+            agent: match s.model.as_deref().and_then(|m| m.split_once('/')) {
+                Some((provider, _)) => provider.to_owned(),
+                None => agent_name(s.agent).to_owned(),
+            },
             dir: short_dir(&s.cwd),
             cwd: s.cwd.trim_end_matches('/').to_string(),
         }
@@ -503,7 +510,9 @@ impl Sidebar {
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| n.run(session::create_in(cwd, agent, mode, model), cx));
+        let sent = net.update(cx, |n, cx| {
+            n.run(session::create_in(cwd, agent, mode, model), cx)
+        });
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -577,8 +586,9 @@ impl Sidebar {
                    agent: Agent,
                    mode: Mode,
                    model: Option<&'static str>| {
-            let b = button(id, label)
-                .on_click(cx.listener(move |this, _, _, cx| this.create("", agent, mode, model, cx)));
+            let b = button(id, label).on_click(
+                cx.listener(move |this, _, _, cx| this.create("", agent, mode, model, cx)),
+            );
             if self.creating {
                 b.opacity(0.5)
             } else {
@@ -605,6 +615,13 @@ impl Sidebar {
                 Mode::Headless,
                 Some(session::DEEPSEEK),
             ))
+            .child(
+                button("sb-new-project", "+ project")
+                    .tooltip(|window, cx| {
+                        Tooltip::new("a Claude session in a folder you pick").build(window, cx)
+                    })
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(AddProject))),
+            )
     }
 
     /// A row of the expanded list: status dot, title, and agent and directory below it.
@@ -620,7 +637,7 @@ impl Sidebar {
             .line_height(px(16.))
             .text_color(if on { INK } else { MUTED })
             // The folder is the project's header above.
-            .child(div().flex_none().child(r.agent));
+            .child(div().flex_none().child(r.agent.clone()));
         row(SharedString::from(format!("sb-{sid}")), on)
             .flex_none()
             .gap(px(9.))
@@ -701,14 +718,17 @@ impl Sidebar {
             )
             .when(folded, |d| d.child(meta(g.rows.len().to_string())))
             .child(
-                icon_button(SharedString::from(format!("sbp-new-{}", g.cwd)), Glyph::Plus)
-                    .opacity(0.)
-                    .group_hover(hover, |s| s.opacity(1.))
-                    .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.create(&cwd, Agent::Claude, Mode::Headless, None, cx);
-                    })),
+                icon_button(
+                    SharedString::from(format!("sbp-new-{}", g.cwd)),
+                    Glyph::Plus,
+                )
+                .opacity(0.)
+                .group_hover(hover, |s| s.opacity(1.))
+                .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.create(&cwd, Agent::Claude, Mode::Headless, None, cx);
+                })),
             )
     }
 
@@ -931,13 +951,26 @@ mod tests {
         let bare = session(3, 3);
         let m = model(vec![named, labelled, bare]);
         let rows = rows(&m);
-        let say = |r: &Row| (r.title.clone(), r.agent, r.dir.clone());
-        assert_eq!(say(&rows[0]), ("work".into(), "shell", "~/work".into()));
+        let say = |r: &Row| (r.title.clone(), r.agent.clone(), r.dir.clone());
+        assert_eq!(
+            say(&rows[0]),
+            ("work".into(), "shell".into(), "~/work".into())
+        );
         assert_eq!(
             say(&rows[1]),
-            ("fix the build".into(), "codex", "/srv/app".into())
+            ("fix the build".into(), "codex".into(), "/srv/app".into())
         );
-        assert_eq!(say(&rows[2]), ("nightly".into(), "claude", "~/work".into()));
+        assert_eq!(
+            say(&rows[2]),
+            ("nightly".into(), "claude".into(), "~/work".into())
+        );
+        // A model run through OpenGateway is named by its provider; a Claude model is not.
+        let mut deep = session(4, 4);
+        deep.agent = Agent::Claude;
+        deep.model = Some("deepseek/deepseek-v4.1-flash-ultrafast".into());
+        assert_eq!(Row::of(&deep).agent, "deepseek");
+        deep.model = Some("opus".into());
+        assert_eq!(Row::of(&deep).agent, "claude");
     }
 
     #[test]
@@ -951,11 +984,12 @@ mod tests {
         let mut home = session(4, 5);
         home.cwd = "/home/u".into();
         let g = groups(&rows(&model(vec![a, b, c, home])));
-        let say: Vec<(&str, Vec<u128>)> = g
-            .iter()
-            .map(|g| (g.name.as_str(), ids(&g.rows)))
-            .collect();
-        assert_eq!(say, [("femme", vec![3, 1]), ("work", vec![2]), ("~", vec![4])]);
+        let say: Vec<(&str, Vec<u128>)> =
+            g.iter().map(|g| (g.name.as_str(), ids(&g.rows))).collect();
+        assert_eq!(
+            say,
+            [("femme", vec![3, 1]), ("work", vec![2]), ("~", vec![4])]
+        );
     }
 
     #[test]
