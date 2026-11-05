@@ -71,3 +71,18 @@ frame interval        7.70    9.61   14.45   15.55   16.12
 p99 frame work 4.42 ms: inside the 6.1 ms a 165 Hz frame allows and the 8.3 ms of 120 Hz, with one
 late frame in fifteen seconds. The four 60 Hz terminal panes set the redraw cadence here (the app
 draws only when something changed), so 124 fps is the content's rate, not a ceiling.
+
+The motion itself, same laptop, `--bench 15 --panes 0 --motion` (the sidebar and the terminal panel
+reverse their transitions every 250 ms, nothing else draws):
+
+```
+frames 1838 (122.2 fps), late 0 (0.00%)
+                       p50     p90     p99   p99.9     max   (ms)
+frame work            0.59    0.76    1.17    1.73    4.30
+frame interval        6.05    6.32   68.81   70.71   71.04
+```
+
+Frame interval p50 6.05 ms and p90 6.32 ms is one frame per 165 Hz refresh: while a transition
+runs, every refresh gets a frame. The 70 ms intervals at p99 are the idle gap between one
+transition ending and the next toggle (250 ms tick, 180 ms motion), when nothing needs drawing.
+With four fire panes behind the motion (`--panes 4 --motion`): p99 frame work 4.65 ms, 0 late.
