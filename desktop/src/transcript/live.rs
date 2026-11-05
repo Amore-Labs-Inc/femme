@@ -91,6 +91,8 @@ pub struct Transcript {
     pub(super) note: Option<String>,
     /// Redraws once a second while the session works, for the clock in the working line.
     ticker: Option<Task<()>>,
+    /// The working line the last row shows, `None` when the session is idle.
+    pub(super) working: Option<String>,
     _events: Option<Subscription>,
     _status: Option<Subscription>,
 }
@@ -108,7 +110,8 @@ impl Transcript {
             };
             rt.spawn(hold(client, wanted));
         }
-        let list = ListState::new(0, ListAlignment::Top, px(300.));
+        // One row past the items: the working line, empty when the session is idle.
+        let list = ListState::new(1, ListAlignment::Top, px(300.));
         list.set_follow_mode(FollowMode::Tail);
         // The handler runs inside the list's own scroll code: it must not touch the list.
         let this = cx.weak_entity();
@@ -151,6 +154,7 @@ impl Transcript {
             glide: None,
             note: None,
             ticker: None,
+            working: None,
             _events: events,
             _status: status,
         }
@@ -177,7 +181,7 @@ impl Transcript {
         self.glide = None;
         self.note = None;
         self.generation += 1;
-        self.list.reset(0);
+        self.list.reset(1);
         self.list.set_follow_mode(FollowMode::Tail);
         self.want.send_replace(sid);
         cx.notify();
@@ -675,6 +679,11 @@ impl Render for Transcript {
         }
         self.glide_step(window);
         let working = self.working_line(cx);
+        if working.is_some() != self.working.is_some() {
+            let last = self.layout.rows.len();
+            self.list.remeasure_items(last..last + 1);
+        }
+        self.working = working;
         let pill = self.pill(window, cx);
         div()
             .size_full()
@@ -701,21 +710,9 @@ impl Render for Transcript {
                 )
                 .size_full()
                 .pt(px(6.))
-                .pb(px(if working.is_some() { 28. } else { 10. })),
+                .pb(px(10.)),
             )
             .child(Scrollbar::vertical(&self.list))
-            .when_some(working.filter(|_| self.note.is_none()), |d, line| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom(px(6.))
-                        .left(px(14.))
-                        .font_family(FONT_MONO)
-                        .text_size(px(12.))
-                        .text_color(MUTED)
-                        .child(line),
-                )
-            })
             .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
             .children(pill)
             .when_some(self.note.clone(), |d, note| {

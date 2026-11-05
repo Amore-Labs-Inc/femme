@@ -129,7 +129,20 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(key) = self.layout.rows.get(ix).map(|r| r.key) else {
-            return div().into_any_element();
+            // The row after the last item: the working line under what is streaming, centred.
+            return match (ix == self.layout.rows.len(), &self.working) {
+                (true, Some(line)) => div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .py(px(8.))
+                    .font_family(FONT_MONO)
+                    .text_size(px(12.))
+                    .text_color(MUTED)
+                    .child(line.clone())
+                    .into_any_element(),
+                _ => div().into_any_element(),
+            };
         };
         let (row, seq) = match key {
             Key::More => return self.more_row(cx),

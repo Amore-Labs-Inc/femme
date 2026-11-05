@@ -106,7 +106,8 @@ VS Code (`docs/smooth.md` has the sources):
 - Streamed text appends; nothing is animated, re-laid out or scrolled by hand per token. The list
   follows the tail; any upward scroll by the user releases it; the "↓" pill shows 150 ms later and
   goes at once when they are back at the end. New rows of the current turn fade in once, whole.
-- The working line is the 1 Hz star, nothing faster or brighter.
+- The working line is the 1 Hz star, nothing faster or brighter; it sits centred under the last row,
+  not pinned to the bottom edge.
 - Under the OS's "reduce motion", every one of these is an instant change (`Presence` sees
   `cx.reduce_motion()`).
 
