@@ -12,8 +12,9 @@ keeps two things as they are: frame time (`femme-desktop --bench`) and the updat
 - Motion runs at the display's own rate, as high as the display goes: a transition asks for the
   next frame every frame (`request_animation_frame`), nothing caps it (the only `with_max_fps` in
   the app are the two tiny spinners, 10 and 12 fps on purpose), and it dirties only what it moves
-  (panels are `.cached` leaves). Budget: 120 Hz ProMotion is 8.3 ms a frame; the bench's frame
-  work is p99 5.9 ms *software-rendered* on the box (no GPU), so a MacBook has headroom to spare.
+  (panels are `.cached` leaves). Budget: 120 Hz ProMotion is 8.3 ms a frame, 165 Hz is 6.1 ms; the
+  bench's frame work is p99 4.4 ms on Cem's laptop at 165 Hz (below) and 5.9 ms software-rendered
+  on the box.
 - Hover, selection, tab switch, typing: instant. Motion never blocks input; it can be reversed
   mid-way (`Presence` does this).
 - Streamed text appends; nothing per token is animated, laid out again, or re-scrolled by hand. The
@@ -55,6 +56,18 @@ after a wheel-up mid-stream while the "↓ new" pill fades in, and after a click
 end with the pill fading out; with the glide on the same scale, the eight frames after the click
 show it moving fast then settling (ease-out) with the pill fading over it.
 
-Not yet measured: frame time at a real 120 Hz display. The box has no GPU, so the bench above is
-lavapipe at ~19 fps; on the MacBook, `cargo build --profile quick --features bench` in `desktop/`
-and `target/quick/femme-desktop --bench 15` gives the number against the 8.3 ms budget.
+Measured on Cem's laptop (Omarchy, 20 cores, 2560x1440 display at 165 Hz, window 1261x1390,
+quick profile, `--bench 15 --panes 4`, 2026-11-05):
+
+```
+frames 1872 (124.3 fps), late 1 (0.05%)
+                       p50     p90     p99   p99.9     max   (ms)
+frame work            2.42    3.41    4.42    5.53   10.17
+  draw                2.29    2.53    3.50    4.50    8.08
+  present             0.41    0.49    0.73    0.92    2.03
+frame interval        7.70    9.61   14.45   15.55   16.12
+```
+
+p99 frame work 4.42 ms: inside the 6.1 ms a 165 Hz frame allows and the 8.3 ms of 120 Hz, with one
+late frame in fifteen seconds. The four 60 Hz terminal panes set the redraw cadence here (the app
+draws only when something changed), so 124 fps is the content's rate, not a ceiling.
