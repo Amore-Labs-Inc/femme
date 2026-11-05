@@ -45,6 +45,10 @@ struct Cli {
     /// Seed of the benchmark's synthetic sources.
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// The benchmark keeps the shell's transitions going (sidebar collapsing, the panel sliding,
+    /// every 250 ms), so the frame times are those of the motion.
+    #[arg(long)]
+    motion: bool,
     /// Requested window size in logical pixels, WIDTHxHEIGHT (a compositor may override it).
     #[arg(long, default_value = "1440x900", value_parser = parse_size, value_name = "WxH")]
     size: (f32, f32),
@@ -112,6 +116,7 @@ fn main() -> anyhow::Result<()> {
         full_height: cli.full_height,
         target_ms: cli.target_ms,
         seed: cli.seed,
+        motion: cli.motion,
         window: cli.size,
     })
 }

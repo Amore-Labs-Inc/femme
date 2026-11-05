@@ -34,6 +34,8 @@ pub struct BenchConfig {
     pub full_height: bool,
     /// `--target-ms`: the p99 target to judge against, instead of the one the display's refresh implies.
     pub target_ms: Option<f64>,
+    /// The shell's transitions ran throughout (`--motion`).
+    pub motion: bool,
     /// The window's size in logical pixels and its scale factor, read when measuring starts (a
     /// compositor may override the size that was asked for).
     pub window: Option<(u32, u32, f32)>,
@@ -364,10 +366,10 @@ impl fmt::Display for Report {
         let win = c
             .window
             .map_or_else(String::new, |(w, h, s)| format!(", window {w}x{h} at {s}x"));
-        let layout = if c.full_height {
-            "full-height panes"
-        } else {
-            "panes in the frame"
+        let layout = match (c.full_height, c.motion) {
+            (true, _) => "full-height panes",
+            (false, true) => "panes in the frame, motion on",
+            (false, false) => "panes in the frame",
         };
         writeln!(
             f,

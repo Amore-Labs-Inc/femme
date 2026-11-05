@@ -130,6 +130,8 @@ pub struct Config {
     pub target_ms: Option<f64>,
     /// Seed of every synthetic source.
     pub seed: u64,
+    /// The benchmark toggles the sidebar and the terminal panel every tick, measuring the motion.
+    pub motion: bool,
     /// Requested window size in logical pixels (a compositor may override it).
     pub window: (f32, f32),
     /// The daemon to show; `None` shows the frame with "no daemon configured".
@@ -146,6 +148,7 @@ impl Default for Config {
             full_height: false,
             target_ms: None,
             seed: 1,
+            motion: false,
             window: (1440., 900.),
             connect: None,
         }
@@ -221,9 +224,11 @@ fn bench_task(
         mode: cfg.mode_label(),
         full_height: cfg.full_height,
         target_ms: cfg.target_ms,
+        motion: cfg.motion,
         window: None,
     };
-    cx.spawn(async move |_, cx| {
+    let motion = cfg.motion;
+    cx.spawn(async move |this, cx| {
         let stats = |cx: &gpui::AsyncApp| -> Vec<PaneStats> {
             panes
                 .iter()
@@ -249,6 +254,17 @@ fn bench_task(
             cx.background_executor()
                 .timer(Duration::from_millis(250))
                 .await;
+            // Each tick reverses both transitions (180 ms), so the run is motion nearly throughout.
+            if motion {
+                let _ = cx.update(|cx| {
+                    handle.update(cx, |_, window, cx| {
+                        this.update(cx, |app, cx| {
+                            app.toggle_sidebar(cx);
+                            app.toggle_terminal(window, cx);
+                        })
+                    })
+                });
+            }
             b.poll();
         }
         // Frames applied count from the start of measuring; resyncs are those of the whole run.
