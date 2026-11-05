@@ -86,3 +86,8 @@ Frame interval p50 6.05 ms and p90 6.32 ms is one frame per 165 Hz refresh: whil
 runs, every refresh gets a frame. The 70 ms intervals at p99 are the idle gap between one
 transition ending and the next toggle (250 ms tick, 180 ms motion), when nothing needs drawing.
 With four fire panes behind the motion (`--panes 4 --motion`): p99 frame work 4.65 ms, 0 late.
+
+Seen on the laptop too (wf-recorder at 60 fps of the app window on the 165 Hz display, GPU-rendered,
+ctrl-b and ctrl-j sent with wtype): the panel's header darkens a step further on every captured
+frame from the toggle to its settled value, ease-out, with no repeated or skipped step; the sidebar
+column narrows the same way. Same shape as the Xvfb captures, at the real rate.
