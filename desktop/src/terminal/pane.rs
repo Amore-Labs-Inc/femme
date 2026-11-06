@@ -33,6 +33,7 @@ use super::input;
 use super::runs::{BgRun, Palette};
 use super::synth::{Fire, FrameSource, Holder, ShellScroll, WINDOW};
 use crate::bench::PaneStats;
+use crate::theme;
 
 /// Which synthetic terminal feeds a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,7 +125,7 @@ impl PaneState {
     fn new(pane: PaneId, up: mpsc::UnboundedSender<TermUp>, initial: (u16, u16)) -> Self {
         let mut st = Self {
             cache: RowCache::new(),
-            palette: Palette::femme_light(),
+            palette: Palette::femme(theme::is_dark()),
             bgs: Vec::new(),
             metrics: None,
             origin: Point::default(),
@@ -162,6 +163,15 @@ impl PaneState {
         if self.focused != on {
             self.focused = on;
             self.send(TermUp::Focus(on));
+        }
+    }
+
+    /// Points the palette at the live theme. Called as the pane is painted: the cache holds styles,
+    /// not colours, so a flip of the theme needs nothing else redone.
+    pub fn follow_theme(&mut self) {
+        let want = Palette::femme(theme::is_dark());
+        if self.palette != want {
+            self.palette = want;
         }
     }
 
@@ -547,6 +557,15 @@ mod tests {
             })
         ));
         (st, up)
+    }
+
+    #[test]
+    fn the_palette_follows_the_live_theme() {
+        let (mut st, _up) = state((80, 24));
+        assert_eq!(st.palette, Palette::femme(theme::is_dark()));
+        st.palette = Palette::femme(!theme::is_dark());
+        st.follow_theme();
+        assert_eq!(st.palette, Palette::femme(theme::is_dark()));
     }
 
     /// Everything the pane said since the last look.

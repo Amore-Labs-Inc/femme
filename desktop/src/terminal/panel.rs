@@ -36,7 +36,7 @@ use gpui::{
 
 use crate::net::Net;
 use crate::terminal::pane::TerminalPane;
-use crate::theme::{FONT_MONO, META_SIZE, MUTED, PANEL, PAPER};
+use crate::theme::{muted, panel, paper, FONT_MONO, META_SIZE};
 use crate::ui::{button, button_dark, ruled};
 
 use tabs::{close_req, main_of, on_show, short, tabs_of, terminals, Centre, Shown};
@@ -529,7 +529,7 @@ impl Render for TerminalPanel {
             .items_center()
             .gap(px(3.))
             .p(px(3.))
-            .bg(PANEL)
+            .bg(panel())
             .child(
                 div()
                     .id("term-tabs")
@@ -558,7 +558,7 @@ impl Render for TerminalPanel {
             Some(pane) => body.child(ruled(
                 div()
                     .size_full()
-                    .bg(PAPER)
+                    .bg(paper())
                     .pl(px(8.))
                     .pr(px(4.))
                     .py(px(6.))
@@ -568,7 +568,7 @@ impl Render for TerminalPanel {
                 div()
                     .font_family(FONT_MONO)
                     .text_size(META_SIZE)
-                    .text_color(MUTED)
+                    .text_color(muted())
                     .child(snap.note),
             ),
         };
