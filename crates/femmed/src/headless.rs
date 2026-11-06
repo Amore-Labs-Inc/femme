@@ -815,10 +815,11 @@ impl Actor {
                 d.hub.publish_delta(self.sid, id, offset, text);
             }
         }
+        // a replayed init too: after a daemon restart that is the only one there is
+        if let Some(c) = &f.commands {
+            save_commands(d, c);
+        }
         if live_line {
-            if let Some(c) = &f.commands {
-                save_commands(d, c);
-            }
             if let Some(u) = f.usage {
                 *d.usage.lock().unwrap_or_else(|e| e.into_inner()) = Some(u);
             }
