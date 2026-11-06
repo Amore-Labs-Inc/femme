@@ -47,7 +47,12 @@ fn text_is_readable_on_its_fills() {
                 p.accent_deep,
             ),
             (
-                "label on neon (pressed)",
+                "label on neon (a row the keyboard is on, the switch knob)",
+                p.on_accent_strong,
+                p.neon,
+            ),
+            (
+                "label on the pressed fill",
                 p.on_accent_strong,
                 p.accent_strong,
             ),
@@ -157,6 +162,17 @@ fn the_pinks_stay_pink() {
     }
     assert_eq!(LIGHT.neon, DARK.neon);
     assert_eq!(LIGHT.accent_text, DARK.accent_text);
+}
+
+/// The permission square for plan mode is the deep magenta in both palettes and stays apart from
+/// neon (auto mode): in the dark palette `accent_deep` is the bright pink, which is not apart from it.
+#[test]
+fn plan_stays_apart_from_neon() {
+    assert_eq!(LIGHT.plan, DARK.plan);
+    for (theme, p) in [("light", &LIGHT), ("dark", &DARK)] {
+        let c = contrast(p.plan, p.neon);
+        assert!(c >= 1.8, "{theme}: plan and neon are {c:.2}:1 apart");
+    }
 }
 
 /// A lane dot on dark paper or panel grey is a visible mark (3:1, the bar for UI graphics).

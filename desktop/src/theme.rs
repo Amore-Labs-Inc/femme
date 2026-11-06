@@ -211,6 +211,9 @@ tokens! {
     /// Keyboard focus ring colour (neon, drawn [`FOCUS_RING_WIDTH`] wide). gpui-component widgets
     /// show focus by tinting their own border with it (see [`apply`]).
     focus_ring,
+    /// The permission square's colour for plan mode (`#B53094` in both palettes): a purple-leaning
+    /// magenta that stays apart from `neon`, the colour of auto mode.
+    plan,
     /// Title bars (and the other dark bars): a dark fill in both palettes, so a bar reads as a bar.
     bar,
     /// The pink lettering of a title bar: the light palette's desk pink in both.
@@ -302,6 +305,7 @@ const fn light() -> Palette {
         warn: pause,
         danger: bad,
         focus_ring: neon,
+        plan: accent_deep,
         bar: ink,
         bar_text: desk,
         on_bar: paper,
@@ -357,6 +361,7 @@ const fn dark() -> Palette {
         warn: pause,
         danger: bad,
         focus_ring: neon,
+        plan: hover,
         bar: rgb8(0x0A080A),
         bar_text: rgb8(0xF386A1),
         on_bar: ink,

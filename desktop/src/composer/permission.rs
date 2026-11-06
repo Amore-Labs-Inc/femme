@@ -4,7 +4,7 @@
 
 use gpui::{Rgba, SharedString};
 
-use crate::theme::{accent_deep, bad, done, neon, panel, pause, work};
+use crate::theme::{bad, done, neon, panel, pause, plan, work};
 
 /// How the square shows a mode: a short label, its colour and the full name for the tooltip.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,7 +23,7 @@ pub fn look(mode: &str) -> Look {
     let (label, color, tip) = match mode {
         "manual" | "default" => ("manual", work(), "Manual (ask before tools)"),
         "acceptEdits" => ("accept edits", pause(), "Accept edits"),
-        "plan" => ("plan", accent_deep(), "Plan mode"),
+        "plan" => ("plan", plan(), "Plan mode"),
         "auto" => ("auto", neon(), "Auto mode"),
         "bypassPermissions" => ("bypass", bad(), "Bypass permissions"),
         "dontAsk" => ("don't ask", done(), "Don't ask"),
@@ -52,7 +52,7 @@ mod tests {
         let cases = [
             ("manual", "manual", work(), "Manual (ask before tools)"),
             ("acceptEdits", "accept edits", pause(), "Accept edits"),
-            ("plan", "plan", accent_deep(), "Plan mode"),
+            ("plan", "plan", plan(), "Plan mode"),
             ("auto", "auto", neon(), "Auto mode"),
             ("bypassPermissions", "bypass", bad(), "Bypass permissions"),
             ("dontAsk", "don't ask", done(), "Don't ask"),
