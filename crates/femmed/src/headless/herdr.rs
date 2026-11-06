@@ -668,7 +668,10 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
                 Cmd::Streams { reply } => {
                     let _ = reply.send(HashMap::new());
                 }
+                // Closing from FEMME ends the pane too: a close is a kill, not a hide. A pane
+                // that is already gone (the sync noticed it) makes this a no-op error.
                 Cmd::Close { done } => {
+                    let _ = herdr(&bin, Some(&hs), &["pane", "close", &pane]).await;
                     let _ = done.send(());
                     return;
                 }
