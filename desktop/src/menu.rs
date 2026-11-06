@@ -264,18 +264,30 @@ fn shadow(d: f32) -> Vec<BoxShadow> {
     s
 }
 
+/// The colours of the "Dark mode" switch in the palette `p`, as (track, knob). On, the track is neon
+/// and the knob is the label colour of a neon fill: ink in the light palette, paper in the dark one,
+/// where ink is too light to show on pink. Off, the track is paper and the knob ink.
+fn switch_colors(p: &theme::Palette, on: bool) -> (Rgba, Rgba) {
+    if on {
+        (p.neon, p.on_accent_strong)
+    } else {
+        (p.paper, p.ink)
+    }
+}
+
 /// The switch of the "Dark mode" row: a ruled track with a square knob, the knob at the right and
 /// the track pink when it is on, at the left on paper when it is off. Hard edges, like every box of
-/// the skin; the knob is ink in both states, so it reads on either track.
+/// the skin.
 fn switch(on: bool) -> Div {
-    let knob = div().absolute().top(px(2.)).size(px(10.)).bg(ink());
+    let (track, knob_color) = switch_colors(theme::current(), on);
+    let knob = div().absolute().top(px(2.)).size(px(10.)).bg(knob_color);
     ruled(
         div()
             .relative()
             .flex_none()
             .w(SWITCH_W)
             .h(SWITCH_H)
-            .bg(if on { neon() } else { paper() }),
+            .bg(track),
     )
     .child(if on {
         knob.right(px(2.))
@@ -887,6 +899,21 @@ mod tests {
         let ids: std::collections::HashSet<_> = Item::ALL.iter().map(|i| i.id()).collect();
         assert_eq!(labels.len(), Item::ALL.len());
         assert_eq!(ids.len(), Item::ALL.len());
+    }
+
+    #[test]
+    fn the_switch_knob_reads_on_its_track_in_both_palettes() {
+        for (name, p) in [("light", &theme::LIGHT), ("dark", &theme::DARK)] {
+            for on in [false, true] {
+                let (track, knob) = switch_colors(p, on);
+                let c = theme::contrast(knob, track);
+                assert!(
+                    c >= 4.5,
+                    "{name}, switch {}: the knob is {c:.2}:1 on its track",
+                    if on { "on" } else { "off" }
+                );
+            }
+        }
     }
 
     #[test]
