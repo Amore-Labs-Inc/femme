@@ -176,6 +176,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
         Req::CyclePermission { sid } => done(d.cycle_permission(sid).await),
+        Req::SessionLabel { sid, label } => done(d.update(sid, |s| s.label = label).map(drop)),
         Req::Commands => Ok(Resp::Commands {
             names: crate::headless::commands(d),
         }),
