@@ -9,10 +9,12 @@
 mod chips;
 mod draft;
 mod files;
+mod slash;
 mod sniff;
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use femme_proto::rpc::{PromptHow, Req, Resp};
 use femme_proto::state::SessionStatus;
@@ -20,8 +22,9 @@ use femme_proto::Sid;
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
     ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
+    Render, Rgba, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, Window,
 };
 use gpui_component::input::{Escape, InputEvent, Textarea, TextareaState};
 
@@ -29,16 +32,19 @@ use self::chips::Previews;
 use self::draft::{
     join_notices, picker_notice, Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE,
 };
-use crate::net::Net;
+use crate::net::{Link, Net};
 use crate::theme::{
     self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
 };
-use crate::ui::{button, button_dark, ruled};
+use crate::ui::{button, button_dark, row, ruled};
 
 /// The input is this many lines tall when empty...
 const MIN_ROWS: usize = 2;
 /// ...grows with the text up to this many, then scrolls.
 const MAX_ROWS: usize = 8;
+/// An empty or failed `Req::Commands` is asked again at most this often, so that a daemon deployed
+/// later fills the `/` menu.
+const COMMANDS_RETRY: Duration = Duration::from_secs(30);
 
 /// The composer: the attachment chips, a multi-line input and the send button, for the session
 /// the shell last gave it with [`Composer::set_session`]. What was typed and attached is kept per
@@ -62,6 +68,20 @@ pub struct Composer {
     /// What the last render drew, to re-render only when the session's kind changes.
     last_target: Target,
     previews: Previews,
+    /// The daemon's slash commands (`Req::Commands`), names without the `/`; empty until it answers.
+    commands: Vec<String>,
+    /// When `Req::Commands` was last sent on this connection (`None`: not yet).
+    asked: Option<Instant>,
+    /// Whether the link was up at the last look, to ask again on each new connection.
+    link_up: bool,
+    /// The `/` menu's selected row.
+    pick: usize,
+    /// The query the menu was drawn for: another one selects the first row again.
+    query: String,
+    /// Esc closed the menu; the next edit opens it again.
+    menu_off: bool,
+    /// Whether the last render drew the menu, so that an edit that closes it re-renders.
+    menu_shown: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -79,7 +99,13 @@ impl Composer {
         let mut subs = Vec::new();
         if let Some(net) = &net {
             // The model changes on every event; only a change of the session's kind matters here.
-            subs.push(cx.observe(net, |this, _, cx| {
+            subs.push(cx.observe(net, |this, net, cx| {
+                let up = matches!(net.read(cx).model.link, Link::Up(_));
+                if up && !this.link_up {
+                    this.asked = None;
+                    this.ask_commands(cx);
+                }
+                this.link_up = up;
                 if this.target(cx) != this.last_target {
                     cx.notify();
                 }
@@ -97,6 +123,13 @@ impl Composer {
             pastes: 0,
             last_target: Target::NoSession,
             previews: Rc::default(),
+            commands: Vec::new(),
+            asked: None,
+            link_up: false,
+            pick: 0,
+            query: String::new(),
+            menu_off: false,
+            menu_shown: false,
             _subs: subs,
         }
     }
@@ -114,6 +147,7 @@ impl Composer {
         }
         self.session = sid;
         self.reload = true;
+        self.menu_off = false;
         cx.notify();
     }
 
@@ -228,6 +262,11 @@ impl Composer {
                 self.send(how, window, cx);
             }
             InputEvent::Change => {
+                self.menu_off = false;
+                let typing = input.read(cx).value().starts_with('/');
+                if typing || self.menu_shown {
+                    cx.notify();
+                }
                 let empty = input.read(cx).text().len() == 0;
                 let stale = self
                     .session
@@ -240,6 +279,113 @@ impl Composer {
             }
             _ => {}
         }
+    }
+
+    /// `Req::Commands` for the `/` menu, once per connection; when the list came back empty or
+    /// failed, again on a later call, at most every [`COMMANDS_RETRY`]. A daemon that does not know
+    /// the request leaves the list empty, and the menu never shows.
+    fn ask_commands(&mut self, cx: &mut Context<Self>) {
+        let Some(net) = self.net.clone() else { return };
+        if !matches!(net.read(cx).model.link, Link::Up(_)) {
+            return;
+        }
+        let due = self
+            .asked
+            .is_none_or(|t| self.commands.is_empty() && t.elapsed() >= COMMANDS_RETRY);
+        if !due {
+            return;
+        }
+        self.asked = Some(Instant::now());
+        let answer = request(&net, Req::Commands, cx);
+        cx.spawn(async move |this, cx| {
+            if let Ok(Resp::Commands { names }) = answer.await {
+                this.update(cx, |this, cx| {
+                    this.commands = names;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The `/` menu's rows for the input's text: none while it is closed, the session takes no
+    /// prompts, or the text is not a command word being typed.
+    fn menu(&self, cx: &App) -> Vec<String> {
+        let Some(input) = self.input.as_ref().filter(|_| !self.menu_off) else {
+            return Vec::new();
+        };
+        if !self.target(cx).takes_prompts() {
+            return Vec::new();
+        }
+        let text = input.read(cx).value();
+        slash::matches(&text, &self.commands)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Puts the picked command into the input, with a space for its arguments.
+    fn complete(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.input.clone() else {
+            return;
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(slash::complete(name), window, cx);
+            let end = input.text().len();
+            input.set_selected_range(end..end, cx);
+            input.focus(window, cx);
+        });
+        // `set_value` sends no `Change`: what an edit would do is done here.
+        self.input_empty = false;
+        self.menu_off = false;
+        if let Some(draft) = self.session.and_then(|sid| self.drafts.get_mut(sid)) {
+            draft.notice = None;
+        }
+        cx.notify();
+    }
+
+    /// The `/` menu's keys, ahead of the input: Up/Down pick, Tab and Enter complete (Enter on a
+    /// whole command name sends it as usual), Esc closes. With the menu closed every key goes on.
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.menu(cx);
+        if rows.is_empty() {
+            return;
+        }
+        let pick = self.pick.min(rows.len() - 1);
+        let k = &ev.keystroke;
+        match k.key.as_str() {
+            "down" => self.pick = (pick + 1).min(rows.len() - 1),
+            "up" => self.pick = pick.saturating_sub(1),
+            "escape" => self.menu_off = true,
+            "tab" => self.complete(&rows[pick], window, cx),
+            "enter" if !k.modifiers.shift => {
+                let text = self.input.as_ref().map(|i| i.read(cx).value());
+                if text.is_some_and(|t| slash::exact(&t, &self.commands)) {
+                    return;
+                }
+                self.complete(&rows[pick], window, cx);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// The `/` menu above the input: one ruled list of `/name` rows, the picked one lit.
+    fn menu_list(&self, rows: Vec<String>, cx: &mut Context<Self>) -> Div {
+        ruled(div().flex().flex_col().bg(PAPER)).children(rows.into_iter().enumerate().map(
+            |(ix, name)| {
+                row(SharedString::from(format!("c-slash-{ix}")), ix == self.pick)
+                    .min_h(px(26.))
+                    .font_family(FONT_MONO)
+                    .text_size(BODY_SIZE)
+                    .child(div().truncate().child(format!("/{name}")))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.complete(&name, window, cx)),
+                    )
+            },
+        ))
     }
 
     /// Esc interrupts a working session; otherwise it is left for whoever else binds it.
@@ -607,6 +753,22 @@ impl Render for Composer {
         self.last_target = target;
 
         let takes = target.takes_prompts();
+        let text = input.read(cx).value();
+        let query = slash::query(&text);
+        if takes && query.is_some() {
+            // ponytail: retried from render rather than a timer: it only matters once `/` is typed.
+            self.ask_commands(cx);
+        }
+        let query = query.unwrap_or_default();
+        if query != self.query {
+            self.query = query.to_owned();
+            self.pick = 0;
+        }
+        let menu = self.menu(cx);
+        self.pick = self.pick.min(menu.len().saturating_sub(1));
+        self.menu_shown = !menu.is_empty();
+        let menu = (!menu.is_empty()).then(|| self.menu_list(menu, cx));
+
         let draft = self.session.and_then(|sid| self.drafts.get(sid));
         let chips = draft.map_or(&[][..], |d| &d.chips[..]);
         let notice = draft.and_then(|d| d.notice.clone());
@@ -661,6 +823,7 @@ impl Render for Composer {
             .when(!chips.is_empty(), |card| {
                 card.child(chips::row(chips, &self.previews, cx))
             })
+            .when_some(menu, |card, menu| card.child(menu))
             .child(
                 div()
                     .flex()
@@ -686,6 +849,8 @@ impl Render for Composer {
             .id("composer")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_escape))
+            // Before the input: while the `/` menu shows, its keys are the menu's.
+            .capture_key_down(cx.listener(Self::on_key))
             .w_full()
             .flex_none()
             .child(card)
