@@ -88,6 +88,28 @@ fn text_on_picks_a_readable_label() {
     }
 }
 
+/// The choice picks its palette and the accessors read the live one. Nothing in the test run flips
+/// the process-wide switch (the tests run in parallel), so the live palette is the light one.
+#[test]
+fn the_accessors_read_the_live_palette() {
+    assert_eq!(pick(false), &LIGHT);
+    assert_eq!(pick(true), &DARK);
+    assert!(!is_dark());
+    assert_eq!(current(), &LIGHT);
+    for (name, token, want) in [
+        ("desk", desk(), LIGHT.desk),
+        ("paper", paper(), LIGHT.paper),
+        ("ink", ink(), LIGHT.ink),
+        ("hover", hover(), LIGHT.hover),
+        ("accent_deep", accent_deep(), LIGHT.accent_deep),
+        ("bar", bar(), LIGHT.bar),
+        ("shadow_color", shadow_color(), LIGHT.shadow_color),
+    ] {
+        assert_eq!(token, want, "{name}");
+    }
+    assert_eq!(text_on(LIGHT.bad), text_on_in(&LIGHT, LIGHT.bad));
+}
+
 /// The documented caveat: white on the light palette's hover pink is below AA, which is why a
 /// hover fill keeps an ink label. If the pink is ever retuned this test says the doc comments
 /// need to follow.

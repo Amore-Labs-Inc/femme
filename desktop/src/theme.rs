@@ -1,21 +1,35 @@
 //! FEMME's retro skin: colour/size tokens from `assets/index.html` (the web board), the embedded
 //! fonts, and the mapping of both onto gpui-component's [`Theme`] so stock widgets (inputs, menus,
-//! popovers, dialogs, scrollbars, resize handles) wear the same palette.
+//! popovers, dialogs, scrollbars, resize handles) wear the same palette. Light and dark.
 //!
 //! The skin in one paragraph: the window background (the *desk*) is pink with an ink dot grid and
 //! shows only as a thin gutter around the panels; every panel and the centre are *paper*, with the
 //! *panel grey* for secondary surfaces (tab strips, the composer's attachment row, muted rows);
-//! text and 1.2 px rules are *ink*; hover fills are the FEMME pink ([`HOVER`]) and *neon* is kept
+//! text and 1.2 px rules are *ink*; hover fills are the FEMME pink ([`hover`]) and *neon* is kept
 //! for the pressed state, the focus ring and the dot of a working session. Never hard-code a colour
 //! outside this file: add a token here and use it.
 //!
-//! Contrast, measured with [`contrast`] (the unit tests below pin every pair a screen relies on):
-//! ink on paper 16.5, ink on [`HOVER`] 4.74, paper on [`ACCENT_DEEP`] 5.5. White on [`HOVER`] is only
-//! 3.5, so a hover fill keeps the label's ink colour; it also keeps gpui from showing a stale label
-//! colour (gpui takes a label's hover colour from the last mouse move but the fill from the live hit
-//! test, so after a key press under a resting pointer a label that turns white sits on paper).
+//! Dark mode is a second [`Palette`] with the same token names ([`DARK`] beside [`LIGHT`]). It turns
+//! the neutrals over (ink is the light colour and paper the dark one, panel grey a step lighter, the
+//! desk near-black with a dim pink dot grid), keeps hover and neon pink and lifts the lane colours so
+//! a dot or a pill still reads on a dark surface. A label's colour follows its fill, so the two
+//! pinks swap roles: [`hover`] carries ink labels and is the deeper pink in dark, [`accent_deep`]
+//! carries paper labels and is the brighter one. Title bars stay dark with pink lettering in both
+//! ([`bar`], [`bar_text`]). Screens read the tokens through accessor functions ([`ink`], [`paper`],
+//! ...) that look at the live palette ([`current`]); [`set_dark`] flips all of them at once,
+//! re-installs the gpui-component theme and redraws every window. A colour baked into state (a
+//! cache, a static, a texture) goes stale on a flip: derive it from the live palette when it is
+//! drawn.
+//!
+//! Contrast, measured with [`contrast`] (the unit tests pin every pair a screen relies on, in both
+//! palettes): ink on paper 16.5 (dark 14.1), ink on [`hover`] 4.74 (dark 4.66), paper on
+//! [`accent_deep`] 5.5 (dark 4.74). White on the light [`hover`] is only 3.5, so a hover fill keeps
+//! the label's ink colour; it also keeps gpui from showing a stale label colour (gpui takes a
+//! label's hover colour from the last mouse move but the fill from the live hit test, so after a
+//! key press under a resting pointer a label that turns white sits on paper).
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{point, px, App, BoxShadow, Hsla, Pixels, Rgba};
 use gpui_component::{theme::ThemeColor, Theme};
@@ -66,9 +80,9 @@ pub fn contrast(a: Rgba, b: Rgba) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// The more readable of [`INK`] and [`PAPER`] as text on a `bg` fill (status pills, solid dots).
+/// The more readable of [`ink`] and [`paper`] as text on a `bg` fill (status pills, solid dots).
 pub fn text_on(bg: Rgba) -> Rgba {
-    text_on_in(&LIGHT, bg)
+    text_on_in(current(), bg)
 }
 
 /// [`text_on`] for the palette `p`: its ink or its paper, whichever reads better on `bg`.
@@ -84,7 +98,8 @@ pub fn text_on_in(p: &Palette, bg: Rgba) -> Rgba {
 // The palettes: every colour token, once per theme.
 // ---------------------------------------------------------------------------------------------
 
-/// Declares [`Palette`]: one `Rgba` field per token, the token's doc comment on the field.
+/// Declares [`Palette`] (one `Rgba` field per token) and, for each token, a function of the same
+/// name that reads it from the live palette ([`current`]). The doc comment is on both.
 macro_rules! tokens {
     ($($(#[$doc:meta])* $name:ident,)*) => {
         /// A complete set of colour tokens. [`LIGHT`] is the web board's skin, [`DARK`] its night
@@ -102,6 +117,13 @@ macro_rules! tokens {
                 vec![$((stringify!($name), self.$name),)*]
             }
         }
+
+        $(
+            $(#[$doc])*
+            pub fn $name() -> Rgba {
+                current().$name
+            }
+        )*
     };
 }
 
@@ -209,6 +231,30 @@ pub const LIGHT: Palette = light();
 /// The dark palette: the neutrals turned over (ink light, paper dark, a near-black desk with a dim
 /// pink dot grid), the pinks kept, the lane colours lifted to read on a dark surface.
 pub const DARK: Palette = dark();
+
+/// The live theme: set by [`set_dark`], read by every accessor. A relaxed atomic is enough: it is
+/// written on the UI thread and a stale read for one frame is harmless.
+static DARK_ON: AtomicBool = AtomicBool::new(false);
+
+/// Whether the dark palette is the live one.
+pub fn is_dark() -> bool {
+    DARK_ON.load(Ordering::Relaxed)
+}
+
+/// The live palette: [`DARK`] after `set_dark(true, ..)`, else [`LIGHT`]. The accessor functions
+/// ([`ink`], [`paper`], ...) read from it; a screen that needs many tokens can take it once.
+pub fn current() -> &'static Palette {
+    pick(is_dark())
+}
+
+/// The palette for a theme choice.
+fn pick(dark: bool) -> &'static Palette {
+    if dark {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
 
 const fn light() -> Palette {
     let desk = rgb8(0xF386A1);
@@ -436,10 +482,11 @@ fn font_data() -> Vec<Cow<'static, [u8]>> {
     ]
 }
 
-/// The hard drop shadow of dialogs and the composer: `3px 3px 0 rgba(0,0,0,.4)`.
+/// The hard drop shadow of dialogs and the composer: `3px 3px 0` in [`shadow_dim`] (black at 40% on
+/// light paper).
 pub fn hard_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: Hsla::from(rgba8(0x000000, 0.4)),
+        color: Hsla::from(shadow_dim()),
         offset: point(px(3.), px(3.)),
         blur_radius: px(0.),
         spread_radius: px(0.),
@@ -447,11 +494,11 @@ pub fn hard_shadow() -> Vec<BoxShadow> {
     }]
 }
 
-/// The small hard shadow of buttons and cards: `2px 2px 0` in solid [`SHADOW`] ink. A pressed
-/// button drops it and moves by the same 2 px, as if pushed into the page.
+/// The small hard shadow of buttons and cards: `2px 2px 0` in solid [`shadow_color`] (ink). A
+/// pressed button drops it and moves by the same 2 px, as if pushed into the page.
 pub fn shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: Hsla::from(SHADOW),
+        color: Hsla::from(shadow_color()),
         offset: point(px(2.), px(2.)),
         blur_radius: px(0.),
         spread_radius: px(0.),
@@ -655,7 +702,22 @@ pub fn apply(cx: &mut App) {
     cx.text_system()
         .add_fonts(font_data())
         .expect("embedded fonts are valid TTFs");
+    install(cx);
+}
 
+/// Switches the whole app to the dark palette (`true`) or the light one: flips every token, installs
+/// the matching gpui-component colours and redraws every window, cached views included. A colour
+/// that was copied into state instead of read when drawn does not follow; see the module docs.
+pub fn set_dark(dark: bool, cx: &mut App) {
+    DARK_ON.store(dark, Ordering::Relaxed);
+    install(cx);
+}
+
+/// Writes the live palette (and the fixed fonts, radius and shadow flags) into gpui-component's
+/// [`Theme`]. `Theme::update` rebuilds the base layer and refreshes every window.
+///
+/// The theme's own mode stays "light": see [`theme_colors`].
+fn install(cx: &mut App) {
     Theme::update(cx, |t| {
         t.font_family = FONT_UI.into();
         t.mono_font_family = FONT_MONO.into();
@@ -668,7 +730,7 @@ pub fn apply(cx: &mut App) {
         t.radius_lg = px(0.);
         t.shadow = false;
         t.focus_ring = false;
-        t.colors = theme_colors(&LIGHT);
+        t.colors = theme_colors(current());
     });
 }
 
