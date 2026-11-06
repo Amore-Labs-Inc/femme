@@ -46,6 +46,8 @@ use crate::session::{
 };
 use crate::takeover::{Act, Ev, Phase, Takeover};
 
+pub(crate) mod herdr;
+
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
 /// when their TUIs are wired.
 const EXIT_CMD: &str = "/exit\r";

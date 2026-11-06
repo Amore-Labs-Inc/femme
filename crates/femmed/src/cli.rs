@@ -143,6 +143,9 @@ async fn serve_daemon() -> anyhow::Result<()> {
     // Held to the end of `serve`; dropping it closes the listeners and removes the socket.
     let _front = crate::front::serve_front(daemon.clone()).await?;
     tokio::spawn(crate::worker::run(std::sync::Arc::downgrade(&daemon)));
+    tokio::spawn(crate::headless::herdr::run(std::sync::Arc::downgrade(
+        &daemon,
+    )));
     tokio::spawn(crate::daemon::Daemon::retain_daily(
         std::sync::Arc::downgrade(&daemon),
     ));

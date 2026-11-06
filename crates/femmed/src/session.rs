@@ -555,6 +555,9 @@ impl Daemon {
             .unwrap_or_default();
         let claimed: HashSet<Sid> = open.iter().map(|s| s.id).collect();
         for s in open {
+            if s.owner.starts_with(headless::herdr::OWNER) {
+                continue; // a herdr pane's: its poller keeps it
+            }
             // Born headless (it has attach state): its actor takes it over, whatever mode it is in now.
             let managed = s.agent != Agent::Shell
                 && self
