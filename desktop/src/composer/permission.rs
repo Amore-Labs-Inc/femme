@@ -1,16 +1,17 @@
-//! The permission-mode pill in the composer row: what a Claude session's permission mode is called
-//! there, its colour and its tooltip. Pure, so it is tested without a window.
+//! The permission-mode square above the composer's `+`: a Claude session's permission mode as a
+//! colour (green manual, yellow accept edits, purple plan, red bypass) with its name in the
+//! tooltip. Pure, so it is tested without a window.
 
 use gpui::{Rgba, SharedString};
 
-use crate::theme::{BAD, DONE, MUTED, NEON, PANEL, PAUSE, PR};
+use crate::theme::{ACCENT_DEEP, BAD, DONE, NEON, PANEL, PAUSE, WORK};
 
-/// How the pill shows a mode: a short label, a fill and the full name for the tooltip.
+/// How the square shows a mode: a short label, its colour and the full name for the tooltip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Look {
-    /// The pill's text.
+    /// The mode's short name.
     pub label: SharedString,
-    /// The pill's fill (the label takes ink or paper, whichever reads).
+    /// The square's fill.
     pub color: Rgba,
     /// What the tooltip says.
     pub tip: SharedString,
@@ -20,9 +21,9 @@ pub struct Look {
 /// own word for manual; a mode this build does not know is shown as it came, in panel grey.
 pub fn look(mode: &str) -> Look {
     let (label, color, tip) = match mode {
-        "manual" | "default" => ("manual", MUTED, "Manual (ask before tools)"),
+        "manual" | "default" => ("manual", WORK, "Manual (ask before tools)"),
         "acceptEdits" => ("accept edits", PAUSE, "Accept edits"),
-        "plan" => ("plan", PR, "Plan mode"),
+        "plan" => ("plan", ACCENT_DEEP, "Plan mode"),
         "auto" => ("auto", NEON, "Auto mode"),
         "bypassPermissions" => ("bypass", BAD, "Bypass permissions"),
         "dontAsk" => ("don't ask", DONE, "Don't ask"),
@@ -49,9 +50,9 @@ mod tests {
     #[test]
     fn each_mode_has_its_label_colour_and_name() {
         let cases = [
-            ("manual", "manual", MUTED, "Manual (ask before tools)"),
+            ("manual", "manual", WORK, "Manual (ask before tools)"),
             ("acceptEdits", "accept edits", PAUSE, "Accept edits"),
-            ("plan", "plan", PR, "Plan mode"),
+            ("plan", "plan", ACCENT_DEEP, "Plan mode"),
             ("auto", "auto", NEON, "Auto mode"),
             ("bypassPermissions", "bypass", BAD, "Bypass permissions"),
             ("dontAsk", "don't ask", DONE, "Don't ask"),

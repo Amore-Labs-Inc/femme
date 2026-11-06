@@ -38,7 +38,7 @@ use crate::net::{Link, Net};
 use crate::theme::{
     self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
 };
-use crate::ui::{button, button_dark, row, ruled, st};
+use crate::ui::{button, button_dark, row, ruled};
 
 /// The input is this many lines tall when empty...
 const MIN_ROWS: usize = 2;
@@ -890,24 +890,29 @@ impl Render for Composer {
 
         let permission = self.permission(cx);
         self.last_permission = permission.clone();
-        // Centred on the 34 px buttons' row, left of `send`.
-        let pill = permission.map(|mode| {
+        // A 10 px colour square above `+`: the mode's name is its tooltip, a click steps the mode.
+        let square = permission.map(|mode| {
             let look = permission::look(&mode);
             let tip = look.tip.clone();
-            div().h(px(34.)).flex().items_center().child(
-                // One id per mode: gpui keeps a tooltip by id, and the old mode's must not outlive
-                // the click that changed it.
-                st(look.label, look.color)
-                    .id(SharedString::from(format!("c-permission-{mode}")))
-                    .cursor_pointer()
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(format!("{tip} (shift-tab)")).build(window, cx)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.cycle_permission(cx);
-                    })),
-            )
+            // One id per mode: gpui keeps a tooltip by id, and the old mode's must not outlive
+            // the click that changed it.
+            ruled(div().size(px(10.)).bg(look.color))
+                .id(SharedString::from(format!("c-permission-{mode}")))
+                .cursor_pointer()
+                .tooltip(move |window, cx| {
+                    Tooltip::new(format!("{tip} (shift-tab)")).build(window, cx)
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.cycle_permission(cx);
+                }))
         });
+        let attach = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(5.))
+            .children(square)
+            .child(attach);
 
         let this = cx.entity().downgrade();
         let field = Textarea::new(&input)
@@ -952,7 +957,6 @@ impl Render for Composer {
                     .gap(px(8.))
                     .child(attach)
                     .child(div().flex_1().min_w_0().child(field))
-                    .when_some(pill, |row, pill| row.child(pill))
                     .child(send),
             )
             .when_some(notice, |card, line| {
