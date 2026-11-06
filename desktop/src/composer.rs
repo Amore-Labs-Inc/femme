@@ -9,6 +9,7 @@
 mod chips;
 mod draft;
 mod files;
+mod permission;
 mod slash;
 mod sniff;
 
@@ -17,16 +18,17 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use femme_proto::rpc::{PromptHow, Req, Resp};
-use femme_proto::state::SessionStatus;
+use femme_proto::state::{Agent, SessionStatus};
 use femme_proto::Sid;
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
     ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
-    Render, Rgba, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window,
+    InteractiveElement as _, IntoElement, KeyDownEvent, KeystrokeEvent, ParentElement as _,
+    PathPromptOptions, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, Window,
 };
 use gpui_component::input::{Escape, InputEvent, Textarea, TextareaState};
+use gpui_component::tooltip::Tooltip;
 
 use self::chips::Previews;
 use self::draft::{
@@ -36,7 +38,7 @@ use crate::net::{Link, Net};
 use crate::theme::{
     self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
 };
-use crate::ui::{button, button_dark, row, ruled};
+use crate::ui::{button, button_dark, row, ruled, st};
 
 /// The input is this many lines tall when empty...
 const MIN_ROWS: usize = 2;
@@ -67,6 +69,8 @@ pub struct Composer {
     pastes: u32,
     /// What the last render drew, to re-render only when the session's kind changes.
     last_target: Target,
+    /// The permission mode the last render's pill showed, to re-render when it changes.
+    last_permission: Option<String>,
     previews: Previews,
     /// The daemon's slash commands (`Req::Commands`), names without the `/`; empty until it answers.
     commands: Vec<String>,
@@ -99,6 +103,11 @@ impl Composer {
     /// A composer with no session yet; `net` is the daemon link (`None`: nothing can be sent).
     pub fn new(net: Option<Entity<Net>>, cx: &mut Context<Self>) -> Self {
         let mut subs = Vec::new();
+        let this = cx.weak_entity();
+        subs.push(cx.intercept_keystrokes(move |ev, window, cx| {
+            this.update(cx, |this, cx| this.intercept(ev, window, cx))
+                .ok();
+        }));
         if let Some(net) = &net {
             // The model changes on every event; only a change of the session's kind matters here.
             subs.push(cx.observe(net, |this, net, cx| {
@@ -108,7 +117,9 @@ impl Composer {
                     this.ask_commands(cx);
                 }
                 this.link_up = up;
-                if this.target(cx) != this.last_target {
+                if this.target(cx) != this.last_target
+                    || this.permission(cx) != this.last_permission
+                {
                     cx.notify();
                 }
             }));
@@ -124,6 +135,7 @@ impl Composer {
             input_empty: true,
             pastes: 0,
             last_target: Target::NoSession,
+            last_permission: None,
             previews: Rc::default(),
             commands: Vec::new(),
             asked: None,
@@ -181,6 +193,56 @@ impl Composer {
             .zip(self.session)
             .and_then(|(net, sid)| net.read(cx).model.sessions.get(&sid).map(|s| s.agent));
         Target::of(self.net.is_some(), agent)
+    }
+
+    /// The selected session's permission mode, when it is a Claude session whose mode is known.
+    fn permission(&self, cx: &App) -> Option<String> {
+        let (net, sid) = self.net.as_ref().zip(self.session)?;
+        let session = net.read(cx).model.sessions.get(&sid)?;
+        (session.agent == Agent::Claude)
+            .then(|| session.permission.clone())
+            .flatten()
+    }
+
+    /// Shift+Tab or a click on the pill: `Req::CyclePermission`, which steps the session to the next
+    /// mode as Shift+Tab does in Claude. The new mode comes back on the session's row; a refusal is
+    /// shown under the input. Nothing is sent unless the selected session is a Claude one.
+    fn cycle_permission(&mut self, cx: &mut Context<Self>) -> bool {
+        let (Some(net), Some(sid)) = (self.net.clone(), self.session) else {
+            return false;
+        };
+        if self.target(cx) != Target::Agent(Agent::Claude) {
+            return false;
+        }
+        let answer = request(&net, Req::CyclePermission { sid }, cx);
+        cx.spawn(async move |this, cx| {
+            if let Err(why) = answer.await {
+                this.update(cx, |this, cx| {
+                    this.notice(sid, format!("permission mode: {why}"), cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+        true
+    }
+
+    /// Shift+Tab with the keyboard in the input steps a Claude session's permission mode, menu open
+    /// or not. It is caught before key bindings resolve: the input binds it to outdent and the root
+    /// to the previous focus stop, and both would run before a key-down listener.
+    fn intercept(&mut self, ev: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let m = &k.modifiers;
+        if k.key != "tab" || !m.shift || m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        let here = self
+            .input
+            .as_ref()
+            .is_some_and(|i| i.read(cx).focus_handle(cx).contains_focused(window, cx));
+        if here && self.cycle_permission(cx) {
+            cx.stop_propagation();
+        }
     }
 
     fn ensure_input(
@@ -350,17 +412,17 @@ impl Composer {
     /// The `/` menu's keys, ahead of the input: Up/Down pick, Tab and Enter complete (Enter on a
     /// whole command name sends it as usual), Esc closes. With the menu closed every key goes on.
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
         let rows = self.menu(cx);
         if rows.is_empty() {
             return;
         }
         let pick = self.pick.min(rows.len() - 1);
-        let k = &ev.keystroke;
         match k.key.as_str() {
             "down" => self.pick = (pick + 1).min(rows.len() - 1),
             "up" => self.pick = pick.saturating_sub(1),
             "escape" => self.menu_off = true,
-            "tab" => self.complete(&rows[pick], window, cx),
+            "tab" if !k.modifiers.modified() => self.complete(&rows[pick], window, cx),
             "enter" if !k.modifiers.shift => {
                 let text = self.input.as_ref().map(|i| i.read(cx).value());
                 if text.is_some_and(|t| slash::exact(&t, &self.commands)) {
@@ -820,6 +882,27 @@ impl Render for Composer {
             disabled_button("c-send", "send")
         };
 
+        let permission = self.permission(cx);
+        self.last_permission = permission.clone();
+        // Centred on the 34 px buttons' row, left of `send`.
+        let pill = permission.map(|mode| {
+            let look = permission::look(&mode);
+            let tip = look.tip.clone();
+            div().h(px(34.)).flex().items_center().child(
+                // One id per mode: gpui keeps a tooltip by id, and the old mode's must not outlive
+                // the click that changed it.
+                st(look.label, look.color)
+                    .id(SharedString::from(format!("c-permission-{mode}")))
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!("{tip} (shift-tab)")).build(window, cx)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cycle_permission(cx);
+                    })),
+            )
+        });
+
         let this = cx.entity().downgrade();
         let field = Textarea::new(&input)
             .appearance(false)
@@ -863,6 +946,7 @@ impl Render for Composer {
                     .gap(px(8.))
                     .child(attach)
                     .child(div().flex_1().min_w_0().child(field))
+                    .when_some(pill, |row, pill| row.child(pill))
                     .child(send),
             )
             .when_some(notice, |card, line| {
