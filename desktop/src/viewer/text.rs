@@ -19,7 +19,7 @@ use super::chrome::{self, Seen};
 use super::guarded;
 use super::hex::human_size;
 use super::highlight::{color, Highlighter, Span, Spans};
-use crate::theme::{FONT_MONO, INK, MUTED, PAPER, RULE};
+use crate::theme::{ink, muted, paper, FONT_MONO, RULE};
 use crate::ui;
 
 /// Text size and row height, in logical pixels.
@@ -429,7 +429,7 @@ impl Render for TextView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (count, longest) = match &self.state {
             State::Loading => {
-                return chrome::framed(chrome::waiting("reading"), human_size(self.bytes), PAPER);
+                return chrome::framed(chrome::waiting("reading"), human_size(self.bytes), paper());
             }
             State::Failed(why) => {
                 return chrome::framed(
@@ -439,7 +439,7 @@ impl Render for TextView {
                         vec![why.clone()],
                     ),
                     human_size(self.bytes),
-                    PAPER,
+                    paper(),
                 );
             }
             State::Ready(r) => {
@@ -456,7 +456,7 @@ impl Render for TextView {
             return chrome::framed(
                 chrome::notice(("viewer-notice", cx.entity_id()), "empty file", Vec::new()),
                 "0 bytes",
-                PAPER,
+                paper(),
             );
         }
         let text = window.text_system();
@@ -480,7 +480,7 @@ impl Render for TextView {
                 .flex()
                 .flex_col()
                 .text_right()
-                .text_color(MUTED),
+                .text_color(muted()),
             px(0.),
             RULE,
             px(0.),
@@ -526,10 +526,10 @@ impl Render for TextView {
             .font_family(FONT_MONO)
             .text_size(px(TEXT_SIZE))
             .line_height(px(LINE_HEIGHT))
-            .text_color(INK)
+            .text_color(ink())
             .child(gutter)
             .child(lines);
-        chrome::framed(area, self.caption(), PAPER)
+        chrome::framed(area, self.caption(), paper())
     }
 }
 
