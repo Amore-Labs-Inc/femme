@@ -8,6 +8,7 @@ pub mod items;
 pub mod live;
 pub mod markdown;
 pub mod md_view;
+pub mod outbox;
 pub mod question;
 pub mod splice;
 pub mod thumb;

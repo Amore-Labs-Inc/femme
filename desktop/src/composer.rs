@@ -91,6 +91,8 @@ struct Pending {
     /// The text as typed (not trimmed), to tell whether the input still holds it.
     text: String,
     ids: Vec<ChipId>,
+    /// Its faded bubble in the transcript ([`crate::net::Model::outbox`]), dropped if refused.
+    shown: u64,
 }
 
 impl Composer {
@@ -451,6 +453,17 @@ impl Composer {
         let draft = self.drafts.entry(sid);
         draft.sending = true;
         draft.notice = None;
+        // The transcript shows the prompt now, faded, until the daemon echoes it.
+        let files = attachments.iter().map(|a| a.name.clone()).collect();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        let shown = net.update(cx, |net, cx| {
+            cx.notify();
+            net.model
+                .outbox
+                .push(sid, body.clone(), files, Instant::now(), now_ms)
+        });
         let answer = request(
             &net,
             Req::Prompt {
@@ -461,7 +474,12 @@ impl Composer {
             },
             cx,
         );
-        let pending = Pending { sid, text, ids };
+        let pending = Pending {
+            sid,
+            text,
+            ids,
+            shown,
+        };
         cx.spawn_in(window, async move |this, cx| {
             let result = answer.await;
             this.update_in(cx, |this, window, cx| {
@@ -480,7 +498,21 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Pending { sid, text, ids } = pending;
+        let Pending {
+            sid,
+            text,
+            ids,
+            shown,
+        } = pending;
+        if result.is_err() {
+            if let Some(net) = &self.net {
+                net.update(cx, |net, cx| {
+                    if net.model.outbox.forget(sid, shown) {
+                        cx.notify();
+                    }
+                });
+            }
+        }
         let Some(draft) = self.drafts.get_mut(sid) else {
             return;
         };

@@ -30,6 +30,7 @@ use tokio::sync::watch;
 use super::ask::Ask;
 use super::items::Items;
 use super::markdown::{self, Doc};
+use super::outbox::Sent;
 use super::splice;
 use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
@@ -93,6 +94,12 @@ pub struct Transcript {
     ticker: Option<Task<()>>,
     /// The working line the last row shows, `None` when the session is idle.
     pub(super) working: Option<String>,
+    /// The prompts on their way that the last row shows ([`crate::net::Model::outbox`]).
+    pub(super) sent: Vec<Sent>,
+    /// The outbox's version when the transcript last looked.
+    sent_ver: u64,
+    /// Redraws when the oldest prompt on its way runs out.
+    sent_timer: Option<Task<()>>,
     _events: Option<Subscription>,
     _status: Option<Subscription>,
 }
@@ -126,8 +133,10 @@ impl Transcript {
         });
         // The working line comes and goes with the session's status, which lives in the model.
         let status = net.as_ref().map(|net| {
-            cx.observe(net, |this, _, cx| {
-                if this.busy(cx) != this.ticker.is_some() {
+            cx.observe(net, |this, net, cx| {
+                let ver = net.read(cx).model.outbox.ver;
+                if this.busy(cx) != this.ticker.is_some() || ver != this.sent_ver {
+                    this.sent_ver = ver;
                     cx.notify();
                 }
             })
@@ -155,6 +164,9 @@ impl Transcript {
             note: None,
             ticker: None,
             working: None,
+            sent: Vec::new(),
+            sent_ver: 0,
+            sent_timer: None,
             _events: events,
             _status: status,
         }
@@ -656,6 +668,32 @@ impl Transcript {
             .map_or(0, |d| d.as_millis() as i64);
         Some(working::line(&working::working(&self.items), now))
     }
+
+    /// The prompts of the session shown that are on their way; a redraw is set for when the next
+    /// one runs out, and the list follows the end again when one is added.
+    fn sent_now(&mut self, cx: &mut Context<Self>) -> Vec<Sent> {
+        let (Some(sid), Some(net)) = (self.items.sid(), self.net.clone()) else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        let outbox = &net.read(cx).model.outbox;
+        let sent: Vec<Sent> = outbox.shown(sid, now).cloned().collect();
+        let expiry = outbox.next_expiry(sid, now);
+        if sent != self.sent {
+            if sent.iter().any(|s| !self.sent.iter().any(|o| o.id == s.id)) {
+                self.follow(cx);
+            }
+            self.sent_timer = expiry.map(|at| {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(at.saturating_duration_since(Instant::now()))
+                        .await;
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                })
+            });
+        }
+        sent
+    }
 }
 
 impl Render for Transcript {
@@ -679,11 +717,13 @@ impl Render for Transcript {
         }
         self.glide_step(window);
         let working = self.working_line(cx);
-        if working.is_some() != self.working.is_some() {
+        let sent = self.sent_now(cx);
+        if working.is_some() != self.working.is_some() || sent != self.sent {
             let last = self.layout.rows.len();
             self.list.remeasure_items(last..last + 1);
         }
         self.working = working;
+        self.sent = sent;
         let pill = self.pill(window, cx);
         div()
             .size_full()
@@ -713,7 +753,9 @@ impl Render for Transcript {
                 .pb(px(10.)),
             )
             .child(Scrollbar::vertical(&self.list))
-            .when(self.layout.rows.is_empty(), |d| d.child(self.hint()))
+            .when(self.layout.rows.is_empty() && self.sent.is_empty(), |d| {
+                d.child(self.hint())
+            })
             .children(pill)
             .when_some(self.note.clone(), |d, note| {
                 d.child(

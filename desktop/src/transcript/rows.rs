@@ -18,6 +18,7 @@ use super::attach;
 use super::body::Parsed;
 use super::live::Transcript;
 use super::md_view;
+use super::outbox::Sent;
 use super::question::QuestionBody;
 use super::thumb;
 use super::turns::{self, Key, ToolLine};
@@ -27,6 +28,9 @@ use crate::theme::{
     PANEL, PAPER, PAUSE, WORK,
 };
 use crate::ui::{card, dialog, meta, ruled, st, tb};
+
+/// How opaque a prompt on its way is drawn: it reads as not there yet.
+const SENT_OPACITY: f32 = 0.55;
 
 /// Widest the text column gets: on a wide window the lines stay readable.
 const COLUMN: f32 = 860.;
@@ -120,6 +124,45 @@ fn block(label: &str, text: &str, color: Rgba) -> Div {
     )
 }
 
+/// The user's card: "you" in `label` over `text`.
+fn you_card(text: String, label: Rgba) -> Div {
+    let mut bubble = card().max_w(relative(0.85)).flex().flex_col().gap(px(6.));
+    bubble.style().box_shadow = Some(theme::hard_shadow());
+    bubble
+        .child(
+            div()
+                .font_family(FONT_PIXEL)
+                .text_size(px(18.))
+                .line_height(relative(1.))
+                .text_color(label)
+                .child("you"),
+        )
+        .when(!text.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(BODY_SIZE)
+                    .line_height(relative(1.4))
+                    .child(SharedString::from(text)),
+            )
+        })
+}
+
+/// A prompt on its way: the user's card, faded, its files named in a line under the text. It goes
+/// when the daemon's `UserMessage` for it arrives.
+// ponytail: names only, no thumbnails; the real bubble that replaces it has them.
+fn sent_row(sent: &Sent) -> AnyElement {
+    let bubble = you_card(sent.text.clone(), MUTED).when(!sent.files.is_empty(), |d| {
+        d.child(meta(sent.files.join(", ")))
+    });
+    column(
+        div()
+            .flex()
+            .justify_end()
+            .opacity(SENT_OPACITY)
+            .child(bubble),
+    )
+}
+
 impl Transcript {
     /// The element of row `ix` of the list.
     pub(super) fn row(
@@ -129,20 +172,30 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(key) = self.layout.rows.get(ix).map(|r| r.key) else {
-            // The row after the last item: the working line under what is streaming, centred.
-            return match (ix == self.layout.rows.len(), &self.working) {
-                (true, Some(line)) => div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .py(px(8.))
-                    .font_family(FONT_MONO)
-                    .text_size(px(12.))
-                    .text_color(MUTED)
-                    .child(line.clone())
-                    .into_any_element(),
-                _ => div().into_any_element(),
-            };
+            // The row after the last item: the prompts on their way, then the working line under
+            // what is streaming, centred.
+            if ix != self.layout.rows.len() {
+                return div().into_any_element();
+            }
+            return div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .children(self.sent.iter().map(sent_row))
+                .when_some(self.working.clone(), |d, line| {
+                    d.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .py(px(8.))
+                            .font_family(FONT_MONO)
+                            .text_size(px(12.))
+                            .text_color(MUTED)
+                            .child(line),
+                    )
+                })
+                .into_any_element();
         };
         let (row, seq) = match key {
             Key::More => return self.more_row(cx),
@@ -235,26 +288,8 @@ impl Transcript {
         for file in files.iter().filter(|f| f.image) {
             self.want_thumb(&file.path, cx);
         }
-        let mut bubble = card().max_w(relative(0.85)).flex().flex_col().gap(px(6.));
-        bubble.style().box_shadow = Some(theme::hard_shadow());
-        let bubble = bubble
-            .child(
-                div()
-                    .font_family(FONT_PIXEL)
-                    .text_size(px(18.))
-                    .line_height(relative(1.))
-                    .text_color(HOVER)
-                    .child("you"),
-            )
-            .when(!text.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_size(BODY_SIZE)
-                        .line_height(relative(1.4))
-                        .child(SharedString::from(text)),
-                )
-            })
-            .when(!files.is_empty(), |d| {
+        let bubble =
+            you_card(text, HOVER).when(!files.is_empty(), |d| {
                 d.child(div().flex().flex_wrap().gap(px(8.)).children(
                     files.iter().enumerate().map(|(i, file)| {
                         let thumb = self.thumbs.get(&file.path);

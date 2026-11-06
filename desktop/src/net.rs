@@ -14,6 +14,7 @@ use femme_proto::{PaneId, Sid};
 use gpui::{Context, EventEmitter, Task};
 
 use crate::connect::{self, Connect};
+use crate::transcript::outbox::Outbox;
 
 /// How many characters of a tab's label are shown.
 const LABEL: usize = 28;
@@ -64,6 +65,9 @@ pub struct Model {
     /// (empty if need be), so [`Load::Done`] means "this is everything", and after a `Reset` it is
     /// [`Load::Rebuilding`] until the full set follows.
     pub load: Load,
+    /// Prompts sent and not yet echoed by the daemon, drawn faded at the end of their transcript.
+    /// The composer adds them; the `UserMessage` rows of a session's scope take them off.
+    pub outbox: Outbox,
 }
 
 fn is_live(s: &Session) -> bool {
@@ -156,7 +160,12 @@ impl Model {
                 self.load = Load::Rebuilding;
                 true
             }
-            // Item and issue rows, transcript scopes and streaming text are not shown yet.
+            Event::Changes {
+                scope: Scope::Session(sid),
+                rows,
+                ..
+            } => self.outbox.echo(*sid, rows),
+            // Issue rows and streaming text are not shown here; the transcript keeps its items.
             _ => false,
         }
     }
