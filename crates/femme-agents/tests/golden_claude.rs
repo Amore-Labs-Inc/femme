@@ -1244,3 +1244,183 @@ proptest! {
         feed(&mut ClaudeDriver::new(), &lines);
     }
 }
+
+// ---- subagents -------------------------------------------------------------------------------
+
+/// A turn whose `Agent` call (`toolu_A`) runs a subagent; `sub` adds the subagent's lines.
+fn agent_turn(sub: bool) -> Vec<u8> {
+    let p = |mut v: Value| {
+        v["parent_tool_use_id"] = json!("toolu_A");
+        v
+    };
+    let se = |e: Value| p(json!({"type":"stream_event","event":e}));
+    let mut lines = vec![
+        json!({"type":"user","uuid":"u1","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"look around"}]}}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"look","prompt":"ls"}}]}}),
+    ];
+    if sub {
+        lines.extend([
+            p(json!({"type":"user","uuid":"s1","message":{"role":"user","content":[{"type":"text","text":"ls"}]}})),
+            se(json!({"type":"message_start","message":{"id":"sm1"}})),
+            se(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})),
+            se(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"on it"}})),
+            se(json!({"type":"content_block_stop","index":0})),
+            p(json!({"type":"assistant","message":{"id":"sm1","content":[{"type":"text","text":"on it"}]}})),
+            p(json!({"type":"assistant","message":{"id":"sm2","content":[
+                {"type":"thinking","thinking":"hm"},
+                {"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}},
+                {"type":"tool_use","id":"toolu_Q","name":"AskUserQuestion","input":{"questions":[{"question":"which?","options":[{"label":"a"},{"label":"b"}]}]}}]}})),
+            p(json!({"type":"user","uuid":"s2","message":{"content":[
+                {"type":"tool_result","tool_use_id":"toolu_B","content":"x.rs"},
+                {"type":"tool_result","tool_use_id":"toolu_Q","content":"no user here","is_error":true}]}})),
+            p(json!({"type":"assistant","message":{"content":[{"type":"text","text":"x.rs"}]}})),
+        ]);
+    }
+    lines.extend([
+        json!({"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"x.rs"}]}}),
+        json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"one file"}]}}),
+        json!({"type":"result","subtype":"success","is_error":false,"num_turns":2,"duration_ms":9}),
+    ]);
+    let mut bytes = Vec::new();
+    for l in lines {
+        bytes.extend(l.to_string().into_bytes());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+/// (id, kind, status, parent) of every completed item.
+fn done_items(ev: &[AgentEvent]) -> Vec<(String, ItemKind, ItemStatus, Option<String>)> {
+    ev.iter()
+        .filter_map(|e| match e {
+            AgentEvent::ItemCompleted {
+                id,
+                kind,
+                status,
+                parent,
+                ..
+            } => Some((id.clone(), *kind, *status, parent.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn subagent_lines_are_items_of_their_agent_call_and_leave_the_turn_alone() {
+    let (with, _) = replay(&mut ClaudeDriver::new(), &agent_turn(true));
+    let (without, _) = replay(&mut ClaudeDriver::new(), &agent_turn(false));
+
+    // the turn and status run exactly as without the subagent
+    let turn = |ev: &[AgentEvent]| -> Vec<String> {
+        kinds(ev)
+            .into_iter()
+            .filter(|k| k.starts_with("turn") || k.starts_with("status"))
+            .collect()
+    };
+    assert_eq!(turn(&with), turn(&without));
+    assert_eq!(count(&with, "asked"), 0);
+
+    let a = Some("toolu_A".to_owned());
+    let all = done_items(&with);
+    let main: Vec<_> = all.iter().filter(|i| i.3.is_none()).cloned().collect();
+    assert_eq!(main, done_items(&without));
+    // the Agent call's item id is its tool_use_id: children find it by that
+    assert!(main
+        .iter()
+        .any(|i| i.0 == "toolu_A" && i.1 == ItemKind::ToolCall));
+
+    let sub: Vec<_> = all
+        .iter()
+        .filter(|i| i.3.is_some())
+        .map(|(id, k, s, p)| {
+            assert_eq!(*p, a);
+            (id.as_str(), *k, *s)
+        })
+        .collect();
+    let off = agent_turn(true)
+        .split(|&b| b == b'\n')
+        .take(10)
+        .map(|l| l.len() + 1)
+        .sum::<usize>();
+    let scoped = format!("toolu_A/o{off}:0");
+    assert_eq!(
+        sub,
+        [
+            ("s1", ItemKind::UserMessage, ItemStatus::Completed),
+            ("sm1:0", ItemKind::AssistantMessage, ItemStatus::Completed),
+            ("sm2:0", ItemKind::Thinking, ItemStatus::Completed),
+            ("toolu_B", ItemKind::ToolCall, ItemStatus::Completed),
+            (
+                "toolu_B:result",
+                ItemKind::ToolResult,
+                ItemStatus::Completed
+            ),
+            ("toolu_Q", ItemKind::ToolCall, ItemStatus::Failed),
+            ("toolu_Q:result", ItemKind::ToolResult, ItemStatus::Failed),
+            (
+                scoped.as_str(),
+                ItemKind::AssistantMessage,
+                ItemStatus::Completed
+            ),
+        ]
+    );
+    // a subagent's AskUserQuestion is a plain tool call, never a Question or Plan
+    assert!(!all
+        .iter()
+        .any(|i| matches!(i.1, ItemKind::Question | ItemKind::Plan)));
+    // what streamed opened with the parent too
+    assert!(with.iter().any(|e| matches!(e,
+        AgentEvent::ItemStarted { id, parent, .. } if id == "sm1:0" && *parent == a)));
+}
+
+/// A subagent still running when the turn ends (interrupted) fails what it left open; outside a
+/// turn its lines open none.
+#[test]
+fn a_subagent_left_open_fails_with_the_turn_and_never_opens_one() {
+    let p = |mut v: Value| {
+        v["parent_tool_use_id"] = json!("toolu_A");
+        v
+    };
+    let lines = [
+        json!({"type":"user","uuid":"u1","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"go"}]}}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{}}]}}),
+        p(
+            json!({"type":"assistant","message":{"id":"sm1","content":[{"type":"tool_use","id":"toolu_B","name":"Bash","input":{}}]}}),
+        ),
+        json!({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}),
+        p(
+            json!({"type":"assistant","message":{"id":"sm2","content":[{"type":"text","text":"late"}]}}),
+        ),
+    ];
+    let mut bytes = Vec::new();
+    for l in lines {
+        bytes.extend(l.to_string().into_bytes());
+        bytes.push(b'\n');
+    }
+    let mut d = ClaudeDriver::new();
+    let (ev, _) = replay(&mut d, &bytes);
+    let items = done_items(&ev);
+    assert!(items.contains(&(
+        "toolu_B".into(),
+        ItemKind::ToolCall,
+        ItemStatus::Failed,
+        Some("toolu_A".into())
+    )));
+    assert!(items.contains(&(
+        "toolu_A".into(),
+        ItemKind::ToolCall,
+        ItemStatus::Failed,
+        None
+    )));
+    assert_eq!(count(&ev, "turn+"), 1);
+    assert_eq!(
+        kinds(&ev).iter().filter(|k| k.starts_with("turn-")).count(),
+        1
+    );
+    assert_eq!(d.status(), AgentStatus::Idle);
+    assert_eq!(
+        items.last().unwrap().0,
+        "sm2:0",
+        "a late subagent line is still an item"
+    );
+}

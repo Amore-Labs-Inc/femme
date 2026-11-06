@@ -26,7 +26,11 @@
 //!   a `Question` item `<tool_use_id>:ask` (Approve / Keep planning). Any other `can_use_tool`
 //!   (only after a plan-mode approval returned the session to `default`) is a `Question` item
 //!   `<tool_use_id>:ask` (Allow / Deny): the driver never answers on its own.
-//! * Subagent traffic (`parent_tool_use_id` set) is dropped.
+//! * Subagent traffic (`parent_tool_use_id` set, the id of the `Agent` call that spawned it) goes
+//!   through the same handlers with its own stream state, and its items carry that id as
+//!   `parent`. It never opens or closes a turn nor changes the status, and its AskUserQuestion or
+//!   ExitPlanMode calls are plain tool calls. Ids are the message/tool/line ids as for the main
+//!   thread; a spool-offset id (`o<offset>`, no id on the line) becomes `<parent>/o<offset>`.
 //! * Thinking items exist only when the CLI sends readable thinking text (it normally sends
 //!   none, only a signature and a token estimate).
 //! * Prompts: every user message gets a fresh `uuid`; the CLI echoes it (`isReplay`) when it starts
@@ -87,6 +91,24 @@ struct Block {
     text: String,
     /// Whether `ItemStarted` was emitted (thinking starts lazily, hidden tools never).
     started: bool,
+}
+
+/// Stream state of one thread: the main one lives in [`ClaudeDriver`]'s fields, each subagent's
+/// in [`ClaudeDriver::subs`] and is swapped in while one of its lines is handled.
+#[derive(Debug, Default)]
+struct Thread {
+    msg: Option<String>,
+    blocks: BTreeMap<u64, Block>,
+    streamed: BTreeSet<String>,
+    ord: BTreeMap<String, usize>,
+    calls: BTreeMap<String, Call>,
+}
+
+impl Thread {
+    /// Nothing streams or waits for a result.
+    fn idle(&self) -> bool {
+        self.blocks.is_empty() && self.calls.is_empty()
+    }
 }
 
 /// A tool call whose result has not arrived.
@@ -176,6 +198,11 @@ pub struct ClaudeDriver {
     calls: BTreeMap<String, Call>,
     pending: BTreeMap<String, Pending>,
     rl: BTreeMap<String, (i64, Option<i64>)>,
+    /// The subagent whose line is being handled (its `Agent` tool call id); `None` for the main
+    /// thread.
+    parent: Option<String>,
+    /// Stream state of the other subagents, by `Agent` tool call id.
+    subs: BTreeMap<String, Thread>,
 }
 
 impl Default for ClaudeDriver {
@@ -209,7 +236,68 @@ impl ClaudeDriver {
             calls: BTreeMap::new(),
             pending: BTreeMap::new(),
             rl: BTreeMap::new(),
+            parent: None,
+            subs: BTreeMap::new(),
         }
+    }
+
+    /// Exchanges the current thread's stream state with `t`.
+    fn swap_thread(&mut self, t: &mut Thread) {
+        std::mem::swap(&mut self.msg, &mut t.msg);
+        std::mem::swap(&mut self.blocks, &mut t.blocks);
+        std::mem::swap(&mut self.streamed, &mut t.streamed);
+        std::mem::swap(&mut self.ord, &mut t.ord);
+        std::mem::swap(&mut self.calls, &mut t.calls);
+    }
+
+    /// Runs `f` as the subagent `pid`: its stream state swapped in, and the items it emits tagged
+    /// with `parent` (all but `Question`s, which are the main thread's).
+    fn in_sub(
+        &mut self,
+        pid: &str,
+        ev: &mut Vec<AgentEvent>,
+        f: impl FnOnce(&mut Self, &mut Vec<AgentEvent>),
+    ) {
+        let mut t = self.subs.remove(pid).unwrap_or_default();
+        self.swap_thread(&mut t);
+        self.parent = Some(pid.to_owned());
+        let from = ev.len();
+        f(self, ev);
+        self.parent = None;
+        self.swap_thread(&mut t);
+        self.subs.insert(pid.to_owned(), t);
+        for e in &mut ev[from..] {
+            match e {
+                AgentEvent::ItemStarted { id, parent, .. } => {
+                    scope(pid, id);
+                    *parent = Some(pid.to_owned());
+                }
+                AgentEvent::ItemCompleted {
+                    id, kind, parent, ..
+                } if *kind != ItemKind::Question => {
+                    scope(pid, id);
+                    *parent = Some(pid.to_owned());
+                }
+                AgentEvent::ItemDelta { id, .. } | AgentEvent::ItemUpdated { id, .. } => {
+                    scope(pid, id)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The subagent `pid` will say no more: what it left open fails, its state goes.
+    fn close_sub(&mut self, pid: &str, why: &str, ev: &mut Vec<AgentEvent>) {
+        if self.subs.contains_key(pid) {
+            self.in_sub(pid, ev, |d, ev| d.close_open(why, ev));
+            self.subs.remove(pid);
+        }
+    }
+
+    /// Whether the tool `name` is shown as Question/Plan items instead of a ToolCall: only on the
+    /// main thread.
+    fn hides(&self, name: &str) -> bool {
+        self.parent.is_none() && hidden(name)
     }
 
     /// The command `u`, created on first sight.
@@ -284,7 +372,7 @@ impl ClaudeDriver {
     }
 
     fn activity(&mut self, offset: u64, ev: &mut Vec<AgentEvent>) {
-        if !self.turn {
+        if !self.turn && self.parent.is_none() {
             self.turn = true;
             self.off.turn_begin(offset);
             ev.push(AgentEvent::TurnStarted);
@@ -414,7 +502,7 @@ impl ClaudeDriver {
                 parent: None,
             });
             self.off.item_open(&id, offset);
-        } else if kind == BlockKind::Tool && !hidden(&name) {
+        } else if kind == BlockKind::Tool && !self.hides(&name) {
             started = true;
             ev.push(AgentEvent::ItemStarted {
                 id: id.clone(),
@@ -518,7 +606,8 @@ impl ClaudeDriver {
 
     /// The final input of a tool call is known.
     fn tool_ready(&mut self, id: String, name: String, input: Value, ev: &mut Vec<AgentEvent>) {
-        match name.as_str() {
+        let shown = if self.hides(&name) { name.as_str() } else { "" };
+        match shown {
             PLAN => {
                 let text = input["plan"].as_str().unwrap_or("").to_owned();
                 ev.push(done(
@@ -589,7 +678,7 @@ impl ClaudeDriver {
                     let id = b["id"].as_str().map_or(bid, str::to_owned);
                     let name = b["name"].as_str().unwrap_or("tool").to_owned();
                     let input = b["input"].clone();
-                    if !streamed && !hidden(&name) {
+                    if !streamed && !self.hides(&name) {
                         ev.push(AgentEvent::ItemStarted {
                             id: id.clone(),
                             kind: ItemKind::ToolCall,
@@ -668,7 +757,8 @@ impl ClaudeDriver {
                 }
             }
             ev.push(event_item(id, out));
-        } else if v["isReplay"].as_bool() == Some(true) {
+        } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
+            // a subagent's text is the prompt it was given
             self.activity(offset, ev);
             ev.push(done(
                 id,
@@ -691,7 +781,7 @@ impl ClaudeDriver {
         let call = self.calls.remove(id);
         self.off.item_close(id);
         let asked = self.take_pending(id, is_error, &output, &line["tool_use_result"], ev);
-        if asked && call.as_ref().is_none_or(|c| hidden(&c.name)) {
+        if asked && call.as_ref().is_none_or(|c| self.hides(&c.name)) {
             return; // the Question/Plan items are the record of this call
         }
         let status = if is_error {
@@ -804,6 +894,18 @@ impl ClaudeDriver {
 
     fn result(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
         if self.turn {
+            // a subagent whose `Agent` call is still open ends with the turn; one that runs on in
+            // the background (its call has returned) keeps its state while it has something open
+            let ended: Vec<String> = self
+                .subs
+                .keys()
+                .filter(|p| self.calls.contains_key(*p))
+                .cloned()
+                .collect();
+            for p in ended {
+                self.close_sub(&p, "the turn ended first", ev);
+            }
+            self.subs.retain(|_, t| !t.idle());
             self.close_open("the turn ended before it was answered", ev);
             self.streamed.clear();
             self.ord.clear();
@@ -844,7 +946,7 @@ impl ClaudeDriver {
         self.close_blocks(ev);
         for (id, c) in std::mem::take(&mut self.calls) {
             self.off.item_close(&id);
-            if !hidden(&c.name) {
+            if !self.hides(&c.name) {
                 ev.push(done(
                     id.clone(),
                     ItemKind::ToolCall,
@@ -856,6 +958,9 @@ impl ClaudeDriver {
                     }),
                 ));
             }
+        }
+        if self.parent.is_some() {
+            return; // questions are the main thread's
         }
         for cid in self.pending.keys().cloned().collect::<Vec<_>>() {
             self.drop_pending(&cid, why, ev);
@@ -1174,10 +1279,17 @@ impl Driver for ClaudeDriver {
             return ev;
         };
         let ty = v["type"].as_str().unwrap_or("");
-        // ponytail: subagent (Task tool) transcripts are dropped, show them nested when the UI wants them
-        if matches!(ty, "stream_event" | "assistant" | "user")
-            && v["parent_tool_use_id"].is_string()
-        {
+        if let (true, Some(pid)) = (
+            matches!(ty, "stream_event" | "assistant" | "user"),
+            v["parent_tool_use_id"].as_str(),
+        ) {
+            self.in_sub(pid, &mut ev, |d, ev| match ty {
+                "stream_event" => d.stream_event(offset, &v, ev),
+                "assistant" => d.assistant(offset, &v, ev),
+                _ => d.user(offset, &v, ev),
+            });
+            self.flush_one(out);
+            self.sync(&mut ev);
             return ev;
         }
         match ty {
@@ -1323,6 +1435,9 @@ impl Driver for ClaudeDriver {
     fn on_exit(&mut self, code: Option<i32>) -> Vec<AgentEvent> {
         let mut ev = Vec::new();
         self.exited = true;
+        for p in self.subs.keys().cloned().collect::<Vec<_>>() {
+            self.close_sub(&p, "claude exited first", &mut ev);
+        }
         self.close_open("claude exited before it was answered", &mut ev);
         if self.turn {
             self.turn = false;
@@ -1350,6 +1465,17 @@ impl Driver for ClaudeDriver {
 /// Key of the resume-offset entry that keeps a command's `queued` line until it starts.
 fn cmd_anchor(uuid: &str) -> String {
     format!("cmd:{uuid}")
+}
+
+/// A subagent's item id: a spool-offset one (`o<offset>...`, the line had no id of its own) is
+/// made `<parent>/o<offset>...` so subagents tailed from other files cannot collide.
+fn scope(pid: &str, id: &mut String) {
+    if id
+        .strip_prefix('o')
+        .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        *id = format!("{pid}/{id}");
+    }
 }
 
 /// Tools whose call is shown as Question/Plan items instead of a ToolCall.
