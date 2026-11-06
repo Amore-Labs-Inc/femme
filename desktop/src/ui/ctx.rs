@@ -4,9 +4,10 @@
 //! itself out of the flow and draws in a deferred layer), the owner opens it from a right-button
 //! press with [`Menu::open`] and a list of [`Item`]s, a label and a callback each. Esc closes it
 //! wherever the keyboard is (it never takes the focus: the owner's caret stays where it was) and so
-//! does a press outside it. A pick closes the menu first and runs its callback after the current
-//! update, so the callback may open the menu again, or [`Menu::pin`] a card in its place: the
-//! "open" of a picture shows its preview, which stays until it is dismissed.
+//! does a press outside it. While it is up nothing behind it takes a hover or a click, so a hover
+//! card does not open beside a preview that is pinned. A pick closes the menu first and runs its
+//! callback after the current update, so the callback may open the menu again, or [`Menu::pin`] a
+//! card in its place: the "open" of a picture shows its preview, which stays until it is dismissed.
 //!
 //! [`card`] is the rows alone, for a menu that places itself: the sidebar's row menu
 //! (`sidebar/ctx.rs`) draws through it and keeps its own anchoring and its name box.
@@ -15,7 +16,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    anchored, deferred, div, px, AnyElement, AnyWindowHandle, App, ClickEvent, Context, Div,
+    anchored, deferred, div, point, px, AnyElement, AnyWindowHandle, App, ClickEvent, Context, Div,
     InteractiveElement as _, IntoElement, KeystrokeEvent, MouseDownEvent, ParentElement as _,
     Pixels, Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Window,
@@ -218,11 +219,21 @@ impl Render for Menu {
             }
             Body::Pinned(build) => build(window, cx),
         };
+        // A sheet over the whole window, under the card: while the menu is up nothing behind it
+        // takes a hover or a click, so no hover card opens beside a preview that is pinned.
+        let screen = window.viewport_size();
+        let sheet = div()
+            .w(screen.width)
+            .h(screen.height)
+            .block_mouse_except_scroll();
         root.child(deferred(
+            anchored().position(point(px(0.), px(0.))).child(sheet),
+        ))
+        .child(deferred(
             anchored().position(shown.at).child(
                 div()
                     .id("ctx-menu")
-                    // Nothing under the menu reacts to the pointer (no hover, no click-through).
+                    // Nothing under the card reacts to the pointer (no hover, no click-through).
                     .occlude()
                     .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         this.close(cx);
