@@ -52,7 +52,7 @@ impl HPane {
     }
 }
 
-/// Polls herdr every 2 s and the transcripts every second, until the daemon goes. No `herdr` on
+/// Polls herdr every 2 s and the transcripts every 250 ms, until the daemon goes. No `herdr` on
 /// the tool path: nothing to mirror.
 pub(crate) async fn run(d: Weak<Daemon>) {
     let Some(bin) = d
@@ -63,11 +63,12 @@ pub(crate) async fn run(d: Weak<Daemon>) {
         return;
     };
     let mut tails: HashMap<Sid, Tail> = HashMap::new();
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // ponytail: a stat and a read per transcript per tick; inotify if the panes get many
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     for n in 0u64.. {
         tick.tick().await;
         let Some(d) = d.upgrade() else { return };
-        if n % 2 == 0 {
+        if n % 8 == 0 {
             // a herdr that does not answer changes nothing: no pane is taken for gone
             if let Some(panes) = list(&bin, &d.cfg.home).await {
                 sync(&d, &bin, &panes, &mut tails).await;
