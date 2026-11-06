@@ -94,6 +94,14 @@ macro_rules! tokens {
         pub struct Palette {
             $($(#[$doc])* pub $name: Rgba,)*
         }
+
+        impl Palette {
+            /// Every token with its name, for the tests.
+            #[cfg(test)]
+            fn entries(&self) -> Vec<(&'static str, Rgba)> {
+                vec![$((stringify!($name), self.$name),)*]
+            }
+        }
     };
 }
 
