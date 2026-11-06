@@ -66,14 +66,16 @@ pub(crate) fn ask(d: &Daemon, s: &Session, q: &str) -> Result<(), CoreError> {
         .kill_on_drop(true);
     let me = d.me.clone();
     tokio::spawn(async move {
-        let out = cmd.output().await;
+        // a hung side question must not linger: the timeout drops the child, which kills it
+        let out = tokio::time::timeout(std::time::Duration::from_secs(300), cmd.output()).await;
         let Some(d) = me.upgrade() else { return };
         let answer = match &out {
-            Ok(o) => answer_of(&o.stdout).ok_or_else(|| {
+            Ok(Ok(o)) => answer_of(&o.stdout).ok_or_else(|| {
                 let err = String::from_utf8_lossy(&o.stderr);
                 format!("/btw failed: {}", err.trim())
             }),
-            Err(e) => Err(format!("/btw failed: {e}")),
+            Ok(Err(e)) => Err(format!("/btw failed: {e}")),
+            Err(_) => Err("/btw gave up after 5 minutes".into()),
         };
         let id = format!("{base}-a");
         let item = match answer {
