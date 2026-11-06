@@ -597,11 +597,21 @@ impl Daemon {
             }
         }
         for sid in self.sessions.dirs.live_sockets() {
-            if !claimed.contains(&sid) {
-                if let Ok(h) = Holder::connect(&self.sessions.dirs, sid).await {
-                    tracing::warn!(%sid, "holder of no open session; stopping it");
-                    let _ = h.shutdown().await;
-                }
+            if claimed.contains(&sid) {
+                continue; // reattached above
+            }
+            // A read error counts as unknown: leaving a holder up is recoverable, stopping it is not.
+            let known = matches!(
+                self.store.read(|c| sessions::get_session(c, sid)),
+                Ok(Some(_))
+            );
+            if !sweepable(known, claimed.contains(&sid)) {
+                tracing::info!(%sid, "holder of a session this store never had; leaving it alone");
+                continue;
+            }
+            if let Ok(h) = Holder::connect(&self.sessions.dirs, sid).await {
+                tracing::warn!(%sid, "holder of no open session; stopping it");
+                let _ = h.shutdown().await;
             }
         }
     }
@@ -835,6 +845,13 @@ impl Daemon {
     }
 }
 
+/// Whether reconcile stops a live holder: only one whose session this store knows (a row, open or
+/// closed) and no open session claims. A holder with no row at all belongs to another daemon's
+/// state sharing the runtime dir (a test's femmed on the real `/run/user/<uid>`), not to us.
+fn sweepable(known: bool, claimed: bool) -> bool {
+    known && !claimed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +874,14 @@ mod tests {
             created: 0,
             closed: None,
         }
+    }
+
+    #[test]
+    fn the_sweep_stops_only_holders_this_store_knows_and_does_not_claim() {
+        assert!(sweepable(true, false), "a known, unclaimed holder is an orphan of ours");
+        assert!(!sweepable(true, true), "a claimed holder is reattached, not stopped");
+        assert!(!sweepable(false, false), "a holder with no row is another daemon's");
+        assert!(!sweepable(false, true));
     }
 
     #[test]

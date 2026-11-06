@@ -739,7 +739,7 @@ impl Transcript {
                 .when(on, |d| d.bg(PANEL).text_color(INK))
         };
         let main = tab("agents-main", self.view.is_none())
-            .child("◂ main")
+            .child("‹ main")
             .on_click(cx.listener(|this, _, _, cx| {
                 this.back(cx);
             }));

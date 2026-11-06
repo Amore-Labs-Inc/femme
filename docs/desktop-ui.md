@@ -37,9 +37,9 @@ Keep it current: when your module's public API changes, edit your section in the
   calls folded, questions as answerable rows.
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
-  `◂ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
+  `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
   answered); the thread on show is lit. A chip, or `open ›` on the Agent's tool row, shows that
-  subagent's items (its prompt, tool calls and text, with its own working line); `◂ main` or `Esc`
+  subagent's items (its prompt, tool calls and text, with its own working line); `‹ main` or `Esc`
   goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
   ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
   message sent while a subagent is on show goes to the session as always.
