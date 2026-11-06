@@ -333,7 +333,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> State
 /// plain label cannot hold: the `femme` wordmark with a [`Glyph::Down`] chevron in the top bar, a
 /// name next to an icon. Add the content with `.child(..)`; children sit in a row, centred, 6 px
 /// apart (give a child its own `.font_family(..)`). For an "open" look override the fill:
-/// `.bg(theme::ACCENT_STRONG)`.
+/// `.bg(theme::accent_strong())`.
 pub fn button_box(id: impl Into<ElementId>) -> Stateful<Div> {
     control(Kind::Light, id)
 }

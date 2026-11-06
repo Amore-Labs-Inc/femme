@@ -368,63 +368,9 @@ const fn dark() -> Palette {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The light palette under its old constant names (until every screen reads the live palette).
+// Metrics
 // ---------------------------------------------------------------------------------------------
 
-/// Light [`Palette::desk`].
-pub const DESK: Rgba = LIGHT.desk;
-/// Light [`Palette::paper`].
-pub const PAPER: Rgba = LIGHT.paper;
-/// Light [`Palette::panel`].
-pub const PANEL: Rgba = LIGHT.panel;
-/// Light [`Palette::ink`].
-pub const INK: Rgba = LIGHT.ink;
-/// Light [`Palette::muted`].
-pub const MUTED: Rgba = LIGHT.muted;
-/// Light [`Palette::hover`].
-pub const HOVER: Rgba = LIGHT.hover;
-/// Light [`Palette::neon`].
-pub const NEON: Rgba = LIGHT.neon;
-/// Light [`Palette::work`].
-pub const WORK: Rgba = LIGHT.work;
-/// Light [`Palette::pause`].
-pub const PAUSE: Rgba = LIGHT.pause;
-/// Light [`Palette::queue`].
-pub const QUEUE: Rgba = LIGHT.queue;
-/// Light [`Palette::pr`].
-pub const PR: Rgba = LIGHT.pr;
-/// Light [`Palette::bad`].
-pub const BAD: Rgba = LIGHT.bad;
-/// Light [`Palette::done`].
-pub const DONE: Rgba = LIGHT.done;
-/// Light [`Palette::surface`].
-pub const SURFACE: Rgba = LIGHT.surface;
-/// Light [`Palette::surface_muted`].
-pub const SURFACE_MUTED: Rgba = LIGHT.surface_muted;
-/// Light [`Palette::border`].
-pub const BORDER: Rgba = LIGHT.border;
-/// Light [`Palette::shadow_color`].
-pub const SHADOW: Rgba = LIGHT.shadow_color;
-/// Light [`Palette::accent`].
-pub const ACCENT: Rgba = LIGHT.accent;
-/// Light [`Palette::accent_strong`].
-pub const ACCENT_STRONG: Rgba = LIGHT.accent_strong;
-/// Light [`Palette::accent_soft`].
-pub const ACCENT_SOFT: Rgba = LIGHT.accent_soft;
-/// Light [`Palette::accent_deep`].
-pub const ACCENT_DEEP: Rgba = LIGHT.accent_deep;
-/// Light [`Palette::on_accent`].
-pub const ON_ACCENT: Rgba = LIGHT.on_accent;
-/// Light [`Palette::muted_text`].
-pub const MUTED_TEXT: Rgba = LIGHT.muted_text;
-/// Light [`Palette::success`].
-pub const SUCCESS: Rgba = LIGHT.success;
-/// Light [`Palette::warn`].
-pub const WARN: Rgba = LIGHT.warn;
-/// Light [`Palette::danger`].
-pub const DANGER: Rgba = LIGHT.danger;
-/// Light [`Palette::focus_ring`].
-pub const FOCUS_RING: Rgba = LIGHT.focus_ring;
 /// Focus ring thickness.
 pub const FOCUS_RING_WIDTH: Pixels = px(2.);
 

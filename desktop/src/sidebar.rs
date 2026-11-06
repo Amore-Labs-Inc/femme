@@ -95,8 +95,8 @@ impl Lane {
             (SessionStatus::Working, _) => Lane::Working,
             (SessionStatus::Blocked, _) | (_, Attention::Blocked) => Lane::Blocked,
             (SessionStatus::Idle | SessionStatus::Starting, _) => Lane::Idle,
-            // A crash is as much a failure as a lost holder (a deviation from the plain mapping: DONE
-            // would paint a dead session as finished).
+            // A crash is as much a failure as a lost holder (a deviation from the plain mapping:
+            // `Closed` would paint a dead session as finished).
             (
                 SessionStatus::Interrupted
                 | SessionStatus::Paused
