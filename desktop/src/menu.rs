@@ -1,5 +1,5 @@
 //! The `femme` button at the top left and the dropdown it opens: version, check for updates,
-//! accounts, reconnect, quit. The shell mounts it (see docs/desktop-ui.md) and handles
+//! accounts, dark mode, reconnect, quit. The shell mounts it (see docs/desktop-ui.md) and handles
 //! [`MenuEvent::Accounts`], [`MenuEvent::Reconnect`] and [`MenuEvent::Quit`].
 //!
 //! - The wordmark is a button: ink border, hard shadow, a caret, a pink fill on hover, pushed in
@@ -9,6 +9,9 @@
 //!   an item. While it is open Up/Down move the highlight, Enter picks the highlighted row and Esc
 //!   closes; the menu listens to the keyboard wherever it is, so the focus never moves (the composer
 //!   keeps its caret) and a hover-opened menu can be driven too.
+//! - "Dark mode" is a switch: it flips the theme ([`theme::set_dark`], which redraws every window and
+//!   keeps the choice for the next run) and the menu stays open, pinned, so the row shows the new
+//!   state; the shell has nothing to do.
 //! - "Check for updates" asks the daemon which commit the box runs, compares it with this build's
 //!   ([`COMMIT`], stamped by `build.rs`) and shows the [`Verdict`] in a row under the item for
 //!   [`RESULT_FOR`]; the comparison itself is pure ([`judge`], [`compare`]) and tested. Behind, it
@@ -55,6 +58,9 @@ const BUTTON_H: Pixels = px(30.);
 const CARD_W: Pixels = px(300.);
 /// Height of an item row.
 const ROW_H: Pixels = px(30.);
+/// Size of the switch in the "Dark mode" row.
+const SWITCH_W: Pixels = px(32.);
+const SWITCH_H: Pixels = px(18.);
 /// Wordmark size: the old nav's 32 px in a bar that is 36 px tall instead of 52.
 const MARK_SIZE: Pixels = px(26.);
 /// How far the wordmark is lifted, in px. Kaushan Script's `f` is 27.5 px from hook to tail at that
@@ -191,17 +197,25 @@ impl Verdict {
 enum Item {
     Check,
     Accounts,
+    DarkMode,
     Reconnect,
     Quit,
 }
 
 impl Item {
-    const ALL: [Item; 4] = [Item::Check, Item::Accounts, Item::Reconnect, Item::Quit];
+    const ALL: [Item; 5] = [
+        Item::Check,
+        Item::Accounts,
+        Item::DarkMode,
+        Item::Reconnect,
+        Item::Quit,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Item::Check => "Check for updates",
             Item::Accounts => "Accounts",
+            Item::DarkMode => "Dark mode",
             Item::Reconnect => "Reconnect",
             Item::Quit => "Quit",
         }
@@ -211,6 +225,7 @@ impl Item {
         match self {
             Item::Check => "menu-check",
             Item::Accounts => "menu-accounts",
+            Item::DarkMode => "menu-dark-mode",
             Item::Reconnect => "menu-reconnect",
             Item::Quit => "menu-quit",
         }
@@ -247,6 +262,26 @@ fn shadow(d: f32) -> Vec<BoxShadow> {
         b.offset = point(px(d), px(d));
     }
     s
+}
+
+/// The switch of the "Dark mode" row: a ruled track with a square knob, the knob at the right and
+/// the track pink when it is on, at the left on paper when it is off. Hard edges, like every box of
+/// the skin; the knob is ink in both states, so it reads on either track.
+fn switch(on: bool) -> Div {
+    let knob = div().absolute().top(px(2.)).size(px(10.)).bg(ink());
+    ruled(
+        div()
+            .relative()
+            .flex_none()
+            .w(SWITCH_W)
+            .h(SWITCH_H)
+            .bg(if on { neon() } else { paper() }),
+    )
+    .child(if on {
+        knob.right(px(2.))
+    } else {
+        knob.left(px(2.))
+    })
 }
 
 /// The `femme` button and its dropdown.
@@ -388,6 +423,12 @@ impl FemmeMenu {
                 self.open(cx);
                 cx.emit(MenuEvent::CheckUpdates);
                 self.check_updates(cx);
+                return;
+            }
+            Item::DarkMode => {
+                // The row shows the new state: stay open, as for the check.
+                self.open(cx);
+                theme::set_dark(!theme::is_dark(), cx);
                 return;
             }
             Item::Accounts => MenuEvent::Accounts,
@@ -560,6 +601,9 @@ fn start_updater() {
             }))
             .on_click(cx.listener(move |t, _, _, cx| t.activate(item, cx)))
             .child(item.label())
+            .when(item == Item::DarkMode, |row| {
+                row.justify_between().child(switch(theme::is_dark()))
+            })
     }
 
     /// The row under "Check for updates": a marker and the words, wrapping.
@@ -635,6 +679,7 @@ fn start_updater() {
         .children(self.result())
         .child(rule())
         .child(self.row(Item::Accounts, cx))
+        .child(self.row(Item::DarkMode, cx))
         .child(self.row(Item::Reconnect, cx))
         .child(rule())
         .child(self.row(Item::Quit, cx))
@@ -823,9 +868,25 @@ mod tests {
         assert_eq!(Item::step(None, true), Check);
         assert_eq!(Item::step(None, false), Quit);
         assert_eq!(Item::step(Some(Check), true), Accounts);
+        assert_eq!(Item::step(Some(Accounts), true), DarkMode);
+        assert_eq!(Item::step(Some(DarkMode), true), Reconnect);
         assert_eq!(Item::step(Some(Quit), true), Check);
         assert_eq!(Item::step(Some(Check), false), Quit);
-        assert_eq!(Item::step(Some(Reconnect), false), Accounts);
+        assert_eq!(Item::step(Some(Reconnect), false), DarkMode);
+        assert_eq!(Item::step(Some(DarkMode), false), Accounts);
+    }
+
+    #[test]
+    fn dark_mode_sits_between_accounts_and_reconnect() {
+        let at = |i| Item::ALL.iter().position(|x| *x == i).unwrap();
+        assert_eq!(at(Item::DarkMode), at(Item::Accounts) + 1);
+        assert_eq!(at(Item::DarkMode) + 1, at(Item::Reconnect));
+        assert_eq!(Item::DarkMode.label(), "Dark mode");
+        // Every row has its own label and element id.
+        let labels: std::collections::HashSet<_> = Item::ALL.iter().map(|i| i.label()).collect();
+        let ids: std::collections::HashSet<_> = Item::ALL.iter().map(|i| i.id()).collect();
+        assert_eq!(labels.len(), Item::ALL.len());
+        assert_eq!(ids.len(), Item::ALL.len());
     }
 
     #[test]
