@@ -46,6 +46,7 @@ use crate::session::{
 };
 use crate::takeover::{Act, Ev, Phase, Takeover};
 
+pub(crate) mod btw;
 pub(crate) mod herdr;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
@@ -815,6 +816,9 @@ impl Actor {
             }
         }
         if live_line {
+            if let Some(c) = &f.commands {
+                save_commands(d, c);
+            }
             if let Some(u) = f.usage {
                 *d.usage.lock().unwrap_or_else(|e| e.into_inner()) = Some(u);
             }
@@ -1245,6 +1249,31 @@ fn cut(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// `<state>/commands.json`: the `/` commands of the last `claude` that started, for the composer's
+/// menu ([`commands`]).
+// ponytail: one list for the box; project commands differ per folder, the last start wins.
+fn save_commands(d: &Daemon, names: &[String]) {
+    let path = d.cfg.state_path("commands.json");
+    let json = serde_json::to_string(names).unwrap_or_default();
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(json.as_str()) {
+        if let Err(e) = std::fs::write(&path, json) {
+            tracing::debug!(%e, "commands not saved");
+        }
+    }
+}
+
+/// The `/` commands a Claude session takes: the saved list plus FEMME's own `btw`, sorted.
+pub(crate) fn commands(d: &Daemon) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_to_string(d.cfg.state_path("commands.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    names.push("btw".into());
+    names.sort();
+    names.dedup();
+    names
+}
+
 // ---- events to rows (pure) ----------------------------------------------------------------------
 
 /// What the driver's events leave behind between batches.
@@ -1279,6 +1308,8 @@ struct Folded {
     agent_sid: Option<String>,
     model: Option<String>,
     usage: Option<UsageSnapshot>,
+    /// The `/` commands the agent said it takes.
+    commands: Option<Vec<String>>,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
     turn_started: bool,
@@ -1442,6 +1473,7 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 }
             }
             AgentEvent::ModelChanged(m) => f.model = Some(m),
+            AgentEvent::Commands(c) => f.commands = Some(c),
             AgentEvent::Status(AgentStatus::Working) => {
                 st.done = false;
                 f.state = Some((SessionStatus::Working, Attention::None));

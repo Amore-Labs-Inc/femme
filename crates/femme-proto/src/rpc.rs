@@ -141,6 +141,9 @@ pub enum Req {
     },
     /// What the daemon is: its version and the commit the box was deployed from.
     ServerInfo,
+    /// The `/` commands a Claude session takes (from the last `claude` that started, plus
+    /// FEMME's own `btw`). Answered with `Resp::Commands`.
+    Commands,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +188,8 @@ pub enum Resp {
         /// `<state>/deployed`: the commit the box runs, when the file is there.
         deployed: Option<String>,
     },
+    /// The answer to `Commands`: names without the leading `/`.
+    Commands { names: Vec<String> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

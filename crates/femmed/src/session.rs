@@ -748,6 +748,12 @@ impl Daemon {
         if s.agent == Agent::Shell || p.kind != PaneKind::Agent {
             return Err(CoreError::Busy);
         }
+        // a TUI has its own `/btw`
+        if s.agent == Agent::Claude && s.mode == Mode::Headless {
+            if let Some(q) = headless::btw::question(text) {
+                return headless::btw::ask(self, &s, q);
+            }
+        }
         if s.mode == Mode::Headless {
             return self
                 .sessions

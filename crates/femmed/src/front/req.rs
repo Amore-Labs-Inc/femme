@@ -62,6 +62,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::Folders { make: false, .. }
             | Req::Caps
             | Req::ServerInfo
+            | Req::Commands
     )
 }
 
@@ -174,6 +175,9 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
+        Req::Commands => Ok(Resp::Commands {
+            names: crate::headless::commands(d),
+        }),
         Req::BoardApi { method, path, body } => {
             super::board::call(&d.cfg, &method, &path, body).await
         }

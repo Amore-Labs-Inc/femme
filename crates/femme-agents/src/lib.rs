@@ -330,6 +330,8 @@ pub enum AgentEvent {
     },
     /// The model in use changed (after a `set_model`, or a fallback).
     ModelChanged(String),
+    /// The `/` commands the agent takes (names without the `/`), as it started.
+    Commands(Vec<String>),
     /// Coarse state transition; only emitted when the state actually changes.
     Status(AgentStatus),
     /// The process exited (from [`Driver::on_exit`]).

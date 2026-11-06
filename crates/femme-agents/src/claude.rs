@@ -350,6 +350,17 @@ impl ClaudeDriver {
             }
             self.model = Some(m);
         }
+        if let Some(all) = v["slash_commands"].as_array() {
+            // the TUI's own commands do nothing under `-p`
+            let tui = &v["terminal_slash_commands"];
+            let names = all
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|n| !tui.as_array().is_some_and(|t| t.iter().any(|t| t == n)))
+                .map(str::to_owned)
+                .collect();
+            ev.push(AgentEvent::Commands(names));
+        }
     }
 
     fn stream_event(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
@@ -635,12 +646,14 @@ impl ClaudeDriver {
             return;
         }
         let id = item_id(v, offset);
+        let text = command_line(&text).unwrap_or(text);
         if let Some(out) = text.strip_prefix("<local-command-stdout>") {
             // output of a slash command the host sent, e.g. set_model's "Set model to `x`"
             let out = out
                 .strip_suffix("</local-command-stdout>")
                 .unwrap_or(out)
                 .trim();
+            let out = &strip_ansi(out);
             if let Some(m) = out
                 .strip_prefix("Set model to `")
                 .and_then(|r| r.split('`').next())
@@ -1367,6 +1380,41 @@ fn item_id(v: &Value, offset: u64) -> String {
         .map_or_else(|| format!("o{offset}"), str::to_owned)
 }
 
+/// A slash command as the TUI records it (`<command-name>/x</command-name>` and its
+/// `<command-args>`) as the line typed: `/x args`.
+fn command_line(text: &str) -> Option<String> {
+    let tag = |t: &str| {
+        let (_, rest) = text.split_once(&format!("<{t}>"))?;
+        rest.split_once(&format!("</{t}>")).map(|(v, _)| v.trim())
+    };
+    if !text.trim_start().starts_with("<command-") {
+        return None;
+    }
+    let name = tag("command-name")?;
+    Some(match tag("command-args").filter(|a| !a.is_empty()) {
+        Some(args) => format!("{name} {args}"),
+        None => name.to_owned(),
+    })
+}
+
+/// Text without its ANSI escape sequences (`ESC [ ... letter`).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+        } else if it.clone().next() == Some('[') {
+            for c in it.by_ref().skip(1) {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Message or tool-result content as text: strings as is, text blocks joined, other blocks as `[type]`.
 fn flatten(content: &Value) -> String {
     match content {
@@ -1675,5 +1723,30 @@ mod tests {
             "a\n[image]\n[tool_reference]"
         );
         assert_eq!(flatten(&Value::Null), "");
+    }
+
+    #[test]
+    fn a_command_reads_as_typed_and_its_output_without_escapes() {
+        let typed = "<command-name>/model</command-name>\n  <command-message>model</command-message>\n  <command-args>opus</command-args>";
+        assert_eq!(command_line(typed).as_deref(), Some("/model opus"));
+        let bare = "<command-name>/compact</command-name><command-args></command-args>";
+        assert_eq!(command_line(bare).as_deref(), Some("/compact"));
+        assert_eq!(command_line("hello"), None);
+        assert_eq!(
+            strip_ansi("\u{1b}[2mCompacted\u{1b}[22m ok"),
+            "Compacted ok"
+        );
+    }
+
+    #[test]
+    fn init_says_the_commands_but_not_the_terminals_own() {
+        let mut d = ClaudeDriver::new();
+        let line = json!({"type":"system","subtype":"init","session_id":"s",
+            "slash_commands":["compact","doctor","review"],"terminal_slash_commands":["doctor"]});
+        let ev = d.on_line(0, line.to_string().as_bytes(), &mut Out::default());
+        assert!(ev.contains(&AgentEvent::Commands(vec![
+            "compact".into(),
+            "review".into()
+        ])));
     }
 }
