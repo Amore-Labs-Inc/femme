@@ -34,8 +34,8 @@ use gpui_component::scroll::Scrollbar;
 
 use crate::net::Net;
 use crate::theme::{
-    bad, bar, bar_dim, bar_text, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL, FONT_UI,
-    META_SIZE, RULE, TB_SIZE,
+    bad, bar, bar_dim, bar_text, ink, muted, neon, on_accent_strong, panel, paper, FONT_MONO,
+    FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{button, ruled_sides, st};
 use crate::viewer::FileView;
@@ -611,6 +611,10 @@ impl FilesPanel {
     ) -> Stateful<Div> {
         // The lines that do something when clicked; a spinner or "(empty)" is only text.
         let clickable = !matches!(row.kind, Kind::Loading | Kind::Empty);
+        // On the neon row of the keyboard every label takes the colour that reads on neon (ink in
+        // the light palette, paper in the dark one); elsewhere ink for a name, muted for the rest.
+        let on_neon = selected && focused;
+        let dim = if on_neon { on_accent_strong() } else { muted() };
         let base = div()
             .id(("files-row", ix))
             .w_full()
@@ -632,7 +636,7 @@ impl FilesPanel {
                 .flex_none()
                 .font_family(FONT_MONO)
                 .text_size(px(13.))
-                .text_color(muted())
+                .text_color(dim)
                 .child(glyph)
         };
         let name = |text: String, color: Rgba| {
@@ -655,11 +659,17 @@ impl FilesPanel {
                 .text_color(color)
                 .child(text)
         };
-        let color = if row.hidden() { muted() } else { ink() };
+        let color = if on_neon {
+            on_accent_strong()
+        } else if row.hidden() {
+            muted()
+        } else {
+            ink()
+        };
         let line = match row.kind {
             Kind::Up => base
                 .child(marker(""))
-                .child(name("..".to_owned(), muted()).font_family(FONT_MONO)),
+                .child(name("..".to_owned(), dim).font_family(FONT_MONO)),
             Kind::Dir { open } => base
                 .child(marker(if open { "▾" } else { "▸" }))
                 .child(name(row.name().to_owned(), color).font_weight(FontWeight::SEMIBOLD)),
@@ -672,18 +682,19 @@ impl FilesPanel {
                         .pl(px(6.))
                         .font_family(FONT_MONO)
                         .text_size(META_SIZE)
-                        .text_color(muted())
+                        .text_color(dim)
                         .child(fmt_size(len)),
                 ),
             Kind::Loading => base
                 .child(spinner(spin))
-                .child(note("loading…".to_owned(), muted())),
+                .child(note("loading…".to_owned(), dim)),
             Kind::Empty => base
                 .child(marker(""))
-                .child(note("(empty)".to_owned(), muted())),
-            Kind::Failed => base
-                .child(marker("!"))
-                .child(note("could not list: click to try again".to_owned(), bad())),
+                .child(note("(empty)".to_owned(), dim)),
+            Kind::Failed => base.child(marker("!")).child(note(
+                "could not list: click to try again".to_owned(),
+                if on_neon { on_accent_strong() } else { bad() },
+            )),
         };
         if !clickable {
             return line.cursor_default();
