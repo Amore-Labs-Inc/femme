@@ -40,8 +40,8 @@ use gpui_component::tooltip::Tooltip;
 use crate::net::{self, Link, Model, Net};
 use crate::session;
 use crate::theme::{
-    ACCENT_SOFT, BAD, BODY_SIZE, DESK, DONE, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED,
-    PAPER, PAUSE, QUEUE, RULE, TB_SIZE, WORK,
+    accent_soft, bad, bar, bar_text, done, ink, muted, paper, pause, queue, work, BODY_SIZE,
+    FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{
     button, dot, icon, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
@@ -78,23 +78,51 @@ pub struct CollapsedChanged(pub bool);
 /// The title bar's add project button: the shell opens the folder picker.
 pub struct AddProject;
 
-/// The status colour of a session's dot: what it is doing, or what it waits for.
-pub fn status_color(s: &Session) -> Rgba {
-    match (s.status, s.attention) {
-        (SessionStatus::Working, _) => WORK,
-        (SessionStatus::Blocked, _) | (_, Attention::Blocked) => PAUSE,
-        (SessionStatus::Idle | SessionStatus::Starting, _) => QUEUE,
-        // A crash is as much a failure as a lost holder (a deviation from the plain mapping: DONE
-        // would paint a dead session as finished).
-        (
-            SessionStatus::Interrupted
-            | SessionStatus::Paused
-            | SessionStatus::Crashed
-            | SessionStatus::Failed,
-            _,
-        ) => BAD,
-        (SessionStatus::Closed, _) => DONE,
+/// What a session's dot says: what it is doing, or what it waits for. Rows keep the lane, not its
+/// colour, so a row built before a theme change is drawn in the new palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    Working,
+    Blocked,
+    Idle,
+    Failed,
+    Closed,
+}
+
+impl Lane {
+    fn of(s: &Session) -> Self {
+        match (s.status, s.attention) {
+            (SessionStatus::Working, _) => Lane::Working,
+            (SessionStatus::Blocked, _) | (_, Attention::Blocked) => Lane::Blocked,
+            (SessionStatus::Idle | SessionStatus::Starting, _) => Lane::Idle,
+            // A crash is as much a failure as a lost holder (a deviation from the plain mapping: DONE
+            // would paint a dead session as finished).
+            (
+                SessionStatus::Interrupted
+                | SessionStatus::Paused
+                | SessionStatus::Crashed
+                | SessionStatus::Failed,
+                _,
+            ) => Lane::Failed,
+            (SessionStatus::Closed, _) => Lane::Closed,
+        }
     }
+
+    /// The lane's colour in the live palette.
+    fn color(self) -> Rgba {
+        match self {
+            Lane::Working => work(),
+            Lane::Blocked => pause(),
+            Lane::Idle => queue(),
+            Lane::Failed => bad(),
+            Lane::Closed => done(),
+        }
+    }
+}
+
+/// The status colour of a session's dot, in the live palette: what it is doing, or what it waits for.
+pub fn status_color(s: &Session) -> Rgba {
+    Lane::of(s).color()
 }
 
 /// The agent, as the second line of a row says it.
@@ -173,7 +201,7 @@ fn groups(rows: &[Row]) -> Vec<Group> {
 #[derive(Clone, Debug, PartialEq)]
 struct Row {
     sid: Sid,
-    dot: Rgba,
+    lane: Lane,
     title: String,
     /// The agent, or the provider of a model run through OpenGateway (`deepseek`).
     agent: String,
@@ -186,7 +214,7 @@ impl Row {
     fn of(s: &Session) -> Self {
         Self {
             sid: s.id,
-            dot: status_color(s),
+            lane: Lane::of(s),
             title: net::title(s),
             agent: match s.model.as_deref().and_then(|m| m.split_once('/')) {
                 Some((provider, _)) => provider.to_owned(),
@@ -279,8 +307,8 @@ fn bare_bar() -> Div {
         .flex_none()
         .items_center()
         .py(px(3.))
-        .bg(INK)
-        .text_color(DESK)
+        .bg(bar())
+        .text_color(bar_text())
         .font_family(FONT_PIXEL)
         .text_size(TB_SIZE)
         .line_height(relative(1.))
@@ -604,7 +632,7 @@ impl Sidebar {
             .font_family(FONT_MONO)
             .text_size(META_SIZE)
             .line_height(px(16.))
-            .text_color(if on { INK } else { MUTED })
+            .text_color(if on { ink() } else { muted() })
             // The folder is the project's header above.
             .child(div().flex_none().child(r.agent.clone()));
         row(SharedString::from(format!("sb-{sid}")), on)
@@ -625,7 +653,7 @@ impl Sidebar {
                     this.open_menu(sid, cx);
                 }),
             )
-            .child(dot(r.dot))
+            .child(dot(r.lane.color()))
             .child(
                 div()
                     .flex()
@@ -637,7 +665,7 @@ impl Sidebar {
                             .truncate()
                             .text_size(BODY_SIZE)
                             .line_height(px(20.))
-                            .text_color(INK)
+                            .text_color(ink())
                             .child(r.title.clone()),
                     )
                     .child(second),
@@ -667,7 +695,7 @@ impl Sidebar {
             .pl(px(8.))
             .pr(px(8.))
             .cursor_pointer()
-            .hover(|s| s.bg(ACCENT_SOFT))
+            .hover(|s| s.bg(accent_soft()))
             .on_hover(cx.listener(Self::hover_changed))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -684,7 +712,7 @@ impl Sidebar {
                     .truncate()
                     .font_family(FONT_MONO)
                     .text_size(META_SIZE)
-                    .text_color(INK)
+                    .text_color(ink())
                     .child(g.name.clone()),
             )
             .when(folded, |d| d.child(meta(g.rows.len().to_string())))
@@ -723,7 +751,7 @@ impl Sidebar {
                 this.set_collapsed(false, cx);
                 this.open(sid, cx);
             }))
-            .child(dot(r.dot))
+            .child(dot(r.lane.color()))
             .when(cursor, |d| d.child(ring()))
     }
 
@@ -756,7 +784,7 @@ impl Sidebar {
                 .items_start()
                 .gap(px(8.))
                 .p(px(12.))
-                .child(div().text_color(MUTED).child(self.note()))
+                .child(div().text_color(muted()).child(self.note()))
                 .when(self.can_create(), |d| d.child(self.new_button(cx)));
         }
         let mut rows = Vec::new();
@@ -848,11 +876,11 @@ impl Render for Sidebar {
             .w_full()
             .h_full()
             .overflow_hidden()
-            .bg(PAPER)
+            .bg(paper())
             .font_family(FONT_UI)
             .text_size(BODY_SIZE)
             .line_height(relative(1.3))
-            .text_color(INK)
+            .text_color(ink())
             .child(self.header(cx))
             .child(body)
     }
@@ -980,19 +1008,20 @@ mod tests {
     #[test]
     fn the_dot_says_what_the_session_is_doing_or_waits_for() {
         use SessionStatus::*;
-        assert_eq!(dot_of(Working, Attention::None), WORK);
-        assert_eq!(dot_of(Blocked, Attention::None), PAUSE);
-        assert_eq!(dot_of(Idle, Attention::Blocked), PAUSE);
-        assert_eq!(dot_of(Idle, Attention::None), QUEUE);
-        assert_eq!(dot_of(Starting, Attention::None), QUEUE);
+        assert_eq!(dot_of(Working, Attention::None), work());
+        assert_eq!(dot_of(Blocked, Attention::None), pause());
+        assert_eq!(dot_of(Idle, Attention::Blocked), pause());
+        assert_eq!(dot_of(Idle, Attention::None), queue());
+        assert_eq!(dot_of(Starting, Attention::None), queue());
         for s in [Interrupted, Paused, Crashed, Failed] {
-            assert_eq!(dot_of(s, Attention::None), BAD, "{s:?}");
+            assert_eq!(dot_of(s, Attention::None), bad(), "{s:?}");
         }
-        assert_eq!(dot_of(Closed, Attention::None), DONE);
-        // The row carries the colour of its session.
+        assert_eq!(dot_of(Closed, Attention::None), done());
+        // The row carries the lane of its session and takes the colour when it is drawn.
         let mut s = session(1, 1);
         s.status = Working;
-        assert_eq!(Row::of(&s).dot, WORK);
+        assert_eq!(Row::of(&s).lane, Lane::Working);
+        assert_eq!(Row::of(&s).lane.color(), work());
     }
 
     #[test]

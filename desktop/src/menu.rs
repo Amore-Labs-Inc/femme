@@ -30,8 +30,8 @@ use gpui::{
 use crate::motion;
 use crate::net::{Link, Net};
 use crate::theme::{
-    self, BAD, BODY_SIZE, DONE, FONT_BRAND, FONT_MONO, FONT_UI, HOVER, INK, NEON, PANEL, PAPER,
-    PAUSE, RULE, WORK,
+    self, bad, done, hover, ink, neon, panel, paper, pause, work, BODY_SIZE, FONT_BRAND, FONT_MONO,
+    FONT_UI, RULE,
 };
 use crate::ui::{dot, ruled, tb};
 
@@ -178,10 +178,10 @@ impl Verdict {
     /// waiting, grey when there is nothing to compare, red when it failed.
     pub fn tone(&self) -> Rgba {
         match self {
-            Verdict::Current { .. } => WORK,
-            Verdict::Behind { .. } | Verdict::DaemonTooOld => PAUSE,
-            Verdict::Unstamped { .. } | Verdict::NoMarker => DONE,
-            Verdict::Failed(_) => BAD,
+            Verdict::Current { .. } => work(),
+            Verdict::Behind { .. } | Verdict::DaemonTooOld => pause(),
+            Verdict::Unstamped { .. } | Verdict::NoMarker => done(),
+            Verdict::Failed(_) => bad(),
         }
     }
 }
@@ -500,7 +500,7 @@ fn start_updater() {
             .font_family(FONT_BRAND)
             .text_size(MARK_SIZE)
             .line_height(relative(1.1))
-            .child(word(INK).absolute().top(px(2.)).left(px(2.)))
+            .child(word(ink()).absolute().top(px(2.)).left(px(2.)))
             .child(word(face))
     }
 
@@ -519,7 +519,7 @@ fn start_updater() {
                 .px(px(10.))
                 // Nothing of the wordmark draws outside the button, whatever the rasteriser does.
                 .overflow_hidden()
-                .bg(if pink { HOVER } else { PAPER }),
+                .bg(if pink { hover() } else { paper() }),
         );
         face.style().box_shadow = Some(if down { Vec::new() } else { shadow(2.) });
         let face = if down {
@@ -527,12 +527,12 @@ fn start_updater() {
         } else {
             face
         };
-        face.child(Self::wordmark(if pink { PAPER } else { NEON }))
+        face.child(Self::wordmark(if pink { paper() } else { neon() }))
             .child(
                 div()
                     .font_family(FONT_MONO)
                     .text_size(px(13.))
-                    .text_color(INK)
+                    .text_color(ink())
                     .child("▾"),
             )
     }
@@ -546,7 +546,11 @@ fn start_updater() {
             .h(ROW_H)
             .px(px(12.))
             .cursor_pointer()
-            .bg(if self.lit == Some(item) { HOVER } else { PAPER })
+            .bg(if self.lit == Some(item) {
+                hover()
+            } else {
+                paper()
+            })
             .on_mouse_move(cx.listener(move |t, _, _, cx| {
                 if t.lit != Some(item) || t.lit_by_key {
                     t.lit = Some(item);
@@ -561,7 +565,7 @@ fn start_updater() {
     /// The row under "Check for updates": a marker and the words, wrapping.
     fn result(&self) -> Option<Div> {
         let (tone, text) = match self.check.as_ref()? {
-            Phase::Asking => (DONE, "asking the box…".to_owned()),
+            Phase::Asking => (done(), "asking the box…".to_owned()),
             Phase::Done(v) => (v.tone(), v.text()),
         };
         Some(
@@ -571,7 +575,7 @@ fn start_updater() {
                 .gap(px(8.))
                 .px(px(12.))
                 .py(px(7.))
-                .bg(PANEL)
+                .bg(panel())
                 .child(dot(tone).mt(px(4.)))
                 .child(
                     div()
@@ -587,7 +591,7 @@ fn start_updater() {
     /// The dropdown: the version as a black title bar, then the items.
     fn card(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let button = self.button.clone();
-        let rule = || div().flex_none().h(RULE).bg(INK);
+        let rule = || div().flex_none().h(RULE).bg(ink());
         let mut card = ruled(
             div()
                 .id("femme-menu-card")
@@ -595,11 +599,11 @@ fn start_updater() {
                 .flex()
                 .flex_col()
                 .w(CARD_W)
-                .bg(PAPER)
+                .bg(paper())
                 .font_family(FONT_UI)
                 .text_size(BODY_SIZE)
                 .line_height(relative(1.3))
-                .text_color(INK),
+                .text_color(ink()),
         );
         card.style().box_shadow = Some(theme::hard_shadow());
         card.on_hover(cx.listener(|t, over: &bool, _, cx| {

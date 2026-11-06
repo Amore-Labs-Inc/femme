@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use super::Sidebar;
-use crate::theme::BAD;
+use crate::theme::bad;
 use crate::ui::{menu, menu_item};
 
 /// The menu open on one row.
@@ -105,7 +105,7 @@ impl Sidebar {
                 )
                 .child(
                     menu_item(SharedString::from(format!("sb-close-{sid}")))
-                        .text_color(BAD)
+                        .text_color(bad())
                         .child("close")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
