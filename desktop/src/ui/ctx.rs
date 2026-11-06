@@ -5,8 +5,8 @@
 //! press with [`Menu::open`] and a list of [`Item`]s, a label and a callback each. Esc closes it
 //! wherever the keyboard is (it never takes the focus: the owner's caret stays where it was) and so
 //! does a press outside it. A pick closes the menu first and runs its callback after the current
-//! update, so the callback may open the menu again, or [`Menu::pin`] a view in its place: the
-//! "open" of a picture shows its preview as a card that stays until it is dismissed.
+//! update, so the callback may open the menu again, or [`Menu::pin`] a card in its place: the
+//! "open" of a picture shows its preview, which stays until it is dismissed.
 //!
 //! [`card`] is the rows alone, for a menu that places itself: the sidebar's row menu
 //! (`sidebar/ctx.rs`) draws through it and keeps its own anchoring and its name box.
@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    anchored, deferred, div, px, AnyView, AnyWindowHandle, App, ClickEvent, Context, Div,
+    anchored, deferred, div, px, AnyElement, AnyWindowHandle, App, ClickEvent, Context, Div,
     InteractiveElement as _, IntoElement, KeystrokeEvent, MouseDownEvent, ParentElement as _,
     Pixels, Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Window,
@@ -82,12 +82,15 @@ pub fn card(prefix: &str, width: Pixels, items: impl IntoIterator<Item = Item>) 
         })
 }
 
+/// Draws a pinned card, again on every frame it is shown.
+type Build = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
+
 /// What an open menu shows.
 enum Body {
     /// Rows to pick from.
     Items(Vec<Item>),
-    /// A view that stays until it is dismissed.
-    Pinned(AnyView),
+    /// A card that stays until it is dismissed.
+    Pinned(Build),
 }
 
 /// An open menu: where, and what it shows.
@@ -130,16 +133,22 @@ impl Menu {
         cx.notify();
     }
 
-    /// Shows `view` at `at` instead of rows, until Esc or a press outside it closes it.
-    pub fn pin(&mut self, at: Point<Pixels>, view: impl Into<AnyView>, cx: &mut Context<Self>) {
+    /// Shows the card `build` draws at `at` instead of rows, until Esc or a press outside it closes
+    /// it.
+    pub fn pin(
+        &mut self,
+        at: Point<Pixels>,
+        build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+        cx: &mut Context<Self>,
+    ) {
         self.shown = Some(Shown {
             at,
-            body: Body::Pinned(view.into()),
+            body: Body::Pinned(Rc::new(build)),
         });
         cx.notify();
     }
 
-    /// Closes the menu (or the view it pins); false when nothing was showing.
+    /// Closes the menu (or the card it pins); false when nothing was showing.
     pub fn close(&mut self, cx: &mut Context<Self>) -> bool {
         if self.shown.take().is_none() {
             return false;
@@ -148,7 +157,7 @@ impl Menu {
         true
     }
 
-    /// Whether the menu, or a view it pins, is showing.
+    /// Whether the menu, or a card it pins, is showing.
     pub fn is_open(&self) -> bool {
         self.shown.is_some()
     }
@@ -207,7 +216,7 @@ impl Render for Menu {
                 });
                 card("ctx", WIDTH, rows).into_any_element()
             }
-            Body::Pinned(view) => view.clone().into_any_element(),
+            Body::Pinned(build) => build(window, cx),
         };
         root.child(deferred(
             anchored().position(shown.at).child(
