@@ -152,7 +152,7 @@ fn fields(c: &ThemeColor) -> Vec<(String, f32, f32, f32, f32)> {
 
 #[test]
 fn palette_sets_every_field_and_none_is_blue() {
-    let colors = palette();
+    let colors = theme_colors(&LIGHT);
     let f = fields(&colors);
     // The parser found the whole struct (gpui-component 0.8.1 has 137 colour fields).
     assert!(f.len() >= 130, "parsed only {} fields", f.len());
