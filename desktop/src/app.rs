@@ -33,6 +33,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use gpui_component::input::Escape;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::Root;
 
@@ -40,7 +41,6 @@ use crate::accounts::AccountsOverlay;
 #[cfg(feature = "bench")]
 use crate::bench::{Bench, BenchConfig, PaneStats};
 use crate::board::{Board, BoardEvent};
-use crate::motion;
 use crate::composer::Composer;
 use crate::connect::Connect;
 use crate::files::FilesPanel;
@@ -48,9 +48,10 @@ use crate::frame::{
     next_stop, short_error, with_note, Centre, Right, Shown, Stop, DIAGRAM_NEEDS_AGENT,
 };
 use crate::menu::{FemmeMenu, MenuEvent};
+use crate::motion;
 use crate::net::{ClientEvent, Net, Started};
-use crate::session;
 use crate::projects::{self, Picker};
+use crate::session;
 use crate::sidebar::{AddProject, CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
@@ -835,6 +836,13 @@ impl FemmeApp {
                 .flex()
                 .flex_col()
                 .gap(GUTTER)
+                // Esc from the composer: back from a subagent's thread first; only on the main
+                // thread does it go on to the composer, which interrupts the session.
+                .capture_action(cx.listener(|this, _: &Escape, _, cx| {
+                    if this.transcript.update(cx, |t, cx| t.back(cx)) {
+                        cx.stop_propagation();
+                    }
+                }))
                 .child(
                     // The box says when the transcript has the keyboard (F6): it takes PageUp and co.
                     ruled(div().flex_1().min_h_0().bg(SURFACE).overflow_hidden())
@@ -891,7 +899,12 @@ impl Render for FemmeApp {
         let column = StyleRefinement::default()
             .h_full()
             // Collapsing and expanding slide the column over 160 ms; the frame follows it each frame.
-            .w(motion::slide("sidebar-w", self.sidebar.read(cx).width(), window, cx));
+            .w(motion::slide(
+                "sidebar-w",
+                self.sidebar.read(cx).width(),
+                window,
+                cx,
+            ));
         let body = div()
             .flex_1()
             .min_h_0()

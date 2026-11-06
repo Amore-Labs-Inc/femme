@@ -25,7 +25,7 @@ use super::turns::{self, Key, ToolLine};
 use crate::motion::appear;
 use crate::theme::{
     self, rgba8, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED,
-    PANEL, PAPER, PAUSE, WORK,
+    NEON, PANEL, PAPER, PAUSE, WORK,
 };
 use crate::ui::{card, dialog, meta, ruled, st, tb};
 
@@ -481,6 +481,15 @@ impl Transcript {
         }
         let line = &view.line;
         let name_color = if line.failed { BAD } else { INK };
+        // An Agent call whose subagent has items: the row opens its thread.
+        let agent = self
+            .items
+            .get(seq)
+            .map(|e| e.item.item_id.clone())
+            .filter(|id| {
+                matches!(line.name.as_str(), "Agent" | "Task")
+                    && self.items.view(Some(id)).next().is_some()
+            });
         let head = div()
             .id(("tool", seq))
             .flex()
@@ -516,6 +525,23 @@ impl Transcript {
                         .text_size(px(12.5))
                         .text_color(if line.failed { BAD } else { MUTED })
                         .child(SharedString::from(format!("→ {result}"))),
+                )
+            })
+            .when_some(agent, |d, id| {
+                d.child(
+                    div()
+                        .id(("agent-open", seq))
+                        .flex_none()
+                        .px(px(4.))
+                        .font_family(FONT_MONO)
+                        .text_size(px(12.))
+                        .text_color(HOVER)
+                        .hover(|s| s.text_color(NEON))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.set_view(Some(id.clone()), cx);
+                        }))
+                        .child("open ›"),
                 )
             })
             .when(line.running, |d| {
