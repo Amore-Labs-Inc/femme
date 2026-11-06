@@ -20,10 +20,13 @@
 //! told apart; the items of a list and the cells of a table ([`Join::Line`]) are not. Code is
 //! copied as it is.
 //!
-//! Limits: the list draws only the rows near the window, so a selection reaches as far as the rows
-//! that are drawn (the window and 300 px beyond it); a text the row cuts short with an ellipsis
-//! cannot be selected (gpui-base refuses a layout that is not the whole text), and its row's open
-//! form shows it whole.
+//! Limits: the list builds and paints only the rows that show in the window (its 300 px of
+//! overdraw are measured, not painted), and gpui-base drops a selection when a row that holds one
+//! of its ends is gone. So a selection lasts while the two rows its ends are in stay in view, at
+//! least in part: a drag may run past the edge of the list (it scrolls) only while the row it began
+//! in is still showing, and scrolling that row out of the window ends the selection. A text the row
+//! cuts short with an ellipsis cannot be selected (gpui-base refuses a layout that is not the whole
+//! text), and its row's open form shows it whole.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -39,6 +42,8 @@ use gpui_base::{
     TextSelection, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration,
     TextSelectionRun,
 };
+use gpui_component::input::AnyInputState;
+use gpui_component::WindowExt as _;
 
 use crate::theme::HOVER;
 
@@ -147,13 +152,32 @@ pub fn copy(window: &mut Window, cx: &mut App) -> bool {
     true
 }
 
-/// Clears the selection. False when there was none.
+/// Copies the selection for ctrl-c, unless the focused input has a selection of its own (then the
+/// input copies that). True when the key is done: the copy was made here.
+pub fn on_copy(window: &mut Window, cx: &mut App) -> bool {
+    !input_has_selection(window, cx) && copy(window, cx)
+}
+
+/// Whether the focused input (the composer) has selected text. Its ctrl-c copies that, and a
+/// transcript selection waits; without one the input takes the key and copies nothing.
+fn input_has_selection(window: &mut Window, cx: &mut App) -> bool {
+    match window.focused_input(cx) {
+        Some(AnyInputState::Input(state)) => state.read(cx).is_copyable(),
+        Some(AnyInputState::Textarea(state)) => state.read(cx).is_copyable(),
+        Some(AnyInputState::Editor(state)) => state.read(cx).is_copyable(),
+        Some(AnyInputState::Otp(_)) | None => false,
+    }
+}
+
+/// Clears the selection. False when no text that shows was selected: nothing, or blanks (the
+/// gap between two paragraphs), which are dropped as well but leave Esc to whoever is next.
 pub fn clear(window: &mut Window, cx: &mut App) -> bool {
     if !TextSelection::has_selection(window, cx) {
         return false;
     }
+    let shown = clipboard_text(&TextSelection::selected_text(window, cx)).is_some();
     TextSelection::clear(window, cx);
-    true
+    shown
 }
 
 /// Whether the pointer went from `down` to `up` far enough to be a drag.

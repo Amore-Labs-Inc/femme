@@ -32,6 +32,7 @@ use super::ask::Ask;
 use super::items::Items;
 use super::markdown::{self, Doc};
 use super::outbox::Sent;
+use super::select;
 use super::splice;
 use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
@@ -551,6 +552,11 @@ impl Transcript {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Esc puts the selected text away before it does anything else.
+        if event.keystroke.key == "escape" && select::clear(window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let page = self.list.viewport_bounds().size.height * 0.9;
         match event.keystroke.key.as_str() {
             "pageup" => self.list.scroll_by(-page),

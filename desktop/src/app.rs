@@ -33,7 +33,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
-use gpui_component::input::Escape;
+use gpui_component::input::{Copy as CopyAction, Escape};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::Root;
 
@@ -56,7 +56,7 @@ use crate::sidebar::{AddProject, CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
 use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, NEON, SURFACE, TOP_BAR_H};
-use crate::transcript::Transcript;
+use crate::transcript::{select, Transcript};
 use crate::ui::{self, ruled, DotGrid};
 
 mod right;
@@ -836,10 +836,18 @@ impl FemmeApp {
                 .flex()
                 .flex_col()
                 .gap(GUTTER)
-                // Esc from the composer: back from a subagent's thread first; only on the main
-                // thread does it go on to the composer, which interrupts the session.
-                .capture_action(cx.listener(|this, _: &Escape, _, cx| {
-                    if this.transcript.update(cx, |t, cx| t.back(cx)) {
+                // Esc from the composer: the selected text of the transcript goes first, then back
+                // from a subagent's thread; only on the main thread with nothing selected does it
+                // go on to the composer, which interrupts the session.
+                .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                    if select::clear(window, cx) || this.transcript.update(cx, |t, cx| t.back(cx)) {
+                        cx.stop_propagation();
+                    }
+                }))
+                // ctrl-c from the composer: the composer's own selection is its to copy; without
+                // one it would take the key and copy nothing, so the transcript's text is copied here.
+                .capture_action(cx.listener(|_, _: &CopyAction, window, cx| {
+                    if select::on_copy(window, cx) {
                         cx.stop_propagation();
                     }
                 }))
