@@ -10,7 +10,8 @@ use femme_proto::state::{ItemKind, ItemStatus};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, px, relative, AnyElement, Context, Div, InteractiveElement as _, IntoElement,
-    ParentElement as _, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    MouseDownEvent, ParentElement as _, Rgba, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
 use gpui_component::input::Input;
 
@@ -293,7 +294,11 @@ impl Transcript {
                 d.child(div().flex().flex_wrap().gap(px(8.)).children(
                     files.iter().enumerate().map(|(i, file)| {
                         let thumb = self.thumbs.get(&file.path);
-                        thumb::attachment(format!("attached-{seq}-{i}"), file, thumb)
+                        let path = file.path.clone();
+                        let menu = cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            this.thumb_menu(&path, ev.position, window, cx)
+                        });
+                        thumb::attachment(format!("attached-{seq}-{i}"), file, thumb, menu)
                     }),
                 ))
             });
@@ -310,7 +315,7 @@ impl Transcript {
                 .gap(px(6.))
                 .text_size(BODY_SIZE)
                 .when(!doc.blocks.is_empty(), |d| {
-                    d.child(md_view::doc(&doc, ink()))
+                    d.child(md_view::doc(("md", seq), &doc, ink()))
                 })
                 .when(live, |d| d.child(streaming())),
         )
@@ -329,7 +334,7 @@ impl Transcript {
                         .gap(px(6.))
                         .p(px(12.))
                         .text_size(BODY_SIZE)
-                        .child(md_view::doc(&doc, ink()))
+                        .child(md_view::doc(("md", seq), &doc, ink()))
                         .when(live, |d| d.child(streaming())),
                 ),
         )

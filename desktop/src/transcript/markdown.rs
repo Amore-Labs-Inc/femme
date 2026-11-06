@@ -1,12 +1,15 @@
 //! Markdown to a block model the list can lay out: paragraphs, headings, code blocks, lists,
-//! quotes, tables, with the inline styles of a paragraph as byte ranges over its text. The parser
+//! quotes, tables, with the inline styles of a paragraph as byte ranges over its text, and where
+//! its links go (a bare `http://` or `https://` address in the text is a link too). The parser
 //! is pulldown-cmark; this module only folds its events into blocks (no HTML, no gpui), so it is
 //! tested on plain strings. Text that is still streaming parses as it stands: an unclosed fence
 //! is a code block to the end, an unclosed `**` is literal text.
 
 use std::ops::Range;
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream,
+};
 
 /// The inline styles in force over a stretch of text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,6 +51,10 @@ pub struct Inline {
     pub text: String,
     /// The styled stretches.
     pub spans: Vec<Span>,
+    /// Where a click opens what: the bytes of the text that are a link's words (or a bare
+    /// address) and the address, in order, not overlapping. The address a link's words are
+    /// followed by, dim, is not among them, and only web and mail addresses are.
+    pub links: Vec<(Range<usize>, String)>,
 }
 
 impl Inline {
@@ -203,6 +210,27 @@ impl Builder {
         }
     }
 
+    /// Text of the document. A bare `http://` or `https://` address in it is a link as well
+    /// (CommonMark only has `<address>`), unless it is in code or in the words of a link.
+    fn words(&mut self, t: &str) {
+        let mut rest = t;
+        if self.code.is_none() && self.link.is_none() {
+            while let Some(found) = find_url(rest) {
+                self.text(&rest[..found.start]);
+                let url = &rest[found.clone()];
+                let at = self.cur.text.len();
+                let style = Style {
+                    link: true,
+                    ..self.style()
+                };
+                self.cur.push(url, style);
+                self.cur.links.push((at..at + url.len(), url.to_owned()));
+                rest = &rest[found.end..];
+            }
+        }
+        self.text(rest);
+    }
+
     fn block(&mut self, b: Block) {
         if let Some(top) = self.containers.last_mut() {
             top.push(b);
@@ -221,7 +249,7 @@ impl Builder {
         match ev {
             Event::Start(tag) => self.start(tag),
             Event::End(end) => self.end(end),
-            Event::Text(t) => self.text(&t),
+            Event::Text(t) => self.words(&t),
             Event::Code(t) => {
                 let style = Style {
                     code: true,
@@ -393,15 +421,18 @@ impl Builder {
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => {
                 if let Some((url, from)) = self.link.take() {
+                    let to = self.cur.text.len();
                     // The words carry the link style already (it was on while they were read).
                     // Show where the link goes unless the words are the address.
-                    let words = &self.cur.text[from..];
-                    if !url.is_empty() && words != url {
+                    if !url.is_empty() && self.cur.text[from..] != url {
                         let style = Style {
                             dim: true,
                             ..self.style()
                         };
                         self.cur.push(&format!(" ({url})"), style);
+                    }
+                    if from < to && opens(&url) {
+                        self.cur.links.push((from..to, url));
                     }
                 }
             }
@@ -411,12 +442,80 @@ impl Builder {
     }
 }
 
+/// Whether a click may open a link to `url`: a web address or a mail one. Anything else the
+/// model writes (a `file:` path, `javascript:`, a program's own scheme, a relative path) is shown
+/// but not opened.
+fn opens(url: &str) -> bool {
+    ["http://", "https://", "mailto:"].iter().any(|scheme| {
+        url.get(..scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+    })
+}
+
+/// Where the first bare `http://` or `https://` address in `s` is: it starts a word (not `xhttp://`),
+/// runs to the next space (or `<`, `>`, `"`), and does not end in the punctuation of the sentence
+/// around it.
+fn find_url(s: &str) -> Option<Range<usize>> {
+    let mut from = 0;
+    while let Some(i) = s[from..].find("http") {
+        let start = from + i;
+        from = start + 4;
+        let rest = &s[start..];
+        let Some(scheme) = ["https://", "http://"]
+            .into_iter()
+            .find(|scheme| rest.starts_with(scheme))
+        else {
+            continue;
+        };
+        if s[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
+            continue;
+        }
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+            .unwrap_or(rest.len());
+        let url = trim_tail(&rest[..end]);
+        // Something has to follow the `//`.
+        if url.len() > scheme.len() {
+            return Some(start..start + url.len());
+        }
+    }
+    None
+}
+
+/// `url` without the punctuation that ends a sentence (`.,;:!?'`) and without a closing bracket
+/// that has no opening one in the address (`wikipedia.org/wiki/Foo_(bar)` keeps its own).
+fn trim_tail(url: &str) -> &str {
+    let mut end = url.len();
+    while let Some(last) = url[..end].chars().next_back() {
+        let open = match last {
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' => None,
+            ')' => Some('('),
+            ']' => Some('['),
+            _ => break,
+        };
+        if let Some(open) = open {
+            let kept = &url[..end];
+            if kept.matches(open).count() >= kept.matches(last).count() {
+                break;
+            }
+        }
+        end -= last.len_utf8();
+    }
+    &url[..end]
+}
+
 /// Parses `src` into blocks.
 pub fn parse(src: &str) -> Doc {
     let mut b = Builder::default();
     b.containers.push(Vec::new());
     let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
-    for ev in Parser::new_ext(src, opts) {
+    // The parser splits a run of text at `~`, `_`, `&amp;`, `[`: a bare address is looked for in
+    // the whole run.
+    for ev in TextMergeStream::new(Parser::new_ext(src, opts)) {
         b.event(ev);
     }
     b.flush();
@@ -432,7 +531,7 @@ mod tests {
     fn para(text: &str) -> Block {
         Block::Paragraph(Inline {
             text: text.into(),
-            spans: vec![],
+            ..Inline::default()
         })
     }
 
@@ -494,6 +593,264 @@ mod tests {
         let p = only_paragraph("<https://example.com>");
         assert_eq!(p.text, "https://example.com");
         assert!(style_of(&p, "example").link);
+    }
+
+    /// The words and the address of each link of `p`.
+    fn links_of(p: &Inline) -> Vec<(&str, &str)> {
+        p.links
+            .iter()
+            .map(|(r, url)| (&p.text[r.clone()], url.as_str()))
+            .collect()
+    }
+
+    /// The addresses `src`, a paragraph, links to.
+    fn urls(src: &str) -> Vec<String> {
+        only_paragraph(src)
+            .links
+            .into_iter()
+            .map(|(_, url)| url)
+            .collect()
+    }
+
+    #[test]
+    fn a_link_keeps_its_target_over_its_words() {
+        let p = only_paragraph("see [the docs](https://example.com/a) now");
+        assert_eq!(p.text, "see the docs (https://example.com/a) now");
+        // The words, not the dim address after them.
+        assert_eq!(p.links, [(4..12, "https://example.com/a".to_owned())]);
+        // The words are the address: one range over them, nothing repeated.
+        let p =
+            only_paragraph("<https://example.com> and [http://a.example/b](http://a.example/b)");
+        assert_eq!(p.text, "https://example.com and http://a.example/b");
+        assert_eq!(
+            links_of(&p),
+            [
+                ("https://example.com", "https://example.com"),
+                ("http://a.example/b", "http://a.example/b")
+            ]
+        );
+        assert!(only_paragraph("plain *text*").links.is_empty());
+    }
+
+    #[test]
+    fn two_links_in_one_paragraph_keep_their_own_targets() {
+        let p = only_paragraph("[one](https://a.example) and [two](https://b.example/x?y=1) done");
+        assert_eq!(
+            links_of(&p),
+            [
+                ("one", "https://a.example"),
+                ("two", "https://b.example/x?y=1")
+            ]
+        );
+        assert!(p.links[0].0.end <= p.links[1].0.start);
+        // Touching links stay two although their style is one stretch.
+        let p = only_paragraph(
+            "[http://x.example](http://x.example)[http://y.example](http://y.example)",
+        );
+        assert_eq!(p.spans.len(), 1);
+        assert_eq!(
+            p.links,
+            [
+                (0..16, "http://x.example".to_owned()),
+                (16..32, "http://y.example".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_link_inside_bold_keeps_both() {
+        let p = only_paragraph("**read [the docs](https://example.com/a) now**");
+        assert_eq!(links_of(&p), [("the docs", "https://example.com/a")]);
+        let words = style_of(&p, "the docs");
+        assert!(words.bold && words.link);
+        // The address after the words is not part of what a click opens.
+        let after = style_of(&p, "(https");
+        assert!(after.bold && after.dim && !after.link);
+    }
+
+    #[test]
+    fn only_web_and_mail_addresses_open() {
+        let p = only_paragraph(
+            "[a](file:///etc/passwd) [b](javascript:alert(1)) [c](./README.md) [d](#top) \
+             [e](vscode://x/y) [f](HTTPS://Up.example) [g](mailto:me@x.example)",
+        );
+        assert_eq!(
+            links_of(&p),
+            [("f", "HTTPS://Up.example"), ("g", "mailto:me@x.example")]
+        );
+        // The others still say where they go.
+        assert!(p
+            .text
+            .contains("a (file:///etc/passwd) b (javascript:alert(1)) c (./README.md)"));
+        assert!(!opens("") && !opens("http:/x") && !opens("é"));
+    }
+
+    #[test]
+    fn a_bare_address_is_a_link() {
+        let p = only_paragraph("go to https://example.com/a?b=1&c=2 now");
+        assert_eq!(p.text, "go to https://example.com/a?b=1&c=2 now");
+        assert_eq!(
+            links_of(&p),
+            [(
+                "https://example.com/a?b=1&c=2",
+                "https://example.com/a?b=1&c=2"
+            )]
+        );
+        assert!(style_of(&p, "example").link);
+        assert!(style_of(&p, "go to").is_plain() && style_of(&p, "now").is_plain());
+        // Several, either scheme, alone on the line, in the words of a heading.
+        let p = only_paragraph("http://a.example, then https://b.example/x\nhttps://c.example");
+        assert_eq!(
+            links_of(&p),
+            [
+                ("http://a.example", "http://a.example"),
+                ("https://b.example/x", "https://b.example/x"),
+                ("https://c.example", "https://c.example")
+            ]
+        );
+        // Styled text keeps its style next to the link.
+        let p = only_paragraph("**https://example.com/b** and ~~old https://c.example/d~~");
+        assert_eq!(
+            links_of(&p),
+            [
+                ("https://example.com/b", "https://example.com/b"),
+                ("https://c.example/d", "https://c.example/d")
+            ]
+        );
+        let first = style_of(&p, "example.com");
+        assert!(first.bold && first.link);
+        let second = style_of(&p, "c.example");
+        assert!(second.strike && second.link);
+        assert!(style_of(&p, "old").strike && !style_of(&p, "old").link);
+    }
+
+    #[test]
+    fn a_bare_address_leaves_out_the_punctuation_around_it() {
+        for (src, url) in [
+            ("see https://example.com.", "https://example.com"),
+            ("see https://example.com/a, then", "https://example.com/a"),
+            ("(see https://example.com/a)", "https://example.com/a"),
+            ("[https://example.com/a]", "https://example.com/a"),
+            ("is it https://example.com/a?", "https://example.com/a"),
+            ("so: 'https://example.com/a'", "https://example.com/a"),
+            ("\"https://example.com/a\"", "https://example.com/a"),
+            ("also https://example.com/a;", "https://example.com/a"),
+            ("at https://example.com/a:", "https://example.com/a"),
+            ("at https://example.com/a...", "https://example.com/a"),
+            ("at https://example.com/a?x=1.", "https://example.com/a?x=1"),
+            // Brackets that close one of the address's own stay.
+            (
+                "(https://en.wikipedia.org/wiki/Foo_(bar))",
+                "https://en.wikipedia.org/wiki/Foo_(bar)",
+            ),
+            (
+                "https://en.wikipedia.org/wiki/Foo_(bar).",
+                "https://en.wikipedia.org/wiki/Foo_(bar)",
+            ),
+            ("see http://[::1]:8080/x, ok", "http://[::1]:8080/x"),
+        ] {
+            assert_eq!(urls(src), [url], "{src}");
+        }
+    }
+
+    #[test]
+    fn an_address_that_is_not_one_is_left_alone() {
+        // In code, in the words of a link (only that link counts), in a code block.
+        let p = only_paragraph(
+            "`https://example.com/a` and [see https://x.example/b here](https://y.example/c)",
+        );
+        assert_eq!(
+            links_of(&p),
+            [("see https://x.example/b here", "https://y.example/c")]
+        );
+        assert!(matches!(
+            parse("```\nhttps://example.com/a\n```").blocks.as_slice(),
+            [Block::Code { .. }]
+        ));
+        // The scheme alone, in the middle of a word, with nothing after it.
+        for src in [
+            "the https:// scheme",
+            "xhttp://y.example",
+            "see https://.",
+            "see http",
+            "see https://",
+            "ftp://z.example/a",
+        ] {
+            assert!(urls(src).is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn an_address_the_parser_cut_into_pieces_is_one_link() {
+        // pulldown-cmark ends a run of text at `~`, at an `&amp;`, at `_(` and at `[`.
+        for url in [
+            "http://example.com/~alice/page",
+            "https://example.com/?a=1&b=2",
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            "https://example.com/a[0]/b",
+        ] {
+            assert_eq!(urls(&format!("see {url} now")), [url], "{url}");
+        }
+        let p = only_paragraph("a https://example.com/?a=1&amp;b=2 b");
+        assert_eq!(
+            links_of(&p),
+            [(
+                "https://example.com/?a=1&b=2",
+                "https://example.com/?a=1&b=2"
+            )]
+        );
+    }
+
+    #[test]
+    fn an_address_still_streaming_is_a_link_so_far() {
+        assert_eq!(urls("see https://exa"), ["https://exa"]);
+        assert_eq!(
+            urls("see https://example.com/pa"),
+            ["https://example.com/pa"]
+        );
+    }
+
+    #[test]
+    fn links_belong_to_the_text_they_are_in() {
+        let doc = parse(
+            "# See [x](http://x.example) or http://h.example\n\n\
+             | a | b |\n|---|---|\n| [c](http://c.example) | http://d.example |\n\n\
+             - item http://i.example\n",
+        );
+        let [Block::Heading { text, .. }, Block::Table { rows, .. }, Block::List { items, .. }] =
+            doc.blocks.as_slice()
+        else {
+            panic!("{doc:?}")
+        };
+        assert_eq!(
+            links_of(text),
+            [
+                ("x", "http://x.example"),
+                ("http://h.example", "http://h.example")
+            ]
+        );
+        assert_eq!(links_of(&rows[0][0]), [("c", "http://c.example")]);
+        assert_eq!(
+            links_of(&rows[0][1]),
+            [("http://d.example", "http://d.example")]
+        );
+        let Block::Paragraph(item) = &items[0].blocks[0] else {
+            panic!("{items:?}")
+        };
+        assert_eq!(links_of(item), [("http://i.example", "http://i.example")]);
+    }
+
+    #[test]
+    fn link_ranges_sit_on_character_boundaries() {
+        let p =
+            only_paragraph("héllo [wörld 😀](https://e.example/ü) und https://exämple.org/ü😀. ok");
+        assert_eq!(
+            links_of(&p),
+            [
+                ("wörld 😀", "https://e.example/ü"),
+                ("https://exämple.org/ü😀", "https://exämple.org/ü😀")
+            ]
+        );
     }
 
     #[test]
@@ -700,7 +1057,8 @@ mod tests {
     #[ignore]
     fn parse_time() {
         let unit = "## A heading\n\nSome **bold** and *italic* text with `code` and a \
-                    [link](https://example.com) in a paragraph that runs on for a while.\n\n\
+                    [link](https://example.com) and a bare https://example.org/a_b/c in a \
+                    paragraph that runs on for a while.\n\n\
                     - one item\n- two item with `x`\n- three\n\n\
                     ```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\n\
                     | a | b |\n|---|---|\n| 1 | 2 |\n\n> a quote line\n\n";
@@ -713,6 +1071,10 @@ mod tests {
         for _ in 0..runs {
             std::hint::black_box(parse(std::hint::black_box(&text)));
         }
-        println!("parse of {} bytes: {:?}", text.len(), start.elapsed() / runs);
+        println!(
+            "parse of {} bytes: {:?}",
+            text.len(),
+            start.elapsed() / runs
+        );
     }
 }

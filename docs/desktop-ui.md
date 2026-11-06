@@ -34,7 +34,10 @@ Keep it current: when your module's public API changes, edit your section in the
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
-  calls folded, questions as answerable rows.
+  calls folded, questions as answerable rows. A link in the markdown, and a bare `http://` or
+  `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
+  hand over it): the words of a link are the target, not the dim address after them, and only web
+  and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
@@ -43,6 +46,17 @@ Keep it current: when your module's public API changes, edit your section in the
   goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
   ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
   message sent while a subagent is on show goes to the session as always.
+- **Pictures, right click**: a composer chip and a thumbnail in the transcript open a small menu at
+  the pointer, drawn by `ui/ctx.rs`. A chip that is a picture offers `copy image`, `open` and
+  `remove`, any other chip `open` and `remove`, a thumbnail `copy image` and `open`; the left click
+  is unchanged. `copy image` puts the picture on the system clipboard through `ui/clip.rs`: gpui does
+  it on macOS and Windows, `wl-copy` (Wayland) or `xclip` (X11) is run for it elsewhere. A PNG goes as
+  it is and any other raster is re-encoded as a PNG with its EXIF orientation applied (the programs
+  that take a pasted picture read PNG); an SVG has no `copy image`. A helper that is missing or fails
+  is said under the composer's input, or in the transcript's dismissible note. `open` keeps the
+  hover preview on screen until Esc or a click elsewhere. `Esc` and a click outside close the menu;
+  `Esc` goes no further, so it does not interrupt a working session, and while the menu is up nothing
+  behind it takes a hover or a click.
 - **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
   the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
@@ -87,8 +101,8 @@ light) and written on every flip.
 | accounts | `ui/accounts` | `desktop/src/accounts.rs` | `AccountsOverlay::new(net, cx)`, `open/close/is_open`; data from `Req::BoardApi{GET /api/accounts, GET /api/keys}`, `Req::Caps`; actions `POST /api/accounts/switch`, `POST/DELETE /api/keys…`, `Req::SetCap` |
 | sidebar | `ui/sidebar` | `desktop/src/sidebar.rs` | `Sidebar::new(net, cx)`, `set_selected(sid, cx)`, emits `OpenSession(Sid)`; lists `Net.model.sessions` that are live, newest first, status dot, title as `net::title` |
 | sessions | `ui/sessions` | `desktop/src/net.rs`, `desktop/src/session.rs` | `Net::current()/set_current()`, `session::open_at_start(net, cx)`; status/attention handling; `Model` fields other agents read stay (`sessions`, `panes`, `link`, `rtt_ms`, `current`) |
-| transcript | `ui/transcript` | `desktop/src/transcript/*` (rewrites `live.rs`, deletes `model.rs`, `pacer.rs`, `view.rs`, `rng.rs`; `bench.rs` loses its transcript bench) | `Transcript::new(net, cx)`, `set_session(sid, cx)`; subscribes `Scope::Session(sid)`, renders `Item` rows + `Delta`, markdown via `pulldown-cmark`, folded tool calls, question rows answer with `Req::AnswerQuestion`, user rows show attachments through `viewer::FileView` (`Req::BlobGet`) |
-| composer | `ui/composer` | `desktop/src/composer.rs` | `Composer::new(net, cx)`, `set_session(sid, cx)`, `Focusable`; a multi-line input (gpui-component `input`), Enter sends, Shift-Enter newline, Esc = `Req::Interrupt`; paste image / drop file → `Req::BlobPut` → thumbnail chip (hover: `viewer::FileView` popover; ×) → `Req::Prompt{attachments, how: Queue}` (`Steer` with ctrl-Enter) |
+| transcript | `ui/transcript` | `desktop/src/transcript/*` (rewrites `live.rs`, deletes `model.rs`, `pacer.rs`, `view.rs`, `rng.rs`; `bench.rs` loses its transcript bench) | `Transcript::new(net, cx)`, `set_session(sid, cx)`; subscribes `Scope::Session(sid)`, renders `Item` rows + `Delta`, markdown via `pulldown-cmark` (`Inline::links` keeps each link's target; `md_view` makes a text with links an `InteractiveText` whose click is `cx.open_url`), folded tool calls, question rows answer with `Req::AnswerQuestion`, user rows show attachments through `viewer::FileView` (`Req::BlobGet`) |
+| composer | `ui/composer` | `desktop/src/composer.rs` | `Composer::new(net, cx)`, `set_session(sid, cx)`, `Focusable`; a multi-line input (gpui-component `input`), Enter sends, Shift-Enter newline, Esc = `Req::Interrupt`; paste image / drop file → `Req::BlobPut` → thumbnail chip (hover: `viewer::FileView` popover; ×) → `Req::Prompt{attachments, how: Queue}` (`Steer` with ctrl-Enter); the text typed for a session is kept in `$XDG_STATE_HOME/femme/drafts/<sid>.txt` on every edit (`composer/disk.rs`) and is back in that chat on the next run, until it is sent |
 | terminal | `ui/terminal` | `desktop/src/terminal/panel.rs`, `terminal/panel/tabs.rs`, `terminal/pane.rs`, `terminal/bridge.rs`, `terminal/input.rs` | `TerminalPanel::new(net, cx)`, `set_session(sid, cx)`, `pane(id)`, `main_pane(sid)` (the session's first terminal: a shell's, or an agent's TUI; the centre draws it), `main_id(sid)`, `set_centre(pane, cx)`, `shown_pane(cx)`, `watch_window(window, cx)`, `Focusable` (focusing the panel hands the keyboard to the tab on show); the panel owns every attached `TerminalPane` (first 8 terminals at once, the rest when their session is current; headless agents' pane 1 is the transcript's, never attached) and draws the right panel's terminal tab: tab per pane except the one the centre draws (a pane is drawn in one place only: `set_centre` says which, the default is the first terminal of a shell or TUI session), `+` (`PaneOpen`, or `SessionCreate` shell when there is no session), `close` (`PaneClose`; `SessionClose` for a shell session's first pane; never an agent's own pane), ctrl-tab / ctrl-shift-tab |
 | files | `ui/files` | `desktop/src/files.rs` | `FilesPanel::new(net, cx)`, `set_session(sid, cwd, cx)`; tree from `Req::FsList{sid, path}` (lazy per directory), click → `Req::FsRead` → `viewer::FileView` in the panel, back button, size guard (ask before > 8 MiB) |
 | viewer | `ui/viewer` | `desktop/src/viewer.rs`, `desktop/Cargo.toml` (deps it adds) | `FileView::new(name, data, cx)`: png/jpg/gif/webp/bmp via gpui `img`, SVG, PDF pages (pure-Rust renderer, no system libs), text/code with syntect, markdown; unknown → hex/size notice |
