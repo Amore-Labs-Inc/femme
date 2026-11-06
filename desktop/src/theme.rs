@@ -641,8 +641,9 @@ fn theme_colors(p: &Palette) -> ThemeColor {
     }
 }
 
-/// Registers the embedded fonts and installs the FEMME palette into gpui-component's global
-/// [`Theme`]. Call once after `gpui_component::init`.
+/// Registers the embedded fonts, reads the saved theme choice (see [`state`]: light when there is
+/// none) and installs the FEMME palette into gpui-component's global [`Theme`]. Call once after
+/// `gpui_component::init` and before the first window opens.
 ///
 /// Stock widgets then render as the skin: paper fills, ink 1 px borders, pink hover and selection,
 /// neon on focus (a focused input turns its border neon), square corners (`radius` 0), no soft
@@ -653,14 +654,17 @@ pub fn apply(cx: &mut App) {
     cx.text_system()
         .add_fonts(font_data())
         .expect("embedded fonts are valid TTFs");
+    DARK_ON.store(state::load(), Ordering::Relaxed);
     install(cx);
 }
 
 /// Switches the whole app to the dark palette (`true`) or the light one: flips every token, installs
 /// the matching gpui-component colours and redraws every window, cached views included. A colour
-/// that was copied into state instead of read when drawn does not follow; see the module docs.
+/// that was copied into state instead of read when drawn does not follow; see the module docs. The
+/// choice is kept in `~/.local/state/femme/theme` for the next run ([`apply`] reads it back).
 pub fn set_dark(dark: bool, cx: &mut App) {
     DARK_ON.store(dark, Ordering::Relaxed);
+    state::save(dark);
     install(cx);
 }
 
@@ -684,6 +688,8 @@ fn install(cx: &mut App) {
         t.colors = theme_colors(current());
     });
 }
+
+mod state;
 
 #[cfg(test)]
 mod tests;
