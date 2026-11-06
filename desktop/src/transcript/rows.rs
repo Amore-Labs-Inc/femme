@@ -309,7 +309,9 @@ impl Transcript {
                 .flex_col()
                 .gap(px(6.))
                 .text_size(BODY_SIZE)
-                .when(!doc.blocks.is_empty(), |d| d.child(md_view::doc(&doc, INK)))
+                .when(!doc.blocks.is_empty(), |d| {
+                    d.child(md_view::doc(("md", seq), &doc, INK))
+                })
                 .when(live, |d| d.child(streaming())),
         )
     }
@@ -327,7 +329,7 @@ impl Transcript {
                         .gap(px(6.))
                         .p(px(12.))
                         .text_size(BODY_SIZE)
-                        .child(md_view::doc(&doc, INK))
+                        .child(md_view::doc(("md", seq), &doc, INK))
                         .when(live, |d| d.child(streaming())),
                 ),
         )

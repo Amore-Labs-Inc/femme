@@ -1,11 +1,14 @@
 //! A parsed markdown document as elements: the paragraphs and headings of the assistant's text,
 //! its code blocks (monospace on the panel grey, with the language above them), lists, quotes,
-//! tables. Links show as text, underlined, followed by their address.
+//! tables. Links show as text, underlined, followed by their address; a click on the words of a
+//! link, or on a bare address, opens it in the browser.
+
+use std::cell::Cell;
 
 use gpui::{
-    div, px, relative, AnyElement, FontStyle, FontWeight, HighlightStyle, Hsla, IntoElement,
-    ParentElement as _, Rgba, SharedString, StrikethroughStyle, Styled as _, StyledText,
-    UnderlineStyle,
+    div, px, relative, AnyElement, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
+    InteractiveElement as _, InteractiveText, IntoElement, ParentElement as _, Rgba, SharedString,
+    StrikethroughStyle, Styled as _, StyledText, UnderlineStyle,
 };
 
 use super::markdown::{Align, Block, Doc, Inline, ListItem, Style};
@@ -15,25 +18,29 @@ use crate::ui::{meta, ruled, ruled_sides};
 /// Size of the code in a block and in a span.
 const CODE_SIZE: f32 = 13.;
 
-/// The elements of `doc`, one below the other, in `color`.
-pub fn doc(doc: &Doc, color: Rgba) -> AnyElement {
-    stack(&doc.blocks, color, 8.).into_any_element()
+/// The elements of `doc`, one below the other, in `color`. `id` tells this document from the
+/// others on screen: the texts with links in it are named by it and by their place in it.
+pub fn doc(id: impl Into<ElementId>, doc: &Doc, color: Rgba) -> AnyElement {
+    stack(&doc.blocks, color, 8., &Cell::new(0))
+        .id(id)
+        .into_any_element()
 }
 
-fn stack(blocks: &[Block], color: Rgba, gap: f32) -> gpui::Div {
+/// `texts` counts the texts laid out so far in the document: it names the next.
+fn stack(blocks: &[Block], color: Rgba, gap: f32, texts: &Cell<usize>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .gap(px(gap))
         .text_color(color)
-        .children(blocks.iter().map(|b| block(b, color)))
+        .children(blocks.iter().map(|b| block(b, color, texts)))
 }
 
-fn block(b: &Block, color: Rgba) -> AnyElement {
+fn block(b: &Block, color: Rgba, texts: &Cell<usize>) -> AnyElement {
     match b {
         Block::Paragraph(text) => div()
             .line_height(relative(1.45))
-            .child(inline(text))
+            .child(inline(text, texts))
             .into_any_element(),
         Block::Heading { level, text } => {
             let size = match level {
@@ -47,7 +54,7 @@ fn block(b: &Block, color: Rgba) -> AnyElement {
                 .text_size(px(size))
                 .line_height(relative(1.25))
                 .font_weight(FontWeight::BOLD)
-                .child(inline(text))
+                .child(inline(text, texts))
                 .into_any_element()
         }
         Block::Code { lang, code } => code_block(lang.as_deref(), code),
@@ -65,13 +72,13 @@ fn block(b: &Block, color: Rgba) -> AnyElement {
                 } else {
                     "•".to_owned()
                 };
-                list_item(&marker, item, color)
+                list_item(&marker, item, color, texts)
             }))
             .into_any_element(),
         Block::Quote(blocks) => ruled_sides(div(), px(0.), px(0.), px(0.), px(3.))
             .border_color(MUTED)
             .pl(px(10.))
-            .child(stack(blocks, MUTED, 6.))
+            .child(stack(blocks, MUTED, 6., texts))
             .into_any_element(),
         Block::Rule => div()
             .w_full()
@@ -79,11 +86,11 @@ fn block(b: &Block, color: Rgba) -> AnyElement {
             .my(px(4.))
             .bg(MUTED)
             .into_any_element(),
-        Block::Table { aligns, head, rows } => table(aligns, head, rows),
+        Block::Table { aligns, head, rows } => table(aligns, head, rows, texts),
     }
 }
 
-fn list_item(marker: &str, item: &ListItem, color: Rgba) -> AnyElement {
+fn list_item(marker: &str, item: &ListItem, color: Rgba, texts: &Cell<usize>) -> AnyElement {
     let mut mark = div()
         .flex_none()
         .min_w(px(22.))
@@ -111,7 +118,7 @@ fn list_item(marker: &str, item: &ListItem, color: Rgba) -> AnyElement {
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .child(stack(&item.blocks, color, 4.)),
+                .child(stack(&item.blocks, color, 4., texts)),
         )
         .into_any_element()
 }
@@ -138,7 +145,12 @@ fn code_block(lang: Option<&str>, code: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn table(aligns: &[Align], head: &[Inline], rows: &[Vec<Inline>]) -> AnyElement {
+fn table(
+    aligns: &[Align],
+    head: &[Inline],
+    rows: &[Vec<Inline>],
+    texts: &Cell<usize>,
+) -> AnyElement {
     let cell = |text: &Inline, col: usize, bold: bool| {
         let mut c = div().flex_1().min_w(px(0.)).px(px(8.)).py(px(3.));
         c = match aligns.get(col).copied().unwrap_or_default() {
@@ -149,7 +161,7 @@ fn table(aligns: &[Align], head: &[Inline], rows: &[Vec<Inline>]) -> AnyElement 
         if bold {
             c = c.font_weight(FontWeight::BOLD);
         }
-        c.child(inline(text))
+        c.child(inline(text, texts))
     };
     let mut table = ruled(div().w_full().flex().flex_col());
     if !head.is_empty() {
@@ -167,8 +179,9 @@ fn table(aligns: &[Align], head: &[Inline], rows: &[Vec<Inline>]) -> AnyElement 
         .into_any_element()
 }
 
-/// The text of `text` with its styled stretches.
-pub fn inline(text: &Inline) -> StyledText {
+/// The text of `text` with its styled stretches; a click on one of its links opens the address
+/// (`texts`: see `stack`; the text takes the next number as its id).
+fn inline(text: &Inline, texts: &Cell<usize>) -> AnyElement {
     let highlights = text
         .spans
         .iter()
@@ -180,9 +193,22 @@ pub fn inline(text: &Inline) -> StyledText {
         .filter(|s| s.style.code)
         .map(|s| (s.range.clone(), SharedString::from(FONT_MONO)))
         .collect::<Vec<_>>();
-    StyledText::new(SharedString::from(text.text.clone()))
+    let styled = StyledText::new(SharedString::from(text.text.clone()))
         .with_highlights(highlights)
-        .with_font_family_overrides(mono)
+        .with_font_family_overrides(mono);
+    let id = texts.get();
+    texts.set(id + 1);
+    if text.links.is_empty() {
+        return styled.into_any_element();
+    }
+    let (ranges, urls): (Vec<_>, Vec<String>) = text.links.iter().cloned().unzip();
+    // InteractiveText turns the pointer into a hand over a link and handles the click. ponytail: it
+    // only forgets the hovered character while the pointer moves inside the text, so coming back
+    // onto the character last hovered, after a repaint elsewhere, keeps the arrow until the pointer
+    // moves one character on (the click works regardless); an on_hover refresh would cure it.
+    InteractiveText::new(("text", id), styled)
+        .on_click(ranges, move |link, _, cx| cx.open_url(&urls[link]))
+        .into_any_element()
 }
 
 fn highlight(s: Style) -> HighlightStyle {
