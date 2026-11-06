@@ -17,7 +17,7 @@
 //! - The sidebar is [`Focusable`]: with the keyboard on it, Up/Down/Home/End move a cursor and Enter
 //!   opens the session under it.
 //!
-//! `+ claude` (the empty state and the foot of the list) creates a headless Claude session in the
+//! `+ claude` (the empty state) creates a headless Claude session in the
 //! daemon's default directory and makes it the current one on [`Net`]; a folder header's `+` does
 //! the same in that folder. Shells start from the terminal panel's own `+`.
 
@@ -746,7 +746,7 @@ impl Sidebar {
             .vertical_scrollbar(&self.scroll)
     }
 
-    /// The expanded body: the rows and the foot with `+ claude`, or the empty state.
+    /// The expanded body: the rows and the foot with the ctrl-b hint, or the empty state.
     fn list(&self, focused: bool, cx: &Context<Self>) -> Div {
         let shown = &self.shown;
         if shown.rows.is_empty() {
@@ -774,7 +774,6 @@ impl Sidebar {
             .justify_between()
             .gap(px(8.))
             .p(px(6.))
-            .when(self.can_create(), |d| d.child(self.new_button(cx)))
             .child(meta(TOGGLE_KEY));
         div()
             .flex()
