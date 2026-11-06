@@ -20,6 +20,7 @@ use super::live::Transcript;
 use super::md_view;
 use super::outbox::Sent;
 use super::question::QuestionBody;
+use super::select::{self, Join, Sel, Selectable, TAIL};
 use super::thumb;
 use super::turns::{self, Key, ToolLine};
 use crate::motion::appear;
@@ -72,13 +73,13 @@ fn chevron(open: bool) -> Div {
 }
 
 /// A muted monospace word, for the labels of folded rows.
-fn small(text: impl Into<SharedString>) -> Div {
+fn small(text: impl IntoElement) -> Div {
     div()
         .flex_none()
         .font_family(FONT_MONO)
         .text_size(px(12.5))
         .text_color(MUTED)
-        .child(text.into())
+        .child(text)
 }
 
 /// The first `SHOWN_LINES` lines or `SHOWN_BYTES` bytes of `text`, and a note on what was cut.
@@ -102,7 +103,7 @@ fn capped(text: &str) -> String {
 }
 
 /// A labelled block of monospace text on the panel grey: a tool's input, its output.
-fn block(label: &str, text: &str, color: Rgba) -> Div {
+fn block(label: &str, text: &str, color: Rgba, sel: &Sel) -> Div {
     ruled(
         div()
             .w_full()
@@ -120,12 +121,12 @@ fn block(label: &str, text: &str, color: Rgba) -> Div {
             .text_size(px(12.5))
             .line_height(relative(1.4))
             .text_color(color)
-            .child(SharedString::from(capped(text))),
+            .child(Selectable::new(sel.slot(), capped(text))),
     )
 }
 
 /// The user's card: "you" in `label` over `text`.
-fn you_card(text: String, label: Rgba) -> Div {
+fn you_card(text: String, label: Rgba, sel: &Sel) -> Div {
     let mut bubble = card().max_w(relative(0.85)).flex().flex_col().gap(px(6.));
     bubble.style().box_shadow = Some(theme::hard_shadow());
     bubble
@@ -142,7 +143,7 @@ fn you_card(text: String, label: Rgba) -> Div {
                 div()
                     .text_size(BODY_SIZE)
                     .line_height(relative(1.4))
-                    .child(SharedString::from(text)),
+                    .child(Selectable::new(sel.slot(), text)),
             )
         })
 }
@@ -150,8 +151,8 @@ fn you_card(text: String, label: Rgba) -> Div {
 /// A prompt on its way: the user's card, faded, its files named in a line under the text. It goes
 /// when the daemon's `UserMessage` for it arrives.
 // ponytail: names only, no thumbnails; the real bubble that replaces it has them.
-fn sent_row(sent: &Sent) -> AnyElement {
-    let bubble = you_card(sent.text.clone(), MUTED).when(!sent.files.is_empty(), |d| {
+fn sent_row(sent: &Sent, sel: &Sel) -> AnyElement {
+    let bubble = you_card(sent.text.clone(), MUTED, sel).when(!sent.files.is_empty(), |d| {
         d.child(meta(sent.files.join(", ")))
     });
     column(
@@ -177,11 +178,12 @@ impl Transcript {
             if ix != self.layout.rows.len() {
                 return div().into_any_element();
             }
+            let sel = Sel::new(ix, TAIL);
             return div()
                 .w_full()
                 .flex()
                 .flex_col()
-                .children(self.sent.iter().map(sent_row))
+                .children(self.sent.iter().map(|sent| sent_row(sent, &sel)))
                 .when_some(self.working.clone(), |d, line| {
                     d.child(
                         div()
@@ -192,7 +194,7 @@ impl Transcript {
                             .font_family(FONT_MONO)
                             .text_size(px(12.))
                             .text_color(MUTED)
-                            .child(line),
+                            .child(Selectable::new(sel.slot(), line)),
                     )
                 })
                 .into_any_element();
@@ -200,8 +202,8 @@ impl Transcript {
         let (row, seq) = match key {
             Key::More => return self.more_row(cx),
             Key::Fold(seq) => return self.fold_row(seq, cx),
-            Key::Tool(seq) => (self.tool_row(seq, cx), seq),
-            Key::Item(seq) => (self.item_row(seq, window, cx), seq),
+            Key::Tool(seq) => (self.tool_row(seq, &Sel::new(ix, seq), cx), seq),
+            Key::Item(seq) => (self.item_row(seq, &Sel::new(ix, seq), window, cx), seq),
         };
         self.fade_in(seq, row, window, cx)
     }
@@ -246,7 +248,13 @@ impl Transcript {
             .into_any_element()
     }
 
-    fn item_row(&mut self, seq: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn item_row(
+        &mut self,
+        seq: u64,
+        sel: &Sel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(e) = self.items.get(seq) else {
             return div().into_any_element();
         };
@@ -259,14 +267,14 @@ impl Transcript {
             }
         }
         match kind {
-            ItemKind::UserMessage => self.user_row(seq, cx),
-            ItemKind::AssistantMessage => self.assistant_row(seq),
-            ItemKind::Plan => self.plan_row(seq),
-            ItemKind::Thinking => self.thinking_row(seq, cx),
-            ItemKind::Question => self.question_row(seq, window, cx),
-            ItemKind::ToolResult => self.tool_row(seq, cx),
-            ItemKind::Event => self.note_row(seq),
-            ItemKind::TurnEnd => self.end_row(seq),
+            ItemKind::UserMessage => self.user_row(seq, sel, cx),
+            ItemKind::AssistantMessage => self.assistant_row(seq, sel),
+            ItemKind::Plan => self.plan_row(seq, sel),
+            ItemKind::Thinking => self.thinking_row(seq, sel, cx),
+            ItemKind::Question => self.question_row(seq, sel, window, cx),
+            ItemKind::ToolResult => self.tool_row(seq, sel, cx),
+            ItemKind::Event => self.note_row(seq, sel),
+            ItemKind::TurnEnd => self.end_row(seq, sel),
             ItemKind::ToolCall | ItemKind::TurnStart => div().into_any_element(),
         }
     }
@@ -282,14 +290,14 @@ impl Transcript {
         }
     }
 
-    fn user_row(&mut self, seq: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn user_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let (text, _) = self.text_of(seq);
         let (text, files) = attach::split(&text);
         for file in files.iter().filter(|f| f.image) {
             self.want_thumb(&file.path, cx);
         }
         let bubble =
-            you_card(text, HOVER).when(!files.is_empty(), |d| {
+            you_card(text, HOVER, sel).when(!files.is_empty(), |d| {
                 d.child(div().flex().flex_wrap().gap(px(8.)).children(
                     files.iter().enumerate().map(|(i, file)| {
                         let thumb = self.thumbs.get(&file.path);
@@ -300,7 +308,7 @@ impl Transcript {
         column(div().flex().justify_end().child(bubble))
     }
 
-    fn assistant_row(&mut self, seq: u64) -> AnyElement {
+    fn assistant_row(&mut self, seq: u64, sel: &Sel) -> AnyElement {
         let (text, live) = self.text_of(seq);
         let doc = self.doc(seq, &text);
         column(
@@ -309,12 +317,14 @@ impl Transcript {
                 .flex_col()
                 .gap(px(6.))
                 .text_size(BODY_SIZE)
-                .when(!doc.blocks.is_empty(), |d| d.child(md_view::doc(&doc, INK)))
+                .when(!doc.blocks.is_empty(), |d| {
+                    d.child(md_view::doc(&doc, INK, sel))
+                })
                 .when(live, |d| d.child(streaming())),
         )
     }
 
-    fn plan_row(&mut self, seq: u64) -> AnyElement {
+    fn plan_row(&mut self, seq: u64, sel: &Sel) -> AnyElement {
         let (text, live) = self.text_of(seq);
         let doc = self.doc(seq, &text);
         column(
@@ -327,13 +337,13 @@ impl Transcript {
                         .gap(px(6.))
                         .p(px(12.))
                         .text_size(BODY_SIZE)
-                        .child(md_view::doc(&doc, INK))
+                        .child(md_view::doc(&doc, INK, sel))
                         .when(live, |d| d.child(streaming())),
                 ),
         )
     }
 
-    fn thinking_row(&mut self, seq: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn thinking_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let (text, live) = self.text_of(seq);
         let open = self.open.contains(&seq);
         let first = text
@@ -350,7 +360,11 @@ impl Transcript {
             .py(px(2.))
             .cursor_pointer()
             .hover(|s| s.bg(PANEL))
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle(seq, cx)))
+            .on_click(cx.listener(move |this, click, _, cx| {
+                if select::plain_click(click) {
+                    this.toggle(seq, cx);
+                }
+            }))
             .child(chevron(open))
             .child(small("thinking").italic())
             .when(!open, |d| {
@@ -362,7 +376,7 @@ impl Transcript {
                         .text_size(px(13.))
                         .italic()
                         .text_color(MUTED)
-                        .child(SharedString::from(first)),
+                        .child(Selectable::new(sel.slot(), first).join(Join::Line)),
                 )
             })
             .when(live, |d| d.child(streaming()));
@@ -380,14 +394,14 @@ impl Transcript {
                             .line_height(relative(1.45))
                             .italic()
                             .text_color(MUTED)
-                            .child(SharedString::from(text)),
+                            .child(Selectable::new(sel.slot(), text)),
                     )
                 }),
         )
     }
 
     /// A status line the agent or the daemon put among the messages.
-    fn note_row(&self, seq: u64) -> AnyElement {
+    fn note_row(&self, seq: u64, sel: &Sel) -> AnyElement {
         let (text, _) = self.text_of(seq);
         let line = text.lines().next().unwrap_or("").to_owned();
         column(
@@ -395,12 +409,12 @@ impl Transcript {
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .text_color(MUTED)
-                .child(SharedString::from(format!("· {line}"))),
+                .child(Selectable::new(sel.slot(), format!("· {line}"))),
         )
     }
 
     /// A turn that did not end the usual way says how.
-    fn end_row(&self, seq: u64) -> AnyElement {
+    fn end_row(&self, seq: u64, sel: &Sel) -> AnyElement {
         let Some(e) = self.items.get(seq) else {
             return div().into_any_element();
         };
@@ -413,10 +427,10 @@ impl Transcript {
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .text_color(if failed { BAD } else { MUTED })
-                .child(SharedString::from(format!(
-                    "· {}",
-                    turns::end_text(&self.items, e)
-                ))),
+                .child(Selectable::new(
+                    sel.slot(),
+                    format!("· {}", turns::end_text(&self.items, e)),
+                )),
         )
     }
 
@@ -469,7 +483,7 @@ impl Transcript {
     }
 
     /// One tool call with its answer (or a result whose call is not held).
-    fn tool_row(&mut self, seq: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn tool_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let open = self.open.contains(&seq);
         let Some(view) = self.tool_view(seq, open) else {
             return div().into_any_element();
@@ -498,10 +512,14 @@ impl Transcript {
             .py(px(2.))
             .cursor_pointer()
             .hover(|s| s.bg(PANEL))
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle(seq, cx)))
+            .on_click(cx.listener(move |this, click, _, cx| {
+                if select::plain_click(click) {
+                    this.toggle(seq, cx);
+                }
+            }))
             .child(chevron(open))
             .child(
-                small(SharedString::from(line.name.clone()))
+                small(Selectable::new(sel.slot(), line.name.clone()).join(Join::Line))
                     .text_color(name_color)
                     .font_weight(gpui::FontWeight::BOLD),
             )
@@ -513,7 +531,7 @@ impl Transcript {
                     .font_family(FONT_MONO)
                     .text_size(px(12.5))
                     .text_color(MUTED)
-                    .child(SharedString::from(line.hint.clone())),
+                    .child(Selectable::new(sel.slot(), line.hint.clone()).join(Join::Line)),
             )
             .when_some(line.result.clone(), |d, result| {
                 d.child(
@@ -524,7 +542,7 @@ impl Transcript {
                         .font_family(FONT_MONO)
                         .text_size(px(12.5))
                         .text_color(if line.failed { BAD } else { MUTED })
-                        .child(SharedString::from(format!("→ {result}"))),
+                        .child(Selectable::new(sel.slot(), format!("→ {result}")).join(Join::Line)),
                 )
             })
             .when_some(agent, |d, id| {
@@ -554,13 +572,14 @@ impl Transcript {
                 .flex_col()
                 .gap(px(6.))
                 .when_some(view.input.clone(), |d, input| {
-                    d.child(block("input", &input, INK))
+                    d.child(block("input", &input, INK, sel))
                 })
                 .when_some(view.output.clone(), |d, output| {
                     d.child(block(
                         if line.failed { "error" } else { "output" },
                         &output,
                         if line.failed { BAD } else { INK },
+                        sel,
                     ))
                 })
                 .when(view.loading, |d| d.child(meta("loading…")))
@@ -637,6 +656,7 @@ impl Transcript {
     fn question_row(
         &mut self,
         seq: u64,
+        sel: &Sel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -651,18 +671,28 @@ impl Transcript {
         };
         let Some(q) = question else {
             // No readable question: say what the daemon said.
-            return column(div().text_color(MUTED).child(SharedString::from(preview)));
+            return column(
+                div()
+                    .text_color(MUTED)
+                    .child(Selectable::new(sel.slot(), preview)),
+            );
         };
         if pending && q.open() {
             self.ask_for(seq, &q.q, window, cx);
-            return self.open_question(seq, &q, cx);
+            return self.open_question(seq, &q, sel, cx);
         }
-        answered_question(&q)
+        answered_question(&q, sel)
     }
 
     /// The dialog of a question that waits: the prompt, the options, a field when the question
     /// takes free text, and "cancel".
-    fn open_question(&self, seq: u64, q: &QuestionBody, cx: &mut Context<Self>) -> AnyElement {
+    fn open_question(
+        &self,
+        seq: u64,
+        q: &QuestionBody,
+        sel: &Sel,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ask = self.asks.get(&seq);
         let sending = ask.is_some_and(|a| a.sending);
         let input = ask.and_then(|a| a.input.clone());
@@ -737,7 +767,7 @@ impl Transcript {
                         div()
                             .text_size(BODY_SIZE)
                             .line_height(relative(1.4))
-                            .child(SharedString::from(q.q.prompt.clone())),
+                            .child(Selectable::new(sel.slot(), q.q.prompt.clone())),
                     )
                     .when(!q.q.options.is_empty(), |d| d.child(options))
                     .child(controls),
@@ -758,7 +788,7 @@ struct ToolView {
 }
 
 /// A question that was answered, or ended unanswered: the prompt and what became of it.
-fn answered_question(q: &QuestionBody) -> AnyElement {
+fn answered_question(q: &QuestionBody, sel: &Sel) -> AnyElement {
     let fate = match (q.answer_text(), &q.reason) {
         (Some(answer), _) => format!("→ {answer}"),
         (None, Some(reason)) => format!("not answered: {reason}"),
@@ -777,7 +807,7 @@ fn answered_question(q: &QuestionBody) -> AnyElement {
                         .truncate()
                         .text_size(px(13.))
                         .text_color(MUTED)
-                        .child(SharedString::from(q.q.prompt.clone())),
+                        .child(Selectable::new(sel.slot(), q.q.prompt.clone()).join(Join::Line)),
                 ),
             )
             .child(
@@ -785,7 +815,7 @@ fn answered_question(q: &QuestionBody) -> AnyElement {
                     .pl(px(12.))
                     .text_size(BODY_SIZE)
                     .font_family(FONT_UI)
-                    .child(SharedString::from(fate)),
+                    .child(Selectable::new(sel.slot(), fate)),
             ),
     )
 }
