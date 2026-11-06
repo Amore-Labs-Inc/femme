@@ -43,6 +43,17 @@ Keep it current: when your module's public API changes, edit your section in the
   goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
   ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
   message sent while a subagent is on show goes to the session as always.
+- **Pictures, right click**: a composer chip and a thumbnail in the transcript open a small menu at
+  the pointer, drawn by `ui/ctx.rs`. A chip that is a picture offers `copy image`, `open` and
+  `remove`, any other chip `open` and `remove`, a thumbnail `copy image` and `open`; the left click
+  is unchanged. `copy image` puts the picture on the system clipboard through `ui/clip.rs`: gpui does
+  it on macOS and Windows, `wl-copy` (Wayland) or `xclip` (X11) is run for it elsewhere. A PNG goes as
+  it is and any other raster is re-encoded as a PNG with its EXIF orientation applied (the programs
+  that take a pasted picture read PNG); an SVG has no `copy image`. A helper that is missing or fails
+  is said under the composer's input, or in the transcript's dismissible note. `open` keeps the
+  hover preview on screen until Esc or a click elsewhere. `Esc` and a click outside close the menu;
+  `Esc` goes no further, so it does not interrupt a working session, and while the menu is up nothing
+  behind it takes a hover or a click.
 - **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
   the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
