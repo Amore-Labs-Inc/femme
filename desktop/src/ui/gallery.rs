@@ -11,8 +11,8 @@ use super::{
     title_bar, title_button, win, Glyph, Kind, State,
 };
 use crate::theme::{
-    self, ACCENT, ACCENT_SOFT, ACCENT_STRONG, FONT_BRAND, FONT_MONO, FONT_PIXEL, FONT_UI, INK,
-    NEON, PAPER, RULE, TITLE_SIZE,
+    self, accent, accent_soft, accent_strong, bar, ink, neon, on_bar, FONT_BRAND, FONT_MONO,
+    FONT_PIXEL, FONT_UI, RULE, TITLE_SIZE,
 };
 
 /// `#RRGGBB` of an opaque colour.
@@ -84,23 +84,29 @@ fn matrix_row(name: &str, kind: Kind, content: impl Fn() -> AnyElement) -> Div {
 
 /// Column one: the colours, the type, the marks.
 fn column_tokens() -> Div {
-    let palette: [(&str, Rgba); 16] = [
-        ("DESK", theme::DESK),
-        ("PAPER", theme::PAPER),
-        ("PANEL", theme::PANEL),
-        ("INK", theme::INK),
-        ("MUTED", theme::MUTED),
-        ("MUTED_TEXT", theme::MUTED_TEXT),
-        ("HOVER", theme::HOVER),
-        ("NEON", theme::NEON),
-        ("ACCENT_SOFT", theme::ACCENT_SOFT),
-        ("ACCENT_DEEP", theme::ACCENT_DEEP),
-        ("SUCCESS", theme::SUCCESS),
-        ("WARN", theme::WARN),
-        ("DANGER", theme::DANGER),
-        ("PR", theme::PR),
-        ("QUEUE", theme::QUEUE),
-        ("DONE", theme::DONE),
+    let palette: [(&str, Rgba); 22] = [
+        ("DESK", theme::desk()),
+        ("DESK_DOT", theme::desk_dot()),
+        ("PAPER", theme::paper()),
+        ("PANEL", theme::panel()),
+        ("INK", theme::ink()),
+        ("MUTED", theme::muted()),
+        ("MUTED_TEXT", theme::muted_text()),
+        ("HOVER", theme::hover()),
+        ("NEON", theme::neon()),
+        ("ACCENT_SOFT", theme::accent_soft()),
+        ("ACCENT_DEEP", theme::accent_deep()),
+        ("ACCENT_TEXT", theme::accent_text()),
+        ("BAR", theme::bar()),
+        ("BAR_TEXT", theme::bar_text()),
+        ("BAR_HOVER", theme::bar_hover()),
+        ("ON_BAR", theme::on_bar()),
+        ("SUCCESS", theme::success()),
+        ("WARN", theme::warn()),
+        ("DANGER", theme::danger()),
+        ("PR", theme::pr()),
+        ("QUEUE", theme::queue()),
+        ("DONE", theme::done()),
     ];
     let line = |font: &'static str, size: f32, text: &'static str| {
         div()
@@ -153,7 +159,7 @@ fn column_tokens() -> Div {
                                 .absolute()
                                 .top(px(2.))
                                 .left(px(2.))
-                                .text_color(INK)
+                                .text_color(ink())
                                 .child("femme"),
                         )
                         .child(
@@ -161,7 +167,7 @@ fn column_tokens() -> Div {
                                 .absolute()
                                 .top_0()
                                 .left_0()
-                                .text_color(NEON)
+                                .text_color(neon())
                                 .child("femme"),
                         ),
                 ),
@@ -173,23 +179,23 @@ fn column_tokens() -> Div {
                         .flex()
                         .items_center()
                         .gap(px(14.))
-                        .child(dot_label("working", NEON))
-                        .child(dot_label("blocked", theme::WARN))
-                        .child(dot_label("failed", theme::DANGER))
-                        .child(dot_label("idle", theme::QUEUE))
-                        .child(dot_label("done", theme::DONE)),
+                        .child(dot_label("working", neon()))
+                        .child(dot_label("blocked", theme::warn()))
+                        .child(dot_label("failed", theme::danger()))
+                        .child(dot_label("idle", theme::queue()))
+                        .child(dot_label("done", theme::done())),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(px(6.))
-                        .child(st("work 4", theme::WORK))
-                        .child(st("pause 2", theme::PAUSE))
-                        .child(st("queue 5", theme::QUEUE))
-                        .child(st("pr 2", theme::PR))
-                        .child(st("bad 1", theme::BAD))
-                        .child(st("done 12", theme::DONE)),
+                        .child(st("work 4", theme::work()))
+                        .child(st("pause 2", theme::pause()))
+                        .child(st("queue 5", theme::queue()))
+                        .child(st("pr 2", theme::pr()))
+                        .child(st("bad 1", theme::bad()))
+                        .child(st("done 12", theme::done())),
                 )
                 .child(
                     div()
@@ -224,22 +230,26 @@ fn rows_block() -> Div {
             .flex()
             .flex_col()
             .w(px(250.))
-            .child(row("g-r-1", false).child(dot(NEON)).child("refactor auth"))
+            .child(
+                row("g-r-1", false)
+                    .child(dot(neon()))
+                    .child("refactor auth"),
+            )
             .child(
                 row("g-r-2", true)
-                    .child(dot(theme::WARN))
+                    .child(dot(theme::warn()))
                     .child("term emulator"),
             )
             .child(
                 row("g-r-3", false)
-                    .bg(ACCENT_SOFT)
-                    .child(dot(theme::QUEUE))
+                    .bg(accent_soft())
+                    .child(dot(theme::queue()))
                     .child("holder snapshot"),
             )
             .child(
                 row("g-r-4", false)
-                    .bg(ACCENT_STRONG)
-                    .child(dot(theme::DANGER))
+                    .bg(accent_strong())
+                    .child(dot(theme::danger()))
                     .child("wide chars"),
             ),
     ))
@@ -277,7 +287,7 @@ fn column_controls() -> Div {
                         .flex()
                         .items_center()
                         .child(div().w(px(LABEL_W)).child(meta("title")))
-                        .child(div().flex().bg(INK).child(div().flex().children(
+                        .child(div().flex().bg(bar()).child(div().flex().children(
                             STATES.iter().map(|(state, _)| {
                                 div().w(px(CELL_W)).h(px(32.)).flex().items_center().child(
                                     apply(frame(Kind::OnInk), look(Kind::OnInk, *state))
@@ -368,7 +378,7 @@ fn column_surfaces() -> Div {
                         .w(px(300.))
                         .child(
                             title_bar("accounts")
-                                .text_color(PAPER)
+                                .text_color(on_bar())
                                 .child(title_button("g-dlg-x", Glyph::Back)),
                         )
                         .child(
@@ -390,8 +400,10 @@ fn column_surfaces() -> Div {
                                 menu()
                                     .w(px(190.))
                                     .child(menu_item("g-m-1").child("femme 0.1.0"))
-                                    .child(menu_item("g-m-2").bg(ACCENT).child("check for updates"))
-                                    .child(menu_item("g-m-3").bg(ACCENT_STRONG).child("accounts"))
+                                    .child(
+                                        menu_item("g-m-2").bg(accent()).child("check for updates"),
+                                    )
+                                    .child(menu_item("g-m-3").bg(accent_strong()).child("accounts"))
                                     .child(
                                         menu_item("g-m-4")
                                             .child("reconnect")
