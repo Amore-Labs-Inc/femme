@@ -40,8 +40,8 @@ use gpui_component::tooltip::Tooltip;
 use crate::net::{self, Link, Model, Net};
 use crate::session;
 use crate::theme::{
-    accent_soft, bad, bar, bar_text, done, ink, muted, paper, pause, queue, work, BODY_SIZE,
-    FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
+    accent_soft, bad, bar, bar_text, done, ink, muted, on_accent_strong, paper, pause, queue, work,
+    BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{
     button, dot, icon, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
@@ -626,16 +626,23 @@ impl Sidebar {
         let sid = r.sid;
         let on = self.selected == Some(sid);
         let cursor = focused && self.cursor == Some(sid);
+        // While the row is pressed it is neon and its labels take the colour that reads on neon:
+        // the title inherits the row's, the second line has its own colour and follows the press
+        // through the row's group.
+        let press = SharedString::from(format!("sb-press-{sid}"));
         let second = div()
+            .id(SharedString::from(format!("sb-2-{sid}")))
             .flex()
             .gap(px(6.))
             .font_family(FONT_MONO)
             .text_size(META_SIZE)
             .line_height(px(16.))
             .text_color(if on { ink() } else { muted() })
+            .group_active(press.clone(), |s| s.text_color(on_accent_strong()))
             // The folder is the project's header above.
             .child(div().flex_none().child(r.agent.clone()));
         row(SharedString::from(format!("sb-{sid}")), on)
+            .group(press)
             .flex_none()
             .gap(px(9.))
             .w_full()
@@ -665,7 +672,6 @@ impl Sidebar {
                             .truncate()
                             .text_size(BODY_SIZE)
                             .line_height(px(20.))
-                            .text_color(ink())
                             .child(r.title.clone()),
                     )
                     .child(second),
