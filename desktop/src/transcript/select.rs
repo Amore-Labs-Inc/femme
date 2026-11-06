@@ -35,8 +35,8 @@ use std::rc::Rc;
 use gpui::{
     fill, px, App, Bounds, ClickEvent, ClipboardItem, CursorStyle, DispatchPhase, Element,
     ElementId, EntityId, GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    Point, Rgba, SharedString, StyledText, Subscription, Window,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Rgba, SharedString, StyledText, Subscription, Window,
 };
 use gpui_base::{
     TextSelection, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration,
@@ -254,6 +254,8 @@ pub struct Retained {
     handle: TextSelectionHandle,
     latest: Rc<RefCell<Latest>>,
     press: Rc<Cell<Option<Press>>>,
+    /// Whether the last paint chose the pointing hand: the pointer was on a link.
+    hand: Rc<Cell<bool>>,
     /// Redraws `view` (the transcript, which is drawn from a cache and would not notice) when
     /// the selection of this text changes.
     _watch: Rc<Subscription>,
@@ -283,6 +285,7 @@ impl Retained {
             handle,
             latest,
             press: Rc::new(Cell::new(None)),
+            hand: Rc::new(Cell::new(false)),
             _watch: Rc::new(watch),
         }
     }
@@ -329,8 +332,9 @@ impl Selectable {
         self
     }
 
-    /// The byte ranges of the text that are links, with their addresses: a click on one (press and
-    /// release on the same link, the pointer not dragged) opens its address.
+    /// The byte ranges of the text that are links, with their addresses: the pointer is a hand over
+    /// one, and a click on it (press and release on the same link, the pointer not dragged) opens
+    /// its address.
     pub fn links(mut self, links: Vec<(Range<usize>, String)>) -> Self {
         self.links = links;
         self
@@ -446,7 +450,9 @@ impl Element for Selectable {
         layout.paint_foreground(window, cx).ok();
 
         let over = layout.index_for_position(window.mouse_position()).ok();
-        let cursor = if over.is_some_and(|ix| link_at(&self.links, ix).is_some()) {
+        let hand = over.is_some_and(|ix| link_at(&self.links, ix).is_some());
+        retained.hand.set(hand);
+        let cursor = if hand {
             CursorStyle::PointingHand
         } else {
             CursorStyle::IBeam
@@ -457,6 +463,31 @@ impl Element for Selectable {
             return;
         }
         let links = Rc::new(std::mem::take(&mut self.links));
+        // The cursor is chosen as the text is painted, and the transcript is drawn from a cache: it
+        // is redrawn when the pointer moves onto a link or off one, or the hand would only show
+        // after something else had repainted.
+        let view = window.current_view();
+        window.on_mouse_event({
+            let (links, layout, hitbox, hand) = (
+                links.clone(),
+                layout.clone(),
+                hitbox.clone(),
+                retained.hand.clone(),
+            );
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                    let on_link = layout
+                        .index_for_position(event.position)
+                        .ok()
+                        .and_then(|ix| link_at(&links, ix))
+                        .is_some();
+                    if on_link != hand.get() {
+                        hand.set(on_link);
+                        cx.notify(view);
+                    }
+                }
+            }
+        });
         window.on_mouse_event({
             let (links, layout, hitbox, press) = (
                 links.clone(),
