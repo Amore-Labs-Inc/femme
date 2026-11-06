@@ -7,11 +7,11 @@ use gpui::{
     Window,
 };
 
-use super::clip;
 use super::editor::{Button, Command, Keyed, Mods};
 use super::export::DEFAULT_SCALE;
 use super::geom::Point;
 use super::{Board, BoardEvent};
+use crate::ui::clip;
 
 /// What one "line" of a mouse wheel is worth in pixels (a notch is three lines; a trackpad reports
 /// pixels itself): a notch pans 90 px and, with ctrl held, zooms by about a fifth.
