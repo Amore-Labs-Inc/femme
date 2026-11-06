@@ -23,7 +23,7 @@ use femme_proto::Sid;
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
     ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, KeystrokeEvent, ParentElement as _,
+    InteractiveElement as _, IntoElement, Keystroke, KeystrokeEvent, ParentElement as _,
     PathPromptOptions, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement as _,
     Styled as _, Subscription, Task, Window,
 };
@@ -230,19 +230,25 @@ impl Composer {
     /// Shift+Tab with the keyboard in the input steps a Claude session's permission mode, menu open
     /// or not. It is caught before key bindings resolve: the input binds it to outdent and the root
     /// to the previous focus stop, and both would run before a key-down listener.
+    /// The `/` menu's keys go the same way, for the same reason (the input binds Tab, Up, Down,
+    /// Enter and Esc).
     fn intercept(&mut self, ev: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let k = &ev.keystroke;
-        let m = &k.modifiers;
-        if k.key != "tab" || !m.shift || m.control || m.alt || m.platform || m.function {
-            return;
-        }
         let here = self
             .input
             .as_ref()
             .is_some_and(|i| i.read(cx).focus_handle(cx).contains_focused(window, cx));
-        if here && self.cycle_permission(cx) {
-            cx.stop_propagation();
+        if !here {
+            return;
         }
+        let k = &ev.keystroke;
+        let m = &k.modifiers;
+        if k.key == "tab" && m.shift && !(m.control || m.alt || m.platform || m.function) {
+            if self.cycle_permission(cx) {
+                cx.stop_propagation();
+            }
+            return;
+        }
+        self.menu_key(k, window, cx);
     }
 
     fn ensure_input(
@@ -409,10 +415,10 @@ impl Composer {
         cx.notify();
     }
 
-    /// The `/` menu's keys, ahead of the input: Up/Down pick, Tab and Enter complete (Enter on a
-    /// whole command name sends it as usual), Esc closes. With the menu closed every key goes on.
-    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let k = &ev.keystroke;
+    /// The `/` menu's keys, ahead of the input's bindings: Up/Down pick, Tab and Enter complete
+    /// (Enter on a whole command name sends it as usual), Esc closes. With the menu closed every
+    /// key goes on.
+    fn menu_key(&mut self, k: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.menu(cx);
         if rows.is_empty() {
             return;
@@ -965,8 +971,6 @@ impl Render for Composer {
             .id("composer")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_escape))
-            // Before the input: while the `/` menu shows, its keys are the menu's.
-            .capture_key_down(cx.listener(Self::on_key))
             .w_full()
             .flex_none()
             .child(card)
