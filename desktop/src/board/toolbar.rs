@@ -11,7 +11,7 @@ use super::palette;
 use super::scene::{Fill, StrokeColor, Tone, Width};
 use super::skin::{cell, clear, group, run, tool_icon, word_cell, word_off, CELL};
 use super::Board;
-use crate::theme::{ACCENT_SOFT, BTN_SIZE, FONT_MONO, FONT_PIXEL, INK, PAPER, RULE};
+use crate::theme::{accent_soft, ink, paper, BTN_SIZE, FONT_MONO, FONT_PIXEL, RULE};
 use crate::ui::{ruled, ruled_sides};
 
 impl Board {
@@ -28,7 +28,7 @@ impl Board {
                 .gap_y(px(4.))
                 .px(px(8.))
                 .py(px(5.))
-                .bg(PAPER),
+                .bg(paper()),
             px(0.),
             px(0.),
             RULE,
@@ -72,7 +72,7 @@ impl Board {
     fn colors(&self, cx: &mut Context<Self>) -> Div {
         let current = self.editor.style().color;
         run().children(StrokeColor::ALL.into_iter().enumerate().map(|(i, color)| {
-            let ring = if color == current { INK } else { clear() };
+            let ring = if color == current { ink() } else { clear() };
             ruled(
                 div()
                     .id(("board-color", i))
@@ -82,7 +82,7 @@ impl Board {
                     .justify_center()
                     .size(px(26.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(ACCENT_SOFT)),
+                    .hover(|s| s.bg(accent_soft())),
             )
             .border_color(ring)
             .child(ruled(
@@ -110,7 +110,7 @@ impl Board {
                             div()
                                 .w(px(16.))
                                 .h(px(height))
-                                .bg(if on { PAPER } else { INK }),
+                                .bg(if on { paper() } else { ink() }),
                         )
                         .on_click(cx.listener(move |t, _, _, cx| {
                             t.editor.set_width(width);
@@ -125,7 +125,7 @@ impl Board {
         let current = self.editor.style().fill;
         group().children(
             [
-                (Fill::None, PAPER),
+                (Fill::None, paper()),
                 (Fill::Soft, palette::token(Tone::Soft)),
                 (Fill::Panel, palette::token(Tone::Panel)),
             ]

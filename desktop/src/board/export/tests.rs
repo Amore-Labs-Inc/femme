@@ -63,11 +63,11 @@ fn filled(fill: Fill) -> Style {
 }
 
 fn token(tone: Tone) -> Rgba8 {
-    palette::rgba8(palette::token(tone))
+    palette::rgba8(palette::token_in(palette::EXPORT, tone))
 }
 
 fn paper() -> Rgba8 {
-    palette::rgba8(palette::paper())
+    palette::rgba8(palette::EXPORT.paper)
 }
 
 /// A scene of one shape.

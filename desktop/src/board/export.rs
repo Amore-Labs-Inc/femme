@@ -115,7 +115,7 @@ impl Scene {
         let Some(mut pixmap) = Pixmap::new(frame.width, frame.height) else {
             return Vec::new();
         };
-        let [r, g, b, a] = palette::rgba8(palette::paper());
+        let [r, g, b, a] = palette::rgba8(palette::EXPORT.paper);
         pixmap.fill(Color::from_rgba8(r, g, b, a));
         for shape in self.shapes() {
             for prim in geometry::prims(shape, self.sketchy, frame.scale) {
@@ -131,9 +131,9 @@ impl Scene {
     }
 }
 
-/// The paint of a tone: the palette's token, opaque, anti-aliased.
+/// The paint of a tone: the export palette's token, opaque, anti-aliased.
 fn paint(tone: Tone) -> Paint<'static> {
-    let [r, g, b, a] = palette::rgba8(palette::token(tone));
+    let [r, g, b, a] = palette::rgba8(palette::token_in(palette::EXPORT, tone));
     let mut paint = Paint::default();
     paint.set_color_rgba8(r, g, b, a);
     paint

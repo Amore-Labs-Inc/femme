@@ -14,8 +14,8 @@ use super::geom::Point;
 use super::paint::paint_ops;
 use super::Board;
 use crate::theme::{
-    self, BODY_SIZE, DANGER, DESK, FONT_MONO, FONT_PIXEL, FONT_UI, INK, MUTED, PANEL, PAPER, RULE,
-    TB_SIZE,
+    self, bar, bar_text, danger, ink, muted, panel, paper, BODY_SIZE, FONT_MONO, FONT_PIXEL,
+    FONT_UI, RULE, TB_SIZE,
 };
 use crate::ui::{button, button_disabled, ruled, ruled_sides, title_button, Glyph};
 
@@ -41,7 +41,7 @@ impl Board {
             .font_family(FONT_UI)
             .text_size(BODY_SIZE)
             .line_height(relative(1.4))
-            .text_color(INK)
+            .text_color(ink())
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             .on_mouse_down(
@@ -54,7 +54,7 @@ impl Board {
 
     /// The card: paper with the ink rule and the large hard shadow.
     fn card(&self, cx: &mut Context<Self>) -> Div {
-        ruled(div().flex().flex_col().bg(PAPER))
+        ruled(div().flex().flex_col().bg(paper()))
             .shadow(theme::hard_shadow())
             .w(relative(CARD_W))
             .max_w(px(CARD_MAX_W))
@@ -76,8 +76,8 @@ impl Board {
             .gap(px(8.))
             .px(px(8.))
             .py(px(3.))
-            .bg(INK)
-            .text_color(DESK)
+            .bg(bar())
+            .text_color(bar_text())
             .font_family(FONT_PIXEL)
             .text_size(TB_SIZE)
             .line_height(relative(1.))
@@ -170,7 +170,7 @@ impl Board {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .bg(PAPER)
+            .bg(paper())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
             .on_scroll(cx.listener(Self::scroll))
@@ -209,9 +209,9 @@ impl Board {
     fn status_row(&self) -> Div {
         let left = match &self.notice {
             Some(n) => div()
-                .text_color(if n.bad { DANGER } else { INK })
+                .text_color(if n.bad { danger() } else { ink() })
                 .child(n.text.clone()),
-            None => div().text_color(MUTED).child(self.hint()),
+            None => div().text_color(muted()).child(self.hint()),
         };
         let shapes = self.editor.scene().len();
         ruled_sides(
@@ -222,7 +222,7 @@ impl Board {
                 .gap(px(12.))
                 .h(px(24.))
                 .px(px(8.))
-                .bg(PANEL)
+                .bg(panel())
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .whitespace_nowrap()
@@ -233,7 +233,7 @@ impl Board {
             px(0.),
         )
         .child(div().flex_1().min_w_0().truncate().child(left))
-        .child(div().flex_none().text_color(MUTED).child(format!(
+        .child(div().flex_none().text_color(muted()).child(format!(
             "{shapes} {}   {}%",
             if shapes == 1 { "shape" } else { "shapes" },
             self.editor.view().percent()
