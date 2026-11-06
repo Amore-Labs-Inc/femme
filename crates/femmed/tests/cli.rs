@@ -48,13 +48,16 @@ fn sandbox() -> TempDir {
         .expect("create a temporary directory")
 }
 
-/// `femmed <args>` with nothing in its environment but `HOME=<home>` and the test's `PATH`, and
-/// /dev/null on stdin and stdout; the test adds what it is about.
+/// `femmed <args>` with nothing in its environment but `HOME=<home>`, `XDG_RUNTIME_DIR=<home>` and
+/// the test's `PATH`, and /dev/null on stdin and stdout; the test adds what it is about. The runtime
+/// dir is never left to default: unset, femmed falls back to `/run/user/<uid>`, where the live
+/// daemon's holders are, and a `serve` there stops every one of them as "of no open session".
 fn femmed(home: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_femmed"));
     cmd.args(args)
         .env_clear()
         .env("HOME", home)
+        .env("XDG_RUNTIME_DIR", home)
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     if let Some(path) = std::env::var_os("PATH") {
