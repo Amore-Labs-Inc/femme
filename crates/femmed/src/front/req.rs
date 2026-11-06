@@ -175,6 +175,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
         Req::ServerInfo => Ok(server_info(d).await),
+        Req::CyclePermission { sid } => done(d.cycle_permission(sid).await),
         Req::Commands => Ok(Resp::Commands {
             names: crate::headless::commands(d),
         }),
@@ -309,6 +310,11 @@ async fn create(
     let label = label
         .map(|l| l.trim().chars().take(LABEL_MAX).collect::<String>())
         .filter(|l| !l.is_empty());
+    // a desktop chat starts on Opus 5.5 (at medium effort, `spawn_process`)
+    let model = match model {
+        None if agent == Agent::Claude => Some("claude-opus-5-5".to_owned()),
+        m => m,
+    };
     let cwd = match cwd.trim() {
         "" => d.cfg.home.display().to_string(),
         c => c.to_string(),

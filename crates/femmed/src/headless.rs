@@ -106,6 +106,11 @@ enum Cmd {
         model: String,
         reply: Reply,
     },
+    /// Claude's permission mode (`plan`, `auto`, ...); a herdr pane steps to its next one.
+    SetPermission {
+        mode: String,
+        reply: Reply,
+    },
     Takeover {
         to: Mode,
         reply: Reply,
@@ -159,6 +164,14 @@ impl Head {
     pub(crate) async fn set_model(&self, model: &str) -> Result<(), CoreError> {
         self.call(|reply| Cmd::SetModel {
             model: model.into(),
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn set_permission(&self, mode: &str) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::SetPermission {
+            mode: mode.into(),
             reply,
         })
         .await
@@ -262,6 +275,7 @@ pub(crate) async fn reattach(d: &Daemon, s: &Session, holder: Holder) -> Result<
             resume: s.agent_sid.clone(),
             extra_env: d.sessions.child_env(&d.cfg, &path),
             hooks_path: None,
+            effort: None,
         };
         let attach = Attach {
             resume_offset: from,
@@ -332,6 +346,8 @@ struct Actor {
     takeover_reply: Option<Reply>,
     /// The agent died twice or would not start: nothing runs until the session is closed.
     failed: bool,
+    /// The agent was stopped to start again on another provider's model.
+    switching: bool,
     stop: bool,
 }
 
@@ -382,6 +398,7 @@ impl Actor {
             stderr: String::new(),
             takeover_reply: None,
             failed: false,
+            switching: false,
             stop: false,
         }
     }
@@ -473,7 +490,11 @@ impl Actor {
                 let _ = reply.send(r);
             }
             Cmd::SetModel { model, reply } => {
-                let r = self.set_model(&model).await;
+                let r = self.set_model(d, &model).await;
+                let _ = reply.send(r);
+            }
+            Cmd::SetPermission { mode, reply } => {
+                let r = self.set_permission(&mode).await;
                 let _ = reply.send(r);
             }
             Cmd::Takeover { to, reply } => self.takeover(d, to, reply).await,
@@ -507,6 +528,12 @@ impl Actor {
     async fn prompt(&mut self, d: &Daemon, text: &str) -> Result<(), CoreError> {
         self.ready()?;
         let row = d.session(self.sid)?;
+        // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
+        if let Some(m) = model_switch(text) {
+            if is_gateway(row.model.as_deref()) != is_gateway(Some(&m)) {
+                return self.set_model(d, &m).await;
+            }
+        }
         let takes = matches!(
             row.status,
             SessionStatus::Starting
@@ -557,10 +584,30 @@ impl Actor {
         Ok(())
     }
 
-    async fn set_model(&mut self, model: &str) -> Result<(), CoreError> {
+    async fn set_model(&mut self, d: &Daemon, model: &str) -> Result<(), CoreError> {
         self.ready()?;
+        let now = d.session(self.sid)?.model;
+        if is_gateway(now.as_deref()) != is_gateway(Some(model)) {
+            // Another provider is another process: this one ends between turns, and the next
+            // continues the conversation on the new model (`agent_exited`).
+            if self.driver.status() != AgentStatus::Idle {
+                return Err(CoreError::Busy);
+            }
+            self.update(d, None, |s| s.model = Some(model.to_owned()));
+            self.switching = true;
+            return self.holder.agent_close_stdin().await.map_err(holder_err);
+        }
         self.driver
             .set_model(model, &mut self.out)
+            .map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
+    async fn set_permission(&mut self, mode: &str) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver
+            .set_permission_mode(mode, &mut self.out)
             .map_err(driver_err)?;
         self.flush().await;
         Ok(())
@@ -840,6 +887,7 @@ impl Actor {
             ready: live_line && std::mem::take(&mut self.starting),
             driver: self.driver.status(),
             asked: f.asked.filter(|_| live_line),
+            permission: f.permission,
         };
         let first = row_first(row.state);
         if first {
@@ -852,10 +900,18 @@ impl Actor {
     }
 
     fn row(&self, d: &Daemon, fx: &RowFx) {
-        if fx.agent_sid.is_none() && fx.model.is_none() && fx.state.is_none() && !fx.ready {
+        if fx.agent_sid.is_none()
+            && fx.model.is_none()
+            && fx.state.is_none()
+            && fx.permission.is_none()
+            && !fx.ready
+        {
             return;
         }
         self.update(d, fx.asked.as_deref(), |s| {
+            if let Some(p) = &fx.permission {
+                s.permission = Some(p.clone());
+            }
             if let Some(a) = &fx.agent_sid {
                 s.agent_sid = Some(a.clone());
             }
@@ -970,6 +1026,9 @@ impl Actor {
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        // ponytail: the desktop's chats think at medium; /effort changes it until the next start
+        let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
+            .then(|| "medium".to_owned());
         let launch = Launch {
             cwd: s.cwd,
             model: s.model,
@@ -977,6 +1036,7 @@ impl Actor {
             extra_env,
             // the stream is the status here; the hooks are for the TUI
             hooks_path: None,
+            effort,
         };
         self.driver = driver_for(self.agent);
         let mut sp = self.driver.spawn(&launch);
@@ -1007,6 +1067,7 @@ impl Actor {
             resume: s.agent_sid,
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
+            effort: None,
         };
         let mut sp = self
             .driver
@@ -1053,6 +1114,17 @@ impl Actor {
         let acts = self.machine.step(Ev::AgentExited);
         if !acts.is_empty() {
             self.run_acts(d, acts).await;
+            return;
+        }
+        if std::mem::take(&mut self.switching) {
+            let model = d.session(self.sid).ok().and_then(|s| s.model);
+            self.event(
+                d,
+                &format!("Model: {}", model.as_deref().unwrap_or("default")),
+            );
+            self.restart(d).await;
+            // a switch is not a crash: the next exit may restart it again
+            self.restarted_at = None;
             return;
         }
         let tail = tail_of(&std::mem::take(&mut self.stderr), STDERR_MAX);
@@ -1250,6 +1322,41 @@ fn cut(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// A model of OpenGateway's (`deepseek/...`): another provider than Anthropic's.
+pub(crate) fn is_gateway(model: Option<&str>) -> bool {
+    model.is_some_and(|m| m.contains('/'))
+}
+
+/// DeepSeek through OpenGateway, the `+ deepseek` model.
+pub(crate) const DEEPSEEK: &str = "deepseek/deepseek-v4.1-flash-ultrafast";
+
+/// The model a `/model <name>` prompt asks for, when the daemon knows it: `deepseek`, an
+/// OpenGateway id, Claude's aliases and ids.
+pub(crate) fn model_switch(text: &str) -> Option<String> {
+    let name = text.trim().strip_prefix("/model ")?.trim();
+    Some(match name {
+        "deepseek" => DEEPSEEK.to_owned(),
+        "opus" => "claude-opus-5-5".to_owned(),
+        "sonnet" => "claude-sonnet-5-5".to_owned(),
+        "haiku" => "claude-haiku-5-5".to_owned(),
+        "fable" => "claude-fable-5-1".to_owned(),
+        m if m.contains('/') || m.starts_with("claude-") => m.to_owned(),
+        _ => return None,
+    })
+}
+
+/// The mode after `now` in Claude's Shift+Tab order.
+fn next_permission(now: Option<&str>) -> &'static str {
+    match now {
+        Some("acceptEdits") => "plan",
+        Some("plan") => "auto",
+        Some("auto") => "bypassPermissions",
+        Some("default" | "manual") => "acceptEdits",
+        // bypass, dontAsk, unknown
+        _ => "default",
+    }
+}
+
 /// `<state>/commands.json`: the `/` commands of the last `claude` that started, for the composer's
 /// menu ([`commands`]).
 // ponytail: one list for the box; project commands differ per folder, the last start wins.
@@ -1350,6 +1457,7 @@ struct Folded {
     usage: Option<UsageSnapshot>,
     /// The `/` commands the agent said it takes.
     commands: Option<Vec<String>>,
+    permission: Option<String>,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
     turn_started: bool,
@@ -1365,6 +1473,7 @@ struct RowFx {
     ready: bool,
     driver: AgentStatus,
     asked: Option<String>,
+    permission: Option<String>,
 }
 
 fn new_item(
@@ -1523,6 +1632,7 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
             }
             AgentEvent::ModelChanged(m) => f.model = Some(m),
             AgentEvent::Commands(c) => f.commands = Some(c),
+            AgentEvent::PermissionMode(m) => f.permission = Some(m),
             AgentEvent::Status(AgentStatus::Working) => {
                 st.done = false;
                 f.state = Some((SessionStatus::Working, Attention::None));
@@ -1867,6 +1977,21 @@ impl Daemon {
             .await
     }
 
+    /// Claude's next permission mode, the order Shift+Tab steps through them.
+    pub(crate) async fn cycle_permission(&self, sid: Sid) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.agent != Agent::Claude || s.mode != Mode::Headless {
+            return Err(CoreError::Bad(
+                "only a Claude chat has permission modes".into(),
+            ));
+        }
+        self.sessions
+            .head(sid)
+            .ok_or_else(gone)?
+            .set_permission(next_permission(s.permission.as_deref()))
+            .await
+    }
+
     pub(crate) async fn switch_mode(&self, sid: Sid, to: Mode) -> Result<(), CoreError> {
         let s = self.session(sid)?;
         if s.agent == Agent::Shell {
@@ -1959,6 +2084,7 @@ mod tests {
             attention: Attention::None,
             created: 0,
             closed: None,
+            permission: None,
         }
     }
 
@@ -2239,6 +2365,41 @@ mod tests {
         assert_eq!(preview_of(ItemKind::ToolCall, &b), "Bash ls -la");
         let r = json!({"call_id": "c", "output": "one\ntwo", "is_error": false});
         assert_eq!(preview_of(ItemKind::ToolResult, &r), "one");
+    }
+
+    #[test]
+    fn model_switches_and_permission_steps() {
+        assert_eq!(model_switch("/model deepseek").as_deref(), Some(DEEPSEEK));
+        assert_eq!(
+            model_switch("/model opus").as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            model_switch("/model claude-haiku-5-5").as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        assert_eq!(model_switch("/model whatever"), None);
+        assert_eq!(model_switch("use the opus model"), None);
+        assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
+        let mut at = None;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let next = next_permission(at);
+            seen.push(next);
+            at = Some(next);
+        }
+        assert_eq!(
+            seen,
+            [
+                "default",
+                "acceptEdits",
+                "plan",
+                "auto",
+                "bypassPermissions"
+            ]
+        );
+        assert_eq!(next_permission(Some("bypassPermissions")), "default");
+        assert_eq!(next_permission(Some("manual")), "acceptEdits");
     }
 
     #[test]

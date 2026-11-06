@@ -278,6 +278,7 @@ fn insert(d: &Daemon, p: &HPane) -> Result<Session, CoreError> {
             attention,
             created: now,
             closed: None,
+            permission: None,
         })?;
         tx.upsert_pane(&Pane {
             id: PaneId {
@@ -309,6 +310,7 @@ struct Tail {
     driver: Box<dyn Driver>,
     fold: FoldState,
     model: Option<String>,
+    permission: Option<String>,
     pending: Vec<Put>,
     /// The subagent transcripts beside it, by path.
     // ponytail: their offsets live only here, so a daemon restart reads them again from the start;
@@ -342,6 +344,7 @@ impl Tail {
             driver: driver_for(Agent::Claude),
             fold: FoldState::default(),
             model: None,
+            permission: None,
             pending: Vec::new(),
             subs: HashMap::new(),
         }
@@ -409,6 +412,9 @@ impl Tail {
             if f.model.is_some() {
                 self.model = f.model;
             }
+            if f.permission.is_some() {
+                self.permission = f.permission;
+            }
         }
         for (path, parent, at, data) in subs {
             self.tail_sub(path, parent, at, data, &mut puts, &mut out);
@@ -433,6 +439,9 @@ impl Tail {
         }
         if let Some(m) = self.model.take() {
             let _ = d.update(sid, |s| s.model = Some(m));
+        }
+        if let Some(p) = self.permission.take() {
+            let _ = d.update(sid, |s| s.permission = Some(p));
         }
     }
 }
@@ -604,6 +613,14 @@ fn disk_value(mut v: Value) -> Option<Value> {
             });
         }
         "system" => {}
+        // the TUI notes every mode change (Shift+Tab): the stream says it as a status
+        "permission-mode" => {
+            v = serde_json::json!({
+                "type": "system",
+                "subtype": "status",
+                "permissionMode": v["permissionMode"],
+            });
+        }
         _ => return None,
     }
     Some(v)
@@ -620,6 +637,12 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::Prompt { text, reply } => {
+                    if super::model_switch(&text).is_some_and(|m| super::is_gateway(Some(&m))) {
+                        let why =
+                            "a herdr pane's Claude cannot move to DeepSeek: start a FEMME chat";
+                        let _ = reply.send(Err(CoreError::Bad(why.into())));
+                        continue;
+                    }
                     let r = herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &text]).await;
                     if let Err(e) = &r {
                         tracing::debug!(%sid, %e, "prompt not typed into the herdr pane");
@@ -628,6 +651,12 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
                 }
                 Cmd::Interrupt { reply } => {
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
+                    let _ = reply.send(r.map(drop));
+                }
+                // the TUI steps through its modes on Shift+Tab; the file says where it landed
+                Cmd::SetPermission { reply, .. } => {
+                    let r =
+                        herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "shift+tab"]).await;
                     let _ = reply.send(r.map(drop));
                 }
                 Cmd::Answer { reply, .. }
@@ -743,6 +772,12 @@ mod tests {
         .unwrap();
         assert_eq!(note["isReplay"], Value::Null);
         assert_eq!(note["message"]["content"], "Build done");
+        let mode =
+            line(serde_json::json!({"type":"permission-mode","permissionMode":"plan"})).unwrap();
+        assert_eq!(
+            (&mode["subtype"], &mode["permissionMode"]),
+            (&Value::from("status"), &Value::from("plan"))
+        );
         for skipped in [
             serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"x"}}),
             serde_json::json!({"type":"user","isMeta":true,"message":{"content":"x"}}),

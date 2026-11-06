@@ -272,6 +272,7 @@ mod tests {
                         attention: Attention::None,
                         created: 0,
                         closed: None,
+                        permission: None,
                     })?
                     .id)
             })
