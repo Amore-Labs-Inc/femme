@@ -175,6 +175,8 @@ pub struct ClaudeDriver {
     sid: Option<String>,
     announced: Option<String>,
     model: Option<String>,
+    /// The permission mode the CLI last reported.
+    permission: Option<String>,
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
@@ -219,6 +221,7 @@ impl ClaudeDriver {
             sid: None,
             announced: None,
             model: None,
+            permission: None,
             awaiting_init: false,
             exited: false,
             seq: 0,
@@ -402,6 +405,7 @@ impl ClaudeDriver {
                 if v["status"].as_str().is_some_and(|s| !s.is_empty()) {
                     self.activity(offset, ev);
                 }
+                self.permission_mode(v, ev);
             }
             "compact_boundary" => ev.push(event_item(item_id(v, offset), "Conversation compacted")),
             // nothing is running and nothing is queued: a command the CLI reported and never ended
@@ -448,6 +452,17 @@ impl ClaudeDriver {
                 .map(str::to_owned)
                 .collect();
             ev.push(AgentEvent::Commands(names));
+        }
+        self.permission_mode(v, ev);
+    }
+
+    /// A line that carries `permissionMode` (init, status) says the mode when it changed.
+    fn permission_mode(&mut self, v: &Value, ev: &mut Vec<AgentEvent>) {
+        if let Some(m) = v["permissionMode"].as_str() {
+            if self.permission.as_deref() != Some(m) {
+                self.permission = Some(m.to_owned());
+                ev.push(AgentEvent::PermissionMode(m.to_owned()));
+            }
         }
     }
 
@@ -1210,6 +1225,9 @@ impl Driver for ClaudeDriver {
         if let Some(m) = &l.model {
             cmd.push(format!("--model={m}"));
         }
+        if let Some(e) = &l.effort {
+            cmd.push(format!("--effort={e}"));
+        }
         match &l.resume {
             Some(id) => cmd.push(format!("--resume={id}")),
             None => cmd.push(format!("--session-id={}", self.planned)),
@@ -1243,6 +1261,9 @@ impl Driver for ClaudeDriver {
         }
         if let Some(m) = &l.model {
             cmd.push(format!("--model={m}"));
+        }
+        if let Some(e) = &l.effort {
+            cmd.push(format!("--effort={e}"));
         }
         if let Some(p) = &l.hooks_path {
             cmd.push(format!("--settings={p}"));
@@ -1405,6 +1426,18 @@ impl Driver for ClaudeDriver {
             return Err(Error::State("claude has exited"));
         }
         self.control("model", json!({"subtype":"set_model","model":model}), out);
+        Ok(())
+    }
+
+    fn set_permission_mode(&mut self, mode: &str, out: &mut Out) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+        self.control(
+            "mode",
+            json!({"subtype":"set_permission_mode","mode":mode}),
+            out,
+        );
         Ok(())
     }
 
@@ -1879,5 +1912,17 @@ mod tests {
             "compact".into(),
             "review".into()
         ])));
+        let status =
+            json!({"type":"system","subtype":"status","status":null,"permissionMode":"plan"});
+        let ev = d.on_line(1, status.to_string().as_bytes(), &mut Out::default());
+        assert_eq!(ev, [AgentEvent::PermissionMode("plan".into())]);
+        // the same mode again says nothing
+        assert!(
+            d.on_line(2, status.to_string().as_bytes(), &mut Out::default())
+                .is_empty()
+        );
+        let mut out = Out::default();
+        d.set_permission_mode("auto", &mut out).unwrap();
+        assert!(String::from_utf8_lossy(&out.stdin).contains(r#""subtype":"set_permission_mode""#));
     }
 }

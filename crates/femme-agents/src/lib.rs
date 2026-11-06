@@ -113,6 +113,8 @@ pub struct Launch {
     /// Settings/hook file the daemon wrote (see [`hooks`]); drivers pass it to the agent when it
     /// has a place for it (Claude `--settings`).
     pub hooks_path: Option<String>,
+    /// Reasoning effort (Claude `--effort`); `None` leaves the agent's default.
+    pub effort: Option<String>,
 }
 
 /// What the daemon hands a fresh driver when it re-attaches to an agent process that outlived the
@@ -340,6 +342,8 @@ pub enum AgentEvent {
     ModelChanged(String),
     /// The `/` commands the agent takes (names without the `/`), as it started.
     Commands(Vec<String>),
+    /// The permission mode the agent is in now (Claude's `bypassPermissions`, `plan`, ...).
+    PermissionMode(String),
     /// Coarse state transition; only emitted when the state actually changes.
     Status(AgentStatus),
     /// The process exited (from [`Driver::on_exit`]).
@@ -429,6 +433,11 @@ pub trait Driver: Send {
 
     /// Switch model for the following turns.
     fn set_model(&mut self, model: &str, out: &mut Out) -> Result<(), Error>;
+
+    /// Switch the permission mode (Claude's `plan`, `auto`, ...).
+    fn set_permission_mode(&mut self, _mode: &str, _out: &mut Out) -> Result<(), Error> {
+        Err(Error::Unsupported("permission modes"))
+    }
 
     /// Smallest spool offset still needed to rebuild in-progress state after a daemon restart:
     /// the first line of the unfinished turn (or oldest unfinished item/question/queued command),
