@@ -53,7 +53,7 @@ names, and refuses the `--daemon` and `--ssh` flags.
 +-----------+------------------------------------------+-------------+
 ```
 
-- **Top bar**: the `femme` menu (version, check for updates, accounts, reconnect, quit) and the link's
+- **Top bar**: the `femme` menu (version, check for updates, accounts, dark mode, reconnect, quit) and the link's
   status, nothing else.
 - **Sessions**: the left column. `ctrl-b` or the `‹` in its title bar collapses it to a 28 px strip of status
   dots (a click on a dot opens that session); it draws its own box and the frame follows its width.
@@ -228,7 +228,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/app/right.rs` | The right-hand strip and its panel (terminal and files tabs): opening, hover, resize, closing. |
 | `build.rs` | Stamps the binary with the commit it was built from (`FEMME_COMMIT`, else `git rev-parse`, else `dev`). |
 | `src/session.rs` | Which session the centre shows when the app opens (`pick`, pure) and `open_at_start`. |
-| `src/menu.rs` | The `femme` wordmark button and its dropdown (version, check for updates, accounts, reconnect, quit); emits `MenuEvent`. |
+| `src/menu.rs` | The `femme` wordmark button and its dropdown (version, check for updates, accounts, dark mode, reconnect, quit); emits `MenuEvent`. |
 | `src/sidebar.rs` | The sessions column: live sessions newest first, status dots, collapses to a strip of dots; emits `OpenSession` and `CollapsedChanged`. |
 | `src/accounts.rs`, `src/accounts/` | The accounts layer: the board's "Me" page as a card (accounts with 5 h / 7 d usage, rotation caps, API keys), through `Req::BoardApi` and `Req::Caps`. |
 | `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
@@ -236,7 +236,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/board.rs`, `src/board/` | The drawing board: scene, editor state machine and PNG export (pure, tested on their own), the gpui layer over them; emits `BoardEvent::{Send, Closed}`. |
 | `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
-| `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
+| `src/theme.rs` | Colour tokens from `board/src/index.html` in a light and a dark palette (read through live accessors; the choice is kept in `~/.local/state/femme/theme`), embedded fonts, mapping onto gpui-component's `Theme`. |
 | `src/ui.rs`, `src/ui/gallery.rs` | The skin's building blocks (window, title bar, card, buttons, icons, chips, dots, menus, the dot-grid desk); the gallery lays every helper out in every state. |
 | `src/terminal/runs.rs` | Pure: `RowPatch` to background runs and same-style text runs, palette resolve. |
 | `src/terminal/element.rs` | `TerminalElement`: batches every row, paints all backgrounds then all text (shaped every frame), keeps the bottom rows and the cursor when the pane is shorter than the grid. |
