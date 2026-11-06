@@ -17,13 +17,14 @@
 //! - The sidebar is [`Focusable`]: with the keyboard on it, Up/Down/Home/End move a cursor and Enter
 //!   opens the session under it.
 //!
-//! `+ shell` and `+ claude` (the empty state and the foot of the list) create a shell session, or a
-//! headless Claude session, in the daemon's default directory and make it the current one on [`Net`].
+//! `+ claude` (the empty state and the foot of the list) creates a headless Claude session in the
+//! daemon's default directory and makes it the current one on [`Net`]; a folder header's `+` does
+//! the same in that folder. Shells start from the terminal panel's own `+`.
 
 use std::collections::HashSet;
 
 use femme_proto::rpc::{Req, Resp};
-use femme_proto::state::{Agent, Attention, Mode, Session, SessionStatus};
+use femme_proto::state::{Agent, Attention, Session, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -295,7 +296,7 @@ pub struct Sidebar {
     collapsed: bool,
     /// The projects folded shut, by folder.
     folded: HashSet<String>,
-    /// A `+ shell` or `+ claude` request is out: a second click would queue a second session.
+    /// A `+ claude` request is out: a second click would queue a second session.
     creating: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
@@ -379,7 +380,7 @@ impl Sidebar {
         }
     }
 
-    /// Whether `+ shell` and `+ claude` are offered: there is a daemon and it is connected.
+    /// Whether `+ claude` is offered: there is a daemon and it is connected.
     fn can_create(&self) -> bool {
         self.net.is_some() && self.shown.can_create()
     }
@@ -389,7 +390,7 @@ impl Sidebar {
         let Some(net) = &self.net else { return };
         let shown = Shown::of(&net.read(cx).model);
         if shown != self.shown {
-            // A session made current before its row arrived (a `+ shell` answer beats the row) is
+            // A session made current before its row arrived (a `+ claude` answer beats the row) is
             // scrolled to once the row is here.
             let was_row = self
                 .selected
@@ -494,25 +495,16 @@ impl Sidebar {
         cx.stop_propagation();
     }
 
-    /// `+ shell` / `+ claude`: a session of `agent` in the daemon's default directory, which becomes
-    /// the current one.
-    fn create(
-        &mut self,
-        cwd: &str,
-        agent: Agent,
-        mode: Mode,
-        model: Option<&str>,
-        cx: &mut Context<Self>,
-    ) {
+    /// `+ claude` (`cwd` empty: the daemon's default directory) or a folder header's `+`: a headless
+    /// Claude session there, which becomes the current one.
+    fn create(&mut self, cwd: &str, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| {
-            n.run(session::create_in(cwd, agent, mode, model), cx)
-        });
+        let sent = net.update(cx, |n, cx| n.run(session::new_claude(cwd), cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -579,49 +571,15 @@ impl Sidebar {
         }
     }
 
-    /// The `+ shell`, `+ claude` and `+ deepseek` buttons, side by side.
-    fn new_buttons(&self, cx: &Context<Self>) -> Div {
-        let new = |id: &'static str,
-                   label: &'static str,
-                   agent: Agent,
-                   mode: Mode,
-                   model: Option<&'static str>| {
-            let b = button(id, label).on_click(
-                cx.listener(move |this, _, _, cx| this.create("", agent, mode, model, cx)),
-            );
-            if self.creating {
-                b.opacity(0.5)
-            } else {
-                b
-            }
-        };
-        // Three buttons outgrow the 240 px sidebar's foot: they wrap rather than clip.
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(px(6.))
-            .child(new("sb-new", "+ shell", Agent::Shell, Mode::Tui, None))
-            .child(new(
-                "sb-new-claude",
-                "+ claude",
-                Agent::Claude,
-                Mode::Headless,
-                None,
-            ))
-            .child(new(
-                "sb-new-deepseek",
-                "+ deepseek",
-                Agent::Claude,
-                Mode::Headless,
-                Some(session::DEEPSEEK),
-            ))
-            .child(
-                button("sb-new-project", "+ project")
-                    .tooltip(|window, cx| {
-                        Tooltip::new("a Claude session in a folder you pick").build(window, cx)
-                    })
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(AddProject))),
-            )
+    /// The `+ claude` button.
+    fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let b = button("sb-new-claude", "+ claude")
+            .on_click(cx.listener(|this, _, _, cx| this.create("", cx)));
+        if self.creating {
+            b.opacity(0.5)
+        } else {
+            b
+        }
     }
 
     /// A row of the expanded list: status dot, title, and agent and directory below it.
@@ -727,7 +685,7 @@ impl Sidebar {
                 .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.create(&cwd, Agent::Claude, Mode::Headless, None, cx);
+                    this.create(&cwd, cx);
                 })),
             )
     }
@@ -775,7 +733,7 @@ impl Sidebar {
             .vertical_scrollbar(&self.scroll)
     }
 
-    /// The expanded body: the rows and the foot with `+ shell` and `+ claude`, or the empty state.
+    /// The expanded body: the rows and the foot with `+ claude`, or the empty state.
     fn list(&self, focused: bool, cx: &Context<Self>) -> Div {
         let shown = &self.shown;
         if shown.rows.is_empty() {
@@ -786,7 +744,7 @@ impl Sidebar {
                 .gap(px(8.))
                 .p(px(12.))
                 .child(div().text_color(MUTED).child(self.note()))
-                .when(self.can_create(), |d| d.child(self.new_buttons(cx)));
+                .when(self.can_create(), |d| d.child(self.new_button(cx)));
         }
         let mut rows = Vec::new();
         for g in groups(&shown.rows) {
@@ -803,7 +761,7 @@ impl Sidebar {
             .justify_between()
             .gap(px(8.))
             .p(px(6.))
-            .when(self.can_create(), |d| d.child(self.new_buttons(cx)))
+            .when(self.can_create(), |d| d.child(self.new_button(cx)))
             .child(meta(TOGGLE_KEY));
         div()
             .flex()
@@ -879,6 +837,7 @@ impl Render for Sidebar {
 mod tests {
     use super::*;
     use femme_client::Link as Transport;
+    use femme_proto::state::Mode;
     use femme_proto::Id;
     use gpui::AppContext as _;
 
@@ -899,6 +858,7 @@ mod tests {
             attention: Attention::None,
             created,
             closed: None,
+            permission: None,
         }
     }
 

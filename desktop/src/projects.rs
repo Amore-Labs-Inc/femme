@@ -8,7 +8,6 @@
 //! made ("Create & Add").
 
 use femme_proto::rpc::{Req, Resp};
-use femme_proto::state::{Agent, Mode};
 use gpui::prelude::FluentBuilder as _;
 use gpui::AppContext as _;
 use gpui::{
@@ -294,7 +293,7 @@ impl Picker {
             };
             let created = match cwd {
                 Ok(cwd) => {
-                    let req = session::create_in(&cwd, Agent::Claude, Mode::Headless, None);
+                    let req = session::new_claude(&cwd);
                     net.update(cx, |n, cx| n.try_run(req, cx)).await
                 }
                 Err(e) => Err(e),

@@ -68,15 +68,19 @@ pub fn pick_shell(model: &Model) -> Option<Sid> {
         .map(|s| s.id)
 }
 
-/// The sidebar's `+ deepseek`: a Claude session on this model, which `femmed` runs through
-/// OpenGateway (the box needs `~/.config/opengateway/key`).
-pub(crate) const DEEPSEEK: &str = "deepseek/deepseek-v4.1-flash-ultrafast";
+/// The model a new Claude session starts on (Opus 5.5; `femmed` adds `--effort=medium` itself).
+pub(crate) const CLAUDE_MODEL: &str = "claude-opus-5-5";
 
 /// A new session of `agent` in the daemon's home directory (an empty `cwd` is what `femmed` takes as
-/// "your home": `~` is refused as not absolute), on `model` (`None`: the agent's default). The
-/// sidebar's `+ shell`, `+ claude` and `+ deepseek` send it too.
+/// "your home": `~` is refused as not absolute), on `model` (`None`: the agent's default).
 pub(crate) fn create(agent: Agent, mode: Mode, model: Option<&str>) -> Req {
     create_in("", agent, mode, model)
+}
+
+/// The sidebar's `+ claude`, a folder header's `+` and the projects picker: a headless Claude
+/// session in `cwd` (empty: the daemon's home) on [`CLAUDE_MODEL`].
+pub(crate) fn new_claude(cwd: &str) -> Req {
+    create_in(cwd, Agent::Claude, Mode::Headless, Some(CLAUDE_MODEL))
 }
 
 /// [`create`] in the folder `cwd` (absolute; empty is the daemon's home).
@@ -284,6 +288,7 @@ mod tests {
             attention: Attention::None,
             created,
             closed: None,
+            permission: None,
         }
     }
 
@@ -446,6 +451,29 @@ mod tests {
             panic!("not a create")
         };
         assert_eq!((agent, mode), (Agent::Shell, Mode::Tui));
+    }
+
+    #[test]
+    fn a_new_claude_session_starts_on_opus() {
+        let Req::SessionCreate {
+            cwd,
+            agent,
+            mode,
+            model,
+            ..
+        } = new_claude("/srv/x")
+        else {
+            panic!("not a create")
+        };
+        assert_eq!(
+            (cwd.as_str(), agent, mode, model.as_deref()),
+            (
+                "/srv/x",
+                Agent::Claude,
+                Mode::Headless,
+                Some("claude-opus-5-5")
+            )
+        );
     }
 
     #[test]

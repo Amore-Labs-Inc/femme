@@ -592,6 +592,7 @@ mod tests {
             attention: Attention::None,
             created,
             closed: None,
+            permission: None,
         }
     }
 

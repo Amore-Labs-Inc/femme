@@ -154,6 +154,7 @@ mod tests {
             attention: Attention::None,
             created: n as i64,
             closed: None,
+            permission: None,
         }
     }
 
