@@ -27,6 +27,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::WindowExt as _;
 use tokio::sync::watch;
 
+use super::agents::{self, Chip};
 use super::ask::Ask;
 use super::items::Items;
 use super::markdown::{self, Doc};
@@ -37,8 +38,10 @@ use super::turns::{self, Key, Layout};
 use super::working;
 use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
-use crate::theme::{BAD, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, PAPER};
-use crate::ui::{meta, ruled};
+use crate::theme::{
+    rgba8, BAD, DONE, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, NEON, PANEL, PAPER,
+};
+use crate::ui::{dot, meta, ruled};
 
 /// How many older items one request asks for.
 const PAGE: u16 = 100;
@@ -58,6 +61,10 @@ const GLIDE: Duration = Duration::from_millis(200);
 pub struct Transcript {
     pub(super) net: Option<Entity<Net>>,
     pub(super) items: Items,
+    /// The thread on show: the main one, or the subagent of this `Agent` call (see [`Items::view`]).
+    pub(super) view: Option<String>,
+    /// The subagents of the turn, for the strip under the list.
+    chips: Vec<Chip>,
     /// The rows the list was last told about.
     pub(super) layout: Layout,
     /// The `seq`s the user opened: thinking, tool rows, fold lines.
@@ -144,6 +151,8 @@ impl Transcript {
         Self {
             net,
             items: Items::new(None),
+            view: None,
+            chips: Vec::new(),
             layout: Layout::default(),
             open: HashSet::new(),
             list,
@@ -179,6 +188,8 @@ impl Transcript {
             return;
         }
         self.items.switch(sid);
+        self.view = None;
+        self.chips.clear();
         self.layout = Layout::default();
         self.open.clear();
         self.asks.clear();
@@ -233,7 +244,7 @@ impl Transcript {
     /// Brings the list up to the items: the rows are worked out again, the list is told which
     /// were added, removed or changed.
     pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
-        let next = turns::layout(&self.items, &self.open);
+        let next = turns::layout(&self.items, self.view.as_deref(), &self.open);
         let plan = splice::plan(&self.layout.rows, &next.rows);
         if let Some((old, count)) = plan.splice {
             self.list.splice(old, count);
@@ -273,6 +284,32 @@ impl Transcript {
             self.seen();
             cx.notify();
         }
+    }
+
+    /// Shows one thread: the main one (`None`) or a subagent's. The list starts over at its end.
+    pub(super) fn set_view(&mut self, view: Option<String>, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.layout = Layout::default();
+        self.open.clear();
+        self.fresh.clear();
+        self.unseen = None;
+        self.pill_timer = None;
+        self.glide = None;
+        self.list.reset(1);
+        self.list.set_follow_mode(FollowMode::Tail);
+        self.refresh(cx);
+    }
+
+    /// Back from a subagent to the main thread; false when that is what was showing.
+    pub fn back(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.view.is_none() {
+            return false;
+        }
+        self.set_view(None, cx);
+        true
     }
 
     /// Opens or closes a thinking row, a tool row or a fold line.
@@ -526,6 +563,11 @@ impl Transcript {
                 self.list.set_follow_mode(FollowMode::Tail);
                 self.seen();
             }
+            "escape" if self.view.is_some() => {
+                self.back(cx);
+                cx.stop_propagation();
+                return;
+            }
             _ => return,
         }
         self.glide = None;
@@ -562,38 +604,40 @@ impl Transcript {
         // Keyed by the session shown, so a pill left over from the last session does not fade
         // out over the next one.
         let a = appear(("to-end", self.generation), shown, window, cx)?;
-        Some(div()
-            .absolute()
-            .bottom(px(12.) - a.offset(6.))
-            .opacity(a.opacity())
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                ruled(
-                    div()
-                        .id("to-end")
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .bg(INK)
-                        .text_color(PAPER)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(HOVER)),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.glide_to_end(cx)))
-                .child(div().font_family(FONT_MONO).text_size(px(12.)).child("↓"))
+        Some(
+            div()
+                .absolute()
+                .bottom(px(12.) - a.offset(6.))
+                .opacity(a.opacity())
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
                 .child(
-                    div()
-                        .font_family(FONT_PIXEL)
-                        .text_size(px(20.))
-                        .line_height(relative(1.))
-                        .child("new"),
+                    ruled(
+                        div()
+                            .id("to-end")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(10.))
+                            .py(px(4.))
+                            .bg(INK)
+                            .text_color(PAPER)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(HOVER)),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.glide_to_end(cx)))
+                    .child(div().font_family(FONT_MONO).text_size(px(12.)).child("↓"))
+                    .child(
+                        div()
+                            .font_family(FONT_PIXEL)
+                            .text_size(px(20.))
+                            .line_height(relative(1.))
+                            .child("new"),
+                    ),
                 ),
-            ))
+        )
     }
 }
 
@@ -651,7 +695,12 @@ impl Transcript {
     }
 
     fn working_line(&mut self, cx: &mut Context<Self>) -> Option<String> {
-        if !self.busy(cx) {
+        // A subagent's view works while its call has no result.
+        let view_done = self
+            .view
+            .as_ref()
+            .is_some_and(|v| !self.chips.iter().any(|c| c.running && c.id == *v));
+        if !self.busy(cx) || view_done {
             self.ticker = None;
             return None;
         }
@@ -663,10 +712,88 @@ impl Transcript {
                 }
             }));
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
-        Some(working::line(&working::working(&self.items), now))
+        Some(working::line(
+            &working::working(&self.items, self.view.as_deref()),
+            now_ms(),
+        ))
+    }
+
+    /// The strip under the list: the main thread first, then one chip per subagent of the turn;
+    /// the thread on show is lit. Nothing while the turn has no subagents.
+    fn strip(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.chips.is_empty() && self.view.is_none() {
+            return None;
+        }
+        let now = now_ms();
+        let tab = |id: &'static str, on: bool| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(5.))
+                .h(px(18.))
+                .px(px(6.))
+                .cursor_pointer()
+                .hover(|s| s.bg(PANEL))
+                .when(on, |d| d.bg(PANEL).text_color(INK))
+        };
+        let main = tab("agents-main", self.view.is_none())
+            .child("◂ main")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.back(cx);
+            }));
+        let chips = self.chips.iter().enumerate().map(|(ix, c)| {
+            let on = self.view.as_deref() == Some(c.id.as_str());
+            let id = c.id.clone();
+            let when = if c.running {
+                agents::elapsed(c.since, now)
+            } else {
+                "done".to_owned()
+            };
+            div()
+                .id(("agent", ix))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(5.))
+                .h(px(18.))
+                .px(px(6.))
+                .max_w(px(220.))
+                .cursor_pointer()
+                .hover(|s| s.bg(PANEL))
+                .when(on, |d| d.bg(PANEL))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_view(Some(id.clone()), cx);
+                }))
+                .child(dot(if c.running { NEON } else { DONE }))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if c.running { INK } else { MUTED })
+                        .child(c.label.clone()),
+                )
+                .child(div().flex_none().text_color(MUTED).child(when))
+        });
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .h(px(24.))
+                .px(px(6.))
+                .border_t_1()
+                .border_color(rgba8(0x1E1E1E, 0.16))
+                .bg(PAPER)
+                .font_family(FONT_MONO)
+                .text_size(px(11.))
+                .text_color(MUTED)
+                .overflow_hidden()
+                .child(main)
+                .children(chips),
+        )
     }
 
     /// The prompts of the session shown that are on their way; a redraw is set for when the next
@@ -716,6 +843,7 @@ impl Render for Transcript {
             });
         }
         self.glide_step(window);
+        self.chips = agents::chips(&self.items);
         let working = self.working_line(cx);
         let sent = self.sent_now(cx);
         if working.is_some() != self.working.is_some() || sent != self.sent {
@@ -725,9 +853,11 @@ impl Render for Transcript {
         self.working = working;
         self.sent = sent;
         let pill = self.pill(window, cx);
+        let strip = self.strip(cx);
         div()
             .size_full()
-            .relative()
+            .flex()
+            .flex_col()
             .bg(PAPER)
             .track_focus(&self.focus)
             // A click gives the transcript the keyboard unless a text field has it: a click on a
@@ -744,39 +874,53 @@ impl Render for Transcript {
             )
             .on_key_down(cx.listener(Self::on_key))
             .child(
-                list(
-                    self.list.clone(),
-                    cx.processor(|this, ix, window, cx| this.row(ix, window, cx)),
-                )
-                .size_full()
-                .pt(px(6.))
-                .pb(px(10.)),
-            )
-            .child(Scrollbar::vertical(&self.list))
-            .when(self.layout.rows.is_empty() && self.sent.is_empty(), |d| {
-                d.child(self.hint())
-            })
-            .children(pill)
-            .when_some(self.note.clone(), |d, note| {
-                d.child(
-                    ruled(
-                        div()
-                            .id("note")
-                            .absolute()
-                            .bottom(px(8.))
-                            .left(px(12.))
-                            .max_w(relative(0.8))
-                            .px(px(8.))
-                            .py(px(3.))
-                            .bg(PAPER)
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.note = None;
-                                cx.notify();
-                            })),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        list(
+                            self.list.clone(),
+                            cx.processor(|this, ix, window, cx| this.row(ix, window, cx)),
+                        )
+                        .size_full()
+                        .pt(px(6.))
+                        .pb(px(10.)),
                     )
-                    .child(meta(note).text_color(BAD)),
-                )
-            })
+                    .child(Scrollbar::vertical(&self.list))
+                    .when(self.layout.rows.is_empty() && self.sent.is_empty(), |d| {
+                        d.child(self.hint())
+                    })
+                    .children(pill)
+                    .when_some(self.note.clone(), |d, note| {
+                        d.child(
+                            ruled(
+                                div()
+                                    .id("note")
+                                    .absolute()
+                                    .bottom(px(8.))
+                                    .left(px(12.))
+                                    .max_w(relative(0.8))
+                                    .px(px(8.))
+                                    .py(px(3.))
+                                    .bg(PAPER)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.note = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(meta(note).text_color(BAD)),
+                        )
+                    }),
+            )
+            .children(strip)
     }
+}
+
+/// Unix ms now.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }

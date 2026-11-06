@@ -2,6 +2,7 @@
 //! that follows the text as it streams in. Markdown for the assistant, folded tool calls, answerable
 //! questions, the user's attachments as thumbnails.
 
+pub mod agents;
 pub mod attach;
 pub mod body;
 pub mod items;

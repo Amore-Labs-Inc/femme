@@ -197,6 +197,14 @@ impl Items {
         self.entries.values()
     }
 
+    /// The items of one thread, in order: the main one (`None`) or the subagent spawned by the
+    /// `Agent` call `parent`.
+    pub fn view<'a>(&'a self, parent: Option<&'a str>) -> impl Iterator<Item = &'a Entry> + 'a {
+        self.entries
+            .values()
+            .filter(move |e| e.item.parent.as_deref() == parent)
+    }
+
     /// How many items are held.
     pub fn len(&self) -> usize {
         self.entries.len()

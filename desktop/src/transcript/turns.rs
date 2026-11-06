@@ -195,10 +195,10 @@ pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
     }
 }
 
-/// The rows for `items`. `open` holds the `seq`s the user opened: a thinking row, a tool row, a
-/// fold line.
-pub fn layout(items: &Items, open: &HashSet<u64>) -> Layout {
-    let entries: Vec<&Entry> = items.iter().collect();
+/// The rows for one thread of `items` (see [`Items::view`]). `open` holds the `seq`s the user
+/// opened: a thinking row, a tool row, a fold line.
+pub fn layout(items: &Items, view: Option<&str>, open: &HashSet<u64>) -> Layout {
+    let entries: Vec<&Entry> = items.view(view).collect();
     let n = entries.len();
 
     // A result whose call is held is part of the call's row.
@@ -439,7 +439,7 @@ mod tests {
         b.call("t1");
         b.result("t1", false);
         b.say("a");
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(
             keys(&l),
             [Key::Item(1), Key::Tool(2), Key::Item(4)],
@@ -455,7 +455,7 @@ mod tests {
         b.call("t2");
         b.result("t2", false);
         b.result("t1", false);
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(keys(&l), [Key::Tool(1), Key::Tool(2)]);
     }
 
@@ -465,7 +465,7 @@ mod tests {
         b.result("gone", false);
         b.say("a");
         assert_eq!(
-            keys(&layout(&b.items, &none())),
+            keys(&layout(&b.items, None, &none())),
             [Key::Item(1), Key::Item(2)]
         );
     }
@@ -482,7 +482,7 @@ mod tests {
         b.result("t2", true);
         b.say("final");
         b.end("e", json!("EndTurn"), Some(192_000));
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         // user, fold (standing for thinking, both tools), then the messages in order; the normal
         // end has no row.
         assert_eq!(
@@ -511,8 +511,8 @@ mod tests {
         b.result("t1", false);
         b.say("final");
         b.end("e", json!("EndTurn"), None);
-        let closed = layout(&b.items, &none());
-        let open = layout(&b.items, &HashSet::from([6]));
+        let closed = layout(&b.items, None, &none());
+        let open = layout(&b.items, None, &HashSet::from([6]));
         assert_eq!(keys(&closed), [Key::Item(1), Key::Fold(6), Key::Item(5)]);
         assert_eq!(
             keys(&open),
@@ -543,7 +543,7 @@ mod tests {
         b.user("u2");
         b.think("th");
         b.call("t2");
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(
             keys(&l),
             [
@@ -569,7 +569,7 @@ mod tests {
             b.say(&format!("a{t}"));
             b.end(&format!("e{t}"), json!("EndTurn"), Some(1_000));
         }
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(
             keys(&l),
             [
@@ -591,7 +591,7 @@ mod tests {
         b.user("u");
         b.say("a");
         b.end("e", json!("EndTurn"), Some(2_000));
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(keys(&l), [Key::Item(1), Key::Item(2)]);
         assert!(l.folds.is_empty());
     }
@@ -604,7 +604,7 @@ mod tests {
         b.end("e", json!("Interrupted"), Some(2_000));
         b.user("u2");
         b.end("e2", json!({"Error": "boom"}), None);
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(
             keys(&l),
             [
@@ -632,7 +632,7 @@ mod tests {
         b.call("t1");
         b.say("a");
         b.end("e", json!("EndTurn"), None);
-        let l = layout(&b.items, &none());
+        let l = layout(&b.items, None, &none());
         assert_eq!(keys(&l), [Key::Tool(1), Key::Fold(5), Key::Item(4)]);
         assert_eq!(l.folds[&5].tools, 1);
     }
@@ -655,8 +655,11 @@ mod tests {
             parent: None,
             ts: 0,
         })]);
-        assert_eq!(keys(&layout(&items, &none())), [Key::More, Key::Item(50)]);
-        assert_eq!(keys(&layout(&b.items, &none())), [Key::Item(1)]);
+        assert_eq!(
+            keys(&layout(&items, None, &none())),
+            [Key::More, Key::Item(50)]
+        );
+        assert_eq!(keys(&layout(&b.items, None, &none())), [Key::Item(1)]);
     }
 
     #[test]
@@ -665,17 +668,21 @@ mod tests {
         b.user("u");
         b.call("t1");
         b.say("a");
-        let before = layout(&b.items, &none());
-        assert_eq!(before, layout(&b.items, &none()), "same input, same rows");
+        let before = layout(&b.items, None, &none());
+        assert_eq!(
+            before,
+            layout(&b.items, None, &none()),
+            "same input, same rows"
+        );
         // The result of the call arrives: its row changed, the others did not.
         b.result("t1", false);
-        let after = layout(&b.items, &none());
+        let after = layout(&b.items, None, &none());
         assert_eq!(keys(&before), keys(&after));
         assert_eq!(before.rows[0], after.rows[0]);
         assert_ne!(before.rows[1].ver, after.rows[1].ver);
         assert_eq!(before.rows[2], after.rows[2]);
         // Opening a row changes its version, and only its.
-        let opened = layout(&b.items, &HashSet::from([2]));
+        let opened = layout(&b.items, None, &HashSet::from([2]));
         assert_ne!(after.rows[1].ver, opened.rows[1].ver);
         assert_eq!(after.rows[0], opened.rows[0]);
     }

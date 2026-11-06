@@ -20,9 +20,10 @@ pub struct Working {
     pub bytes: usize,
 }
 
-/// The turn so far: everything after the last user message.
-pub fn working(items: &Items) -> Working {
-    let all: Vec<_> = items.iter().collect();
+/// The turn so far: everything after the last user message of the thread shown (`view`, as in
+/// [`Items::view`]; a subagent's first item is its prompt).
+pub fn working(items: &Items, view: Option<&str>) -> Working {
+    let all: Vec<_> = items.view(view).collect();
     let start = all
         .iter()
         .rposition(|e| e.item.kind == ItemKind::UserMessage);
@@ -127,16 +128,25 @@ mod tests {
         use ItemStatus::*;
         let it = items(vec![
             item(1, UserMessage, Completed, "old question", 1_000),
-            item(2, AssistantMessage, Completed, "old answer, not counted", 2_000),
+            item(
+                2,
+                AssistantMessage,
+                Completed,
+                "old answer, not counted",
+                2_000,
+            ),
             item(3, UserMessage, Completed, "fix the build", 10_000),
             item(4, Thinking, Completed, &"t".repeat(4000), 11_000),
             item(5, AssistantMessage, InProgress, &"w".repeat(2000), 12_000),
         ]);
-        let w = working(&it);
+        let w = working(&it, None);
         assert_eq!(w.verb, "Writing");
         assert_eq!(w.since, Some(10_000));
         // Five minutes and 42 s later: the star is frame 342 % 6 = 0.
-        assert_eq!(line(&w, 10_000 + 342_000), "· Writing… (5m 42s · ↓ 1.5k tokens)");
+        assert_eq!(
+            line(&w, 10_000 + 342_000),
+            "· Writing… (5m 42s · ↓ 1.5k tokens)"
+        );
     }
 
     #[test]
@@ -147,10 +157,10 @@ mod tests {
             item(1, UserMessage, Completed, "hi", 0),
             item(2, ToolCall, Completed, "{}", 0),
         ]);
-        assert_eq!(working(&it).verb, "Thinking");
+        assert_eq!(working(&it, None).verb, "Thinking");
         let tool = items(vec![item(1, ToolCall, InProgress, "", 0)]);
-        assert_eq!(working(&tool).verb, "Running a tool");
-        let none = working(&Items::new(Some(Id(1))));
+        assert_eq!(working(&tool, None).verb, "Running a tool");
+        let none = working(&Items::new(Some(Id(1))), None);
         assert_eq!(line(&none, 0), "· Thinking…");
         assert_eq!(elapsed(3_725), "1h 2m");
         assert_eq!(tokens(3_999), "999");
