@@ -144,6 +144,8 @@ pub enum Req {
     /// The `/` commands a Claude session takes (from the last `claude` that started, plus
     /// FEMME's own `btw`). Answered with `Resp::Commands`.
     Commands,
+    /// The session's next permission mode, the way Shift+Tab steps through them in Claude.
+    CyclePermission { sid: Sid },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -19,7 +19,7 @@ use crate::{all, blob_id, enum_col, exists, id_blob, one, Error, Result, Tx};
 
 macro_rules! session_cols {
     () => {
-        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed"
+        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission"
     };
 }
 macro_rules! pane_cols {
@@ -47,6 +47,7 @@ pub(crate) fn session_from_row(r: &Row<'_>) -> Result<Session> {
         attention: enum_col(r, 12, attention_parse)?,
         created: r.get(13)?,
         closed: r.get(14)?,
+        permission: r.get(15)?,
     })
 }
 
@@ -234,7 +235,7 @@ impl Tx<'_> {
         self.prepare_cached(concat!(
             "INSERT INTO sessions (",
             session_cols!(),
-            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
         ))?
         .execute(params![
             id_blob(s.id),
@@ -252,6 +253,7 @@ impl Tx<'_> {
             attention_str(s.attention),
             s.created,
             s.closed,
+            s.permission,
         ])?;
         self.clear_tombstone(Entity::Session, &s.id.to_string())?; // an explicit id may come back (restore)
         Ok(s)
@@ -281,7 +283,8 @@ impl Tx<'_> {
         after.rev = self.next_rev();
         self.prepare_cached(
             "UPDATE sessions SET rev = ?2, name = ?3, owner = ?4, agent = ?5, mode = ?6, cwd = ?7, label = ?8,
-                    agent_sid = ?9, model = ?10, status = ?11, attention = ?12, closed = ?13
+                    agent_sid = ?9, model = ?10, status = ?11, attention = ?12, closed = ?13,
+                    permission = ?14
              WHERE id = ?1",
         )?
         .execute(params![
@@ -298,6 +301,7 @@ impl Tx<'_> {
             session_status_str(after.status),
             attention_str(after.attention),
             after.closed,
+            after.permission,
         ])?;
         Ok(after)
     }

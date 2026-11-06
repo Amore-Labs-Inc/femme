@@ -8,7 +8,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::{Error, Result};
 
 /// Every migration, oldest first. Index + 1 is the `user_version` it leaves behind.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 // Notes on the shape (plan §7):
 // - STRICT: SQLite refuses a TEXT in a BLOB column and the like, so an encoding slip is an error
@@ -164,6 +164,9 @@ CREATE TABLE agent_state (
 
 /// Subagent items name the tool call that spawned them.
 const V3: &str = "ALTER TABLE items ADD COLUMN parent TEXT;";
+
+/// A Claude session's permission mode.
+const V4: &str = "ALTER TABLE sessions ADD COLUMN permission TEXT;";
 
 /// Brings the database up to [`MIGRATIONS`]'s last version. Safe to run from two processes at
 /// once: each script runs inside `BEGIN IMMEDIATE` after re-reading the version.

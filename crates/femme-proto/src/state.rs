@@ -66,6 +66,9 @@ pub struct Session {
     /// Unix ms.
     pub created: i64,
     pub closed: Option<i64>,
+    /// Claude's permission mode (`manual`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`,
+    /// ...), when known.
+    pub permission: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
