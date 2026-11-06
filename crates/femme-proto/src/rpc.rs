@@ -146,6 +146,8 @@ pub enum Req {
     Commands,
     /// The session's next permission mode, the way Shift+Tab steps through them in Claude.
     CyclePermission { sid: Sid },
+    /// Renames the session for the lists (`label`; `None` clears it).
+    SessionLabel { sid: Sid, label: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
