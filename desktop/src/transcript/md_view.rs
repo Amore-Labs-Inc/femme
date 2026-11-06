@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use super::markdown::{Align, Block, Doc, Inline, ListItem, Style};
-use crate::theme::{FONT_MONO, HOVER, INK, MUTED, PANEL, RULE};
+use crate::theme::{accent_text, ink, muted, panel, FONT_MONO, RULE};
 use crate::ui::{meta, ruled, ruled_sides};
 
 /// Size of the code in a block and in a span.
@@ -69,15 +69,15 @@ fn block(b: &Block, color: Rgba) -> AnyElement {
             }))
             .into_any_element(),
         Block::Quote(blocks) => ruled_sides(div(), px(0.), px(0.), px(0.), px(3.))
-            .border_color(MUTED)
+            .border_color(muted())
             .pl(px(10.))
-            .child(stack(blocks, MUTED, 6.))
+            .child(stack(blocks, muted(), 6.))
             .into_any_element(),
         Block::Rule => div()
             .w_full()
             .h(px(1.))
             .my(px(4.))
-            .bg(MUTED)
+            .bg(muted())
             .into_any_element(),
         Block::Table { aligns, head, rows } => table(aligns, head, rows),
     }
@@ -89,7 +89,7 @@ fn list_item(marker: &str, item: &ListItem, color: Rgba) -> AnyElement {
         .min_w(px(22.))
         .flex()
         .justify_end()
-        .text_color(MUTED)
+        .text_color(muted())
         .line_height(relative(1.45));
     let marker = match item.task {
         Some(done) => {
@@ -120,7 +120,7 @@ fn code_block(lang: Option<&str>, code: &str) -> AnyElement {
     let head = lang
         .filter(|l| !l.is_empty())
         .map(|l| div().px(px(10.)).pt(px(4.)).child(meta(l.to_owned())));
-    let block = ruled(div().w_full().flex().flex_col().bg(PANEL).pb(px(8.)));
+    let block = ruled(div().w_full().flex().flex_col().bg(panel()).pb(px(8.)));
     let block = match head {
         Some(head) => block.child(head),
         None => block.pt(px(8.)),
@@ -132,7 +132,7 @@ fn code_block(lang: Option<&str>, code: &str) -> AnyElement {
                 .font_family(FONT_MONO)
                 .text_size(px(CODE_SIZE))
                 .line_height(relative(1.4))
-                .text_color(INK)
+                .text_color(ink())
                 .child(SharedString::from(code.to_owned())),
         )
         .into_any_element()
@@ -154,7 +154,7 @@ fn table(aligns: &[Align], head: &[Inline], rows: &[Vec<Inline>]) -> AnyElement 
     let mut table = ruled(div().w_full().flex().flex_col());
     if !head.is_empty() {
         table = table.child(
-            ruled_sides(div().flex().bg(PANEL), px(0.), px(0.), RULE, px(0.))
+            ruled_sides(div().flex().bg(panel()), px(0.), px(0.), RULE, px(0.))
                 .children(head.iter().enumerate().map(|(i, t)| cell(t, i, true))),
         );
     }
@@ -194,7 +194,7 @@ fn highlight(s: Style) -> HighlightStyle {
         h.font_style = Some(FontStyle::Italic);
     }
     if s.code {
-        h.background_color = Some(Hsla::from(PANEL));
+        h.background_color = Some(Hsla::from(panel()));
     }
     if s.strike {
         h.strikethrough = Some(StrikethroughStyle {
@@ -205,12 +205,12 @@ fn highlight(s: Style) -> HighlightStyle {
     if s.link {
         h.underline = Some(UnderlineStyle {
             thickness: px(1.),
-            color: Some(Hsla::from(HOVER)),
+            color: Some(Hsla::from(accent_text())),
             wavy: false,
         });
     }
     if s.dim {
-        h.color = Some(Hsla::from(MUTED));
+        h.color = Some(Hsla::from(muted()));
     }
     h
 }

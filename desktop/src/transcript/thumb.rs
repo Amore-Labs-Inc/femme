@@ -14,7 +14,7 @@ use gpui::{
 };
 
 use super::attach::{self, Attached};
-use crate::theme::{self, BAD, FONT_MONO, MUTED, PANEL, PAPER};
+use crate::theme::{self, bad, muted, panel, paper, FONT_MONO};
 use crate::ui::{meta, ruled, tb};
 
 /// Side of a thumbnail's box.
@@ -66,8 +66,8 @@ fn picture(image: &Arc<Image>) -> Img {
         .left_0()
         .size_full()
         .object_fit(ObjectFit::Contain)
-        .with_loading(|| div().size_full().bg(PANEL).into_any_element())
-        .with_fallback(|| note("cannot draw", BAD).into_any_element())
+        .with_loading(|| div().size_full().bg(panel()).into_any_element())
+        .with_fallback(|| note("cannot draw", bad()).into_any_element())
 }
 
 /// The preview that opens over a thumbnail: the picture, fitted whole into a titled box.
@@ -85,7 +85,7 @@ impl Render for Preview {
                 .h(px(h))
                 .flex()
                 .flex_col()
-                .bg(PAPER)
+                .bg(paper())
                 .overflow_hidden(),
         );
         shell.style().box_shadow = Some(theme::hard_shadow());
@@ -95,7 +95,7 @@ impl Render for Preview {
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
-                .bg(PANEL)
+                .bg(panel())
                 .overflow_hidden()
                 .child(picture(&self.image)),
         )
@@ -115,7 +115,7 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
             .relative()
             .flex_none()
             .size(side)
-            .bg(PANEL)
+            .bg(panel())
             .overflow_hidden(),
     );
     match thumb {
@@ -132,8 +132,8 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
                 .child(thumb)
                 .into_any_element()
         }
-        Some(Thumb::Failed) => frame.child(note("unavailable", BAD)).into_any_element(),
-        Some(Thumb::Loading) | None => frame.child(note("loading", MUTED)).into_any_element(),
+        Some(Thumb::Failed) => frame.child(note("unavailable", bad())).into_any_element(),
+        Some(Thumb::Loading) | None => frame.child(note("loading", muted())).into_any_element(),
     }
 }
 
@@ -145,7 +145,7 @@ fn chip(name: &str) -> impl IntoElement {
             .max_w(relative(1.))
             .px(px(8.))
             .py(px(3.))
-            .bg(PAPER)
+            .bg(paper())
             .font_family(FONT_MONO)
             .text_size(theme::META_SIZE)
             .whitespace_nowrap()

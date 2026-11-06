@@ -24,8 +24,8 @@ use super::thumb;
 use super::turns::{self, Key, ToolLine};
 use crate::motion::appear;
 use crate::theme::{
-    self, rgba8, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED,
-    NEON, PANEL, PAPER, PAUSE, WORK,
+    self, accent_deep, accent_text, bad, hover, ink, muted, neon, panel, paper, pause, work,
+    BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE,
 };
 use crate::ui::{card, dialog, meta, ruled, st, tb};
 
@@ -67,7 +67,7 @@ fn chevron(open: bool) -> Div {
         .w(px(12.))
         .font_family(FONT_MONO)
         .text_size(META_SIZE)
-        .text_color(MUTED)
+        .text_color(muted())
         .child(if open { "▾" } else { "▸" })
 }
 
@@ -77,7 +77,7 @@ fn small(text: impl Into<SharedString>) -> Div {
         .flex_none()
         .font_family(FONT_MONO)
         .text_size(px(12.5))
-        .text_color(MUTED)
+        .text_color(muted())
         .child(text.into())
 }
 
@@ -108,7 +108,7 @@ fn block(label: &str, text: &str, color: Rgba) -> Div {
             .w_full()
             .flex()
             .flex_col()
-            .bg(PANEL)
+            .bg(panel())
             .py(px(5.))
             .gap(px(2.)),
     )
@@ -151,7 +151,7 @@ fn you_card(text: String, label: Rgba) -> Div {
 /// when the daemon's `UserMessage` for it arrives.
 // ponytail: names only, no thumbnails; the real bubble that replaces it has them.
 fn sent_row(sent: &Sent) -> AnyElement {
-    let bubble = you_card(sent.text.clone(), MUTED).when(!sent.files.is_empty(), |d| {
+    let bubble = you_card(sent.text.clone(), muted()).when(!sent.files.is_empty(), |d| {
         d.child(meta(sent.files.join(", ")))
     });
     column(
@@ -191,7 +191,7 @@ impl Transcript {
                             .py(px(8.))
                             .font_family(FONT_MONO)
                             .text_size(px(12.))
-                            .text_color(MUTED)
+                            .text_color(muted())
                             .child(line),
                     )
                 })
@@ -289,7 +289,7 @@ impl Transcript {
             self.want_thumb(&file.path, cx);
         }
         let bubble =
-            you_card(text, HOVER).when(!files.is_empty(), |d| {
+            you_card(text, accent_text()).when(!files.is_empty(), |d| {
                 d.child(div().flex().flex_wrap().gap(px(8.)).children(
                     files.iter().enumerate().map(|(i, file)| {
                         let thumb = self.thumbs.get(&file.path);
@@ -309,7 +309,9 @@ impl Transcript {
                 .flex_col()
                 .gap(px(6.))
                 .text_size(BODY_SIZE)
-                .when(!doc.blocks.is_empty(), |d| d.child(md_view::doc(&doc, INK)))
+                .when(!doc.blocks.is_empty(), |d| {
+                    d.child(md_view::doc(&doc, ink()))
+                })
                 .when(live, |d| d.child(streaming())),
         )
     }
@@ -318,7 +320,7 @@ impl Transcript {
         let (text, live) = self.text_of(seq);
         let doc = self.doc(seq, &text);
         column(
-            ruled(div().flex().flex_col().bg(PAPER))
+            ruled(div().flex().flex_col().bg(paper()))
                 .child(tb("plan"))
                 .child(
                     div()
@@ -327,7 +329,7 @@ impl Transcript {
                         .gap(px(6.))
                         .p(px(12.))
                         .text_size(BODY_SIZE)
-                        .child(md_view::doc(&doc, INK))
+                        .child(md_view::doc(&doc, ink()))
                         .when(live, |d| d.child(streaming())),
                 ),
         )
@@ -349,7 +351,7 @@ impl Transcript {
             .gap(px(6.))
             .py(px(2.))
             .cursor_pointer()
-            .hover(|s| s.bg(PANEL))
+            .hover(|s| s.bg(panel()))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle(seq, cx)))
             .child(chevron(open))
             .child(small("thinking").italic())
@@ -361,7 +363,7 @@ impl Transcript {
                         .truncate()
                         .text_size(px(13.))
                         .italic()
-                        .text_color(MUTED)
+                        .text_color(muted())
                         .child(SharedString::from(first)),
                 )
             })
@@ -379,7 +381,7 @@ impl Transcript {
                             .text_size(px(13.))
                             .line_height(relative(1.45))
                             .italic()
-                            .text_color(MUTED)
+                            .text_color(muted())
                             .child(SharedString::from(text)),
                     )
                 }),
@@ -394,7 +396,7 @@ impl Transcript {
             div()
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
-                .text_color(MUTED)
+                .text_color(muted())
                 .child(SharedString::from(format!("· {line}"))),
         )
     }
@@ -412,7 +414,7 @@ impl Transcript {
             div()
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
-                .text_color(if failed { BAD } else { MUTED })
+                .text_color(if failed { bad() } else { muted() })
                 .child(SharedString::from(format!(
                     "· {}",
                     turns::end_text(&self.items, e)
@@ -463,8 +465,8 @@ impl Transcript {
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle(seq, cx)))
                 .child(chevron(open))
-                .child(small(label).when(failed, |d| d.text_color(BAD)))
-                .child(div().flex_1().h(px(1.)).bg(rgba8(0x1E1E1E, 0.16))),
+                .child(small(label).when(failed, |d| d.text_color(bad())))
+                .child(div().flex_1().h(px(1.)).bg(Rgba { a: 0.16, ..ink() })),
         )
     }
 
@@ -480,7 +482,7 @@ impl Transcript {
             }
         }
         let line = &view.line;
-        let name_color = if line.failed { BAD } else { INK };
+        let name_color = if line.failed { bad() } else { ink() };
         // An Agent call whose subagent has items: the row opens its thread.
         let agent = self
             .items
@@ -497,7 +499,7 @@ impl Transcript {
             .gap(px(6.))
             .py(px(2.))
             .cursor_pointer()
-            .hover(|s| s.bg(PANEL))
+            .hover(|s| s.bg(panel()))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle(seq, cx)))
             .child(chevron(open))
             .child(
@@ -512,7 +514,7 @@ impl Transcript {
                     .truncate()
                     .font_family(FONT_MONO)
                     .text_size(px(12.5))
-                    .text_color(MUTED)
+                    .text_color(muted())
                     .child(SharedString::from(line.hint.clone())),
             )
             .when_some(line.result.clone(), |d, result| {
@@ -523,7 +525,7 @@ impl Transcript {
                         .truncate()
                         .font_family(FONT_MONO)
                         .text_size(px(12.5))
-                        .text_color(if line.failed { BAD } else { MUTED })
+                        .text_color(if line.failed { bad() } else { muted() })
                         .child(SharedString::from(format!("→ {result}"))),
                 )
             })
@@ -535,8 +537,8 @@ impl Transcript {
                         .px(px(4.))
                         .font_family(FONT_MONO)
                         .text_size(px(12.))
-                        .text_color(HOVER)
-                        .hover(|s| s.text_color(NEON))
+                        .text_color(accent_text())
+                        .hover(|s| s.text_color(neon()))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.set_view(Some(id.clone()), cx);
@@ -545,7 +547,7 @@ impl Transcript {
                 )
             })
             .when(line.running, |d| {
-                d.child(div().flex_none().child(st("running", PAUSE)))
+                d.child(div().flex_none().child(st("running", pause())))
             });
         let body = open.then(|| {
             div()
@@ -554,13 +556,13 @@ impl Transcript {
                 .flex_col()
                 .gap(px(6.))
                 .when_some(view.input.clone(), |d, input| {
-                    d.child(block("input", &input, INK))
+                    d.child(block("input", &input, ink()))
                 })
                 .when_some(view.output.clone(), |d, output| {
                     d.child(block(
                         if line.failed { "error" } else { "output" },
                         &output,
-                        if line.failed { BAD } else { INK },
+                        if line.failed { bad() } else { ink() },
                     ))
                 })
                 .when(view.loading, |d| d.child(meta("loading…")))
@@ -651,7 +653,7 @@ impl Transcript {
         };
         let Some(q) = question else {
             // No readable question: say what the daemon said.
-            return column(div().text_color(MUTED).child(SharedString::from(preview)));
+            return column(div().text_color(muted()).child(SharedString::from(preview)));
         };
         if pending && q.open() {
             self.ask_for(seq, &q.q, window, cx);
@@ -776,7 +778,7 @@ fn answered_question(q: &QuestionBody) -> AnyElement {
                         .min_w(px(0.))
                         .truncate()
                         .text_size(px(13.))
-                        .text_color(MUTED)
+                        .text_color(muted())
                         .child(SharedString::from(q.q.prompt.clone())),
                 ),
             )
@@ -792,13 +794,17 @@ fn answered_question(q: &QuestionBody) -> AnyElement {
 
 /// The tag on an item that is still arriving.
 fn streaming() -> Div {
-    div().flex().child(st("streaming", WORK))
+    div().flex().child(st("streaming", work()))
 }
 
 /// One option of a question: its number and its words, in a box that turns pink under the pointer
 /// (dark when ticked).
 fn option(id: String, n: &str, label: &str, on: bool, disabled: bool) -> gpui::Stateful<Div> {
-    let (bg, fg) = if on { (INK, PAPER) } else { (PAPER, INK) };
+    let (bg, fg) = if on {
+        (ink(), paper())
+    } else {
+        (paper(), ink())
+    };
     let mut b = ruled(
         div()
             .id(SharedString::from(id))
@@ -810,7 +816,10 @@ fn option(id: String, n: &str, label: &str, on: bool, disabled: bool) -> gpui::S
             .text_color(fg),
     );
     if !disabled {
-        b = b.cursor_pointer().hover(|s| s.bg(HOVER));
+        // The selected option has a paper label, so its hover is the deep pink that carries one.
+        b = b
+            .cursor_pointer()
+            .hover(move |s| s.bg(if on { accent_deep() } else { hover() }));
     }
     b.child(
         div()
@@ -843,11 +852,11 @@ fn action(id: String, label: &'static str, enabled: bool) -> gpui::Stateful<Div>
             .font_family(FONT_PIXEL)
             .text_size(px(20.))
             .line_height(relative(1.))
-            .bg(PAPER)
-            .text_color(if enabled { INK } else { MUTED }),
+            .bg(paper())
+            .text_color(if enabled { ink() } else { muted() }),
     );
     let b = if enabled {
-        b.cursor_pointer().hover(|s| s.bg(HOVER))
+        b.cursor_pointer().hover(|s| s.bg(hover()))
     } else {
         b
     };
