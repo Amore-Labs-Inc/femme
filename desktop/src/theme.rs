@@ -217,6 +217,9 @@ tokens! {
     bar_text,
     /// Label colour on a `bar` fill (buttons and glyphs on a title bar).
     on_bar,
+    /// Secondary lettering on a `bar` (the size of the open file): panel grey in the light palette,
+    /// a light grey in the dark one.
+    bar_dim,
     /// Hover fill of a button on a `bar`; `on_bar` stays readable on it.
     bar_hover,
     /// The veil behind a modal card (the accounts overlay, a project dialog, the board's dialogs).
@@ -302,6 +305,7 @@ const fn light() -> Palette {
         bar: ink,
         bar_text: desk,
         on_bar: paper,
+        bar_dim: panel,
         bar_hover: accent_deep,
         scrim: rgba8(0x000000, 0.25),
         overlay: rgba8(0x1E1E1E, 0.4),
@@ -356,6 +360,7 @@ const fn dark() -> Palette {
         bar: rgb8(0x0A080A),
         bar_text: rgb8(0xF386A1),
         on_bar: ink,
+        bar_dim: rgb8(0xA6A6A6),
         bar_hover: hover,
         scrim: rgba8(0x000000, 0.5),
         overlay: rgba8(0x000000, 0.6),

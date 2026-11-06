@@ -53,6 +53,7 @@ fn text_is_readable_on_its_fills() {
             ),
             ("lettering on the bar", p.bar_text, p.bar),
             ("label on the bar", p.on_bar, p.bar),
+            ("dim lettering on the bar", p.bar_dim, p.bar),
             ("label on the bar's hover fill", p.on_bar, p.bar_hover),
             ("muted on paper", p.muted, p.paper),
             ("muted on panel grey", p.muted, p.panel),

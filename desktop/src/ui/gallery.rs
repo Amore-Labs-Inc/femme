@@ -84,7 +84,7 @@ fn matrix_row(name: &str, kind: Kind, content: impl Fn() -> AnyElement) -> Div {
 
 /// Column one: the colours, the type, the marks.
 fn column_tokens() -> Div {
-    let palette: [(&str, Rgba); 22] = [
+    let palette: [(&str, Rgba); 23] = [
         ("DESK", theme::desk()),
         ("DESK_DOT", theme::desk_dot()),
         ("PAPER", theme::paper()),
@@ -101,6 +101,7 @@ fn column_tokens() -> Div {
         ("BAR_TEXT", theme::bar_text()),
         ("BAR_HOVER", theme::bar_hover()),
         ("ON_BAR", theme::on_bar()),
+        ("BAR_DIM", theme::bar_dim()),
         ("SUCCESS", theme::success()),
         ("WARN", theme::warn()),
         ("DANGER", theme::danger()),
