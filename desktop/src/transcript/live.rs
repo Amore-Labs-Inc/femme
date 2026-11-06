@@ -17,10 +17,10 @@ use femme_proto::state::{ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window,
+    div, list, px, relative, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
+    FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, Window,
 };
 use gpui_base::animation::cubic_bezier;
 use gpui_component::scroll::Scrollbar;
@@ -97,6 +97,8 @@ pub struct Transcript {
     glide: Option<(Instant, Pixels)>,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
+    /// The right-click menu of the thumbnails, and the preview its `open` keeps on screen.
+    pub(super) ctx: Entity<crate::ui::ctx::Menu>,
     /// Redraws once a second while the session works, for the clock in the working line.
     ticker: Option<Task<()>>,
     /// The working line the last row shows, `None` when the session is idle.
@@ -171,6 +173,7 @@ impl Transcript {
             pill_timer: None,
             glide: None,
             note: None,
+            ctx: cx.new(crate::ui::ctx::Menu::new),
             ticker: None,
             working: None,
             sent: Vec::new(),
@@ -915,6 +918,7 @@ impl Render for Transcript {
                     }),
             )
             .children(strip)
+            .child(self.ctx.clone())
     }
 }
 

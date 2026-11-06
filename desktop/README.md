@@ -234,10 +234,12 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
 | `src/viewer.rs`, `src/viewer/` | `FileView`: images (raster, SVG), PDF pages, text and code with syntax highlighting, markdown, a hex dump for the rest. |
 | `src/board.rs`, `src/board/` | The drawing board: scene, editor state machine and PNG export (pure, tested on their own), the gpui layer over them; emits `BoardEvent::{Send, Closed}`. |
-| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview; `composer/disk.rs` keeps each session's unsent text in `~/.local/state/femme/drafts/` between runs. |
+| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview and a right-click menu (`copy image`, `open`, `remove`).; `composer/disk.rs` keeps each session's unsent text in `~/.local/state/femme/drafts/` between runs. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
 | `src/ui.rs`, `src/ui/gallery.rs` | The skin's building blocks (window, title bar, card, buttons, icons, chips, dots, menus, the dot-grid desk); the gallery lays every helper out in every state. |
+| `src/ui/ctx.rs` | The right-click menu: `Menu`, a view its owner keeps among its children (items are a label and a callback; Esc and a click outside close it; `pin` keeps a card, such as a preview, on screen), and `card`, the rows alone, which the sidebar's row menu draws through. |
+| `src/ui/clip.rs` | The picture on the system clipboard: gpui where it can (macOS, Windows), `wl-copy` or `xclip` elsewhere; `png_of` makes the PNG that goes there from any raster. The board, the composer's chips and the transcript's thumbnails use it. |
 | `src/terminal/runs.rs` | Pure: `RowPatch` to background runs and same-style text runs, palette resolve. |
 | `src/terminal/element.rs` | `TerminalElement`: batches every row, paints all backgrounds then all text (shaped every frame), keeps the bottom rows and the cursor when the pane is shorter than the grid. |
 | `src/terminal/panel.rs`, `panel/tabs.rs` | `TerminalPanel`: one `TerminalPane` per terminal pane of the live sessions, the right panel's terminal tab (tabs, `+`, close) and the centre's main pane; the tab rules are pure. |
@@ -251,7 +253,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/transcript/{body,question,attach}.rs` | Pure: item bodies (JSON, also the cut ones of the blob tier), questions and their answers, `Attached:` lines. |
 | `src/transcript/{markdown,md_view}.rs` | pulldown-cmark folded into a block model (pure; it keeps each link's target and finds bare `http(s)://` addresses), and the block model as elements (a text with links is a gpui `InteractiveText`: a click on a link opens it in the browser). |
 | `src/transcript/faces.rs`, `faces/` | The bold, italic and bold-italic faces of Schibsted Grotesk (static instances cut from the family's variable files; gpui draws a variable file at its default weight only, so `**bold**` and `*italic*` came out plain), registered once by `Transcript::new`. |
-| `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (both gpui `img`, the picture fitted whole into its box); the list diff (pure). |
+| `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (both gpui `img`, the picture fitted whole into its box) and the thumbnails' right-click menu (`copy image`, `open`); the list diff (pure). |
 | `src/bench.rs` | Frame-time histograms from gpui's profiler (`bench` feature), probes, the report. |
 | `assets/fonts/` | VT323, JetBrains Mono NL (no ligatures), Schibsted Grotesk, Kaushan Script (all OFL). |
 | `assets/dots-{1x,2x}.png` | Desk dot-grid tiles (192 logical px, a multiple of the board's 6px period). |

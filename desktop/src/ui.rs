@@ -25,6 +25,8 @@ use crate::theme::{
     FONT_PIXEL, FONT_UI, INK, MUTED, MUTED_TEXT, PANEL, PAPER, RULE, STRIP_W, TITLE_SIZE,
 };
 
+pub mod clip;
+pub mod ctx;
 mod gallery;
 pub use gallery::gallery;
 

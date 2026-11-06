@@ -60,7 +60,6 @@ pub mod textedit;
 pub mod view;
 
 mod chrome;
-mod clip;
 mod input;
 mod paint;
 mod persist;

@@ -75,6 +75,8 @@ pub struct Composer {
     /// The permission mode the last render's pill showed, to re-render when it changes.
     last_permission: Option<String>,
     previews: Previews,
+    /// The right-click menu of the chips, and the preview its `open` keeps on screen.
+    ctx: Entity<crate::ui::ctx::Menu>,
     /// The daemon's slash commands (`Req::Commands`), names without the `/`; empty until it answers.
     commands: Vec<String>,
     /// When `Req::Commands` was last sent on this connection (`None`: not yet).
@@ -141,6 +143,7 @@ impl Composer {
             last_target: Target::NoSession,
             last_permission: None,
             previews: Rc::default(),
+            ctx: cx.new(crate::ui::ctx::Menu::new),
             commands: Vec::new(),
             asked: None,
             link_up: false,
@@ -1006,5 +1009,6 @@ impl Render for Composer {
             .w_full()
             .flex_none()
             .child(card)
+            .child(self.ctx.clone())
     }
 }
