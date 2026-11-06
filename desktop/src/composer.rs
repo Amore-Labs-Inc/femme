@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 
 mod chips;
+mod disk;
 mod draft;
 mod files;
 mod permission;
@@ -59,6 +60,8 @@ pub struct Composer {
     /// Made on the first render: a `TextareaState` needs a `Window`, which `new` does not have.
     input: Option<Entity<TextareaState>>,
     drafts: Drafts,
+    /// Where drafts are kept between runs (see [`disk`]); `None` when the environment names no home.
+    disk: Option<std::path::PathBuf>,
     /// The session changed: the next render puts its draft text into the input.
     reload: bool,
     /// The placeholder the input shows now.
@@ -130,6 +133,7 @@ impl Composer {
             focus: cx.focus_handle(),
             input: None,
             drafts: Drafts::default(),
+            disk: disk::default_dir(),
             reload: true,
             placeholder: "",
             input_empty: true,
@@ -157,6 +161,7 @@ impl Composer {
         // While `reload` is pending the input still holds the text of a session already parked.
         if let (Some(old), Some(input), false) = (self.session, &self.input, self.reload) {
             let text = input.read(cx).value().to_string();
+            self.keep(old, &text);
             self.drafts.park(old, text);
         }
         self.session = sid;
@@ -292,10 +297,16 @@ impl Composer {
     ) {
         if self.reload {
             self.reload = false;
-            let text = self
+            let mut text = self
                 .session
                 .map_or("", |sid| self.drafts.text(sid))
                 .to_owned();
+            // A fresh run: what was typed for the session before the app last closed.
+            if text.is_empty() {
+                if let (Some(sid), Some(dir)) = (self.session, &self.disk) {
+                    text = disk::load(dir, sid).unwrap_or_default();
+                }
+            }
             self.input_empty = text.is_empty();
             input.update(cx, |input, cx| {
                 input.set_value(text, window, cx);
@@ -338,6 +349,9 @@ impl Composer {
                     cx.notify();
                 }
                 let empty = input.read(cx).text().len() == 0;
+                if let Some(sid) = self.session {
+                    self.keep(sid, &input.read(cx).value());
+                }
                 let stale = self
                     .session
                     .and_then(|sid| self.drafts.get_mut(sid))
@@ -408,6 +422,9 @@ impl Composer {
         });
         // `set_value` sends no `Change`: what an edit would do is done here.
         self.input_empty = false;
+        if let Some(sid) = self.session {
+            self.keep(sid, &slash::complete(name));
+        }
         self.menu_off = false;
         if let Some(draft) = self.session.and_then(|sid| self.drafts.get_mut(sid)) {
             draft.notice = None;
@@ -614,12 +631,23 @@ impl Composer {
                     if input.read(cx).value() == text {
                         input.update(cx, |input, cx| input.set_value("", window, cx));
                         self.input_empty = true;
+                        self.keep(sid, "");
                     }
                 }
                 self.drafts.prune(sid);
             }
         }
         cx.notify();
+    }
+
+    /// Keeps `text` for `sid` on disk (see [`disk`]), so it is back after a quit. A draft that
+    /// cannot be written is only lost on quit: not worth a notice under the input.
+    fn keep(&self, sid: Sid, text: &str) {
+        if let Some(dir) = &self.disk {
+            if let Err(e) = disk::save(dir, sid, text) {
+                eprintln!("femme-desktop: draft of {sid} not saved: {e}");
+            }
+        }
     }
 
     /// Shows `line` under the input of `sid`'s draft.
