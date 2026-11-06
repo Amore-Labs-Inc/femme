@@ -1275,6 +1275,45 @@ pub(crate) fn commands(d: &Daemon) -> Vec<String> {
     names
 }
 
+/// Saves the commands once when no session has yet: a `claude -p /context` is answered without
+/// the model, and its init line lists them.
+pub(crate) async fn seed_commands(d: Weak<Daemon>) {
+    let Some(dm) = d.upgrade() else { return };
+    if dm.cfg.state_path("commands.json").exists() {
+        return;
+    }
+    let path = dm.sessions.path(&dm.cfg);
+    let Some(claude) = find_on_path("claude", &path) else {
+        return;
+    };
+    let mut cmd = tokio::process::Command::new(claude);
+    cmd.args([
+        "-p",
+        "--output-format=stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "/context",
+    ])
+    .current_dir(&dm.cfg.home)
+    .envs(dm.sessions.child_env(&dm.cfg, &path))
+    .stdin(std::process::Stdio::null())
+    .kill_on_drop(true);
+    drop(dm);
+    let Ok(out) = tokio::time::timeout(Duration::from_secs(60), cmd.output()).await else {
+        return;
+    };
+    let Ok(out) = out else { return };
+    let mut driver = driver_for(Agent::Claude);
+    for line in out.stdout.split(|&b| b == b'\n') {
+        for ev in driver.on_line(0, line, &mut Out::default()) {
+            if let (AgentEvent::Commands(c), Some(d)) = (ev, d.upgrade()) {
+                save_commands(&d, &c);
+                return;
+            }
+        }
+    }
+}
+
 // ---- events to rows (pure) ----------------------------------------------------------------------
 
 /// What the driver's events leave behind between batches.
