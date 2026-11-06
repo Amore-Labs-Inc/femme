@@ -11,8 +11,8 @@ use super::{
     title_bar, title_button, win, Glyph, Kind, State,
 };
 use crate::theme::{
-    self, accent, accent_soft, accent_strong, bar, ink, neon, on_bar, FONT_BRAND, FONT_MONO,
-    FONT_PIXEL, FONT_UI, RULE, TITLE_SIZE,
+    self, accent, accent_soft, accent_strong, bar, ink, neon, on_accent_strong, on_bar, FONT_BRAND,
+    FONT_MONO, FONT_PIXEL, FONT_UI, RULE, TITLE_SIZE,
 };
 
 /// `#RRGGBB` of an opaque colour.
@@ -250,6 +250,7 @@ fn rows_block() -> Div {
             .child(
                 row("g-r-4", false)
                     .bg(accent_strong())
+                    .text_color(on_accent_strong())
                     .child(dot(theme::danger()))
                     .child("wide chars"),
             ),
@@ -404,7 +405,12 @@ fn column_surfaces() -> Div {
                                     .child(
                                         menu_item("g-m-2").bg(accent()).child("check for updates"),
                                     )
-                                    .child(menu_item("g-m-3").bg(accent_strong()).child("accounts"))
+                                    .child(
+                                        menu_item("g-m-3")
+                                            .bg(accent_strong())
+                                            .text_color(on_accent_strong())
+                                            .child("accounts"),
+                                    )
                                     .child(
                                         menu_item("g-m-4")
                                             .child("reconnect")
