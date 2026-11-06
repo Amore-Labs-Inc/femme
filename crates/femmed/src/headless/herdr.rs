@@ -3,6 +3,11 @@
 //! transcript (`~/.claude/projects/*/<uuid>.jsonl`) is tailed through the Claude driver into
 //! transcript items, and a prompt from a client is typed into the pane by `herdr agent prompt`.
 //!
+//! Subagents (Claude's `Agent` tool) write their own transcripts beside it,
+//! `<uuid>/subagents/agent-<id>.jsonl` with `agent-<id>.meta.json` naming the spawning tool call
+//! (`toolUseId`); those are tailed too, their lines marked with that call as `parent_tool_use_id`
+//! the way the stream marks a subagent's, so their items nest under the call.
+//!
 //! A mirrored session is `Mode::Headless` with owner `herdr:<herdr session>:<pane>` and the
 //! conversation's uuid as `agent_sid`, so clients show it like any headless chat. Its status is
 //! herdr's. Closing it in FEMME only hides it: the pane runs on, and the same conversation in the
@@ -305,7 +310,24 @@ struct Tail {
     fold: FoldState,
     model: Option<String>,
     pending: Vec<Put>,
+    /// The subagent transcripts beside it, by path.
+    // ponytail: their offsets live only here, so a daemon restart reads them again from the start;
+    // that writes nothing (the items are the same), persist them if the reading ever shows
+    subs: HashMap<PathBuf, SubTail>,
 }
+
+/// A subagent's transcript, read on from where it was read.
+struct SubTail {
+    /// The `Agent` tool call that spawned it.
+    parent: String,
+    lines: SpoolLines,
+    /// The file is read up to here.
+    read: u64,
+}
+
+/// What a tick read from a subagent's transcript: its path, its parent when it is new, where the
+/// data starts and the data (`None`: shorter than read, rewritten).
+type SubRead = (PathBuf, Option<String>, u64, Option<Vec<u8>>);
 
 impl Tail {
     fn new(sid: Sid, uuid: String, committed: u64) -> Tail {
@@ -321,6 +343,7 @@ impl Tail {
             fold: FoldState::default(),
             model: None,
             pending: Vec::new(),
+            subs: HashMap::new(),
         }
     }
 
@@ -341,6 +364,7 @@ impl Tail {
             return;
         };
         let at = self.read;
+        let dir = path.with_extension("").join("subagents");
         let data = match tokio::task::spawn_blocking(move || read_from(&path, at)).await {
             Ok(Ok(Some(data))) => data,
             Ok(Ok(None)) => {
@@ -350,7 +374,15 @@ impl Tail {
             }
             _ => return,
         };
-        if data.is_empty() && self.pending.is_empty() {
+        let known: Vec<(PathBuf, u64)> =
+            self.subs.iter().map(|(p, t)| (p.clone(), t.read)).collect();
+        let subs = tokio::task::spawn_blocking(move || read_subs(&dir, &known))
+            .await
+            .unwrap_or_default();
+        let sub_data = subs
+            .iter()
+            .any(|s| s.3.as_ref().is_none_or(|d| !d.is_empty()));
+        if data.is_empty() && !sub_data && self.pending.is_empty() {
             return;
         }
         self.lines.push(at, &data);
@@ -378,6 +410,9 @@ impl Tail {
                 self.model = f.model;
             }
         }
+        for (path, parent, at, data) in subs {
+            self.tail_sub(path, parent, at, data, &mut puts, &mut out);
+        }
         let end = self.lines.offset();
         if puts.is_empty() && end == self.committed {
             return;
@@ -400,6 +435,88 @@ impl Tail {
             let _ = d.update(sid, |s| s.model = Some(m));
         }
     }
+}
+
+impl Tail {
+    /// Runs what was read from one subagent transcript through the driver as that subagent's.
+    fn tail_sub(
+        &mut self,
+        path: PathBuf,
+        parent: Option<String>,
+        at: u64,
+        data: Option<Vec<u8>>,
+        puts: &mut Vec<Put>,
+        out: &mut Out,
+    ) {
+        let t = match (self.subs.entry(path), parent) {
+            (std::collections::hash_map::Entry::Occupied(e), _) => e.into_mut(),
+            (std::collections::hash_map::Entry::Vacant(e), Some(parent)) => e.insert(SubTail {
+                parent,
+                lines: SpoolLines::new(0),
+                read: 0,
+            }),
+            (std::collections::hash_map::Entry::Vacant(_), None) => return,
+        };
+        let Some(data) = data else {
+            // rewritten: read it again (the items it gives again are the same ones)
+            t.lines = SpoolLines::new(0);
+            t.read = 0;
+            return;
+        };
+        t.lines.push(at, &data);
+        t.read = at + data.len() as u64;
+        while let Some((at, line)) = t.lines.next_line() {
+            let Some(line) = sub_line(&line, &t.parent) else {
+                continue;
+            };
+            let events = self.driver.on_line(at, &line, out);
+            out.stdin.clear();
+            let f = fold(
+                &mut self.fold,
+                self.sid,
+                &format!("d{}:{at}", t.parent),
+                events,
+                now_ms(),
+            );
+            puts.extend(f.puts);
+        }
+    }
+}
+
+/// Reads on in every subagent transcript of `dir`: the `known` ones from where they were read,
+/// a new one from the start once its `.meta.json` names the tool call that spawned it.
+fn read_subs(dir: &Path, known: &[(PathBuf, u64)]) -> Vec<SubRead> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let path = e.path();
+        let Some(stem) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".jsonl"))
+            .filter(|n| n.starts_with("agent-"))
+        else {
+            continue;
+        };
+        let (parent, at) = match known.iter().find(|(p, _)| *p == path) {
+            Some((_, at)) => (None, *at),
+            None => {
+                let meta = std::fs::read(dir.join(format!("{stem}.meta.json")))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+                let Some(id) = meta.as_ref().and_then(|m| m["toolUseId"].as_str()) else {
+                    continue; // not said yet: next tick
+                };
+                (Some(id.to_owned()), 0)
+            }
+        };
+        if let Ok(data) = read_from(&path, at) {
+            out.push((path, parent, at, data));
+        }
+    }
+    out
 }
 
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
@@ -430,8 +547,28 @@ fn read_from(path: &Path, at: u64) -> std::io::Result<Option<Vec<u8>>> {
 /// or `None` for the file's own bookkeeping. A typed prompt becomes the replay the stream would
 /// echo (`isReplay`), and a turn's `turn_duration` the `result` that ends it.
 fn disk_line(line: &[u8]) -> Option<Vec<u8>> {
-    let mut v: Value = serde_json::from_slice(line).ok()?;
-    if v["isSidechain"] == true || v["isMeta"] == true {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    if v["isSidechain"] == true {
+        return None;
+    }
+    serde_json::to_vec(&disk_value(v)?).ok()
+}
+
+/// A line of a subagent's transcript (every one a sidechain) as the stream shows a subagent's:
+/// its messages only, marked with the spawning tool call `parent`.
+fn sub_line(line: &[u8], parent: &str) -> Option<Vec<u8>> {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    if !matches!(v["type"].as_str(), Some("assistant" | "user")) {
+        return None;
+    }
+    let mut v = disk_value(v)?;
+    v["parent_tool_use_id"] = Value::String(parent.to_owned());
+    serde_json::to_vec(&v).ok()
+}
+
+/// [`disk_line`] on a parsed line, sidechain or not.
+fn disk_value(mut v: Value) -> Option<Value> {
+    if v["isMeta"] == true {
         return None;
     }
     match v["type"].as_str()? {
@@ -469,7 +606,7 @@ fn disk_line(line: &[u8]) -> Option<Vec<u8>> {
         "system" => {}
         _ => return None,
     }
-    serde_json::to_vec(&v).ok()
+    Some(v)
 }
 
 // ---- the way in ---------------------------------------------------------------------------------
@@ -641,6 +778,30 @@ mod tests {
         assert_eq!(got[&("/s.sock".to_owned(), "wA:p1".to_owned())], "c-1");
     }
 
+    #[test]
+    fn a_subagents_file_reads_as_its_stream() {
+        let sub = |v: Value| {
+            sub_line(v.to_string().as_bytes(), "toolu_A")
+                .map(|b| serde_json::from_slice::<Value>(&b).unwrap())
+        };
+        let prompt =
+            sub(serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"ls"}}))
+                .unwrap();
+        assert_eq!(prompt["parent_tool_use_id"], "toolu_A");
+        assert_eq!(prompt["isReplay"], true);
+        let said = serde_json::json!({"type":"assistant","isSidechain":true,
+            "message":{"id":"s1","content":[{"type":"text","text":"x"}]}});
+        assert_eq!(sub(said).unwrap()["parent_tool_use_id"], "toolu_A");
+        for skipped in [
+            serde_json::json!({"type":"attachment","isSidechain":true}),
+            serde_json::json!({"type":"api-request","agentId":"a"}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","durationMs":5}),
+            serde_json::json!({"type":"user","isSidechain":true,"isMeta":true,"message":{"content":"x"}}),
+        ] {
+            assert_eq!(sub(skipped), None);
+        }
+    }
+
     /// A temp home with a store and one transcript file.
     fn daemon() -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
         let dir = tempfile::Builder::new()
@@ -738,5 +899,159 @@ mod tests {
             .read(|c| sessions::list_sessions(c, false))
             .unwrap()
             .is_empty());
+    }
+
+    const AGENT_TURN: &str = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"look"}}
+{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"prompt":"ls"}}]}}
+"#;
+
+    const SUB: &str = r#"{"type":"user","isSidechain":true,"uuid":"s0","message":{"role":"user","content":"ls"}}
+{"type":"attachment","isSidechain":true,"attachment":{}}
+{"type":"api-request","agentId":"x"}
+{"type":"assistant","isSidechain":true,"message":{"id":"sm1","content":[{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}]}}
+"#;
+
+    #[tokio::test]
+    async fn a_subagents_transcript_is_tailed_under_its_agent_call() {
+        let (d, dir) = daemon();
+        let proj = dir.path().join(".claude/projects/-w");
+        let subs = proj.join("u-1/subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        std::fs::write(proj.join("u-1.jsonl"), AGENT_TURN).unwrap();
+        // no meta yet: not read
+        std::fs::write(subs.join("agent-x1.jsonl"), SUB).unwrap();
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        let tick = |tails: &mut HashMap<Sid, Tail>| {
+            let d = d.clone();
+            let tails = std::mem::take(tails);
+            async move {
+                let mut tails = tails;
+                for t in tails.values_mut() {
+                    t.tail(&d).await;
+                }
+                tails
+            }
+        };
+        let items = |d: &Daemon| {
+            let mut v = d
+                .store
+                .read(|c| store_items::page_items(c, sid, None, 100))
+                .unwrap();
+            v.reverse();
+            v.into_iter()
+                .map(|i| (i.item_id, i.kind, i.status, i.parent))
+                .collect::<Vec<_>>()
+        };
+        tails = tick(&mut tails).await;
+        assert!(items(&d).iter().all(|i| i.3.is_none()));
+        assert_eq!(items(&d).len(), 2);
+
+        // the meta names the call: the file is read, its items nest under it
+        std::fs::write(
+            subs.join("agent-x1.meta.json"),
+            r#"{"agentType":"Explore","description":"look","toolUseId":"toolu_A","finished":false}"#,
+        )
+        .unwrap();
+        tails = tick(&mut tails).await;
+        let a = Some("toolu_A".to_owned());
+        assert_eq!(
+            items(&d),
+            [
+                (
+                    "m1".into(),
+                    ItemKind::UserMessage,
+                    ItemStatus::Completed,
+                    None
+                ),
+                (
+                    "toolu_A".into(),
+                    ItemKind::ToolCall,
+                    ItemStatus::InProgress,
+                    None
+                ),
+                (
+                    "s0".into(),
+                    ItemKind::UserMessage,
+                    ItemStatus::Completed,
+                    a.clone()
+                ),
+                (
+                    "toolu_B".into(),
+                    ItemKind::ToolCall,
+                    ItemStatus::InProgress,
+                    a.clone()
+                ),
+            ]
+        );
+
+        // it goes on mid-turn, then the call returns and the turn ends; nothing is read twice
+        let append = |p: PathBuf, s: &str| {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(p)
+                .unwrap()
+                .write_all(s.as_bytes())
+                .unwrap();
+        };
+        append(
+            subs.join("agent-x1.jsonl"),
+            concat!(
+                r#"{"type":"user","isSidechain":true,"uuid":"s2","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"x.rs"}]}}"#,
+                "\n",
+                r#"{"type":"assistant","isSidechain":true,"message":{"id":"sm2","content":[{"type":"text","text":"x.rs"}]}}"#,
+                "\n"
+            ),
+        );
+        append(
+            proj.join("u-1.jsonl"),
+            concat!(
+                r#"{"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"x.rs"}]}}"#,
+                "\n",
+                r#"{"type":"system","subtype":"turn_duration","durationMs":12}"#,
+                "\n"
+            ),
+        );
+        tails = tick(&mut tails).await;
+        tails = tick(&mut tails).await;
+        let got = items(&d);
+        let sub: Vec<_> = got
+            .iter()
+            .filter(|i| i.3.is_some())
+            .map(|i| (i.0.as_str(), i.1, i.2))
+            .collect();
+        assert_eq!(
+            sub,
+            [
+                ("s0", ItemKind::UserMessage, ItemStatus::Completed),
+                ("toolu_B", ItemKind::ToolCall, ItemStatus::Completed),
+                (
+                    "toolu_B:result",
+                    ItemKind::ToolResult,
+                    ItemStatus::Completed
+                ),
+                ("sm2:0", ItemKind::AssistantMessage, ItemStatus::Completed),
+            ]
+        );
+        let main: Vec<_> = got
+            .iter()
+            .filter(|i| i.3.is_none())
+            .map(|i| (i.0.as_str(), i.1, i.2))
+            .collect();
+        assert_eq!(main.len(), 4, "{main:?}");
+        assert_eq!(
+            main[1],
+            ("toolu_A", ItemKind::ToolCall, ItemStatus::Completed)
+        );
+        assert_eq!(main[3].1, ItemKind::TurnEnd);
+        assert_eq!(
+            tails[&sid].subs.values().next().unwrap().read,
+            std::fs::metadata(subs.join("agent-x1.jsonl"))
+                .unwrap()
+                .len()
+        );
     }
 }
