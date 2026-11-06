@@ -33,6 +33,7 @@ use gpui::{
     Render, Rgba, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _,
     Styled as _, Subscription, Window,
 };
+use gpui_component::input::Escape;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
@@ -53,6 +54,8 @@ pub const STRIP: f32 = 28.;
 // The strip must be narrower than the list, or collapsing would widen the sidebar.
 const _: () = assert!(STRIP < WIDTH);
 /// Height of a row of the expanded list.
+mod ctx;
+
 const ROW_H: f32 = 46.;
 /// Height of a dot cell of the collapsed strip.
 const CELL_H: f32 = 28.;
@@ -298,6 +301,8 @@ pub struct Sidebar {
     folded: HashSet<String>,
     /// A `+ claude` request is out: a second click would queue a second session.
     creating: bool,
+    /// The right-click menu open on a row.
+    menu: Option<ctx::Menu>,
     focus: FocusHandle,
     scroll: ScrollHandle,
     _net: Option<Subscription>,
@@ -331,6 +336,7 @@ impl Sidebar {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _net: watch,
+            menu: None,
             _focus: Vec::new(),
         }
     }
@@ -490,6 +496,11 @@ impl Sidebar {
                 Some(sid) => self.open(sid, cx),
                 None => return,
             },
+            "escape" => {
+                if !self.close_menu(cx) {
+                    return;
+                }
+            }
             _ => return,
         }
         cx.stop_propagation();
@@ -519,7 +530,7 @@ impl Sidebar {
         .detach();
     }
 
-    /// The row's `×`: closes the session (any agent; a crashed one too, whose holder is gone). The
+    /// The menu's `close`: closes the session (any agent; a crashed one too, whose holder is gone). The
     /// daemon's row change takes it off the list, and the centre moves on if it was on show.
     fn close(&mut self, sid: Sid, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
@@ -605,6 +616,15 @@ impl Sidebar {
             .pr(px(8.))
             .on_hover(cx.listener(Self::hover_changed))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
+            // The right button opens the row's menu (rename, close) and gives the sidebar the keys.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.focus, cx);
+                    this.open_menu(sid, cx);
+                }),
+            )
             .child(dot(r.dot))
             .child(
                 div()
@@ -622,15 +642,8 @@ impl Sidebar {
                     )
                     .child(second),
             )
-            .child(
-                icon_button(SharedString::from(format!("sb-x-{sid}")), Glyph::Close).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.close(sid, cx);
-                    }),
-                ),
-            )
             .when(cursor, |d| d.child(ring()))
+            .children(self.menu_for(sid, cx))
     }
 
     /// A project's header: the chevron, its folder's name, and on hover `+` for a new Claude
@@ -811,9 +824,22 @@ impl Render for Sidebar {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     window.focus(&this.focus, cx);
+                    this.close_menu(cx);
                     cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.close_menu(cx);
+                }),
+            )
+            // Esc in the rename box reaches here as the input's action.
+            .on_action(cx.listener(|this, _: &Escape, _, cx| {
+                if this.close_menu(cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key))
             .flex()
             .flex_col()
