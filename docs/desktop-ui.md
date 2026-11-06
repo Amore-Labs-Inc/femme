@@ -43,6 +43,21 @@ Keep it current: when your module's public API changes, edit your section in the
   goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
   ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
   message sent while a subagent is on show goes to the session as always.
+- **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
+  selects across paragraphs, list items and rows, in reading order (pink, the colour of the
+  composer's selection), a double click selects a word, a triple click the paragraph (the text
+  up to a line break: a line of a code block or of a message), a click elsewhere clears. `ctrl-c` copies
+  the selection (paragraphs apart by a blank line, list items and table cells one per line, code as
+  it is, no markers or bullets) unless the composer has a selection of its own, which it copies
+  instead; `Esc` clears it (and only then goes on to its other work: back from a subagent, interrupt).
+  The pointer is an I-beam over text, and a drag never takes the keyboard from the composer. Text is
+  built with `transcript/select.rs`'s `Selectable` (a `StyledText` that takes part in gpui-base's
+  window-level text selection, with the links of its spans: a click that did not drag opens one),
+  never with a plain `div().child("text")`: only buttons and chips are plain. The list builds only
+  the rows on screen and gpui-base drops a selection whose end row is gone, so a selection lasts
+  while the rows of its two ends stay in view (at least in part): a drag can scroll the list at its
+  edge only while the row it began in still shows, and scrolling that row away ends the selection.
+  A text a row cuts short with an ellipsis cannot be selected (its open row shows it whole).
 - **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
   the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
