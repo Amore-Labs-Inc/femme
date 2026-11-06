@@ -1,6 +1,7 @@
 //! The attachment chips above the input, and the preview that opens while the pointer rests on one.
-//! Plain `div`s in the FEMME skin; gpui-component's `Attachment` and `Spinner` are themed for other
-//! looks and draw their icons from SVG assets this app does not register.
+//! A right click on a chip opens its menu (`copy image` for a picture, `open`, `remove`), drawn by
+//! [`crate::ui::ctx`]. Plain `div`s in the FEMME skin; gpui-component's `Attachment` and `Spinner`
+//! are themed for other looks and draw their icons from SVG assets this app does not register.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -8,11 +9,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use femme_proto::Sid;
 use gpui::{
     div, img, prelude::FluentBuilder as _, px, relative, Anchor, Animation, AnimationExt as _,
     AnyElement, App, AppContext as _, Context, Div, Entity, Image, InteractiveElement as _,
-    IntoElement, ObjectFit, ParentElement as _, Pixels, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _,
+    IntoElement, MouseButton, MouseDownEvent, ObjectFit, ParentElement as _, Pixels, Point,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _,
 };
 use gpui_component::hover_card::HoverCard;
 use gpui_component::scroll::ScrollableElement as _;
@@ -23,7 +25,8 @@ use super::Composer;
 use crate::theme::{
     BAD, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED, PANEL, PAPER, RULE,
 };
-use crate::ui::{dialog, meta, ruled};
+use crate::ui::ctx::Item;
+use crate::ui::{clip, dialog, meta, ruled};
 use crate::viewer::FileView;
 
 /// The viewer entities behind the previews of non-image chips, made on the first hover and kept
@@ -64,6 +67,7 @@ pub(super) fn row(
 }
 
 /// What the preview shows of a chip, cloned so the popover owns it.
+#[derive(Clone)]
 struct Preview {
     id: ChipId,
     name: String,
@@ -71,6 +75,22 @@ struct Preview {
     image: Option<Arc<Image>>,
     dims: Option<(u32, u32)>,
     error: Option<String>,
+}
+
+impl Preview {
+    fn of(c: &Chip) -> Self {
+        Preview {
+            id: c.id,
+            name: c.name.clone(),
+            data: c.data.clone(),
+            image: c.image.clone(),
+            dims: c.dims,
+            error: match &c.upload {
+                Upload::Failed(why) => Some(why.clone()),
+                _ => None,
+            },
+        }
+    }
 }
 
 fn chip(c: &Chip, previews: &Previews, cx: &mut Context<Composer>) -> impl IntoElement {
@@ -90,19 +110,16 @@ fn chip(c: &Chip, previews: &Previews, cx: &mut Context<Composer>) -> impl IntoE
     .child(button(("chip-x", c.id), "×").on_click(cx.listener({
         let id = c.id;
         move |this, _, _, cx| this.remove_chip(id, cx)
-    })));
+    })))
+    .on_mouse_down(
+        MouseButton::Right,
+        cx.listener({
+            let id = c.id;
+            move |this, ev: &MouseDownEvent, _, cx| this.chip_menu(id, ev.position, cx)
+        }),
+    );
 
-    let preview = Preview {
-        id: c.id,
-        name: c.name.clone(),
-        data: c.data.clone(),
-        image: c.image.clone(),
-        dims: c.dims,
-        error: match &c.upload {
-            Upload::Failed(why) => Some(why.clone()),
-            _ => None,
-        },
-    };
+    let preview = Preview::of(c);
     let previews = previews.clone();
     HoverCard::new(("chip-hover", c.id))
         .anchor(Anchor::BottomLeft)
@@ -111,6 +128,101 @@ fn chip(c: &Chip, previews: &Previews, cx: &mut Context<Composer>) -> impl IntoE
         .appearance(false)
         .trigger(body)
         .content(move |_, _, cx| preview_card(&preview, &previews, cx))
+}
+
+/// One row of a chip's menu.
+enum Entry {
+    /// The picture, to the clipboard.
+    Copy(Arc<Image>),
+    /// The chip's preview, kept on screen.
+    Open,
+    /// The chip's `×`.
+    Remove,
+}
+
+impl Entry {
+    fn label(&self) -> &'static str {
+        match self {
+            Entry::Copy(_) => "copy image",
+            Entry::Open => "open",
+            Entry::Remove => "remove",
+        }
+    }
+}
+
+/// The rows of a chip's menu: `copy image` when the chip is a picture that can be copied, then
+/// `open` and `remove`.
+fn entries(image: Option<&Arc<Image>>) -> Vec<Entry> {
+    let copy = image
+        .filter(|i| clip::copyable(i))
+        .map(|i| Entry::Copy(i.clone()));
+    copy.into_iter()
+        .chain([Entry::Open, Entry::Remove])
+        .collect()
+}
+
+impl Composer {
+    /// The menu of the chip `id`, opened at `at` by a right click on it.
+    pub(super) fn chip_menu(&mut self, id: ChipId, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(sid) = self.session else { return };
+        let Some(chip) = self.drafts.get(sid).and_then(|d| d.chip(id)) else {
+            return;
+        };
+        let (preview, previews) = (Preview::of(chip), self.previews.clone());
+        let items = entries(chip.image.as_ref())
+            .into_iter()
+            .map(|entry| {
+                let label = entry.label();
+                match entry {
+                    Entry::Copy(image) => {
+                        let name = chip.name.clone();
+                        Item::new(
+                            label,
+                            cx.listener(move |this, _, _, cx| {
+                                this.copy_chip(sid, &name, &image, cx)
+                            }),
+                        )
+                    }
+                    Entry::Open => {
+                        let (preview, previews) = (preview.clone(), previews.clone());
+                        Item::new(
+                            label,
+                            cx.listener(move |this, _, _, cx| {
+                                let (preview, previews) = (preview.clone(), previews.clone());
+                                this.ctx.update(cx, |menu, cx| {
+                                    let card = move |_: &mut _, cx: &mut App| {
+                                        preview_card(&preview, &previews, cx).into_any_element()
+                                    };
+                                    menu.pin(at, card, cx)
+                                });
+                            }),
+                        )
+                    }
+                    Entry::Remove => Item::new(
+                        label,
+                        cx.listener(move |this, _, _, cx| this.remove_chip(id, cx)),
+                    )
+                    .danger(),
+                }
+            })
+            .collect();
+        self.ctx.update(cx, |menu, cx| menu.open(at, items, cx));
+    }
+
+    /// `copy image`: the picture goes to the clipboard; a helper that fails is said under the input.
+    fn copy_chip(&mut self, sid: Sid, name: &str, image: &Arc<Image>, cx: &mut Context<Self>) {
+        let copied = clip::copy_image(image, cx);
+        let name = name.to_owned();
+        cx.spawn(async move |this, cx| {
+            if let Err(why) = copied.await {
+                this.update(cx, |this, cx| {
+                    this.notice(sid, format!("could not copy {name}: {why}"), cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
 }
 
 /// A small VT323 button inside a chip (`×`, `retry`).
@@ -290,4 +402,33 @@ fn preview_card(p: &Preview, previews: &Previews, cx: &mut App) -> impl IntoElem
             })
             .child(body),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::ImageFormat;
+
+    use super::*;
+
+    fn labels(image: Option<&Arc<Image>>) -> Vec<&'static str> {
+        entries(image).iter().map(Entry::label).collect()
+    }
+
+    fn picture(format: ImageFormat) -> Arc<Image> {
+        Arc::new(Image::from_bytes(format, Vec::new()))
+    }
+
+    #[test]
+    fn a_picture_is_copied_opened_or_removed() {
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Gif] {
+            let image = picture(format);
+            assert_eq!(labels(Some(&image)), ["copy image", "open", "remove"]);
+        }
+    }
+
+    #[test]
+    fn a_file_or_a_vector_picture_is_only_opened_or_removed() {
+        assert_eq!(labels(None), ["open", "remove"]);
+        assert_eq!(labels(Some(&picture(ImageFormat::Svg))), ["open", "remove"]);
+    }
 }
