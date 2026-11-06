@@ -34,7 +34,7 @@ impl Board {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::rgba8(0x000000, 0.25))
+            .bg(theme::scrim())
             .occlude()
             .key_context("Board")
             .track_focus(&self.focus)

@@ -21,7 +21,7 @@ use gpui_component::tooltip::Tooltip;
 use super::{FemmeApp, ToggleBoard, ToggleTerminal};
 use crate::frame::{self, Settle, Tab};
 use crate::motion::Appear;
-use crate::theme::{self, GUTTER, STRIP_W, SURFACE, TOP_BAR_H};
+use crate::theme::{self, surface, GUTTER, STRIP_W, TOP_BAR_H};
 use crate::ui::{self, Glyph};
 
 /// How long the pointer rests on the strip before the panel opens.
@@ -243,7 +243,7 @@ impl FemmeApp {
                         div()
                             .flex_1()
                             .min_h_0()
-                            .bg(SURFACE)
+                            .bg(surface())
                             .overflow_hidden()
                             .child(body),
                     ),

@@ -16,8 +16,8 @@ use super::model::{Account, AccountList, Key, Meta, Usage};
 use super::{clock, AccountsOverlay, CapStatus, Load};
 use crate::motion::Appear;
 use crate::theme::{
-    self, BAD, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, MUTED, PANEL, PAPER, PAUSE,
-    RULE, TB_SIZE, WORK,
+    self, bad, bar, hover, ink, muted, on_bar, panel, paper, pause, work, BODY_SIZE, FONT_MONO,
+    FONT_PIXEL, FONT_UI, RULE, TB_SIZE,
 };
 use crate::ui::{button, button_dark, card, dialog, meta, ruled, ruled_sides, st};
 
@@ -41,11 +41,11 @@ pub(super) fn cap_text(cap: Option<u8>) -> String {
 }
 
 /// `.empty`: a muted, centred line where a list would be (red when it is an error).
-fn empty(text: impl Into<SharedString>, bad: bool) -> Div {
+fn empty(text: impl Into<SharedString>, error: bool) -> Div {
     div()
         .py(px(14.))
         .text_center()
-        .text_color(if bad { BAD } else { MUTED })
+        .text_color(if error { bad() } else { muted() })
         .child(text.into())
 }
 
@@ -57,7 +57,7 @@ fn active_bar() -> Div {
         .top_0()
         .bottom_0()
         .w(px(6.))
-        .bg(WORK)
+        .bg(work())
 }
 
 /// `.meter`: a bar `fill` (0 to 1) full, amber when the window has reached its cap.
@@ -66,12 +66,12 @@ fn meter(fill: f32, hot: bool) -> Div {
         div()
             .flex_1()
             .h(px(12.))
-            .bg(PAPER)
+            .bg(paper())
             .child(
                 div()
                     .h_full()
                     .w(relative(fill))
-                    .bg(if hot { PAUSE } else { INK }),
+                    .bg(if hot { pause() } else { ink() }),
             ),
     )
 }
@@ -106,10 +106,10 @@ fn title_button(id: &'static str, label: &'static str) -> Stateful<Div> {
             .text_size(px(18.))
             .line_height(relative(1.))
             .cursor_pointer()
-            .hover(|s| s.bg(HOVER))
+            .hover(|s| s.bg(hover()))
             .child(label),
     )
-    .border_color(PAPER)
+    .border_color(on_bar())
 }
 
 /// A text box of the page: the input in a ruled paper frame.
@@ -119,7 +119,7 @@ fn field(state: &Entity<InputState>) -> Div {
             .h(px(36.))
             .flex()
             .items_center()
-            .bg(PAPER)
+            .bg(paper())
             .child(Input::new(state).appearance(false)),
     )
 }
@@ -132,7 +132,7 @@ fn cap_box(state: &Entity<InputState>) -> Div {
             .h(px(28.))
             .flex()
             .items_center()
-            .bg(PAPER)
+            .bg(paper())
             .child(Input::new(state).appearance(false).small()),
     )
 }
@@ -154,7 +154,7 @@ impl AccountsOverlay {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::rgba8(0x000000, 0.25))
+            .bg(theme::scrim())
             .opacity(a.opacity())
             .occlude()
             .key_context("Accounts")
@@ -162,7 +162,7 @@ impl AccountsOverlay {
             .font_family(FONT_UI)
             .text_size(BODY_SIZE)
             .line_height(relative(1.4))
-            .text_color(INK)
+            .text_color(ink())
             .on_key_down(cx.listener(|t, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
                     t.dismiss(window, cx);
@@ -228,8 +228,8 @@ impl AccountsOverlay {
             .gap(px(8.))
             .px(px(8.))
             .py(px(3.))
-            .bg(INK)
-            .text_color(PAPER)
+            .bg(bar())
+            .text_color(on_bar())
             .font_family(FONT_PIXEL)
             .text_size(TB_SIZE)
             .line_height(relative(1.))
@@ -285,9 +285,9 @@ impl AccountsOverlay {
             .items_center()
             .gap(px(8.))
             .child(format!("{} · {}", a.number, a.title))
-            .when(a.active, |d| d.child(st("active", WORK)))
-            .when(a.disabled, |d| d.child(st("disabled", MUTED)))
-            .children(a.scoped.iter().map(|s| st(s.tag(offset), INK)))
+            .when(a.active, |d| d.child(st("active", work())))
+            .when(a.disabled, |d| d.child(st("disabled", muted())))
+            .children(a.scoped.iter().map(|s| st(s.tag(offset), ink())))
             .children(switch);
         let bars = a.bars().into_iter().map(|(label, usage)| {
             let cap = if label == "5h" { five_cap } else { caps.weekly };
@@ -312,8 +312,8 @@ impl AccountsOverlay {
         let status = match &row.status {
             CapStatus::Idle => None,
             CapStatus::Saving => Some(meta("saving")),
-            CapStatus::Saved => Some(meta("saved").text_color(WORK)),
-            CapStatus::Bad(why) => Some(meta(why.clone()).text_color(BAD)),
+            CapStatus::Saved => Some(meta("saved").text_color(work())),
+            CapStatus::Bad(why) => Some(meta(why.clone()).text_color(bad())),
         };
         Some(
             div()
@@ -356,7 +356,7 @@ impl AccountsOverlay {
         let rows = div().flex().flex_col().gap(px(6.));
         let rows = match &self.keys {
             Load::Loading => rows.child(meta("loading keys")),
-            Load::Failed(why) => rows.child(meta(why.clone()).text_color(BAD)),
+            Load::Failed(why) => rows.child(meta(why.clone()).text_color(bad())),
             Load::Ready(keys) if keys.is_empty() => rows.child(meta("no keys yet")),
             Load::Ready(keys) => rows.children(keys.iter().map(|k| self.key_row(k, now, cx))),
         };
@@ -459,7 +459,7 @@ impl AccountsOverlay {
             );
         }
         if let Some(why) = &k.error {
-            row = row.child(meta(why.clone()).text_color(BAD));
+            row = row.child(meta(why.clone()).text_color(bad()));
         }
         row
     }
@@ -469,7 +469,7 @@ impl AccountsOverlay {
         let (name, key) = self.secret.as_ref()?;
         Some(ruled(
             div()
-                .bg(PANEL)
+                .bg(panel())
                 .p(px(8.))
                 .flex()
                 .flex_col()
@@ -574,8 +574,8 @@ impl AccountsOverlay {
                     .flex_none()
                     .px(px(8.))
                     .py(px(2.))
-                    .bg(PAPER)
-                    .text_color(if n.bad { BAD } else { WORK })
+                    .bg(paper())
+                    .text_color(if n.bad { bad() } else { work() })
                     .child(n.text.clone()),
                 px(0.),
                 px(0.),
@@ -590,7 +590,7 @@ impl AccountsOverlay {
             .py(px(8.))
             .text_center()
             .text_size(px(13.))
-            .text_color(MUTED)
+            .text_color(muted())
             .child(usage_line(&self.meta))
     }
 }
