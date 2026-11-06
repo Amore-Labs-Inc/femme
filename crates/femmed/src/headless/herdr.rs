@@ -69,7 +69,7 @@ pub(crate) async fn run(d: Weak<Daemon>) {
         let Some(d) = d.upgrade() else { return };
         if n % 2 == 0 {
             // a herdr that does not answer changes nothing: no pane is taken for gone
-            if let Some(panes) = list(&bin).await {
+            if let Some(panes) = list(&bin, &d.cfg.home).await {
                 sync(&d, &bin, &panes, &mut tails).await;
             }
         }
@@ -79,8 +79,11 @@ pub(crate) async fn run(d: Weak<Daemon>) {
     }
 }
 
-/// Every Claude pane of every running herdr session.
-async fn list(bin: &str) -> Option<Vec<HPane>> {
+/// Every Claude pane of every running herdr session. The conversation is Claude's own word for it
+/// (`~/.claude/sessions/<pid>.json`) when there is one: herdr takes it from Claude's hooks, so any
+/// `claude -p` run inside the pane overwrites it.
+async fn list(bin: &str, home: &Path) -> Option<Vec<HPane>> {
+    let own = conversations(home);
     let v: Value = serde_json::from_str(
         &herdr(bin, None, &["session", "list", "--json"])
             .await
@@ -93,9 +96,49 @@ async fn list(bin: &str) -> Option<Vec<HPane>> {
             continue;
         };
         let out = herdr(bin, Some(name), &["pane", "list"]).await.ok()?;
-        panes.extend(parse_panes(name, &out));
+        let sock = s["socket_path"].as_str().unwrap_or("");
+        panes.extend(parse_panes(name, &out).into_iter().map(|mut p| {
+            if let Some(u) = own.get(&(sock.to_owned(), p.pane.clone())) {
+                p.uuid = u.clone();
+            }
+            p
+        }));
     }
     Some(panes)
+}
+
+/// `(herdr socket, pane) -> conversation` of every interactive Claude that runs in a herdr pane.
+fn conversations(home: &Path) -> HashMap<(String, String), String> {
+    let mut out = HashMap::new();
+    let Ok(dir) = std::fs::read_dir(home.join(".claude/sessions")) else {
+        return out;
+    };
+    for e in dir.flatten() {
+        let Some(v) = std::fs::read(e.path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        else {
+            continue;
+        };
+        let (Some(pid), Some(conv)) = (v["pid"].as_u64(), v["sessionId"].as_str()) else {
+            continue;
+        };
+        if v["kind"] != "interactive" {
+            continue;
+        }
+        let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else {
+            continue; // gone
+        };
+        let var = |k: &str| {
+            env.split(|&b| b == 0)
+                .find_map(|kv| kv.strip_prefix(k.as_bytes()))
+                .map(|v| String::from_utf8_lossy(v).into_owned())
+        };
+        if let (Some(sock), Some(pane)) = (var("HERDR_SOCKET_PATH="), var("HERDR_PANE_ID=")) {
+            out.insert((sock, pane), conv.to_owned());
+        }
+    }
+    out
 }
 
 fn parse_panes(hs: &str, json: &str) -> Vec<HPane> {
@@ -151,9 +194,14 @@ async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, T
             .iter()
             .any(|p| row_of(p).is_some_and(|r| r.id == s.id))
         {
+            // gone, not closed: a closed row is one the user hid, and stays hidden
             tails.remove(&s.id);
-            if let Err(e) = d.end_session(s.id).await {
-                tracing::warn!(sid = %s.id, %e, "herdr session not closed");
+            if let Some(h) = d.sessions.head(s.id) {
+                h.close().await;
+                d.sessions.unhead(s.id);
+            }
+            if let Err(e) = d.write(|tx, _| tx.delete_session(s.id)) {
+                tracing::warn!(sid = %s.id, %e, "herdr session not dropped");
             }
         }
     }
@@ -397,7 +445,14 @@ fn disk_line(line: &[u8]) -> Option<Vec<u8>> {
                 Value::Array(a) => a.first().and_then(|b| b["text"].as_str()).unwrap_or(""),
                 _ => "",
             };
-            if !result && !text.starts_with("[Request interrupted") {
+            if let Some(n) = text.trim_start().strip_prefix("<task-notification>") {
+                // a background task's report, not something typed: its summary as an event
+                let summary = n
+                    .split_once("<summary>")
+                    .and_then(|(_, r)| r.split_once("</summary>"))
+                    .map_or("A background task reported", |(s, _)| s.trim());
+                v["message"]["content"] = Value::String(summary.to_owned());
+            } else if !result && !text.starts_with("[Request interrupted") {
                 v["isReplay"] = Value::Bool(true);
             }
         }
@@ -545,6 +600,11 @@ mod tests {
         let end =
             line(serde_json::json!({"type":"system","subtype":"turn_duration","durationMs":5}));
         assert_eq!(end.unwrap()["type"], "result");
+        let note = line(serde_json::json!({"type":"user","message":{"content":
+            "<task-notification>\n<status>completed</status>\n<summary>Build done</summary>\n</task-notification>"}}))
+        .unwrap();
+        assert_eq!(note["isReplay"], Value::Null);
+        assert_eq!(note["message"]["content"], "Build done");
         for skipped in [
             serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"x"}}),
             serde_json::json!({"type":"user","isMeta":true,"message":{"content":"x"}}),
@@ -553,6 +613,31 @@ mod tests {
         ] {
             assert_eq!(line(skipped), None);
         }
+    }
+
+    #[test]
+    fn a_panes_conversation_is_claudes_own_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .env("HERDR_SOCKET_PATH", "/s.sock")
+            .env("HERDR_PANE_ID", "wA:p1")
+            .spawn()
+            .unwrap();
+        let sessions = dir.path().join(".claude/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let file = |pid: u32, kind: &str, conv: &str| {
+            let v = serde_json::json!({"pid": pid, "sessionId": conv, "kind": kind});
+            std::fs::write(sessions.join(format!("{pid}-{kind}.json")), v.to_string()).unwrap();
+        };
+        file(child.id(), "interactive", "c-1");
+        file(child.id(), "print", "c-2"); // a `claude -p` in the pane is not its conversation
+        file(u32::MAX, "interactive", "c-3"); // no such process
+        let got = conversations(dir.path());
+        child.kill().unwrap();
+        let _ = child.wait();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[&("/s.sock".to_owned(), "wA:p1".to_owned())], "c-1");
     }
 
     /// A temp home with a store and one transcript file.
