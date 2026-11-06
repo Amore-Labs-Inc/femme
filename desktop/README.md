@@ -249,7 +249,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/transcript/items.rs` | Pure: the items of a session by `seq` (newest rev wins, tombstones), the text of the item in progress merged from deltas by offset (replays, late joins, out-of-order), fetched blobs. |
 | `src/transcript/turns.rs` | Pure: which rows the list shows: a result shares its call's row, a finished turn's thinking and tool calls fold behind one line ("worked for 3m · 12 tools"). |
 | `src/transcript/{body,question,attach}.rs` | Pure: item bodies (JSON, also the cut ones of the blob tier), questions and their answers, `Attached:` lines. |
-| `src/transcript/{markdown,md_view}.rs` | pulldown-cmark folded into a block model (pure), and the block model as elements. |
+| `src/transcript/{markdown,md_view}.rs` | pulldown-cmark folded into a block model (pure; it keeps each link's target and finds bare `http(s)://` addresses), and the block model as elements (a text with links is a gpui `InteractiveText`: a click on a link opens it in the browser). |
 | `src/transcript/faces.rs`, `faces/` | The bold, italic and bold-italic faces of Schibsted Grotesk (static instances cut from the family's variable files; gpui draws a variable file at its default weight only, so `**bold**` and `*italic*` came out plain), registered once by `Transcript::new`. |
 | `src/transcript/{rows,ask,thumb,splice}.rs` | One builder per kind of row; open questions and sending answers; attachment chips, thumbnails and the hover preview (both gpui `img`, the picture fitted whole into its box); the list diff (pure). |
 | `src/bench.rs` | Frame-time histograms from gpui's profiler (`bench` feature), probes, the report. |
@@ -415,7 +415,7 @@ terminal element paints all backgrounds in one layer and all glyphs (`paint_glyp
 - Terminal panes have no selection or copy, send no mouse press or motion (only the wheel), ignore the bell, and
   hide the cursor while scrolled back. `femme-proto` has no `KeyCode` for Menu, PrintScreen, Pause or ScrollLock, so those are
   dropped (a TODO in `terminal/input.rs`), and `ctrl+shift+c` (copy) is not sent.
-- The transcript has no text selection or copy, its code blocks are not highlighted and its links do not open. A
+- The transcript has no text selection or copy and its code blocks are not highlighted. A
   session joined while a message is being written shows that message from where the daemon's replay begins (marked
   with `…`) until the finished row arrives.
 - Block and box-drawing glyphs come from the font and can seam by a pixel; double/dotted/dashed underlines draw as single lines;
