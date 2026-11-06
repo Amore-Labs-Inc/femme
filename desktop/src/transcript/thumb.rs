@@ -2,20 +2,26 @@
 //! file, and for an image a thumbnail that opens a larger preview while the pointer is on it. The
 //! bytes come from the box (`Req::FsRead`); the thumbnail and the preview both draw the picture
 //! with gpui's `img`, fitted whole into their box: it keeps its ratio, sits in the middle, and the
-//! panel colour shows around it.
+//! panel colour shows around it. A right click on a thumbnail opens its menu (`copy image`, `open`),
+//! drawn by [`crate::ui::ctx`]: the picture to copy is the one the thumbnail already holds.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     div, img, px, relative, AnyElement, App, AppContext as _, Context, ElementId, Image, Img,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ObjectFit,
+    ParentElement as _, Pixels, Point, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Window,
 };
 
+use gpui_component::WindowExt as _;
+
 use super::attach::{self, Attached};
-use crate::theme::{self, BAD, FONT_MONO, MUTED, PANEL, PAPER};
-use crate::ui::{meta, ruled, tb};
+use super::live::Transcript;
+use crate::theme::{self, bad, muted, panel, paper, FONT_MONO};
+use crate::ui::ctx::Item;
+use crate::ui::{clip, meta, ruled, tb};
 
 /// Side of a thumbnail's box.
 pub const THUMB: f32 = 88.;
@@ -66,8 +72,8 @@ fn picture(image: &Arc<Image>) -> Img {
         .left_0()
         .size_full()
         .object_fit(ObjectFit::Contain)
-        .with_loading(|| div().size_full().bg(PANEL).into_any_element())
-        .with_fallback(|| note("cannot draw", BAD).into_any_element())
+        .with_loading(|| div().size_full().bg(panel()).into_any_element())
+        .with_fallback(|| note("cannot draw", bad()).into_any_element())
 }
 
 /// The preview that opens over a thumbnail: the picture, fitted whole into a titled box.
@@ -85,7 +91,7 @@ impl Render for Preview {
                 .h(px(h))
                 .flex()
                 .flex_col()
-                .bg(PAPER)
+                .bg(paper())
                 .overflow_hidden(),
         );
         shell.style().box_shadow = Some(theme::hard_shadow());
@@ -95,7 +101,7 @@ impl Render for Preview {
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
-                .bg(PANEL)
+                .bg(panel())
                 .overflow_hidden()
                 .child(picture(&self.image)),
         )
@@ -103,8 +109,14 @@ impl Render for Preview {
 }
 
 /// An attached file as a chip (a file) or a thumbnail (a picture), with `thumb` what is known of
-/// it. `id` tells it apart from the other attachments on screen.
-pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thumb>) -> AnyElement {
+/// it. `id` tells it apart from the other attachments on screen. `on_menu` hears a right click on
+/// a thumbnail that shows its picture.
+pub fn attachment(
+    id: impl Into<ElementId>,
+    file: &Attached,
+    thumb: Option<&Thumb>,
+    on_menu: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     if !file.image {
         return chip(&file.name).into_any_element();
     }
@@ -115,7 +127,7 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
             .relative()
             .flex_none()
             .size(side)
-            .bg(PANEL)
+            .bg(panel())
             .overflow_hidden(),
     );
     match thumb {
@@ -124,6 +136,7 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
             let thumb = picture(&image);
             frame
                 .cursor_pointer()
+                .on_mouse_down(MouseButton::Right, on_menu)
                 .tooltip_show_delay(PREVIEW_DELAY)
                 .tooltip(move |_, cx: &mut App| {
                     let (name, image) = (name.clone(), image.clone());
@@ -132,8 +145,99 @@ pub fn attachment(id: impl Into<ElementId>, file: &Attached, thumb: Option<&Thum
                 .child(thumb)
                 .into_any_element()
         }
-        Some(Thumb::Failed) => frame.child(note("unavailable", BAD)).into_any_element(),
-        Some(Thumb::Loading) | None => frame.child(note("loading", MUTED)).into_any_element(),
+        Some(Thumb::Failed) => frame.child(note("unavailable", bad())).into_any_element(),
+        Some(Thumb::Loading) | None => frame.child(note("loading", muted())).into_any_element(),
+    }
+}
+
+/// One row of a thumbnail's menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Entry {
+    /// The picture, to the clipboard.
+    Copy,
+    /// The preview, kept on screen.
+    Open,
+}
+
+impl Entry {
+    fn label(self) -> &'static str {
+        match self {
+            Entry::Copy => "copy image",
+            Entry::Open => "open",
+        }
+    }
+}
+
+/// The rows of a thumbnail's menu: `copy image` when the picture can be copied, then `open`.
+fn entries(image: &Image) -> &'static [Entry] {
+    if clip::copyable(image) {
+        &[Entry::Copy, Entry::Open]
+    } else {
+        &[Entry::Open]
+    }
+}
+
+impl Transcript {
+    /// A right click at `at` on the thumbnail of the file at `path`: its menu opens. A file whose
+    /// picture is not there (yet) has none. The click leaves the keyboard where it is.
+    pub(super) fn thumb_menu(
+        &mut self,
+        path: &str,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Thumb::Ready { image, name }) = self.thumbs.get(path) else {
+            return;
+        };
+        if window.has_focused_input(cx) {
+            window.prevent_default();
+        }
+        let preview = cx.new(|_| Preview {
+            name: name.clone().into(),
+            image: image.clone(),
+        });
+        let items = entries(image)
+            .iter()
+            .map(|entry| match entry {
+                Entry::Copy => {
+                    let (name, image) = (name.clone(), image.clone());
+                    Item::new(
+                        entry.label(),
+                        cx.listener(move |this, _, _, cx| this.copy_thumb(&name, &image, cx)),
+                    )
+                }
+                Entry::Open => {
+                    let preview = preview.clone();
+                    Item::new(
+                        entry.label(),
+                        cx.listener(move |this, _, _, cx| {
+                            let preview = preview.clone();
+                            this.ctx.update(cx, |menu, cx| {
+                                menu.pin(at, move |_, _| preview.clone().into_any_element(), cx)
+                            });
+                        }),
+                    )
+                }
+            })
+            .collect();
+        self.ctx.update(cx, |menu, cx| menu.open(at, items, cx));
+    }
+
+    /// `copy image`: the picture goes to the clipboard; a helper that fails is said in the note.
+    fn copy_thumb(&mut self, name: &str, image: &Arc<Image>, cx: &mut Context<Self>) {
+        let copied = clip::copy_image(image, cx);
+        let name = name.to_owned();
+        cx.spawn(async move |this, cx| {
+            if let Err(why) = copied.await {
+                this.update(cx, |this, cx| {
+                    this.note = Some(format!("could not copy {name}: {why}"));
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 }
 
@@ -145,7 +249,7 @@ fn chip(name: &str) -> impl IntoElement {
             .max_w(relative(1.))
             .px(px(8.))
             .py(px(3.))
-            .bg(PAPER)
+            .bg(paper())
             .font_family(FONT_MONO)
             .text_size(theme::META_SIZE)
             .whitespace_nowrap()
@@ -164,4 +268,33 @@ fn note(text: &'static str, color: gpui::Rgba) -> impl IntoElement {
         .justify_center()
         .p(px(4.))
         .child(meta(text).text_color(color))
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::ImageFormat;
+
+    use super::*;
+
+    fn picture(format: ImageFormat) -> Image {
+        Image::from_bytes(format, Vec::new())
+    }
+
+    #[test]
+    fn a_picture_is_copied_or_opened() {
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Webp] {
+            assert_eq!(entries(&picture(format)), [Entry::Copy, Entry::Open]);
+        }
+    }
+
+    #[test]
+    fn a_vector_picture_is_only_opened() {
+        assert_eq!(entries(&picture(ImageFormat::Svg)), [Entry::Open]);
+    }
+
+    #[test]
+    fn the_rows_are_worded_for_the_user() {
+        assert_eq!(Entry::Copy.label(), "copy image");
+        assert_eq!(Entry::Open.label(), "open");
+    }
 }

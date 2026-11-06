@@ -4,7 +4,7 @@
 
 use gpui::{Rgba, SharedString};
 
-use crate::theme::{ACCENT_DEEP, BAD, DONE, NEON, PANEL, PAUSE, WORK};
+use crate::theme::{bad, done, neon, panel, pause, plan, work};
 
 /// How the square shows a mode: a short label, its colour and the full name for the tooltip.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,17 +21,17 @@ pub struct Look {
 /// own word for manual; a mode this build does not know is shown as it came, in panel grey.
 pub fn look(mode: &str) -> Look {
     let (label, color, tip) = match mode {
-        "manual" | "default" => ("manual", WORK, "Manual (ask before tools)"),
-        "acceptEdits" => ("accept edits", PAUSE, "Accept edits"),
-        "plan" => ("plan", ACCENT_DEEP, "Plan mode"),
-        "auto" => ("auto", NEON, "Auto mode"),
-        "bypassPermissions" => ("bypass", BAD, "Bypass permissions"),
-        "dontAsk" => ("don't ask", DONE, "Don't ask"),
+        "manual" | "default" => ("manual", work(), "Manual (ask before tools)"),
+        "acceptEdits" => ("accept edits", pause(), "Accept edits"),
+        "plan" => ("plan", plan(), "Plan mode"),
+        "auto" => ("auto", neon(), "Auto mode"),
+        "bypassPermissions" => ("bypass", bad(), "Bypass permissions"),
+        "dontAsk" => ("don't ask", done(), "Don't ask"),
         other => {
             let other = SharedString::from(other.to_owned());
             return Look {
                 label: other.clone(),
-                color: PANEL,
+                color: panel(),
                 tip: other,
             };
         }
@@ -50,12 +50,12 @@ mod tests {
     #[test]
     fn each_mode_has_its_label_colour_and_name() {
         let cases = [
-            ("manual", "manual", WORK, "Manual (ask before tools)"),
-            ("acceptEdits", "accept edits", PAUSE, "Accept edits"),
-            ("plan", "plan", ACCENT_DEEP, "Plan mode"),
-            ("auto", "auto", NEON, "Auto mode"),
-            ("bypassPermissions", "bypass", BAD, "Bypass permissions"),
-            ("dontAsk", "don't ask", DONE, "Don't ask"),
+            ("manual", "manual", work(), "Manual (ask before tools)"),
+            ("acceptEdits", "accept edits", pause(), "Accept edits"),
+            ("plan", "plan", plan(), "Plan mode"),
+            ("auto", "auto", neon(), "Auto mode"),
+            ("bypassPermissions", "bypass", bad(), "Bypass permissions"),
+            ("dontAsk", "don't ask", done(), "Don't ask"),
         ];
         for (mode, label, color, tip) in cases {
             let l = look(mode);
@@ -76,6 +76,6 @@ mod tests {
     fn an_unknown_mode_is_shown_as_it_came() {
         let l = look("yolo");
         assert_eq!((l.label.as_ref(), l.tip.as_ref()), ("yolo", "yolo"));
-        assert_eq!(l.color, PANEL);
+        assert_eq!(l.color, panel());
     }
 }

@@ -3,9 +3,20 @@
 //! gpui puts a picture on the clipboard on macOS and Windows only: its X11 backend writes an image
 //! as empty text, and its Wayland one offers no image type to other programs. Elsewhere a helper
 //! does it: `wl-copy` (wl-clipboard) under Wayland, `xclip` under X11, fed the PNG on stdin.
+//!
+//! [`copy_image`] is the call for a picture the app shows (a chip of the composer, a thumbnail of
+//! the transcript). Every program that takes a pasted picture reads a PNG, so a PNG goes as it is
+//! and any other raster is turned into one first ([`png_of`]). The board has its own PNG and calls
+//! [`copy_png`].
 
-use std::io::{self, Write};
+use std::borrow::Cow;
+use std::io::{self, Cursor, Write};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+
+use gpui::{App, AppContext as _, ClipboardItem, Image, ImageFormat, Task};
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{DynamicImage, ImageDecoder as _, ImageReader};
 
 /// Whether this platform needs a helper for a picture on the clipboard: all but macOS and Windows.
 pub const NEEDS_HELPER: bool = cfg!(not(any(target_os = "macos", target_os = "windows")));
@@ -84,6 +95,46 @@ pub fn copy_png(helpers: &[Helper], png: &[u8]) -> Result<(), String> {
         }
     }
     Err(failed.unwrap_or_else(|| "install wl-clipboard (wl-copy) or xclip".to_owned()))
+}
+
+/// Whether `image` can go on the clipboard: every raster can. An SVG cannot: the pictures that are
+/// pasted are bitmaps, and nothing here draws a vector one into a bitmap.
+pub fn copyable(image: &Image) -> bool {
+    image.format != ImageFormat::Svg
+}
+
+/// The PNG that goes on the clipboard for the picture in `bytes`: a PNG as it is, any other raster
+/// decoded and encoded again, with its EXIF orientation applied as the viewer shows it (an
+/// animation gives its first frame). The error says why the bytes are no picture.
+pub fn png_of(bytes: &[u8]) -> Result<Cow<'_, [u8]>, String> {
+    let fail = |e: image::ImageError| format!("could not read the picture: {e}");
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    if reader.format() == Some(image::ImageFormat::Png) {
+        return Ok(Cow::Borrowed(bytes));
+    }
+    let mut decoder = reader.into_decoder().map_err(fail)?;
+    let orientation = decoder.orientation().map_err(fail)?;
+    let mut picture = DynamicImage::from_decoder(decoder).map_err(fail)?;
+    picture.apply_orientation(orientation);
+    let mut png = Vec::new();
+    // The default compression is slow in a debug build, and the clipboard is no archive.
+    let encoder =
+        PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Adaptive);
+    picture.write_with_encoder(encoder).map_err(fail)?;
+    Ok(Cow::Owned(png))
+}
+
+/// Puts `image` on the clipboard. Where a helper has to do it, that runs off the UI thread: the
+/// task ends with why the picture could not be copied, in words for the user.
+pub fn copy_image(image: &Arc<Image>, cx: &App) -> Task<Result<(), String>> {
+    if !NEEDS_HELPER {
+        cx.write_to_clipboard(ClipboardItem::new_image(image));
+        return Task::ready(Ok(()));
+    }
+    let image = image.clone();
+    cx.background_spawn(async move { copy_png(&session_helpers(), &png_of(&image.bytes)?) })
 }
 
 #[cfg(all(test, unix))]

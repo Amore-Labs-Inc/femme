@@ -55,7 +55,7 @@ use crate::session;
 use crate::sidebar::{AddProject, CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
 use crate::terminal::{SourceKind, TerminalPane};
-use crate::theme::{BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, INK, MUTED, NEON, SURFACE, TOP_BAR_H};
+use crate::theme::{ink, muted, neon, surface, BODY_SIZE, FONT_PIXEL, FONT_UI, GUTTER, TOP_BAR_H};
 use crate::transcript::{select, Transcript};
 use crate::ui::{self, ruled, DotGrid};
 
@@ -754,7 +754,7 @@ impl FemmeApp {
                 .items_center()
                 .gap(px(10.))
                 .px(px(8.))
-                .bg(SURFACE),
+                .bg(surface()),
         )
         .child(
             div()
@@ -798,7 +798,7 @@ impl FemmeApp {
                         d.child(
                             div()
                                 .text_size(px(14.))
-                                .text_color(MUTED)
+                                .text_color(muted())
                                 .child(detail.to_owned()),
                         )
                     }),
@@ -821,7 +821,7 @@ impl FemmeApp {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .bg(SURFACE)
+                            .bg(surface())
                             .pl(px(8.))
                             .pr(px(4.))
                             .py(px(6.)),
@@ -853,19 +853,19 @@ impl FemmeApp {
                 }))
                 .child(
                     // The box says when the transcript has the keyboard (F6): it takes PageUp and co.
-                    ruled(div().flex_1().min_h_0().bg(SURFACE).overflow_hidden())
+                    ruled(div().flex_1().min_h_0().bg(surface()).overflow_hidden())
                         .when(
                             self.transcript
                                 .focus_handle(cx)
                                 .contains_focused(window, cx),
-                            |d| d.border_color(NEON),
+                            |d| d.border_color(neon()),
                         )
                         .child(self.transcript.clone().cached(full)),
                 )
                 // The composer sizes itself and draws its own box.
                 .child(div().flex_none().child(self.composer.clone()))
                 .into_any_element(),
-            Centre::Terminal(sid) => ruled(div().size_full().bg(SURFACE).overflow_hidden())
+            Centre::Terminal(sid) => ruled(div().size_full().bg(surface()).overflow_hidden())
                 .child(match self.terminal.read(cx).main_pane(*sid) {
                     Some(pane) => div()
                         .size_full()
@@ -877,7 +877,7 @@ impl FemmeApp {
                     None => Self::card_view("starting…", "attaching to the session's terminal"),
                 })
                 .into_any_element(),
-            Centre::Card(card) => ruled(div().size_full().bg(SURFACE))
+            Centre::Card(card) => ruled(div().size_full().bg(surface()))
                 .child(Self::card_view(card.title(), &card.detail()))
                 .into_any_element(),
         }
@@ -897,8 +897,8 @@ impl Render for FemmeApp {
                 .id("femme")
                 .size_full()
                 .p(GUTTER)
-                .bg(SURFACE)
-                .text_color(INK)
+                .bg(surface())
+                .text_color(ink())
                 .child(self.centre(window, cx))
                 .into_any_element();
         }
@@ -957,7 +957,7 @@ impl Render for FemmeApp {
             .font_family(FONT_UI)
             .text_size(BODY_SIZE)
             .line_height(relative(1.4))
-            .text_color(INK)
+            .text_color(ink())
             .child(
                 div()
                     .absolute()

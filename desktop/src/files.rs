@@ -34,8 +34,8 @@ use gpui_component::scroll::Scrollbar;
 
 use crate::net::Net;
 use crate::theme::{
-    BAD, DESK, FONT_MONO, FONT_PIXEL, FONT_UI, INK, META_SIZE, MUTED, NEON, PANEL, PAPER, RULE,
-    TB_SIZE,
+    bad, bar, bar_dim, bar_text, ink, muted, neon, on_accent_strong, panel, paper, FONT_MONO,
+    FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{button, ruled_sides, st};
 use crate::viewer::FileView;
@@ -471,13 +471,13 @@ impl FilesPanel {
         let small = |b: Stateful<Div>| b.h(px(24.));
         let text = |t: String| div().flex_1().min_w_0().text_size(px(13.)).child(t);
         Some(match self.notice.as_ref()? {
-            Notice::Reading { name, len } => strip(PANEL)
+            Notice::Reading { name, len } => strip(panel())
                 .child(spinner(self.spin()))
                 .child(text(format!("reading {name} ({})", fmt_size(*len))))
                 .into_any_element(),
             Notice::Confirm { path, len, .. } => {
                 let (path, len) = (path.clone(), *len);
-                strip(PANEL)
+                strip(panel())
                     .child(text(format!("big file ({}): open?", fmt_size(len))))
                     .child(small(button("files-yes", "open")).on_click(
                         cx.listener(move |t, _, _, cx| t.open_file(path.clone(), len, true, cx)),
@@ -490,8 +490,8 @@ impl FilesPanel {
                     )))
                     .into_any_element()
             }
-            Notice::TooBig { name, len } => strip(PANEL)
-                .child(st("too big", BAD))
+            Notice::TooBig { name, len } => strip(panel())
+                .child(st("too big", bad()))
                 .child(text(format!(
                     "{name} is {}; the daemon reads at most {}",
                     fmt_size(*len),
@@ -500,8 +500,8 @@ impl FilesPanel {
                 .child(dismiss(cx))
                 .into_any_element(),
             Notice::ListFailed { text: why, .. } | Notice::Error(why) => {
-                strip(Rgba { a: 0.12, ..BAD })
-                    .child(st("error", BAD))
+                strip(Rgba { a: 0.12, ..bad() })
+                    .child(st("error", bad()))
                     .child(text(why.clone()))
                     .child(dismiss(cx))
                     .into_any_element()
@@ -523,7 +523,7 @@ impl FilesPanel {
                 .gap(px(8.))
                 .px(px(8.))
                 .py(px(4.))
-                .bg(PANEL),
+                .bg(panel()),
             px(0.),
             px(0.),
             RULE,
@@ -538,7 +538,7 @@ impl FilesPanel {
                 .text_ellipsis_start()
                 .font_family(FONT_MONO)
                 .text_size(META_SIZE)
-                .text_color(MUTED)
+                .text_color(muted())
                 .child(tree::under(&self.cwd, self.tree.root())),
         )
         .child(
@@ -569,7 +569,7 @@ impl FilesPanel {
                 div()
                     .font_family(FONT_MONO)
                     .text_size(META_SIZE)
-                    .text_color(MUTED)
+                    .text_color(muted())
                     .child("no session selected"),
             )
         };
@@ -611,6 +611,10 @@ impl FilesPanel {
     ) -> Stateful<Div> {
         // The lines that do something when clicked; a spinner or "(empty)" is only text.
         let clickable = !matches!(row.kind, Kind::Loading | Kind::Empty);
+        // On the neon row of the keyboard every label takes the colour that reads on neon (ink in
+        // the light palette, paper in the dark one); elsewhere ink for a name, muted for the rest.
+        let on_neon = selected && focused;
+        let dim = if on_neon { on_accent_strong() } else { muted() };
         let base = div()
             .id(("files-row", ix))
             .w_full()
@@ -623,16 +627,16 @@ impl FilesPanel {
             .whitespace_nowrap()
             .cursor_pointer()
             .when(selected, |d| {
-                d.bg(if focused { NEON } else { cursor_idle() })
+                d.bg(if focused { neon() } else { cursor_idle() })
             })
-            .when(!selected && clickable, |d| d.hover(|s| s.bg(PANEL)));
+            .when(!selected && clickable, |d| d.hover(|s| s.bg(panel())));
         let marker = |glyph: &'static str| {
             div()
                 .w(px(12.))
                 .flex_none()
                 .font_family(FONT_MONO)
                 .text_size(px(13.))
-                .text_color(MUTED)
+                .text_color(dim)
                 .child(glyph)
         };
         let name = |text: String, color: Rgba| {
@@ -655,11 +659,17 @@ impl FilesPanel {
                 .text_color(color)
                 .child(text)
         };
-        let color = if row.hidden() { MUTED } else { INK };
+        let color = if on_neon {
+            on_accent_strong()
+        } else if row.hidden() {
+            muted()
+        } else {
+            ink()
+        };
         let line = match row.kind {
             Kind::Up => base
                 .child(marker(""))
-                .child(name("..".to_owned(), MUTED).font_family(FONT_MONO)),
+                .child(name("..".to_owned(), dim).font_family(FONT_MONO)),
             Kind::Dir { open } => base
                 .child(marker(if open { "▾" } else { "▸" }))
                 .child(name(row.name().to_owned(), color).font_weight(FontWeight::SEMIBOLD)),
@@ -672,18 +682,19 @@ impl FilesPanel {
                         .pl(px(6.))
                         .font_family(FONT_MONO)
                         .text_size(META_SIZE)
-                        .text_color(MUTED)
+                        .text_color(dim)
                         .child(fmt_size(len)),
                 ),
             Kind::Loading => base
                 .child(spinner(spin))
-                .child(note("loading…".to_owned(), MUTED)),
+                .child(note("loading…".to_owned(), dim)),
             Kind::Empty => base
                 .child(marker(""))
-                .child(note("(empty)".to_owned(), MUTED)),
-            Kind::Failed => base
-                .child(marker("!"))
-                .child(note("could not list: click to try again".to_owned(), BAD)),
+                .child(note("(empty)".to_owned(), dim)),
+            Kind::Failed => base.child(marker("!")).child(note(
+                "could not list: click to try again".to_owned(),
+                if on_neon { on_accent_strong() } else { bad() },
+            )),
         };
         if !clickable {
             return line.cursor_default();
@@ -710,8 +721,8 @@ impl FilesPanel {
             .gap(px(8.))
             .px(px(8.))
             .py(px(3.))
-            .bg(INK)
-            .text_color(DESK)
+            .bg(bar())
+            .text_color(bar_text())
             .child(
                 button("files-back", "‹ back")
                     .h(px(26.))
@@ -734,7 +745,7 @@ impl FilesPanel {
                     .flex_none()
                     .font_family(FONT_MONO)
                     .text_size(META_SIZE)
-                    .text_color(PANEL)
+                    .text_color(bar_dim())
                     .child(fmt_size(open.size as u64)),
             );
         // The scrollbar is a sibling of what scrolls: inside it, it would scroll away.
@@ -755,10 +766,10 @@ impl FilesPanel {
     }
 }
 
-/// The cursor's line while the panel does not have the keyboard: a pale [`NEON`], apart from the
+/// The cursor's line while the panel does not have the keyboard: a pale [`neon`], apart from the
 /// grey of the line under the pointer.
 fn cursor_idle() -> Rgba {
-    Rgba { a: 0.3, ..NEON }
+    Rgba { a: 0.3, ..neon() }
 }
 
 /// A row between the header and the tree: ruled below, `bg` behind.
@@ -816,8 +827,8 @@ impl Render for FilesPanel {
         div()
             .size_full()
             .overflow_hidden()
-            .bg(PAPER)
-            .text_color(INK)
+            .bg(paper())
+            .text_color(ink())
             .font_family(FONT_UI)
             .text_size(px(14.))
             .line_height(relative(1.3))

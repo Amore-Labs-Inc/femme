@@ -6,14 +6,13 @@ use femme_proto::rpc::Req;
 use femme_proto::Sid;
 use gpui::{
     deferred, div, px, AnyElement, AppContext as _, Context, Entity, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window,
+    IntoElement, MouseButton, ParentElement as _, Styled as _, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use super::Sidebar;
-use crate::theme::BAD;
-use crate::ui::{menu, menu_item};
+use crate::ui::ctx::{card, Item, WIDTH};
+use crate::ui::menu;
 
 /// The menu open on one row.
 pub(super) struct Menu {
@@ -93,26 +92,24 @@ impl Sidebar {
                     .py(px(2.))
                     .child(Input::new(input)),
             ),
-            None => menu()
-                .w(px(140.))
-                .child(
-                    menu_item(SharedString::from(format!("sb-rename-{sid}")))
-                        .child("rename")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.start_rename(window, cx);
-                        })),
-                )
-                .child(
-                    menu_item(SharedString::from(format!("sb-close-{sid}")))
-                        .text_color(BAD)
-                        .child("close")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
+            None => card(
+                &format!("sb-ctx-{sid}"),
+                WIDTH,
+                [
+                    Item::new(
+                        "rename",
+                        cx.listener(|this, _, window, cx| this.start_rename(window, cx)),
+                    ),
+                    Item::new(
+                        "close",
+                        cx.listener(move |this, _, _, cx| {
                             this.close_menu(cx);
                             this.close(sid, cx);
-                        })),
-                ),
+                        }),
+                    )
+                    .danger(),
+                ],
+            ),
         };
         Some(
             deferred(

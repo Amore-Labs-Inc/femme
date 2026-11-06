@@ -1,6 +1,7 @@
 //! A parsed markdown document as elements: the paragraphs and headings of the assistant's text,
 //! its code blocks (monospace on the panel grey, with the language above them), lists, quotes,
-//! tables. Links show as text, underlined, followed by their address. Every text is a
+//! tables. Links show as text, underlined, followed by their address; a click on the words of a
+//! link, or on a bare address, opens it in the browser. Every text is a
 //! [`Selectable`](super::select::Selectable): the mouse selects it and ctrl-c copies it.
 
 use gpui::{
@@ -10,7 +11,7 @@ use gpui::{
 
 use super::markdown::{Align, Block, Doc, Inline, ListItem, Style};
 use super::select::{Join, Sel, Selectable, Slot};
-use crate::theme::{FONT_MONO, HOVER, INK, MUTED, PANEL, RULE};
+use crate::theme::{accent_text, ink, muted, panel, FONT_MONO, RULE};
 use crate::ui::{meta, ruled, ruled_sides};
 
 /// Size of the code in a block and in a span.
@@ -78,15 +79,15 @@ fn block(b: &Block, color: Rgba, sel: &Sel, join: Join) -> AnyElement {
             }))
             .into_any_element(),
         Block::Quote(blocks) => ruled_sides(div(), px(0.), px(0.), px(0.), px(3.))
-            .border_color(MUTED)
+            .border_color(muted())
             .pl(px(10.))
-            .child(stack(blocks, MUTED, 6., sel, Join::Block))
+            .child(stack(blocks, muted(), 6., sel, Join::Block))
             .into_any_element(),
         Block::Rule => div()
             .w_full()
             .h(px(1.))
             .my(px(4.))
-            .bg(MUTED)
+            .bg(muted())
             .into_any_element(),
         Block::Table { aligns, head, rows } => table(aligns, head, rows, sel, join),
     }
@@ -98,7 +99,7 @@ fn list_item(marker: &str, item: &ListItem, color: Rgba, sel: &Sel, join: Join) 
         .min_w(px(22.))
         .flex()
         .justify_end()
-        .text_color(MUTED)
+        .text_color(muted())
         .line_height(relative(1.45));
     let marker = match item.task {
         Some(done) => {
@@ -129,7 +130,7 @@ fn code_block(lang: Option<&str>, code: &str, slot: Slot, join: Join) -> AnyElem
     let head = lang
         .filter(|l| !l.is_empty())
         .map(|l| div().px(px(10.)).pt(px(4.)).child(meta(l.to_owned())));
-    let block = ruled(div().w_full().flex().flex_col().bg(PANEL).pb(px(8.)));
+    let block = ruled(div().w_full().flex().flex_col().bg(panel()).pb(px(8.)));
     let block = match head {
         Some(head) => block.child(head),
         None => block.pt(px(8.)),
@@ -141,7 +142,7 @@ fn code_block(lang: Option<&str>, code: &str, slot: Slot, join: Join) -> AnyElem
                 .font_family(FONT_MONO)
                 .text_size(px(CODE_SIZE))
                 .line_height(relative(1.4))
-                .text_color(INK)
+                .text_color(ink())
                 .child(Selectable::new(slot, code.to_owned()).join(join)),
         )
         .into_any_element()
@@ -170,7 +171,7 @@ fn table(
     let mut table = ruled(div().w_full().flex().flex_col());
     if !head.is_empty() {
         table = table.child(
-            ruled_sides(div().flex().bg(PANEL), px(0.), px(0.), RULE, px(0.)).children(
+            ruled_sides(div().flex().bg(panel()), px(0.), px(0.), RULE, px(0.)).children(
                 head.iter().enumerate().map(|(i, t)| {
                     let last = rows.is_empty() && i + 1 == head.len();
                     cell(t, i, true, if last { join } else { Join::Line })
@@ -188,7 +189,8 @@ fn table(
         .into_any_element()
 }
 
-/// The text of `text` with its styled stretches, selectable, in `slot`.
+/// The text of `text` with its styled stretches, selectable, in `slot`; a click on one of its links
+/// opens the address.
 pub fn inline(text: &Inline, slot: Slot) -> Selectable {
     let highlights = text
         .spans
@@ -204,6 +206,7 @@ pub fn inline(text: &Inline, slot: Slot) -> Selectable {
     Selectable::new(slot, text.text.clone())
         .highlights(highlights)
         .font_families(mono)
+        .links(text.links.clone())
 }
 
 fn highlight(s: Style) -> HighlightStyle {
@@ -215,7 +218,7 @@ fn highlight(s: Style) -> HighlightStyle {
         h.font_style = Some(FontStyle::Italic);
     }
     if s.code {
-        h.background_color = Some(Hsla::from(PANEL));
+        h.background_color = Some(Hsla::from(panel()));
     }
     if s.strike {
         h.strikethrough = Some(StrikethroughStyle {
@@ -226,12 +229,12 @@ fn highlight(s: Style) -> HighlightStyle {
     if s.link {
         h.underline = Some(UnderlineStyle {
             thickness: px(1.),
-            color: Some(Hsla::from(HOVER)),
+            color: Some(Hsla::from(accent_text())),
             wavy: false,
         });
     }
     if s.dim {
-        h.color = Some(Hsla::from(MUTED));
+        h.color = Some(Hsla::from(muted()));
     }
     h
 }

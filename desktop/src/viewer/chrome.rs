@@ -13,7 +13,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _,
 };
 
-use crate::theme::{self, FONT_MONO, FONT_PIXEL, INK, MUTED, PAPER, RULE};
+use crate::theme::{self, ink, muted, paper, FONT_MONO, FONT_PIXEL, RULE};
 use crate::ui;
 
 /// Frames of the spinner, in the pixel font's own ASCII.
@@ -28,7 +28,7 @@ fn spin_glyph(t: f32) -> Div {
     div()
         .font_family(FONT_PIXEL)
         .text_size(theme::TB_SIZE)
-        .text_color(INK)
+        .text_color(ink())
         .child(frame)
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn waiting(label: impl Into<SharedString>) -> Div {
 /// The caption strip: one muted line over a thin ink rule, as tall as its text.
 pub(crate) fn caption(text: impl Into<SharedString>) -> Div {
     ui::ruled_sides(
-        div().flex_none().w_full().px(px(8.)).py(px(3.)).bg(PAPER),
+        div().flex_none().w_full().px(px(8.)).py(px(3.)).bg(paper()),
         px(0.),
         px(0.),
         RULE,
@@ -106,7 +106,7 @@ pub(crate) fn notice(
         .w_full()
         .overflow_x_scroll()
         .restrict_scroll_to_axis()
-        .bg(PAPER)
+        .bg(paper())
         .child(
             div()
                 .flex_none()
@@ -120,7 +120,7 @@ pub(crate) fn notice(
                         .flex_none()
                         .font_family(theme::FONT_UI)
                         .text_size(theme::BODY_SIZE)
-                        .text_color(INK)
+                        .text_color(ink())
                         .child(headline.into()),
                 )
                 .child(
@@ -129,7 +129,7 @@ pub(crate) fn notice(
                         .flex_col()
                         .font_family(FONT_MONO)
                         .text_size(theme::META_SIZE)
-                        .text_color(MUTED)
+                        .text_color(muted())
                         .whitespace_nowrap()
                         .children(
                             lines

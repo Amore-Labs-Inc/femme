@@ -107,6 +107,45 @@ impl Palette {
         }
     }
 
+    /// FEMME's dark skin: ink `#ECECEC` on paper `#1E1E1E`, the dark theme's own pair. Colours 1-6
+    /// are the dark skin's tokens (and a blue beside them) at WCAG contrast >= 4.5 on paper, 9-14
+    /// their lighter siblings; 7 and 15 ("white") are light greys. 0 and 8 ("black", which
+    /// light-theme programs use for plain and dim text) are greys that still read on paper (>= 2.4),
+    /// 8 the lighter one.
+    pub fn femme_dark() -> Self {
+        Self {
+            fg: hex(0xECECEC),
+            bg: hex(0x1E1E1E),
+            ansi: [
+                hex(0x5F5F5F), // 0 black: a grey that still reads
+                hex(0xFF6B70), // 1 red: the dark skin's red
+                hex(0x2FD07A), // 2 green: the dark skin's green
+                hex(0xF5C24B), // 3 yellow: the dark skin's amber
+                hex(0x6C9BFF), // 4 blue
+                hex(0xD45BB6), // 5 magenta: skin pink as is
+                hex(0x2CD3C4), // 6 cyan: the dark skin's teal
+                hex(0xC4C4C4), // 7 white: light grey
+                hex(0x8C8C8C), // 8 bright black: mid grey
+                hex(0xFF8A8E), // 9 bright red
+                hex(0x5BE69A), // 10 bright green
+                hex(0xFFD66E), // 11 bright yellow
+                hex(0x8FB4FF), // 12 bright blue
+                hex(0xF28FD8), // 13 bright magenta
+                hex(0x5CE3D6), // 14 bright cyan
+                hex(0xF5F5F5), // 15 bright white: near white
+            ],
+        }
+    }
+
+    /// The skin of a theme: [`Palette::femme_dark`] when `dark`, else [`Palette::femme_light`].
+    pub fn femme(dark: bool) -> Self {
+        if dark {
+            Self::femme_dark()
+        } else {
+            Self::femme_light()
+        }
+    }
+
     /// Looks up a wire colour: `Default` gives `default`, 0-15 come from [`Palette::ansi`], 16-231
     /// are the xterm 6x6x6 cube, 232-255 the grey ramp `8 + 10 * n`, and `Rgb` is used as is.
     pub fn color(&self, c: Color, default: Rgb) -> Rgb {
@@ -748,5 +787,47 @@ mod tests {
             assert!(contrast(p.ansi[i], p.bg) >= 2.4, "white {i} vanishes");
         }
         assert!(contrast(p.ansi[15], p.bg) < contrast(p.ansi[7], p.bg));
+    }
+
+    #[test]
+    fn femme_dark_colours_read_on_paper() {
+        let p = Palette::femme_dark();
+        assert_eq!((p.fg, p.bg), ([0xEC; 3], [0x1E; 3]));
+        assert!(contrast(p.fg, p.bg) >= 7.0, "plain text is below AAA");
+        for i in 1..=6 {
+            assert!(contrast(p.ansi[i], p.bg) >= 4.5, "ansi {i} below AA");
+        }
+        for i in 9..=14 {
+            let (c, normal) = (contrast(p.ansi[i], p.bg), contrast(p.ansi[i - 8], p.bg));
+            assert!(c >= 3.0, "ansi {i}: contrast {c:.2} on paper");
+            assert!(
+                c > normal,
+                "bright {i} is not lighter than its normal colour"
+            );
+        }
+        assert!(contrast(p.ansi[0], p.bg) >= 2.4, "black vanishes");
+        assert!(
+            contrast(p.ansi[8], p.bg) >= 4.5,
+            "bright black is not readable"
+        );
+        assert!(contrast(p.ansi[8], p.bg) > contrast(p.ansi[0], p.bg));
+        assert!(contrast(p.ansi[7], p.bg) >= 7.0, "white is not light");
+        assert!(contrast(p.ansi[15], p.bg) > contrast(p.ansi[7], p.bg));
+    }
+
+    /// The pane is painted with the theme's paper, and a cell whose background equals the skin's
+    /// paper draws no quad: the two must be the same colour or the pane shows patches.
+    #[test]
+    fn each_skin_is_its_themes_ink_on_paper() {
+        let rgb = |c: gpui::Rgba| [c.r, c.g, c.b].map(|v| (v * 255.0).round() as u8);
+        for (name, theme, skin) in [
+            ("light", &crate::theme::LIGHT, Palette::femme_light()),
+            ("dark", &crate::theme::DARK, Palette::femme_dark()),
+        ] {
+            assert_eq!(skin.bg, rgb(theme.paper), "{name}: pane paper");
+            assert_eq!(skin.fg, rgb(theme.ink), "{name}: pane ink");
+        }
+        assert_eq!(Palette::femme(false), Palette::femme_light());
+        assert_eq!(Palette::femme(true), Palette::femme_dark());
     }
 }

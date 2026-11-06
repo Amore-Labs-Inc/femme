@@ -21,10 +21,13 @@ use gpui::{
 };
 
 use crate::theme::{
-    self, ACCENT, ACCENT_DEEP, ACCENT_SOFT, ACCENT_STRONG, BODY_SIZE, BTN_SIZE, DESK, FONT_MONO,
-    FONT_PIXEL, FONT_UI, INK, MUTED, MUTED_TEXT, PANEL, PAPER, RULE, STRIP_W, TITLE_SIZE,
+    self, accent, accent_soft, accent_strong, bar, bar_text, desk, ink, muted, on_accent_strong,
+    panel, paper, Palette, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, RULE, STRIP_W,
+    TITLE_SIZE,
 };
 
+pub mod clip;
+pub mod ctx;
 mod gallery;
 pub use gallery::gallery;
 
@@ -41,7 +44,7 @@ pub fn ruled_sides<E: Styled>(
     b.right = Some(right.into());
     b.bottom = Some(bottom.into());
     b.left = Some(left.into());
-    el.border_color(INK)
+    el.border_color(ink())
 }
 
 /// The 1.2px ink border on all four sides.
@@ -57,12 +60,13 @@ pub fn ruled<E: Styled>(el: E) -> E {
 /// [`title_bar`] first and the body (give it `flex_1().min_h_0()`) after it. The pink desk shows only
 /// in the [`theme::GUTTER`] around it.
 pub fn win() -> Div {
-    ruled(div().flex().flex_col().bg(PAPER))
+    ruled(div().flex().flex_col().bg(paper()))
 }
 
-/// `.tb`: the black title bar of a window. Lowercase VT323 22 px lettering in desk pink; the label
-/// takes the free width, so any further `.child(..)` (an [`icon_button`], a [`chip`], a status) sits
-/// at the right edge. Set `.text_color(PAPER)` on it for the white lettering of a dialog.
+/// `.tb`: the dark title bar of a window. Lowercase VT323 22 px lettering in pink
+/// ([`theme::bar_text`]); the label takes the free width, so any further `.child(..)` (an
+/// [`icon_button`], a [`chip`], a status) sits at the right edge. Set
+/// `.text_color(theme::on_bar())` on it for the plain lettering of a dialog.
 ///
 /// Use it as the first child of a [`win`] or a [`dialog`].
 pub fn title_bar(text: impl Into<SharedString>) -> Div {
@@ -74,8 +78,8 @@ pub fn title_bar(text: impl Into<SharedString>) -> Div {
         .gap(px(8.))
         .px(px(8.))
         .py(px(3.))
-        .bg(INK)
-        .text_color(DESK)
+        .bg(bar())
+        .text_color(bar_text())
         .font_family(FONT_PIXEL)
         .text_size(TITLE_SIZE)
         .line_height(relative(1.))
@@ -97,20 +101,20 @@ pub fn tb(label: impl Into<SharedString>) -> Div {
 /// facts on a panel: an account, a session row, a tool call. Leave 3 px of room right and below it, or
 /// an `overflow_hidden` parent cuts the shadow.
 pub fn card() -> Div {
-    ruled(div().bg(PAPER).px(px(12.)).py(px(10.))).shadow(theme::shadow())
+    ruled(div().bg(paper()).px(px(12.)).py(px(10.))).shadow(theme::shadow())
 }
 
 /// `.dialog`: a panel-grey card with the larger hard shadow ([`theme::hard_shadow`]). A modal over the
 /// centre (accounts): a [`title_bar`], then paper [`card`]s on the grey.
 pub fn dialog() -> Div {
-    ruled(div().bg(PANEL)).shadow(theme::hard_shadow())
+    ruled(div().bg(panel())).shadow(theme::hard_shadow())
 }
 
 /// A dropdown or popover surface: paper, ink rule, the large hard shadow, 4 px of room around its
 /// [`menu_item`]s. gpui-component's own popups keep their hairline edge (the theme cannot change it);
 /// build the `femme` dropdown and context menus from this instead.
 pub fn menu() -> Div {
-    ruled(div().flex().flex_col().gap(px(2.)).p(px(4.)).bg(PAPER)).shadow(theme::hard_shadow())
+    ruled(div().flex().flex_col().gap(px(2.)).p(px(4.)).bg(paper())).shadow(theme::hard_shadow())
 }
 
 /// A row of a [`menu`]: 28 px tall, body text, pink on hover, neon while pressed. Add the label (and
@@ -126,10 +130,10 @@ pub fn menu_item(id: impl Into<ElementId>) -> Stateful<Div> {
         .px(px(8.))
         .font_family(FONT_UI)
         .text_size(BODY_SIZE)
-        .text_color(INK)
+        .text_color(ink())
         .cursor_pointer()
-        .hover(|s| s.bg(ACCENT))
-        .active(|s| s.bg(ACCENT_STRONG))
+        .hover(|s| s.bg(accent()))
+        .active(|s| s.bg(accent_strong()).text_color(on_accent_strong()))
 }
 
 /// A row of a list (sessions, files, accounts): at least 30 px, paper, a soft pink wash on hover and
@@ -145,11 +149,11 @@ pub fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
         .min_h(px(30.))
         .px(px(10.))
         .py(px(4.))
-        .text_color(INK)
+        .text_color(ink())
         .cursor_pointer()
-        .bg(if selected { ACCENT } else { PAPER })
-        .hover(move |s| s.bg(if selected { ACCENT } else { ACCENT_SOFT }))
-        .active(|s| s.bg(ACCENT_STRONG));
+        .bg(if selected { accent() } else { paper() })
+        .hover(move |s| s.bg(if selected { accent() } else { accent_soft() }))
+        .active(|s| s.bg(accent_strong()).text_color(on_accent_strong()));
     if selected {
         r.child(
             div()
@@ -158,7 +162,7 @@ pub fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
                 .bottom_0()
                 .left_0()
                 .w(px(4.))
-                .bg(INK),
+                .bg(ink()),
         )
     } else {
         r
@@ -206,7 +210,13 @@ enum State {
     Disabled,
 }
 
+/// What a control of `kind` looks like in `state`, in the live palette.
 fn look(kind: Kind, state: State) -> Look {
+    look_in(theme::current(), kind, state)
+}
+
+/// [`look`] in the palette `p` (the tests check both).
+fn look_in(p: &Palette, kind: Kind, state: State) -> Look {
     use Kind::*;
     use State::*;
     let clear = theme::rgba8(0xFEFEFE, 0.);
@@ -220,38 +230,45 @@ fn look(kind: Kind, state: State) -> Look {
     let raised = |bg, fg| Look {
         bg,
         fg,
-        edge: INK,
+        edge: p.ink,
         raised: true,
         pushed: false,
     };
-    // Pressed: neon, shadow dropped and the box moved onto it.
+    // Pressed: neon, shadow dropped and the box moved onto it. The label is the dark colour (ink on
+    // the light palette, paper on the dark one).
     let pushed = Look {
-        bg: ACCENT_STRONG,
-        fg: INK,
-        edge: INK,
+        bg: p.accent_strong,
+        fg: p.on_accent_strong,
+        edge: p.ink,
         raised: false,
         pushed: true,
     };
     match (kind, state) {
-        (Light, Idle) => raised(PAPER, INK),
-        (Light, Hover) => raised(ACCENT, INK),
+        (Light, Idle) => raised(p.paper, p.ink),
+        (Light, Hover) => raised(p.accent, p.on_accent),
         (Light, Pressed) | (Dark, Pressed) => pushed,
-        (Light, Disabled) => flat(PAPER, MUTED_TEXT, MUTED_TEXT),
-        (Dark, Idle) => raised(INK, PAPER),
-        // Deep pink: the label stays paper, and paper on it is 5.5:1.
-        (Dark, Hover) => raised(ACCENT_DEEP, PAPER),
-        (Dark, Disabled) => flat(PANEL, MUTED_TEXT, MUTED_TEXT),
-        (Ghost, Idle) => flat(clear, INK, clear),
-        (Ghost, Hover) => flat(ACCENT, INK, INK),
-        (Ghost | GhostOn | OnInk, Pressed) => Look {
+        (Light, Disabled) => flat(p.paper, p.muted_text, p.muted_text),
+        (Dark, Idle) => raised(p.ink, p.paper),
+        // Deep pink: the label stays paper, and paper on it is 4.7:1 or better.
+        (Dark, Hover) => raised(p.accent_deep, p.paper),
+        (Dark, Disabled) => flat(p.panel, p.muted_text, p.muted_text),
+        (Ghost, Idle) => flat(clear, p.ink, clear),
+        (Ghost, Hover) => flat(p.accent, p.on_accent, p.ink),
+        // On a bar the box has no visible edge, like the bar.
+        (OnInk, Pressed) => Look {
+            pushed: false,
+            edge: p.bar,
+            ..pushed
+        },
+        (Ghost | GhostOn, Pressed) => Look {
             pushed: false,
             ..pushed
         },
-        (Ghost | GhostOn | OnInk, Disabled) => flat(clear, MUTED_TEXT, clear),
-        (GhostOn, Idle) => flat(INK, PAPER, INK),
-        (GhostOn, Hover) => flat(ACCENT_DEEP, PAPER, INK),
-        (OnInk, Idle) => flat(clear, PAPER, clear),
-        (OnInk, Hover) => flat(ACCENT_DEEP, PAPER, PAPER),
+        (Ghost | GhostOn | OnInk, Disabled) => flat(clear, p.muted_text, clear),
+        (GhostOn, Idle) => flat(p.ink, p.paper, p.ink),
+        (GhostOn, Hover) => flat(p.accent_deep, p.paper, p.ink),
+        (OnInk, Idle) => flat(clear, p.on_bar, clear),
+        (OnInk, Hover) => flat(p.bar_hover, p.on_bar, p.on_bar),
     }
 }
 
@@ -318,7 +335,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> State
 /// plain label cannot hold: the `femme` wordmark with a [`Glyph::Down`] chevron in the top bar, a
 /// name next to an icon. Add the content with `.child(..)`; children sit in a row, centred, 6 px
 /// apart (give a child its own `.font_family(..)`). For an "open" look override the fill:
-/// `.bg(theme::ACCENT_STRONG)`.
+/// `.bg(theme::accent_strong())`.
 pub fn button_box(id: impl Into<ElementId>) -> Stateful<Div> {
     control(Kind::Light, id)
 }
@@ -494,8 +511,8 @@ pub fn strip(id: impl Into<ElementId>) -> Stateful<Div> {
             .gap(px(2.))
             .w(STRIP_W)
             .py(px(4.))
-            .bg(PANEL)
-            .hover(|s| s.bg(ACCENT_SOFT)),
+            .bg(panel())
+            .hover(|s| s.bg(accent_soft())),
     )
 }
 
@@ -516,8 +533,8 @@ pub fn chip(text: impl Into<SharedString>) -> Div {
             .h(px(22.))
             .px(px(8.))
             .overflow_hidden()
-            .bg(PANEL)
-            .text_color(INK)
+            .bg(panel())
+            .text_color(ink())
             .font_family(FONT_UI)
             .text_size(px(13.))
             .line_height(relative(1.))
@@ -542,8 +559,8 @@ pub fn st(label: impl Into<SharedString>, color: Rgba) -> Div {
 }
 
 /// `.dot`: an 8 px square status marker with the ink rule, filled with the status colour (a session
-/// row, a connection). Working is [`theme::NEON`], blocked [`theme::WARN`], failed [`theme::DANGER`], idle
-/// [`theme::QUEUE`].
+/// row, a connection). Working is [`theme::neon`], blocked [`theme::warn`], failed [`theme::danger`], idle
+/// [`theme::queue`].
 pub fn dot(color: Rgba) -> Div {
     ruled(div().flex_none().size(px(8.)).bg(color))
 }
@@ -553,7 +570,7 @@ pub fn meta(text: impl Into<SharedString>) -> Div {
     div()
         .font_family(FONT_MONO)
         .text_size(theme::META_SIZE)
-        .text_color(MUTED)
+        .text_color(muted())
         .whitespace_nowrap()
         .overflow_hidden()
         .text_ellipsis()
@@ -567,28 +584,57 @@ pub fn meta(text: impl Into<SharedString>) -> Div {
 /// Logical size of one dot-grid tile: a multiple of the board's 6px period.
 const DOT_TILE: f32 = 192.;
 
-/// The desk: pink with a 1px ink dot every 6px (the board's `body` background). gpui has no tiled
-/// backgrounds, so a pre-rendered 192px tile is painted as a grid of sprites (about forty at 1440x900).
-/// It fills the window behind the shell; panels cover it, so it shows only in the [`theme::GUTTER`]s.
+/// The desk: pink with a 1px ink dot every 6px (the board's `body` background), or near-black with
+/// a dim pink dot in the dark palette. gpui has no tiled backgrounds, so a pre-rendered 192px tile is
+/// painted as a grid of sprites (about forty at 1440x900). It fills the window behind the shell;
+/// panels cover it, so it shows only in the [`theme::GUTTER`]s.
 // ponytail: the tile density (1x or 2x) is picked once from the window's scale factor at creation;
 // a window dragged between displays of different density just shows a slightly soft or fat dot.
 #[derive(Clone)]
 pub struct DotGrid {
-    tile: Arc<RenderImage>,
+    /// The embedded tile (pink with ink dots).
+    light: Arc<RenderImage>,
+    /// The same dots recoloured for the dark desk, made once alongside it.
+    dark: Arc<RenderImage>,
 }
 
 impl DotGrid {
-    /// Decodes the embedded tile that matches `scale` (the window's scale factor).
+    /// Decodes the embedded tile that matches `scale` (the window's scale factor), and derives the
+    /// dark one from it.
     pub fn new(scale: f32, cx: &App) -> Self {
         let bytes: &[u8] = if scale > 1.5 {
             include_bytes!("../assets/dots-2x.png")
         } else {
             include_bytes!("../assets/dots-1x.png")
         };
-        let tile = Image::from_bytes(ImageFormat::Png, bytes.to_vec())
+        let light = Image::from_bytes(ImageFormat::Png, bytes.to_vec())
             .to_image_data(cx.svg_renderer())
             .expect("embedded dot tile is a valid PNG");
-        Self { tile }
+        let dark = dark_tile(&light);
+        Self { light, dark }
+    }
+}
+
+/// The dark desk's tile: the light tile's dots in [`theme::DARK`]'s dot colour on its desk colour.
+fn dark_tile(light: &RenderImage) -> Arc<RenderImage> {
+    let size = light.size(0);
+    let mut bgra = light.as_bytes(0).expect("the tile has a frame").to_vec();
+    recolour(&mut bgra, &theme::DARK);
+    let buffer = image::ImageBuffer::from_raw(size.width.0 as u32, size.height.0 as u32, bgra)
+        .expect("the buffer keeps the tile's size");
+    Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
+}
+
+/// Recolours a BGRA tile of two flat colours, ink dots (dark pixels) on a pink desk (light ones), as
+/// the dots and the desk of `p`.
+fn recolour(bgra: &mut [u8], p: &Palette) {
+    let bgra_of = |c: Rgba| {
+        let byte = |v: f32| (v * 255.).round() as u8;
+        [byte(c.b), byte(c.g), byte(c.r), 0xFF]
+    };
+    let (desk, dot) = (bgra_of(p.desk), bgra_of(p.desk_dot));
+    for px in bgra.as_chunks_mut::<4>().0 {
+        *px = if px[2] < 0x80 { dot } else { desk };
     }
 }
 
@@ -645,15 +691,26 @@ impl Element for DotGrid {
         window: &mut Window,
         _: &mut App,
     ) {
-        window.paint_quad(fill(bounds, DESK));
+        window.paint_quad(fill(bounds, desk()));
+        let tile_image = if theme::is_dark() {
+            &self.dark
+        } else {
+            &self.light
+        };
         let t = px(DOT_TILE);
         let mut y = bounds.origin.y;
         while y < bounds.bottom() {
             let mut x = bounds.origin.x;
             while x < bounds.right() {
                 let tile = Bounds::new(point(x, y), size(t, t));
-                let _ =
-                    window.paint_image(tile, tile, Corners::default(), self.tile.clone(), 0, false);
+                let _ = window.paint_image(
+                    tile,
+                    tile,
+                    Corners::default(),
+                    tile_image.clone(),
+                    0,
+                    false,
+                );
                 x += t;
             }
             y += t;
@@ -664,7 +721,7 @@ impl Element for DotGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::contrast;
+    use crate::theme::{contrast, DARK, LIGHT};
 
     const KINDS: [Kind; 5] = [
         Kind::Light,
@@ -674,28 +731,37 @@ mod tests {
         Kind::OnInk,
     ];
     const STATES: [State; 4] = [State::Idle, State::Hover, State::Pressed, State::Disabled];
+    /// Both palettes with their names, for the failure messages. The tests read the palettes
+    /// directly and never flip the process-wide theme (they run in parallel).
+    const BOTH: [(&str, &Palette); 2] = [("light", &LIGHT), ("dark", &DARK)];
 
     /// The colour a control's fill shows when the fill is transparent: the window it sits on.
-    fn solid(kind: Kind, bg: Rgba) -> Rgba {
+    fn solid(p: &Palette, kind: Kind, bg: Rgba) -> Rgba {
         match (bg.a < 1., kind) {
             (false, _) => bg,
-            (true, Kind::OnInk) => INK,
-            (true, _) => PAPER,
+            (true, Kind::OnInk) => p.bar,
+            (true, _) => p.paper,
         }
     }
 
     /// Every label a user is meant to read (every state but disabled) is AA (4.5:1) on its fill:
-    /// this is the check that a pink hover never leaves white text at 3.5:1.
+    /// this is the check that a pink hover never leaves white text at 3.5:1, and that the pressed
+    /// neon keeps a dark label in the dark palette.
     #[test]
     fn every_label_is_readable_on_its_fill() {
-        for kind in KINDS {
-            for state in STATES {
-                if state == State::Disabled {
-                    continue;
+        for (mode, p) in BOTH {
+            for kind in KINDS {
+                for state in STATES {
+                    if state == State::Disabled {
+                        continue;
+                    }
+                    let l = look_in(p, kind, state);
+                    let c = contrast(l.fg, solid(p, kind, l.bg));
+                    assert!(
+                        c >= 4.5,
+                        "{mode} {kind:?} {state:?}: {c:.2}:1 is below 4.5:1"
+                    );
                 }
-                let l = look(kind, state);
-                let c = contrast(l.fg, solid(kind, l.bg));
-                assert!(c >= 4.5, "{kind:?} {state:?}: {c:.2}:1 is below 4.5:1");
             }
         }
     }
@@ -703,39 +769,91 @@ mod tests {
     /// Hover recolours the fill only (see the module docs): the table never changes the label.
     #[test]
     fn hover_keeps_the_label_colour() {
-        for kind in KINDS {
-            assert_eq!(
-                look(kind, State::Hover).fg,
-                look(kind, State::Idle).fg,
-                "{kind:?}"
-            );
+        for (mode, p) in BOTH {
+            for kind in KINDS {
+                assert_eq!(
+                    look_in(p, kind, State::Hover).fg,
+                    look_in(p, kind, State::Idle).fg,
+                    "{mode} {kind:?}"
+                );
+            }
         }
     }
 
-    /// Pressed is neon with an ink label for every kind; only a button box moves.
+    /// Pressed is neon with the dark label for every kind; only a button box moves.
     #[test]
     fn pressed_is_neon_for_every_kind() {
-        for kind in KINDS {
-            let l = look(kind, State::Pressed);
-            assert_eq!(l.bg, ACCENT_STRONG, "{kind:?}");
-            assert_eq!(l.fg, INK, "{kind:?}");
-            assert!(!l.raised, "{kind:?} drops its shadow");
-            assert_eq!(
-                l.pushed,
-                matches!(kind, Kind::Light | Kind::Dark),
-                "{kind:?}"
-            );
+        for (mode, p) in BOTH {
+            for kind in KINDS {
+                let l = look_in(p, kind, State::Pressed);
+                assert_eq!(l.bg, p.accent_strong, "{mode} {kind:?}");
+                assert_eq!(l.fg, p.on_accent_strong, "{mode} {kind:?}");
+                assert!(!l.raised, "{mode} {kind:?} drops its shadow");
+                assert_eq!(
+                    l.pushed,
+                    matches!(kind, Kind::Light | Kind::Dark),
+                    "{mode} {kind:?}"
+                );
+            }
         }
     }
 
     /// A disabled control has no shadow and does not move.
     #[test]
     fn disabled_is_flat() {
-        for kind in KINDS {
-            let l = look(kind, State::Disabled);
-            assert!(!l.raised && !l.pushed, "{kind:?}");
-            assert_eq!(l.fg, MUTED_TEXT, "{kind:?}");
+        for (mode, p) in BOTH {
+            for kind in KINDS {
+                let l = look_in(p, kind, State::Disabled);
+                assert!(!l.raised && !l.pushed, "{mode} {kind:?}");
+                assert_eq!(l.fg, p.muted_text, "{mode} {kind:?}");
+            }
         }
+    }
+
+    /// The live look is the live palette's (the light one: no test flips the theme).
+    #[test]
+    fn the_live_look_follows_the_live_palette() {
+        for kind in KINDS {
+            for state in STATES {
+                let (live, light) = (look(kind, state), look_in(&LIGHT, kind, state));
+                assert_eq!(
+                    (live.bg, live.fg, live.edge),
+                    (light.bg, light.fg, light.edge)
+                );
+            }
+        }
+    }
+
+    /// `recolour` assumes the embedded tiles are two flat colours: pink desk, ink dots.
+    #[test]
+    fn the_embedded_tiles_are_a_desk_and_its_dots() {
+        let want =
+            std::collections::BTreeSet::from([[0xF3, 0x86, 0xA1, 0xFF], [0x1E, 0x1E, 0x1E, 0xFF]]);
+        for bytes in [
+            include_bytes!("../assets/dots-1x.png").as_slice(),
+            include_bytes!("../assets/dots-2x.png").as_slice(),
+        ] {
+            let rgba = image::load_from_memory(bytes).expect("a PNG").into_rgba8();
+            let seen: std::collections::BTreeSet<[u8; 4]> = rgba.pixels().map(|p| p.0).collect();
+            assert_eq!(seen, want);
+        }
+    }
+
+    /// The dark tile keeps every dot where it was and has only the dark desk's two colours.
+    #[test]
+    fn recolour_keeps_the_dots_where_they_were() {
+        // BGRA: a dot pixel, a desk pixel, a dot pixel.
+        let mut bgra = vec![
+            0x1E, 0x1E, 0x1E, 0xFF, 0xA1, 0x86, 0xF3, 0xFF, 0x1E, 0x1E, 0x1E, 0xFF,
+        ];
+        recolour(&mut bgra, &DARK);
+        let bgra_of = |c: Rgba| {
+            let byte = |v: f32| (v * 255.).round() as u8;
+            [byte(c.b), byte(c.g), byte(c.r), 0xFF]
+        };
+        assert_eq!(bgra[0..4], bgra_of(DARK.desk_dot));
+        assert_eq!(bgra[4..8], bgra_of(DARK.desk));
+        assert_eq!(bgra[8..12], bgra_of(DARK.desk_dot));
     }
 
     #[test]

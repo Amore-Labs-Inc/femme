@@ -13,7 +13,7 @@ FEMME today: shell scripts + a 5-dependency Rust web board (`board/src/main.rs`,
 - Permissions: **bypass everywhere** stays. The approval UI handles only agent questions (AskUserQuestion, plan approval, Codex `requestUserInput`).
 - Instinct/bot sessions run **headless**; their `/screen` text is generated from the transcript.
 - Platforms: Linux + macOS first, Windows later.
-- Look: FEMME board's visual elements (typesafe.ai retro: `--desk #F386A1` dot grid, black `.tb` title bars, VT323 pixel font for chrome, JetBrains Mono, Schibsted Grotesk body, 1.2px ink borders, hard `3px 3px 0` shadows, light only). UX: t3code (three-column shell, queue/steer composer, inline question rows, `when`-conditioned keybindings, command palette, bottom terminal drawer).
+- Look: FEMME board's visual elements (typesafe.ai retro: `--desk #F386A1` dot grid, black `.tb` title bars, VT323 pixel font for chrome, JetBrains Mono, Schibsted Grotesk body, 1.2px ink borders, hard `3px 3px 0` shadows; light, and a dark palette since the dark mode in `docs/desktop-ui.md`). UX: t3code (three-column shell, queue/steer composer, inline question rows, `when`-conditioned keybindings, command palette, bottom terminal drawer).
 
 Research base: 12 Opus agents read t3code (`d01b92c`), VS Code (`d041bd1`), Zed (`decd2399`), the Rust GUI/network/terminal/runtime crate landscape and 6 arXiv subject classes (cs.NI, cs.DC, cs.PF, cs.OS, cs.HC, cs.GR; 40+ papers), then one Plan agent designed the daemon. Clones live under the session scratchpad `research/`. arXiv IDs are listed at the end.
 

@@ -1,21 +1,35 @@
 //! FEMME's retro skin: colour/size tokens from `assets/index.html` (the web board), the embedded
 //! fonts, and the mapping of both onto gpui-component's [`Theme`] so stock widgets (inputs, menus,
-//! popovers, dialogs, scrollbars, resize handles) wear the same palette. Light only.
+//! popovers, dialogs, scrollbars, resize handles) wear the same palette. Light and dark.
 //!
 //! The skin in one paragraph: the window background (the *desk*) is pink with an ink dot grid and
 //! shows only as a thin gutter around the panels; every panel and the centre are *paper*, with the
 //! *panel grey* for secondary surfaces (tab strips, the composer's attachment row, muted rows);
-//! text and 1.2 px rules are *ink*; hover fills are the FEMME pink ([`HOVER`]) and *neon* is kept
+//! text and 1.2 px rules are *ink*; hover fills are the FEMME pink ([`hover`]) and *neon* is kept
 //! for the pressed state, the focus ring and the dot of a working session. Never hard-code a colour
 //! outside this file: add a token here and use it.
 //!
-//! Contrast, measured with [`contrast`] (the unit tests below pin every pair a screen relies on):
-//! ink on paper 16.5, ink on [`HOVER`] 4.74, paper on [`ACCENT_DEEP`] 5.5. White on [`HOVER`] is only
-//! 3.5, so a hover fill keeps the label's ink colour; it also keeps gpui from showing a stale label
-//! colour (gpui takes a label's hover colour from the last mouse move but the fill from the live hit
-//! test, so after a key press under a resting pointer a label that turns white sits on paper).
+//! Dark mode is a second [`Palette`] with the same token names ([`DARK`] beside [`LIGHT`]). It turns
+//! the neutrals over (ink is the light colour and paper the dark one, panel grey a step lighter, the
+//! desk near-black with a dim pink dot grid), keeps hover and neon pink and lifts the lane colours so
+//! a dot or a pill still reads on a dark surface. A label's colour follows its fill, so the two
+//! pinks swap roles: [`hover`] carries ink labels and is the deeper pink in dark, [`accent_deep`]
+//! carries paper labels and is the brighter one. Title bars stay dark with pink lettering in both
+//! ([`bar`], [`bar_text`]). Screens read the tokens through accessor functions ([`ink`], [`paper`],
+//! ...) that look at the live palette ([`current`]); [`set_dark`] flips all of them at once,
+//! re-installs the gpui-component theme and redraws every window. A colour baked into state (a
+//! cache, a static, a texture) goes stale on a flip: derive it from the live palette when it is
+//! drawn.
+//!
+//! Contrast, measured with [`contrast`] (the unit tests pin every pair a screen relies on, in both
+//! palettes): ink on paper 16.5 (dark 14.1), ink on [`hover`] 4.74 (dark 4.66), paper on
+//! [`accent_deep`] 5.5 (dark 4.74). White on the light [`hover`] is only 3.5, so a hover fill keeps
+//! the label's ink colour; it also keeps gpui from showing a stale label colour (gpui takes a
+//! label's hover colour from the last mouse move but the fill from the live hit test, so after a
+//! key press under a resting pointer a label that turns white sits on paper).
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{point, px, App, BoxShadow, Hsla, Pixels, Rgba};
 use gpui_component::{theme::ThemeColor, Theme};
@@ -66,89 +80,302 @@ pub fn contrast(a: Rgba, b: Rgba) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// The more readable of [`INK`] and [`PAPER`] as text on a `bg` fill (status pills, solid dots).
+/// The more readable of [`ink`] and [`paper`] as text on a `bg` fill (status pills, solid dots).
 pub fn text_on(bg: Rgba) -> Rgba {
-    if contrast(INK, bg) >= contrast(PAPER, bg) {
-        INK
+    text_on_in(current(), bg)
+}
+
+/// [`text_on`] for the palette `p`: its ink or its paper, whichever reads better on `bg`.
+pub fn text_on_in(p: &Palette, bg: Rgba) -> Rgba {
+    if contrast(p.ink, bg) >= contrast(p.paper, bg) {
+        p.ink
     } else {
-        PAPER
+        p.paper
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// The palette: the web board's `:root` custom properties, same names, same values.
+// The palettes: every colour token, once per theme.
 // ---------------------------------------------------------------------------------------------
 
-/// The desk (`--desk`): pink behind everything. With the ink dot grid ([`crate::ui::DotGrid`]) it is
-/// the window background and shows only in the gutters around panels ([`GUTTER`]) and on title-bar
-/// lettering; a work surface is never desk-coloured.
-pub const DESK: Rgba = rgb8(0xF386A1);
-/// Paper (`--paper`): the work surface. Panels, the centre, inputs, cards and the terminal.
-pub const PAPER: Rgba = rgb8(0xFEFEFE);
-/// Panel grey (`--panel`): secondary surfaces on paper (tab strips, the composer's attachment row,
-/// muted rows, dialogs, popovers).
-pub const PANEL: Rgba = rgb8(0xE5E5E5);
-/// Ink (`--ink`): text, borders, title bars, shadows.
-pub const INK: Rgba = rgb8(0x1E1E1E);
-/// Readable secondary text (`--muted`): meta lines, placeholders. 6.6:1 on paper, 5.3:1 on panel grey.
-/// For disabled text use [`MUTED_TEXT`].
-pub const MUTED: Rgba = rgb8(0x5C5C5C);
-/// FEMME pink (`--hover`): hover fills, the selected row, text selection. Label colour on it stays
-/// [`INK`] (4.7:1); see [`ON_ACCENT`].
-pub const HOVER: Rgba = rgb8(0xD45BB6);
-/// Neon pink (`--neon`): the pressed/active state of a control, the focus ring ([`FOCUS_RING`]), the
-/// dot of a working session, the wordmark. Never a resting fill, and never text on paper (3.0:1).
-pub const NEON: Rgba = rgb8(0xFF4FB4);
-/// Lane: working (`--work`). Green; a fill or a dot, not text on paper (3.0:1).
-pub const WORK: Rgba = rgb8(0x03AA5C);
-/// Lane: paused / blocked (`--pause`). Yellow; a fill or a dot, never text on paper (1.8:1).
-pub const PAUSE: Rgba = rgb8(0xF2B33D);
-/// Lane: queued (`--queue`).
-pub const QUEUE: Rgba = rgb8(0xDEDEDE);
-/// Lane: pull request (`--pr`). Teal; also the `info` colour of gpui-component widgets.
-pub const PR: Rgba = rgb8(0x09AEA1);
-/// Lane: failed / error (`--bad`). 4.7:1 on paper, so usable as text.
-pub const BAD: Rgba = rgb8(0xD93036);
-/// Lane: done / idle (`--done`).
-pub const DONE: Rgba = rgb8(0x858585);
+/// Declares [`Palette`] (one `Rgba` field per token) and, for each token, a function of the same
+/// name that reads it from the live palette ([`current`]). The doc comment is on both.
+macro_rules! tokens {
+    ($($(#[$doc:meta])* $name:ident,)*) => {
+        /// A complete set of colour tokens. [`LIGHT`] is the web board's skin, [`DARK`] its night
+        /// version; both define every token, so a screen written against the names never cares
+        /// which one is on.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub struct Palette {
+            $($(#[$doc])* pub $name: Rgba,)*
+        }
+
+        impl Palette {
+            /// Every token with its name, for the tests.
+            #[cfg(test)]
+            fn entries(&self) -> Vec<(&'static str, Rgba)> {
+                vec![$((stringify!($name), self.$name),)*]
+            }
+        }
+
+        $(
+            $(#[$doc])*
+            pub fn $name() -> Rgba {
+                current().$name
+            }
+        )*
+    };
+}
+
+tokens! {
+    /// The desk (`--desk`): the window background behind everything. Pink in the light palette,
+    /// near-black in the dark one, with a dot grid ([`crate::ui::DotGrid`], dots in `desk_dot`). It
+    /// shows only in the gutters around panels ([`GUTTER`]) and on title-bar lettering; a work
+    /// surface is never desk-coloured.
+    desk,
+    /// The dots of the desk's grid: ink on the pink desk, a dim pink on the dark one, where a bright
+    /// grid would shout over the work.
+    desk_dot,
+    /// Paper (`--paper`): the work surface. Panels, the centre, inputs, cards and the terminal.
+    paper,
+    /// Panel grey (`--panel`): secondary surfaces on paper (tab strips, the composer's attachment
+    /// row, muted rows, dialogs, popovers). A step lighter than paper in the dark palette.
+    panel,
+    /// Ink (`--ink`): text, borders, shadows, the fill of a dark button. The dark colour in the
+    /// light palette and the light one in the dark palette.
+    ink,
+    /// Readable secondary text (`--muted`): meta lines, placeholders. Over 5:1 on paper and on panel
+    /// grey in both palettes. For disabled text use `muted_text`.
+    muted,
+    /// FEMME pink (`--hover`): hover fills, the selected row, text selection. It carries `ink`
+    /// labels (4.6:1 or better; see `on_accent`), so it is the mid pink in the light palette and
+    /// the deeper pink in the dark one.
+    hover,
+    /// Neon pink (`--neon`): the pressed/active state of a control, the focus ring, the dot of a
+    /// working session, the wordmark. Never a resting fill, and the same in both palettes.
+    neon,
+    /// Lane: working (`--work`). Green; a fill or a dot, not text on light paper (3.0:1).
+    work,
+    /// Lane: paused / blocked (`--pause`). Yellow; a fill or a dot, never text on light paper (1.8:1).
+    pause,
+    /// Lane: queued (`--queue`).
+    queue,
+    /// Lane: pull request (`--pr`). Teal; also the `info` colour of gpui-component widgets.
+    pr,
+    /// Lane: failed / error (`--bad`). Usable as text on paper in both palettes.
+    bad,
+    /// Lane: done / idle (`--done`).
+    done,
+    /// Work surface: panels, the centre, inputs, cards (same as `paper`).
+    surface,
+    /// Secondary surface: tab strips, the composer's attachment row, muted rows, dialogs (same as
+    /// `panel`).
+    surface_muted,
+    /// Border colour of every box: ink, [`RULE`] wide.
+    border,
+    /// Colour of the hard (zero-blur) shadow under buttons and cards; see [`shadow`]. Ink in both
+    /// palettes.
+    shadow_color,
+    /// Colour of the dimmer hard shadow under dialogs and the composer; see [`hard_shadow`]. Black
+    /// at 40% on light paper, ink at 30% on dark (a black shadow would vanish there).
+    shadow_dim,
+    /// Hover pink: the fill of a hovered control or row, and of the selected row (same as `hover`).
+    accent,
+    /// Strong accent (neon): the pressed/active state and the focus ring (same as `neon`).
+    accent_strong,
+    /// Soft pink: a wash for a hovered row inside a list whose selected row is `accent`; ink on it is
+    /// over 10:1. Pale in the light palette, a dark plum in the dark one.
+    accent_soft,
+    /// Deep pink: the hover fill of an ink-filled control (the dark button), whose label is paper:
+    /// the pink that carries paper labels (4.7:1 or better). Also the colour of a hovered link. In
+    /// the dark palette that is the brighter pink, because paper is the dark colour there.
+    accent_deep,
+    /// Pink for text and translucent washes on paper (`#D45BB6` in both palettes): links, the drop
+    /// target. 3.5:1 on light paper, 4.7:1 on dark paper.
+    accent_text,
+    /// Label colour on an `accent` fill: ink (4.6:1 or better; white would be 3.5:1 on the light
+    /// palette's pink, below AA).
+    on_accent,
+    /// Label colour on the neon fill of a pressed control: the dark colour in both palettes (ink in
+    /// the light one, paper in the dark one), 5.5:1 or better.
+    on_accent_strong,
+    /// Text that is allowed to be faint: disabled labels, disabled borders (3.5:1 or better on
+    /// paper). Readable secondary text is `muted`.
+    muted_text,
+    /// Success: done, connected, "working" lane green (same as `work`).
+    success,
+    /// Warning: blocked, asks the user something (same as `pause`).
+    warn,
+    /// Danger: failed, destructive (same as `bad`).
+    danger,
+    /// Keyboard focus ring colour (neon, drawn [`FOCUS_RING_WIDTH`] wide). gpui-component widgets
+    /// show focus by tinting their own border with it (see [`apply`]).
+    focus_ring,
+    /// The permission square's colour for plan mode (`#B53094` in both palettes): a purple-leaning
+    /// magenta that stays apart from `neon`, the colour of auto mode.
+    plan,
+    /// Title bars (and the other dark bars): a dark fill in both palettes, so a bar reads as a bar.
+    bar,
+    /// The pink lettering of a title bar: the light palette's desk pink in both.
+    bar_text,
+    /// Label colour on a `bar` fill (buttons and glyphs on a title bar).
+    on_bar,
+    /// Secondary lettering on a `bar` (the size of the open file): panel grey in the light palette,
+    /// a light grey in the dark one.
+    bar_dim,
+    /// Hover fill of a button on a `bar`; `on_bar` stays readable on it.
+    bar_hover,
+    /// The veil behind a modal card (the accounts overlay, a project dialog, the board's dialogs).
+    scrim,
+    /// The veil of gpui-component's own dialogs and sheets.
+    overlay,
+}
+
+/// The light palette: the web board's `:root` custom properties, same names, same values.
+pub const LIGHT: Palette = light();
+
+/// The dark palette: the neutrals turned over (ink light, paper dark, a near-black desk with a dim
+/// pink dot grid), the pinks kept, the lane colours lifted to read on a dark surface.
+pub const DARK: Palette = dark();
+
+/// The live theme: set by [`set_dark`], read by every accessor. A relaxed atomic is enough: it is
+/// written on the UI thread and a stale read for one frame is harmless.
+static DARK_ON: AtomicBool = AtomicBool::new(false);
+
+/// Whether the dark palette is the live one.
+pub fn is_dark() -> bool {
+    DARK_ON.load(Ordering::Relaxed)
+}
+
+/// The live palette: [`DARK`] after `set_dark(true, ..)`, else [`LIGHT`]. The accessor functions
+/// ([`ink`], [`paper`], ...) read from it; a screen that needs many tokens can take it once.
+pub fn current() -> &'static Palette {
+    pick(is_dark())
+}
+
+/// The palette for a theme choice.
+fn pick(dark: bool) -> &'static Palette {
+    if dark {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+const fn light() -> Palette {
+    let desk = rgb8(0xF386A1);
+    let paper = rgb8(0xFEFEFE);
+    let panel = rgb8(0xE5E5E5);
+    let ink = rgb8(0x1E1E1E);
+    let hover = rgb8(0xD45BB6);
+    let neon = rgb8(0xFF4FB4);
+    let work = rgb8(0x03AA5C);
+    let pause = rgb8(0xF2B33D);
+    let bad = rgb8(0xD93036);
+    let accent_deep = rgb8(0xB53094);
+    Palette {
+        desk,
+        desk_dot: ink,
+        paper,
+        panel,
+        ink,
+        muted: rgb8(0x5C5C5C),
+        hover,
+        neon,
+        work,
+        pause,
+        queue: rgb8(0xDEDEDE),
+        pr: rgb8(0x09AEA1),
+        bad,
+        done: rgb8(0x858585),
+        surface: paper,
+        surface_muted: panel,
+        border: ink,
+        shadow_color: ink,
+        shadow_dim: rgba8(0x000000, 0.4),
+        accent: hover,
+        accent_strong: neon,
+        accent_soft: rgb8(0xF6CDE6),
+        accent_deep,
+        accent_text: hover,
+        on_accent: ink,
+        on_accent_strong: ink,
+        muted_text: rgb8(0x858585),
+        success: work,
+        warn: pause,
+        danger: bad,
+        focus_ring: neon,
+        plan: accent_deep,
+        bar: ink,
+        bar_text: desk,
+        on_bar: paper,
+        bar_dim: panel,
+        bar_hover: accent_deep,
+        scrim: rgba8(0x000000, 0.25),
+        overlay: rgba8(0x1E1E1E, 0.4),
+    }
+}
+
+const fn dark() -> Palette {
+    let desk = rgb8(0x120C10);
+    let paper = rgb8(0x1E1E1E);
+    let panel = rgb8(0x2B2B2B);
+    let ink = rgb8(0xECECEC);
+    // The pinks swap roles with the neutrals: `hover` carries ink (light) labels, so it is the deep
+    // pink; `accent_deep` carries paper (dark) labels, so it is the bright one.
+    let hover = rgb8(0xB53094);
+    let neon = rgb8(0xFF4FB4);
+    let work = rgb8(0x2FD07A);
+    let pause = rgb8(0xF5C24B);
+    let bad = rgb8(0xFF6B70);
+    let accent_deep = rgb8(0xD45BB6);
+    Palette {
+        desk,
+        desk_dot: rgb8(0x56313B),
+        paper,
+        panel,
+        ink,
+        muted: rgb8(0xA6A6A6),
+        hover,
+        neon,
+        work,
+        pause,
+        queue: rgb8(0x4D4D4D),
+        pr: rgb8(0x2CD3C4),
+        bad,
+        done: rgb8(0x8C8C8C),
+        surface: paper,
+        surface_muted: panel,
+        border: ink,
+        shadow_color: ink,
+        shadow_dim: rgba8(0xECECEC, 0.3),
+        accent: hover,
+        accent_strong: neon,
+        accent_soft: rgb8(0x4A2640),
+        accent_deep,
+        accent_text: accent_deep,
+        on_accent: ink,
+        on_accent_strong: paper,
+        muted_text: rgb8(0x747474),
+        success: work,
+        warn: pause,
+        danger: bad,
+        focus_ring: neon,
+        plan: hover,
+        bar: rgb8(0x0A080A),
+        bar_text: rgb8(0xF386A1),
+        on_bar: ink,
+        bar_dim: rgb8(0xA6A6A6),
+        bar_hover: hover,
+        scrim: rgba8(0x000000, 0.5),
+        overlay: rgba8(0x000000, 0.6),
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
-// Semantic tokens: what a colour is *for*. New code reaches for these; the palette names above stay
-// because the existing screens use them.
+// Metrics
 // ---------------------------------------------------------------------------------------------
 
-/// Work surface: panels, the centre, inputs, cards (paper).
-pub const SURFACE: Rgba = PAPER;
-/// Secondary surface: tab strips, the composer's attachment row, muted rows, dialogs (panel grey).
-pub const SURFACE_MUTED: Rgba = PANEL;
-/// Border colour of every box: ink, [`RULE`] wide.
-pub const BORDER: Rgba = INK;
-/// Colour of the hard (zero-blur) shadow under buttons and cards; see [`shadow`].
-pub const SHADOW: Rgba = INK;
-/// Hover pink: the fill of a hovered control or row, and of the selected row (same as [`HOVER`]).
-pub const ACCENT: Rgba = HOVER;
-/// Strong accent (neon): the pressed/active state and the focus ring (same as [`NEON`]).
-pub const ACCENT_STRONG: Rgba = NEON;
-/// Soft pink: a light wash for a hovered row inside a list whose selected row is [`ACCENT`]; ink on
-/// it is 11.7:1. `#F6CDE6`.
-pub const ACCENT_SOFT: Rgba = rgb8(0xF6CDE6);
-/// Deep pink: the hover fill of a *dark* control (ink fill, paper label), where the label stays paper:
-/// paper on it is 5.5:1. Also the colour of a hovered link.
-pub const ACCENT_DEEP: Rgba = rgb8(0xB53094);
-/// Label colour on an [`ACCENT`] fill: ink (4.7:1; white would be 3.5:1, below AA).
-pub const ON_ACCENT: Rgba = INK;
-/// Text that is allowed to be faint: disabled labels, disabled borders (3.7:1 on paper). Readable
-/// secondary text is [`MUTED`].
-pub const MUTED_TEXT: Rgba = rgb8(0x858585);
-/// Success: done, connected, "working" lane green (same as [`WORK`]).
-pub const SUCCESS: Rgba = WORK;
-/// Warning: blocked, asks the user something (same as [`PAUSE`]).
-pub const WARN: Rgba = PAUSE;
-/// Danger: failed, destructive (same as [`BAD`]).
-pub const DANGER: Rgba = BAD;
-/// Keyboard focus ring colour (neon, drawn [`FOCUS_RING_WIDTH`] wide). gpui-component widgets show
-/// focus by tinting their own border with it (see [`apply`]).
-pub const FOCUS_RING: Rgba = NEON;
 /// Focus ring thickness.
 pub const FOCUS_RING_WIDTH: Pixels = px(2.);
 
@@ -211,10 +438,11 @@ fn font_data() -> Vec<Cow<'static, [u8]>> {
     ]
 }
 
-/// The hard drop shadow of dialogs and the composer: `3px 3px 0 rgba(0,0,0,.4)`.
+/// The hard drop shadow of dialogs and the composer: `3px 3px 0` in [`shadow_dim`] (black at 40% on
+/// light paper).
 pub fn hard_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: Hsla::from(rgba8(0x000000, 0.4)),
+        color: Hsla::from(shadow_dim()),
         offset: point(px(3.), px(3.)),
         blur_radius: px(0.),
         spread_radius: px(0.),
@@ -222,11 +450,11 @@ pub fn hard_shadow() -> Vec<BoxShadow> {
     }]
 }
 
-/// The small hard shadow of buttons and cards: `2px 2px 0` in solid [`SHADOW`] ink. A pressed
-/// button drops it and moves by the same 2 px, as if pushed into the page.
+/// The small hard shadow of buttons and cards: `2px 2px 0` in solid [`shadow_color`] (ink). A
+/// pressed button drops it and moves by the same 2 px, as if pushed into the page.
 pub fn shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: Hsla::from(SHADOW),
+        color: Hsla::from(shadow_color()),
         offset: point(px(2.), px(2.)),
         blur_radius: px(0.),
         spread_radius: px(0.),
@@ -239,178 +467,188 @@ fn h(c: Rgba) -> Hsla {
     Hsla::from(c)
 }
 
-/// Every colour of gpui-component's theme, from the FEMME tokens. A struct literal without
+/// Every colour of gpui-component's theme, from the FEMME tokens of `p`. A struct literal without
 /// `..Default::default()` on purpose: a field gpui-component adds becomes a compile error here
 /// instead of a stray shadcn blue on screen, and the test below checks the result holds no blue.
-fn palette() -> ThemeColor {
+///
+/// The widgets' own mode stays "light" in both palettes: gpui-component derives a few fills from
+/// `is_dark()` on the assumption that its stock dark colours are in use (an input's background then
+/// becomes its border colour mixed with transparent, which here is ink), so its dark branches would
+/// paint light inputs on the dark palette.
+fn theme_colors(p: &Palette) -> ThemeColor {
     let clear = h(rgba8(0xFEFEFE, 0.0));
-    // A shade of `c` towards ink: the hover and active variants of a coloured button.
-    let hover = |c: Rgba| h(mix(c, INK, 0.12));
-    let active = |c: Rgba| h(mix(c, INK, 0.26));
+    // A shade of `c` towards ink: the hover and active variants of a coloured button (darker on
+    // paper, lighter on dark paper).
+    let hovered = |c: Rgba| h(mix(c, p.ink, 0.12));
+    let pressed = |c: Rgba| h(mix(c, p.ink, 0.26));
     ThemeColor {
         // Surfaces and text.
-        background: h(SURFACE),
-        foreground: h(INK),
-        border: h(BORDER),
-        input: h(BORDER),
+        background: h(p.surface),
+        foreground: h(p.ink),
+        border: h(p.border),
+        input: h(p.border),
         // gpui-component shows focus by tinting the border with `ring` (the ring itself is off, see
         // `apply`), so a focused input turns neon.
-        ring: h(FOCUS_RING),
-        caret: h(INK),
-        selection: h(HOVER),
-        muted: h(SURFACE_MUTED),
-        muted_foreground: h(MUTED),
-        accent: h(ACCENT),
-        accent_foreground: h(ON_ACCENT),
-        overlay: h(rgba8(0x1E1E1E, 0.4)),
-        window_border: h(INK),
+        ring: h(p.focus_ring),
+        caret: h(p.ink),
+        selection: h(p.hover),
+        muted: h(p.surface_muted),
+        muted_foreground: h(p.muted),
+        accent: h(p.accent),
+        accent_foreground: h(p.on_accent),
+        overlay: h(p.overlay),
+        window_border: h(p.ink),
         // Menus, popovers, tooltips, select lists.
-        popover: h(SURFACE_MUTED),
-        popover_foreground: h(INK),
+        popover: h(p.surface_muted),
+        popover_foreground: h(p.ink),
         // Plain Button.
-        button: h(SURFACE),
-        button_hover: h(ACCENT),
-        button_active: h(ACCENT_STRONG),
-        button_foreground: h(INK),
+        button: h(p.surface),
+        button_hover: h(p.accent),
+        button_active: h(p.accent_strong),
+        button_foreground: h(p.ink),
         // Primary: the dark, ink-filled button. Its hover keeps the paper label, so the fill goes deep.
-        primary: h(INK),
-        primary_hover: h(ACCENT_DEEP),
-        primary_active: h(ACCENT_STRONG),
-        primary_foreground: h(PAPER),
-        button_primary: h(INK),
-        button_primary_hover: h(ACCENT_DEEP),
-        button_primary_active: h(ACCENT_STRONG),
-        button_primary_foreground: h(PAPER),
+        primary: h(p.ink),
+        primary_hover: h(p.accent_deep),
+        primary_active: h(p.accent_strong),
+        primary_foreground: h(p.paper),
+        button_primary: h(p.ink),
+        button_primary_hover: h(p.accent_deep),
+        button_primary_active: h(p.accent_strong),
+        button_primary_foreground: h(p.paper),
         // Secondary: panel grey.
-        secondary: h(SURFACE_MUTED),
-        secondary_hover: h(ACCENT),
-        secondary_active: h(ACCENT_STRONG),
-        secondary_foreground: h(INK),
-        button_secondary: h(SURFACE_MUTED),
-        button_secondary_hover: h(ACCENT),
-        button_secondary_active: h(ACCENT_STRONG),
-        button_secondary_foreground: h(INK),
+        secondary: h(p.surface_muted),
+        secondary_hover: h(p.accent),
+        secondary_active: h(p.accent_strong),
+        secondary_foreground: h(p.ink),
+        button_secondary: h(p.surface_muted),
+        button_secondary_hover: h(p.accent),
+        button_secondary_active: h(p.accent_strong),
+        button_secondary_foreground: h(p.ink),
         // Status colours: a solid lane colour, a shade darker under the pointer and pressed. The label
         // is whichever of ink and paper reads better on the fill.
-        danger: h(DANGER),
-        danger_hover: hover(DANGER),
-        danger_active: active(DANGER),
-        danger_foreground: h(text_on(DANGER)),
-        button_danger: h(DANGER),
-        button_danger_hover: hover(DANGER),
-        button_danger_active: active(DANGER),
-        button_danger_foreground: h(text_on(DANGER)),
-        success: h(SUCCESS),
-        success_hover: hover(SUCCESS),
-        success_active: active(SUCCESS),
-        success_foreground: h(text_on(SUCCESS)),
-        button_success: h(SUCCESS),
-        button_success_hover: hover(SUCCESS),
-        button_success_active: active(SUCCESS),
-        button_success_foreground: h(text_on(SUCCESS)),
-        warning: h(WARN),
-        warning_hover: hover(WARN),
-        warning_active: active(WARN),
-        warning_foreground: h(text_on(WARN)),
-        button_warning: h(WARN),
-        button_warning_hover: hover(WARN),
-        button_warning_active: active(WARN),
-        button_warning_foreground: h(text_on(WARN)),
-        info: h(PR),
-        info_hover: hover(PR),
-        info_active: active(PR),
-        info_foreground: h(text_on(PR)),
-        button_info: h(PR),
-        button_info_hover: hover(PR),
-        button_info_active: active(PR),
-        button_info_foreground: h(text_on(PR)),
+        danger: h(p.danger),
+        danger_hover: hovered(p.danger),
+        danger_active: pressed(p.danger),
+        danger_foreground: h(text_on_in(p, p.danger)),
+        button_danger: h(p.danger),
+        button_danger_hover: hovered(p.danger),
+        button_danger_active: pressed(p.danger),
+        button_danger_foreground: h(text_on_in(p, p.danger)),
+        success: h(p.success),
+        success_hover: hovered(p.success),
+        success_active: pressed(p.success),
+        success_foreground: h(text_on_in(p, p.success)),
+        button_success: h(p.success),
+        button_success_hover: hovered(p.success),
+        button_success_active: pressed(p.success),
+        button_success_foreground: h(text_on_in(p, p.success)),
+        warning: h(p.warn),
+        warning_hover: hovered(p.warn),
+        warning_active: pressed(p.warn),
+        warning_foreground: h(text_on_in(p, p.warn)),
+        button_warning: h(p.warn),
+        button_warning_hover: hovered(p.warn),
+        button_warning_active: pressed(p.warn),
+        button_warning_foreground: h(text_on_in(p, p.warn)),
+        info: h(p.pr),
+        info_hover: hovered(p.pr),
+        info_active: pressed(p.pr),
+        info_foreground: h(text_on_in(p, p.pr)),
+        button_info: h(p.pr),
+        button_info_hover: hovered(p.pr),
+        button_info_active: pressed(p.pr),
+        button_info_foreground: h(text_on_in(p, p.pr)),
         // Links: ink, deep pink under the pointer.
-        link: h(INK),
-        link_hover: h(ACCENT_DEEP),
-        link_active: h(INK),
+        link: h(p.ink),
+        link_hover: h(p.accent_deep),
+        link_active: h(p.ink),
         // Lists and tables: a soft wash on hover, the full pink and an ink edge on the selected row.
-        list: h(SURFACE),
-        list_even: h(SURFACE),
-        list_head: h(SURFACE_MUTED),
-        list_hover: h(ACCENT_SOFT),
-        list_active: h(ACCENT),
-        list_active_border: h(INK),
-        table: h(SURFACE),
-        table_even: h(SURFACE),
-        table_head: h(SURFACE_MUTED),
-        table_head_foreground: h(INK),
-        table_foot: h(SURFACE_MUTED),
-        table_foot_foreground: h(INK),
-        table_hover: h(ACCENT_SOFT),
-        table_active: h(ACCENT),
-        table_active_border: h(INK),
-        table_row_border: h(SURFACE_MUTED),
+        list: h(p.surface),
+        list_even: h(p.surface),
+        list_head: h(p.surface_muted),
+        list_hover: h(p.accent_soft),
+        list_active: h(p.accent),
+        list_active_border: h(p.ink),
+        table: h(p.surface),
+        table_even: h(p.surface),
+        table_head: h(p.surface_muted),
+        table_head_foreground: h(p.ink),
+        table_foot: h(p.surface_muted),
+        table_foot_foreground: h(p.ink),
+        table_hover: h(p.accent_soft),
+        table_active: h(p.accent),
+        table_active_border: h(p.ink),
+        table_row_border: h(p.surface_muted),
         // Tabs: the selected tab is the dark button.
         tab: clear,
-        tab_foreground: h(INK),
-        tab_active: h(INK),
-        tab_active_foreground: h(PAPER),
-        tab_bar: h(SURFACE_MUTED),
-        tab_bar_segmented: h(SURFACE_MUTED),
+        tab_foreground: h(p.ink),
+        tab_active: h(p.ink),
+        tab_active_foreground: h(p.paper),
+        tab_bar: h(p.surface_muted),
+        tab_bar_segmented: h(p.surface_muted),
         // Sidebar, title and status bars.
-        sidebar: h(SURFACE_MUTED),
-        sidebar_foreground: h(INK),
-        sidebar_border: h(INK),
-        sidebar_accent: h(ACCENT),
-        sidebar_accent_foreground: h(ON_ACCENT),
-        sidebar_primary: h(INK),
-        sidebar_primary_foreground: h(PAPER),
-        title_bar: h(INK),
-        title_bar_border: h(INK),
-        status_bar: h(SURFACE_MUTED),
-        status_bar_border: h(INK),
+        sidebar: h(p.surface_muted),
+        sidebar_foreground: h(p.ink),
+        sidebar_border: h(p.ink),
+        sidebar_accent: h(p.accent),
+        sidebar_accent_foreground: h(p.on_accent),
+        sidebar_primary: h(p.ink),
+        sidebar_primary_foreground: h(p.paper),
+        title_bar: h(p.bar),
+        title_bar_border: h(p.ink),
+        status_bar: h(p.surface_muted),
+        status_bar_border: h(p.ink),
         // Scrollbars: no track, an ink thumb (the hover/drag colour is the full ink).
         scrollbar: clear,
-        scrollbar_thumb: h(rgba8(0x1E1E1E, 0.55)),
-        scrollbar_thumb_hover: h(INK),
+        scrollbar_thumb: h(Rgba { a: 0.55, ..p.ink }),
+        scrollbar_thumb_hover: h(p.ink),
         // Dragging a resize handle or a file over a drop target.
-        drag_border: h(ACCENT_STRONG),
-        drop_target: h(rgba8(0xD45BB6, 0.25)),
+        drag_border: h(p.accent_strong),
+        drop_target: h(Rgba {
+            a: 0.25,
+            ..p.accent_text
+        }),
         // Small controls.
-        accordion: h(SURFACE),
-        group_box: h(SURFACE_MUTED),
-        group_box_foreground: h(INK),
-        description_list_label: h(SURFACE_MUTED),
-        description_list_label_foreground: h(INK),
-        progress_bar: h(INK),
-        slider_bar: h(INK),
-        slider_thumb: h(PAPER),
-        switch: h(SURFACE_MUTED),
-        switch_thumb: h(PAPER),
-        skeleton: h(SURFACE_MUTED),
+        accordion: h(p.surface),
+        group_box: h(p.surface_muted),
+        group_box_foreground: h(p.ink),
+        description_list_label: h(p.surface_muted),
+        description_list_label_foreground: h(p.ink),
+        progress_bar: h(p.ink),
+        slider_bar: h(p.ink),
+        slider_thumb: h(p.paper),
+        switch: h(p.surface_muted),
+        switch_thumb: h(p.paper),
+        skeleton: h(p.surface_muted),
         // Charts: pink, ink, teal and yellow; never the stock blue ramp.
-        chart_1: h(ACCENT_STRONG),
-        chart_2: h(ACCENT),
-        chart_3: h(INK),
-        chart_4: h(PR),
-        chart_5: h(PAUSE),
-        chart_bullish: h(SUCCESS),
-        chart_bearish: h(DANGER),
-        chart_grid: h(SURFACE_MUTED),
+        chart_1: h(p.accent_strong),
+        chart_2: h(p.accent),
+        chart_3: h(p.ink),
+        chart_4: h(p.pr),
+        chart_5: h(p.pause),
+        chart_bullish: h(p.success),
+        chart_bearish: h(p.danger),
+        chart_grid: h(p.surface_muted),
         // The base hues (syntax and chart helpers): blue and magenta are taken from the FEMME pinks and
         // teal so that "blue" never shows up anywhere.
-        red: h(DANGER),
-        red_light: h(mix(DANGER, PAPER, 0.35)),
-        green: h(SUCCESS),
-        green_light: h(mix(SUCCESS, PAPER, 0.35)),
-        blue: h(PR),
-        blue_light: h(mix(PR, PAPER, 0.35)),
-        yellow: h(WARN),
-        yellow_light: h(mix(WARN, PAPER, 0.35)),
-        magenta: h(ACCENT),
-        magenta_light: h(mix(ACCENT, PAPER, 0.35)),
-        cyan: h(PR),
-        cyan_light: h(mix(PR, PAPER, 0.35)),
+        red: h(p.danger),
+        red_light: h(mix(p.danger, p.paper, 0.35)),
+        green: h(p.success),
+        green_light: h(mix(p.success, p.paper, 0.35)),
+        blue: h(p.pr),
+        blue_light: h(mix(p.pr, p.paper, 0.35)),
+        yellow: h(p.warn),
+        yellow_light: h(mix(p.warn, p.paper, 0.35)),
+        magenta: h(p.accent),
+        magenta_light: h(mix(p.accent, p.paper, 0.35)),
+        cyan: h(p.pr),
+        cyan_light: h(mix(p.pr, p.paper, 0.35)),
     }
 }
 
-/// Registers the embedded fonts and installs the FEMME palette into gpui-component's global
-/// [`Theme`]. Call once after `gpui_component::init`.
+/// Registers the embedded fonts, reads the saved theme choice (see [`state`]: light when there is
+/// none) and installs the FEMME palette into gpui-component's global [`Theme`]. Call once after
+/// `gpui_component::init` and before the first window opens.
 ///
 /// Stock widgets then render as the skin: paper fills, ink 1 px borders, pink hover and selection,
 /// neon on focus (a focused input turns its border neon), square corners (`radius` 0), no soft
@@ -421,7 +659,25 @@ pub fn apply(cx: &mut App) {
     cx.text_system()
         .add_fonts(font_data())
         .expect("embedded fonts are valid TTFs");
+    DARK_ON.store(state::load(), Ordering::Relaxed);
+    install(cx);
+}
 
+/// Switches the whole app to the dark palette (`true`) or the light one: flips every token, installs
+/// the matching gpui-component colours and redraws every window, cached views included. A colour
+/// that was copied into state instead of read when drawn does not follow; see the module docs. The
+/// choice is kept in `~/.local/state/femme/theme` for the next run ([`apply`] reads it back).
+pub fn set_dark(dark: bool, cx: &mut App) {
+    DARK_ON.store(dark, Ordering::Relaxed);
+    state::save(dark);
+    install(cx);
+}
+
+/// Writes the live palette (and the fixed fonts, radius and shadow flags) into gpui-component's
+/// [`Theme`]. `Theme::update` rebuilds the base layer and refreshes every window.
+///
+/// The theme's own mode stays "light": see [`theme_colors`].
+fn install(cx: &mut App) {
     Theme::update(cx, |t| {
         t.font_family = FONT_UI.into();
         t.mono_font_family = FONT_MONO.into();
@@ -434,193 +690,11 @@ pub fn apply(cx: &mut App) {
         t.radius_lg = px(0.);
         t.shadow = false;
         t.focus_ring = false;
-        t.colors = palette();
+        t.colors = theme_colors(current());
     });
 }
 
+mod state;
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fonts_are_embedded() {
-        let fonts = font_data();
-        assert_eq!(fonts.len(), 7);
-        // TrueType / OpenType magic.
-        for f in &fonts {
-            assert!(matches!(&f[..4], [0, 1, 0, 0] | b"OTTO" | b"true"));
-        }
-    }
-
-    #[test]
-    fn contrast_follows_wcag() {
-        let black = rgb8(0x000000);
-        let white = rgb8(0xFFFFFF);
-        assert!((contrast(black, white) - 21.0).abs() < 0.01);
-        assert!((contrast(white, white) - 1.0).abs() < 1e-6);
-        // Order does not matter.
-        assert_eq!(contrast(INK, PAPER), contrast(PAPER, INK));
-        // Known values: ink on paper is 16.5:1.
-        assert!((contrast(INK, PAPER) - 16.53).abs() < 0.05);
-    }
-
-    /// Every text/fill pair a screen relies on is AA (4.5:1) readable.
-    #[test]
-    fn text_is_readable_on_its_fills() {
-        let pairs: &[(&str, Rgba, Rgba)] = &[
-            ("ink on paper", INK, PAPER),
-            ("ink on panel grey", INK, PANEL),
-            ("ink on hover pink", ON_ACCENT, ACCENT),
-            ("ink on soft pink", INK, ACCENT_SOFT),
-            ("paper on ink (dark button)", PAPER, INK),
-            ("paper on deep pink (dark button hover)", PAPER, ACCENT_DEEP),
-            ("ink on neon (pressed)", INK, NEON),
-            ("desk pink on ink (title bar)", DESK, INK),
-            ("muted on paper", MUTED, PAPER),
-            ("muted on panel grey", MUTED, PANEL),
-            ("danger red on paper", DANGER, PAPER),
-            ("paper on danger red", PAPER, DANGER),
-            ("ink on success green", INK, SUCCESS),
-            ("ink on warning yellow", INK, WARN),
-            ("ink on teal", INK, PR),
-            ("ink on queued grey", INK, QUEUE),
-            ("ink on done grey", INK, DONE),
-        ];
-        for (name, fg, bg) in pairs {
-            let c = contrast(*fg, *bg);
-            assert!(c >= 4.5, "{name}: {c:.2}:1 is below 4.5:1");
-        }
-    }
-
-    /// `text_on` always picks a readable label, for every fill the skin paints.
-    #[test]
-    fn text_on_picks_a_readable_label() {
-        for bg in [
-            DESK,
-            PAPER,
-            PANEL,
-            INK,
-            HOVER,
-            NEON,
-            ACCENT_SOFT,
-            ACCENT_DEEP,
-            WORK,
-            PAUSE,
-            QUEUE,
-            PR,
-            BAD,
-            DONE,
-        ] {
-            let fg = text_on(bg);
-            assert!(contrast(fg, bg) >= 3.0, "{bg:?}");
-        }
-        assert_eq!(text_on(INK), PAPER);
-        assert_eq!(text_on(PAPER), INK);
-        assert_eq!(text_on(BAD), PAPER);
-    }
-
-    /// The documented caveat: white on the hover pink is below AA, which is why a hover fill keeps an
-    /// ink label. If the pink is ever retuned this test says the doc comments need to follow.
-    #[test]
-    fn white_on_hover_pink_is_not_aa() {
-        let white = rgb8(0xFFFFFF);
-        assert!(contrast(white, HOVER) < 4.5);
-        assert!(contrast(INK, HOVER) >= 4.5);
-    }
-
-    /// Hue in degrees of an opaque colour and its HSL saturation.
-    fn hue_sat(c: Rgba) -> (f32, f32) {
-        let hsla = Hsla::from(c);
-        (hsla.h * 360.0, hsla.s)
-    }
-
-    /// Blue is `190..=270` degrees (cyan-blue through violet) at any visible saturation. Teal (175
-    /// degrees) and the pinks (315-345) are fine.
-    fn is_blue(h: f32, s: f32) -> bool {
-        (190.0..=270.0).contains(&h) && s > 0.15
-    }
-
-    #[test]
-    fn no_token_is_blue() {
-        for (name, c) in [
-            ("DESK", DESK),
-            ("PAPER", PAPER),
-            ("PANEL", PANEL),
-            ("INK", INK),
-            ("MUTED", MUTED),
-            ("HOVER", HOVER),
-            ("NEON", NEON),
-            ("WORK", WORK),
-            ("PAUSE", PAUSE),
-            ("QUEUE", QUEUE),
-            ("PR", PR),
-            ("BAD", BAD),
-            ("DONE", DONE),
-            ("ACCENT_SOFT", ACCENT_SOFT),
-            ("ACCENT_DEEP", ACCENT_DEEP),
-            ("MUTED_TEXT", MUTED_TEXT),
-        ] {
-            let (h, s) = hue_sat(c);
-            assert!(
-                !is_blue(h, s),
-                "{name} is blue (hue {h:.0}, saturation {s:.2})"
-            );
-        }
-        assert!(is_blue(220.0, 0.9), "the check itself spots blue");
-        assert!(!is_blue(175.0, 0.9), "teal is not blue");
-    }
-
-    /// `(field name, hue in degrees, saturation, alpha)` of every colour field of `ThemeColor`, read from
-    /// its `Debug` output (the struct has no iterator and this crate has no serde).
-    fn fields(c: &ThemeColor) -> Vec<(String, f32, f32, f32, f32)> {
-        let dbg = format!("{c:?}");
-        let mut out = Vec::new();
-        for (end, _) in dbg.match_indices(": Hsla { h: ") {
-            let start = dbg[..end]
-                .rfind(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                .map_or(0, |i| i + 1);
-            let name = dbg[start..end].to_string();
-            let body = &dbg[end + ": Hsla { ".len()..];
-            let body = &body[..body.find('}').expect("Hsla closes")];
-            let mut vals = [0f32; 4];
-            for (i, part) in body.split(',').enumerate() {
-                let (_, v) = part.split_once(':').expect("name: value");
-                vals[i] = v.trim().parse().expect("a float");
-            }
-            out.push((name, vals[0] * 360.0, vals[1], vals[2], vals[3]));
-        }
-        out
-    }
-
-    #[test]
-    fn palette_sets_every_field_and_none_is_blue() {
-        let colors = palette();
-        let f = fields(&colors);
-        // The parser found the whole struct (gpui-component 0.8.1 has 137 colour fields).
-        assert!(f.len() >= 130, "parsed only {} fields", f.len());
-        for (name, hue, sat, lightness, alpha) in f {
-            // A field nobody set is the all-zero default: transparent black.
-            assert!(
-                alpha != 0.0 || lightness != 0.0 || sat != 0.0 || hue != 0.0,
-                "{name} was left at the default"
-            );
-            // Transparent colours have no colour to speak of.
-            if alpha > 0.0 {
-                assert!(
-                    !is_blue(hue, sat),
-                    "{name} is blue (hue {hue:.0}, saturation {sat:.2})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn shadows_are_hard() {
-        for s in [shadow(), hard_shadow()] {
-            assert_eq!(s.len(), 1);
-            assert_eq!(s[0].blur_radius, px(0.));
-            assert_eq!(s[0].spread_radius, px(0.));
-            assert_eq!(s[0].offset.x, s[0].offset.y);
-        }
-    }
-}
+mod tests;

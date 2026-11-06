@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::pane::{Metrics, PaneState};
 use super::runs::{batch_row, Rgb, TextRun, UnderlineKind};
-use crate::theme::{FONT_MONO, NEON, PAPER, TERM_SIZE};
+use crate::theme::{neon, paper, FONT_MONO, TERM_SIZE};
 
 /// Converts an 8-bit colour to gpui's [`Hsla`].
 pub fn hsla(c: Rgb) -> Hsla {
@@ -249,12 +249,13 @@ impl Element for TerminalElement {
             line_h,
             scale,
         } = pre.m;
-        window.paint_quad(fill(bounds, PAPER));
+        window.paint_quad(fill(bounds, paper()));
         // Rows and columns hang off a device-pixel-aligned origin (the 1.2px rules leave it fractional).
         let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
         let origin = point(snap(bounds.origin.x), snap(bounds.origin.y));
 
         let mut guard = self.state.borrow_mut();
+        guard.follow_theme();
         guard.origin = origin;
         let scroll = guard.scroll;
         let PaneState {
@@ -329,7 +330,7 @@ impl Element for TerminalElement {
         if let Some(row) = cursor_row.filter(|_| c.visible && c.col < cols && scroll == 0) {
             let origin = origin + point(cell_w * f32::from(c.col), line_h * f32::from(row));
             let cell = Bounds::new(origin, size(cell_w, line_h));
-            let color = Hsla::from(NEON);
+            let color = Hsla::from(neon());
             let q = match c.shape {
                 CursorShape::Block if self.focus.is_focused(window) => {
                     fill(cell, Hsla { a: 0.6, ..color })

@@ -26,7 +26,7 @@ Keep it current: when your module's public API changes, edit your section in the
 ```
 
 - **Top bar**: the `femme` wordmark is a button: hover or click opens a dropdown (version, check for
-  updates, accounts, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
+  updates, accounts, dark mode, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
   The link status stays next to it. No lanes, no palette button, no panel buttons.
 - **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
@@ -34,7 +34,10 @@ Keep it current: when your module's public API changes, edit your section in the
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
-  calls folded, questions as answerable rows.
+  calls folded, questions as answerable rows. A link in the markdown, and a bare `http://` or
+  `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
+  hand over it): the words of a link are the target, not the dim address after them, and only web
+  and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
@@ -58,6 +61,17 @@ Keep it current: when your module's public API changes, edit your section in the
   while the rows of its two ends stay in view (at least in part): a drag can scroll the list at its
   edge only while the row it began in still shows, and scrolling that row away ends the selection.
   A text a row cuts short with an ellipsis cannot be selected (its open row shows it whole).
+- **Pictures, right click**: a composer chip and a thumbnail in the transcript open a small menu at
+  the pointer, drawn by `ui/ctx.rs`. A chip that is a picture offers `copy image`, `open` and
+  `remove`, any other chip `open` and `remove`, a thumbnail `copy image` and `open`; the left click
+  is unchanged. `copy image` puts the picture on the system clipboard through `ui/clip.rs`: gpui does
+  it on macOS and Windows, `wl-copy` (Wayland) or `xclip` (X11) is run for it elsewhere. A PNG goes as
+  it is and any other raster is re-encoded as a PNG with its EXIF orientation applied (the programs
+  that take a pasted picture read PNG); an SVG has no `copy image`. A helper that is missing or fails
+  is said under the composer's input, or in the transcript's dismissible note. `open` keeps the
+  hover preview on screen until Esc or a click elsewhere. `Esc` and a click outside close the menu;
+  `Esc` goes no further, so it does not interrupt a working session, and while the menu is up nothing
+  behind it takes a hover or a click.
 - **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
   the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
@@ -77,23 +91,40 @@ Keep it current: when your module's public API changes, edit your section in the
 
 Skin: keep FEMME's identity (fonts VT323 / JetBrains Mono / Schibsted Grotesk, ink borders, black
 title bars, the logo) but the work surface is paper, not pink: pink is the desk margin and accents.
-Light only. Tokens live in `theme.rs`, helpers in `ui.rs`: use them, never hard-code colours.
+Tokens live in `theme.rs`, helpers in `ui.rs`: use them, never hard-code colours.
+
+Dark mode: the `femme ▾` menu has a `Dark mode` switch between `Accounts` and `Reconnect`; it flips the
+theme at once in every window and keeps the menu open. `theme.rs` holds two palettes with the same token
+names (`LIGHT`, `DARK`) and a colour is read through its accessor (`theme::ink()`, `paper()`, ...) each
+time it is drawn, so nothing is rebuilt on a flip: never keep one colour in state, a static or a cache
+and draw with it later, derive it when you draw. What is costly to build (the code colours of
+`viewer/highlight.rs`, the dot grid's tile, the terminal's skin) is kept once per palette and picked
+with `theme::is_dark()` as it is drawn. Ink and paper swap (light ink on a near-black desk with a dim
+pink dot grid), hover and neon stay pink, title bars stay dark with pink lettering (`bar`,
+`bar_text`), and a label takes the colour that reads on its fill (`on_accent`, `on_accent_strong`,
+`text_on`; `ink()` and `muted()` do not read on the pink fills in dark, and a child that sets its own
+colour keeps it while its row is pressed), so a new fill is checked against both palettes: the tests
+in `theme/tests.rs` hold every pair a screen relies on. The terminal grid (`Palette::femme`), the code
+colours (`viewer/highlight.rs`) and the board follow the theme; the board's PNG export and a PDF page
+stay light (a picture goes to Claude, a page is white paper). The choice is the word `dark` or `light`
+in `$XDG_STATE_HOME/femme/theme`, else `~/.local/state/femme/theme` (beside `board.json`), read before
+the first window opens (no file is light) and written on every flip.
 
 ## Modules and owners
 
 | Agent | Branch | Owns (only these files) | Public API (stubs are in place, compile-clean) |
 |---|---|---|---|
 | shell | `ui/shell` | `desktop/src/app.rs`, `main.rs`, `lib.rs` (mod list), deletes `panels.rs` and `bench.rs`'s transcript parts | `FemmeApp` layout, keymap, mounts every module below, focus cycle, integration owner |
-| menu | `ui/menu` | `desktop/src/menu.rs` | `FemmeMenu::new(net, cx)`, emits `MenuEvent::{Accounts, CheckUpdates, Reconnect, Quit}`; renders the wordmark button + dropdown; "check for updates" compares `env!("FEMME_COMMIT")` (add `desktop/build.rs` to stamp it) with `Req::ServerInfo.deployed` and says what the timer will do |
+| menu | `ui/menu` | `desktop/src/menu.rs` | `FemmeMenu::new(net, cx)`, emits `MenuEvent::{Accounts, CheckUpdates, Reconnect, Quit}`; renders the wordmark button + dropdown (with a `Dark mode` switch that calls `theme::set_dark` itself and emits nothing); "check for updates" compares `env!("FEMME_COMMIT")` (add `desktop/build.rs` to stamp it) with `Req::ServerInfo.deployed` and says what the timer will do |
 | accounts | `ui/accounts` | `desktop/src/accounts.rs` | `AccountsOverlay::new(net, cx)`, `open/close/is_open`; data from `Req::BoardApi{GET /api/accounts, GET /api/keys}`, `Req::Caps`; actions `POST /api/accounts/switch`, `POST/DELETE /api/keys…`, `Req::SetCap` |
 | sidebar | `ui/sidebar` | `desktop/src/sidebar.rs` | `Sidebar::new(net, cx)`, `set_selected(sid, cx)`, emits `OpenSession(Sid)`; lists `Net.model.sessions` that are live, newest first, status dot, title as `net::title` |
 | sessions | `ui/sessions` | `desktop/src/net.rs`, `desktop/src/session.rs` | `Net::current()/set_current()`, `session::open_at_start(net, cx)`; status/attention handling; `Model` fields other agents read stay (`sessions`, `panes`, `link`, `rtt_ms`, `current`) |
-| transcript | `ui/transcript` | `desktop/src/transcript/*` (rewrites `live.rs`, deletes `model.rs`, `pacer.rs`, `view.rs`, `rng.rs`; `bench.rs` loses its transcript bench) | `Transcript::new(net, cx)`, `set_session(sid, cx)`; subscribes `Scope::Session(sid)`, renders `Item` rows + `Delta`, markdown via `pulldown-cmark`, folded tool calls, question rows answer with `Req::AnswerQuestion`, user rows show attachments through `viewer::FileView` (`Req::BlobGet`) |
+| transcript | `ui/transcript` | `desktop/src/transcript/*` (rewrites `live.rs`, deletes `model.rs`, `pacer.rs`, `view.rs`, `rng.rs`; `bench.rs` loses its transcript bench) | `Transcript::new(net, cx)`, `set_session(sid, cx)`; subscribes `Scope::Session(sid)`, renders `Item` rows + `Delta`, markdown via `pulldown-cmark` (`Inline::links` keeps each link's target; `md_view` makes a text with links an `InteractiveText` whose click is `cx.open_url`), folded tool calls, question rows answer with `Req::AnswerQuestion`, user rows show attachments through `viewer::FileView` (`Req::BlobGet`) |
 | composer | `ui/composer` | `desktop/src/composer.rs` | `Composer::new(net, cx)`, `set_session(sid, cx)`, `Focusable`; a multi-line input (gpui-component `input`), Enter sends, Shift-Enter newline, Esc = `Req::Interrupt`; paste image / drop file → `Req::BlobPut` → thumbnail chip (hover: `viewer::FileView` popover; ×) → `Req::Prompt{attachments, how: Queue}` (`Steer` with ctrl-Enter); the text typed for a session is kept in `$XDG_STATE_HOME/femme/drafts/<sid>.txt` on every edit (`composer/disk.rs`) and is back in that chat on the next run, until it is sent |
 | terminal | `ui/terminal` | `desktop/src/terminal/panel.rs`, `terminal/panel/tabs.rs`, `terminal/pane.rs`, `terminal/bridge.rs`, `terminal/input.rs` | `TerminalPanel::new(net, cx)`, `set_session(sid, cx)`, `pane(id)`, `main_pane(sid)` (the session's first terminal: a shell's, or an agent's TUI; the centre draws it), `main_id(sid)`, `set_centre(pane, cx)`, `shown_pane(cx)`, `watch_window(window, cx)`, `Focusable` (focusing the panel hands the keyboard to the tab on show); the panel owns every attached `TerminalPane` (first 8 terminals at once, the rest when their session is current; headless agents' pane 1 is the transcript's, never attached) and draws the right panel's terminal tab: tab per pane except the one the centre draws (a pane is drawn in one place only: `set_centre` says which, the default is the first terminal of a shell or TUI session), `+` (`PaneOpen`, or `SessionCreate` shell when there is no session), `close` (`PaneClose`; `SessionClose` for a shell session's first pane; never an agent's own pane), ctrl-tab / ctrl-shift-tab |
 | files | `ui/files` | `desktop/src/files.rs` | `FilesPanel::new(net, cx)`, `set_session(sid, cwd, cx)`; tree from `Req::FsList{sid, path}` (lazy per directory), click → `Req::FsRead` → `viewer::FileView` in the panel, back button, size guard (ask before > 8 MiB) |
 | viewer | `ui/viewer` | `desktop/src/viewer.rs`, `desktop/Cargo.toml` (deps it adds) | `FileView::new(name, data, cx)`: png/jpg/gif/webp/bmp via gpui `img`, SVG, PDF pages (pure-Rust renderer, no system libs), text/code with syntect, markdown; unknown → hex/size notice |
-| theme | `ui/theme` | `desktop/src/theme.rs`, `desktop/src/ui.rs`, `desktop/assets/*` | tokens and helpers; **add or change values, never rename or remove** existing items (every other agent compiles against them); paper work surface, pink desk margin, hover/active states for buttons |
+| theme | `ui/theme` | `desktop/src/theme.rs`, `desktop/src/ui.rs`, `desktop/assets/*` | tokens and helpers; **add or change values, never rename or remove** existing items (every other agent compiles against them); paper work surface, pink desk margin, hover/active states for buttons. The one rename, made with dark mode: a colour token is a function (`ink()`, `paper()`, ...) reading the live palette, and the old `INK`/`PAPER`/... constants are gone |
 | daemon | `ui/daemon` | `crates/femmed/**`, `crates/femme-proto/**` (only to extend), `server/fable-cap.sh`, `server/systemd/femme-cswap.service` | serves the new requests below |
 
 Not touched by anyone: `desktop/src/connect.rs`, `display.rs`, `terminal/element.rs`, `terminal/runs.rs`, `terminal/synth.rs`, `crates/femme-client`, `crates/femme-term`.

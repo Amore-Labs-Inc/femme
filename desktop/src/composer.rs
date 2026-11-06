@@ -37,7 +37,7 @@ use self::draft::{
 };
 use crate::net::{Link, Net};
 use crate::theme::{
-    self, BAD, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE, MUTED, NEON, PANEL, PAPER,
+    self, bad, muted, neon, panel, paper, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE,
 };
 use crate::ui::{button, button_dark, row, ruled};
 
@@ -75,6 +75,8 @@ pub struct Composer {
     /// The permission mode the last render's pill showed, to re-render when it changes.
     last_permission: Option<String>,
     previews: Previews,
+    /// The right-click menu of the chips, and the preview its `open` keeps on screen.
+    ctx: Entity<crate::ui::ctx::Menu>,
     /// The daemon's slash commands (`Req::Commands`), names without the `/`; empty until it answers.
     commands: Vec<String>,
     /// When `Req::Commands` was last sent on this connection (`None`: not yet).
@@ -141,6 +143,7 @@ impl Composer {
             last_target: Target::NoSession,
             last_permission: None,
             previews: Rc::default(),
+            ctx: cx.new(crate::ui::ctx::Menu::new),
             commands: Vec::new(),
             asked: None,
             link_up: false,
@@ -461,7 +464,7 @@ impl Composer {
 
     /// The `/` menu above the input: one ruled list of `/name` rows, the picked one lit.
     fn menu_list(&self, rows: Vec<String>, cx: &mut Context<Self>) -> Div {
-        ruled(div().flex().flex_col().bg(PAPER)).children(rows.into_iter().enumerate().map(
+        ruled(div().flex().flex_col().bg(paper())).children(rows.into_iter().enumerate().map(
             |(ix, name)| {
                 row(SharedString::from(format!("c-slash-{ix}")), ix == self.pick)
                     .min_h(px(26.))
@@ -834,9 +837,9 @@ fn request(net: &Entity<Net>, req: Req, cx: &mut Context<Composer>) -> Task<Resu
 fn drop_fill() -> Rgba {
     let mix = |paper: f32, neon: f32| paper * 0.8 + neon * 0.2;
     Rgba {
-        r: mix(PAPER.r, NEON.r),
-        g: mix(PAPER.g, NEON.g),
-        b: mix(PAPER.b, NEON.b),
+        r: mix(paper().r, neon().r),
+        g: mix(paper().g, neon().g),
+        b: mix(paper().b, neon().b),
         a: 1.,
     }
 }
@@ -856,8 +859,8 @@ fn disabled_button(id: &'static str, label: &'static str) -> Stateful<Div> {
             .font_family(FONT_PIXEL)
             .text_size(BTN_SIZE)
             .line_height(relative(1.))
-            .bg(PANEL)
-            .text_color(MUTED)
+            .bg(panel())
+            .text_color(muted())
             .cursor_default(),
     )
     .child(label)
@@ -960,13 +963,13 @@ impl Render for Composer {
                 .flex_col()
                 .gap(px(8.))
                 .p(px(8.))
-                .bg(PAPER),
+                .bg(paper()),
         );
         card.style().box_shadow = Some(theme::hard_shadow());
         let card = card
             .when(takes, |card| {
                 card.drag_over::<ExternalPaths>(|style, _, _, _| {
-                    style.border_color(NEON).bg(drop_fill())
+                    style.border_color(neon()).bg(drop_fill())
                 })
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                     if let Some(sid) = this.session {
@@ -992,7 +995,7 @@ impl Render for Composer {
                     div()
                         .font_family(FONT_MONO)
                         .text_size(META_SIZE)
-                        .text_color(BAD)
+                        .text_color(bad())
                         .child(line),
                 )
             });
@@ -1006,5 +1009,6 @@ impl Render for Composer {
             .w_full()
             .flex_none()
             .child(card)
+            .child(self.ctx.clone())
     }
 }

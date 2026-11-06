@@ -17,10 +17,10 @@ use femme_proto::state::{ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, list, px, relative, App, Context, Div, Entity, FocusHandle, Focusable, FollowMode,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window,
+    div, list, px, relative, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
+    FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, MouseButton, ParentElement as _, Pixels, Render, Rgba,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
 };
 use gpui_base::animation::cubic_bezier;
 use gpui_component::scroll::Scrollbar;
@@ -39,9 +39,7 @@ use super::turns::{self, Key, Layout};
 use super::working;
 use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
-use crate::theme::{
-    rgba8, BAD, DONE, FONT_MONO, FONT_PIXEL, HOVER, INK, MUTED, NEON, PANEL, PAPER,
-};
+use crate::theme::{accent_deep, bad, done, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL};
 use crate::ui::{dot, meta, ruled};
 
 /// How many older items one request asks for.
@@ -98,6 +96,8 @@ pub struct Transcript {
     glide: Option<(Instant, Pixels)>,
     /// The last request that failed, shown until it is dismissed.
     pub(super) note: Option<String>,
+    /// The right-click menu of the thumbnails, and the preview its `open` keeps on screen.
+    pub(super) ctx: Entity<crate::ui::ctx::Menu>,
     /// Redraws once a second while the session works, for the clock in the working line.
     ticker: Option<Task<()>>,
     /// The working line the last row shows, `None` when the session is idle.
@@ -172,6 +172,7 @@ impl Transcript {
             pill_timer: None,
             glide: None,
             note: None,
+            ctx: cx.new(crate::ui::ctx::Menu::new),
             ticker: None,
             working: None,
             sent: Vec::new(),
@@ -600,7 +601,7 @@ impl Transcript {
             .justify_center()
             .font_family(FONT_PIXEL)
             .text_size(px(22.))
-            .text_color(MUTED)
+            .text_color(muted())
             .child(word)
     }
 
@@ -628,10 +629,11 @@ impl Transcript {
                             .gap(px(6.))
                             .px(px(10.))
                             .py(px(4.))
-                            .bg(INK)
-                            .text_color(PAPER)
+                            .bg(ink())
+                            .text_color(paper())
                             .cursor_pointer()
-                            .hover(|s| s.bg(HOVER)),
+                            // Deep pink, like the dark button: the label stays paper.
+                            .hover(|s| s.bg(accent_deep())),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.glide_to_end(cx)))
                     .child(div().font_family(FONT_MONO).text_size(px(12.)).child("↓"))
@@ -741,8 +743,8 @@ impl Transcript {
                 .h(px(18.))
                 .px(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(PANEL))
-                .when(on, |d| d.bg(PANEL).text_color(INK))
+                .hover(|s| s.bg(panel()))
+                .when(on, |d| d.bg(panel()).text_color(ink()))
         };
         let main = tab("agents-main", self.view.is_none())
             .child("‹ main")
@@ -767,20 +769,20 @@ impl Transcript {
                 .px(px(6.))
                 .max_w(px(220.))
                 .cursor_pointer()
-                .hover(|s| s.bg(PANEL))
-                .when(on, |d| d.bg(PANEL))
+                .hover(|s| s.bg(panel()))
+                .when(on, |d| d.bg(panel()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.set_view(Some(id.clone()), cx);
                 }))
-                .child(dot(if c.running { NEON } else { DONE }))
+                .child(dot(if c.running { neon() } else { done() }))
                 .child(
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_color(if c.running { INK } else { MUTED })
+                        .text_color(if c.running { ink() } else { muted() })
                         .child(c.label.clone()),
                 )
-                .child(div().flex_none().text_color(MUTED).child(when))
+                .child(div().flex_none().text_color(muted()).child(when))
         });
         Some(
             div()
@@ -791,11 +793,11 @@ impl Transcript {
                 .h(px(24.))
                 .px(px(6.))
                 .border_t_1()
-                .border_color(rgba8(0x1E1E1E, 0.16))
-                .bg(PAPER)
+                .border_color(Rgba { a: 0.16, ..ink() })
+                .bg(paper())
                 .font_family(FONT_MONO)
                 .text_size(px(11.))
-                .text_color(MUTED)
+                .text_color(muted())
                 .overflow_hidden()
                 .child(main)
                 .children(chips),
@@ -864,7 +866,7 @@ impl Render for Transcript {
             .size_full()
             .flex()
             .flex_col()
-            .bg(PAPER)
+            .bg(paper())
             .track_focus(&self.focus)
             // A click gives the transcript the keyboard unless a text field has it: a click on a
             // row must not take it from the composer. This listener runs after the fields in the
@@ -909,18 +911,19 @@ impl Render for Transcript {
                                     .max_w(relative(0.8))
                                     .px(px(8.))
                                     .py(px(3.))
-                                    .bg(PAPER)
+                                    .bg(paper())
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.note = None;
                                         cx.notify();
                                     })),
                             )
-                            .child(meta(note).text_color(BAD)),
+                            .child(meta(note).text_color(bad())),
                         )
                     }),
             )
             .children(strip)
+            .child(self.ctx.clone())
     }
 }
 

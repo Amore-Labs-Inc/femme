@@ -21,7 +21,7 @@ use gpui_component::Sizable as _;
 use crate::motion;
 use crate::net::Net;
 use crate::session;
-use crate::theme::{self, BAD, BODY_SIZE, FONT_MONO, FONT_UI, INK, PAPER};
+use crate::theme::{self, bad, ink, paper, BODY_SIZE, FONT_MONO, FONT_UI};
 use crate::ui::{button, dialog, meta, row, ruled, title_bar};
 
 /// Where the field starts.
@@ -369,7 +369,7 @@ impl Picker {
             .gap(px(6.))
             .p(px(6.))
             .child(
-                ruled(div().flex_1().min_w_0().h(px(28.)).flex().items_center().bg(PAPER))
+                ruled(div().flex_1().min_w_0().h(px(28.)).flex().items_center().bg(paper()))
                     .child(Input::new(self.input.as_ref().unwrap()).appearance(false).small()),
             )
             .child(
@@ -422,7 +422,12 @@ impl Picker {
                 d.child(div().px(px(10.)).py(px(6.)).child(meta(e)))
             })
             .when_some(self.error.clone(), |d, e| {
-                d.child(div().px(px(10.)).py(px(6.)).child(meta(e).text_color(BAD)))
+                d.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .child(meta(e).text_color(bad())),
+                )
             })
             .into_any_element()
     }
@@ -450,7 +455,7 @@ impl Render for Picker {
             .justify_center()
             .items_start()
             .pt(relative(0.12))
-            .bg(theme::rgba8(0x000000, 0.25))
+            .bg(theme::scrim())
             .opacity(a.opacity())
             .occlude()
             .key_context("Picker")
@@ -458,7 +463,7 @@ impl Render for Picker {
             .font_family(FONT_UI)
             .text_size(BODY_SIZE)
             .line_height(relative(1.4))
-            .text_color(INK)
+            .text_color(ink())
             // Before the field: Enter, Tab and the arrows are the palette's, not the field's.
             .capture_key_down(cx.listener(Self::on_key))
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, _, cx| t.close(cx)))

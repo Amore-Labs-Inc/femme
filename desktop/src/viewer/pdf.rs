@@ -20,7 +20,7 @@ use super::bitmap::{bgra_image, MAX_SIDE};
 use super::chrome::{self, Seen};
 use super::guarded;
 use super::hex::human_size;
-use crate::theme::{PANEL, PAPER};
+use crate::theme::{self, panel, paper};
 use crate::ui;
 
 /// Space above the first page, between pages and below the last (logical pixels).
@@ -407,6 +407,14 @@ impl PdfView {
         for i in shown.clone() {
             let height = page_height(width, doc.sizes[i]);
             let slot = &doc.slots[i];
+            // A drawn page is white paper in either theme (the bitmap is opaque and was drawn over
+            // white); while it is not there the slot is the theme's paper, so the spinner and the
+            // failure line read.
+            let page = if slot.bitmap.is_some() {
+                theme::LIGHT.paper
+            } else {
+                paper()
+            };
             let body = match (&slot.bitmap, &slot.failed) {
                 (Some(b), _) => img(b.image.clone())
                     .size_full()
@@ -431,7 +439,7 @@ impl PdfView {
                                 .flex_none()
                                 .w(px(width))
                                 .h(px(height))
-                                .bg(PAPER)
+                                .bg(page)
                                 .overflow_hidden(),
                         )
                         .child(body),
@@ -448,7 +456,7 @@ impl PdfView {
             1 => "1 page".to_string(),
             _ => format!("{n} pages"),
         };
-        chrome::framed(column, format!("{pages} · {size_text}"), PANEL)
+        chrome::framed(column, format!("{pages} · {size_text}"), panel())
     }
 }
 
@@ -456,7 +464,7 @@ impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match &self.state {
             State::Opening => {
-                chrome::framed(chrome::waiting("opening"), human_size(self.bytes), PANEL)
+                chrome::framed(chrome::waiting("opening"), human_size(self.bytes), panel())
             }
             State::Failed(why) => chrome::framed(
                 chrome::notice(
@@ -465,7 +473,7 @@ impl Render for PdfView {
                     vec![why.clone()],
                 ),
                 human_size(self.bytes),
-                PANEL,
+                panel(),
             ),
             State::Ready(_) => self.pages(window, cx),
         }

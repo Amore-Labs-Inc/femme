@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use gpui::Rgba;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
-use crate::theme::{BAD, HOVER, INK, MUTED, PAUSE, PR, WORK};
+use crate::theme::{self, DARK, LIGHT};
 
 /// Every grammar two-face bundles (about 200), parsed lazily; the first use loads the set.
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
@@ -100,23 +100,47 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
-/// The text colour of a class: the status colours of the theme, darkened toward ink until they read
-/// on paper (the test holds each to 4.5:1).
+/// The text colour of a class in the live theme (see [`colors`]).
 pub(crate) fn color(class: Class) -> Rgba {
-    // In the order of the enum: five hues that stay apart on paper.
-    static PALETTE: LazyLock<[Rgba; 8]> = LazyLock::new(|| {
+    colors(theme::is_dark())[class as usize]
+}
+
+/// The text colour of each class, in the order of the enum, for one theme: five hues that stay
+/// apart on paper. Light: the status colours of the theme, darkened toward ink until they read on
+/// paper. Dark: the same, but ink is the light end there, so the tokens (already light) stay as
+/// they are, the keyword pink being the pink for text. The test holds each to 4.5:1 on its paper.
+fn colors(dark: bool) -> &'static [Rgba; 8] {
+    static LIGHT_COLORS: LazyLock<[Rgba; 8]> = LazyLock::new(|| {
+        let p = &LIGHT;
         [
-            INK,                   // Plain
-            MUTED,                 // Comment
-            mix(HOVER, INK, 0.30), // Keyword: pink
-            mix(WORK, INK, 0.35),  // Str: green
-            mix(BAD, INK, 0.25),   // Number: red
-            mix(PAUSE, INK, 0.50), // Type: ochre
-            mix(PR, INK, 0.40),    // Function: teal
-            BAD,                   // Invalid
+            p.ink,                     // Plain
+            p.muted,                   // Comment
+            mix(p.hover, p.ink, 0.30), // Keyword: pink
+            mix(p.work, p.ink, 0.35),  // Str: green
+            mix(p.bad, p.ink, 0.25),   // Number: red
+            mix(p.pause, p.ink, 0.50), // Type: ochre
+            mix(p.pr, p.ink, 0.40),    // Function: teal
+            p.bad,                     // Invalid
         ]
     });
-    PALETTE[class as usize]
+    static DARK_COLORS: LazyLock<[Rgba; 8]> = LazyLock::new(|| {
+        let p = &DARK;
+        [
+            p.ink,                   // Plain
+            p.muted,                 // Comment
+            p.accent_text,           // Keyword: pink
+            p.work,                  // Str: green
+            mix(p.bad, p.ink, 0.25), // Number: red, a shade paler than Invalid
+            p.pause,                 // Type: amber
+            p.pr,                    // Function: teal
+            p.bad,                   // Invalid
+        ]
+    });
+    if dark {
+        &DARK_COLORS
+    } else {
+        &LIGHT_COLORS
+    }
 }
 
 /// A coloured stretch of one line, in bytes of that line.
@@ -298,19 +322,44 @@ mod tests {
 
     #[test]
     fn every_class_reads_on_paper() {
-        for class in [
-            Class::Plain,
-            Class::Comment,
-            Class::Keyword,
-            Class::Str,
-            Class::Number,
-            Class::Type,
-            Class::Function,
-            Class::Invalid,
-        ] {
-            let c = contrast(color(class), crate::theme::PAPER);
-            assert!(c >= 4.5, "{class:?} has contrast {c:.2} on paper");
+        for (name, dark, paper) in [("light", false, LIGHT.paper), ("dark", true, DARK.paper)] {
+            for class in [
+                Class::Plain,
+                Class::Comment,
+                Class::Keyword,
+                Class::Str,
+                Class::Number,
+                Class::Type,
+                Class::Function,
+                Class::Invalid,
+            ] {
+                let c = contrast(colors(dark)[class as usize], paper);
+                assert!(c >= 4.5, "{name}: {class:?} has contrast {c:.2} on paper");
+            }
         }
+    }
+
+    #[test]
+    fn the_hues_stay_apart_in_both_themes() {
+        for dark in [false, true] {
+            let c = colors(dark);
+            for a in 0..c.len() {
+                for b in a + 1..c.len() {
+                    // Number and Invalid are both red on purpose; the rest must differ.
+                    if (a, b) == (Class::Number as usize, Class::Invalid as usize) {
+                        continue;
+                    }
+                    assert_ne!(
+                        c[a], c[b],
+                        "dark={dark}: classes {a} and {b} share a colour"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            color(Class::Plain),
+            colors(theme::is_dark())[Class::Plain as usize]
+        );
     }
 
     #[test]

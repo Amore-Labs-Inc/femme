@@ -11,7 +11,8 @@ use super::editor::Tool;
 use super::icons;
 use super::paint::paint_icon;
 use crate::theme::{
-    self, ACCENT, ACCENT_DEEP, ACCENT_STRONG, BTN_SIZE, FONT_PIXEL, INK, MUTED_TEXT, PAPER,
+    self, accent, accent_deep, accent_strong, ink, muted_text, on_accent_strong, paper, BTN_SIZE,
+    FONT_PIXEL,
 };
 use crate::ui::ruled;
 
@@ -27,9 +28,9 @@ pub fn clear() -> Rgba {
 /// paper label while `on`. Icons and text inside follow its label colour.
 pub fn cell(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
     let (bg, fg, hover) = if on {
-        (INK, PAPER, ACCENT_DEEP)
+        (ink(), paper(), accent_deep())
     } else {
-        (clear(), INK, ACCENT)
+        (clear(), ink(), accent())
     };
     div()
         .id(id)
@@ -44,7 +45,7 @@ pub fn cell(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .text_color(fg)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .active(|s| s.bg(ACCENT_STRONG).text_color(INK))
+        .active(|s| s.bg(accent_strong()).text_color(on_accent_strong()))
 }
 
 /// A [`cell`] holding a word in the pixel font.
@@ -69,14 +70,14 @@ pub fn word_off(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> 
         .font_family(FONT_PIXEL)
         .text_size(BTN_SIZE)
         .line_height(relative(1.))
-        .text_color(MUTED_TEXT)
+        .text_color(muted_text())
         .cursor_not_allowed()
         .child(label)
 }
 
 /// A bordered run of controls.
 pub fn group() -> Div {
-    ruled(div().flex().flex_none().items_center().bg(PAPER))
+    ruled(div().flex().flex_none().items_center().bg(paper()))
 }
 
 /// An unbordered run of controls.

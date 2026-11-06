@@ -45,7 +45,7 @@ use gpui_base::{
 use gpui_component::input::AnyInputState;
 use gpui_component::WindowExt as _;
 
-use crate::theme::HOVER;
+use crate::theme::hover;
 
 /// How many low bits of an element id and of a document order number the texts of one row.
 const ROW_BITS: u32 = 24;
@@ -53,14 +53,12 @@ const ROW_BITS: u32 = 24;
 /// The `key` of the row after the last item of the list (prompts on their way, the working line).
 pub const TAIL: u64 = (1 << (64 - ROW_BITS)) - 1;
 
-/// The highlight of selected text: the theme's pink ([`HOVER`], the colour of the composer's
-/// selection), thin enough to leave ink and the grey of a code span readable under it.
-const SELECTION: Rgba = Rgba {
-    r: HOVER.r,
-    g: HOVER.g,
-    b: HOVER.b,
-    a: 0.55,
-};
+/// The highlight of selected text: the palette's pink (`hover`, the colour of the composer's
+/// selection), thin enough to leave ink and the grey of a code span readable under it, in the light
+/// palette and in the dark one.
+fn selection() -> Rgba {
+    Rgba { a: 0.55, ..hover() }
+}
 
 /// How far the pointer may move between press and release and still make a click.
 const DRAG: Pixels = px(4.);
@@ -439,7 +437,7 @@ impl Element for Selectable {
                 layout.position_for_index(range.end),
             ) {
                 for quad in selection_quads(start, end, layout.bounds(), layout.line_height()) {
-                    window.paint_quad(fill(quad, SELECTION));
+                    window.paint_quad(fill(quad, selection()));
                 }
             }
         }

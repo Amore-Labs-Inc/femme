@@ -21,7 +21,7 @@ use super::chrome;
 use super::guarded;
 use super::hex::human_size;
 use super::kind::{Kind, Raster};
-use crate::theme::PANEL;
+use crate::theme::panel;
 
 /// The longest side a decoded raster keeps; bigger pictures are scaled down while decoding.
 pub(crate) const MAX_SIDE: u32 = 8192;
@@ -326,7 +326,7 @@ impl Render for ImageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size_text = human_size(self.bytes);
         match &self.state {
-            State::Loading => chrome::framed(chrome::waiting("decoding"), size_text, PANEL),
+            State::Loading => chrome::framed(chrome::waiting("decoding"), size_text, panel()),
             State::Failed(why) => chrome::framed(
                 chrome::notice(
                     ("viewer-notice", cx.entity_id()),
@@ -334,7 +334,7 @@ impl Render for ImageView {
                     vec![why.clone()],
                 ),
                 size_text,
-                PANEL,
+                panel(),
             ),
             State::Ready(d) => {
                 let mode = if self.one_to_one {
@@ -344,7 +344,7 @@ impl Render for ImageView {
                 };
                 let caption: SharedString =
                     format!("{} · {size_text} · {mode}", dimensions_text(d)).into();
-                chrome::framed(self.picture(d, window, cx), caption, PANEL)
+                chrome::framed(self.picture(d, window, cx), caption, panel())
             }
         }
     }
