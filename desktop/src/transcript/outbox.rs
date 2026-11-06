@@ -160,6 +160,7 @@ mod tests {
             preview: text.chars().take(8).collect(),
             body: Some(serde_json::json!({ "text": text }).to_string()),
             blob_hash: None,
+            parent: None,
             ts,
         })
     }

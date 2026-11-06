@@ -439,6 +439,7 @@ mod tests {
             preview: String::new(),
             body: None,
             blob_hash: None,
+            parent: None,
             ts: 1_000 * seq as i64,
         }
     }

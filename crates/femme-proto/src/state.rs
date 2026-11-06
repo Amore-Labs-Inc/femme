@@ -126,6 +126,9 @@ pub struct Item {
     pub blob_hash: Option<[u8; 32]>,
     /// Unix ms.
     pub ts: i64,
+    /// Set on a subagent's items: the id of the tool call (Agent) that spawned it. The main
+    /// transcript shows items without one; a subagent view shows the items with its id.
+    pub parent: Option<String>,
 }
 
 /// A question an agent asks the user (AskUserQuestion, plan approval, Codex `requestUserInput`).

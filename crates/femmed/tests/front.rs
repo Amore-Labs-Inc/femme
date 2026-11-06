@@ -1113,6 +1113,7 @@ fn item(sid: Sid, n: u64, body: &str) -> Item {
         preview: String::new(),
         body: Some(body.into()),
         blob_hash: None,
+        parent: None,
         ts: n as i64,
     }
 }

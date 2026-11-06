@@ -1385,6 +1385,7 @@ fn new_item(
         preview: b.map(|b| preview_of(kind, b)).unwrap_or_default(),
         body: b.map(Value::to_string),
         blob_hash: None,
+        parent: None,
         ts: now,
     }
 }
@@ -1926,6 +1927,7 @@ mod tests {
             preview: preview.into(),
             body: None,
             blob_hash: None,
+            parent: None,
             ts: 0,
         }
     }

@@ -110,6 +110,7 @@ mod tests {
             preview: text.into(),
             body: None,
             blob_hash: None,
+            parent: None,
             ts,
         })
     }

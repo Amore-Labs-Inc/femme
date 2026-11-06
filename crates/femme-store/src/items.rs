@@ -66,7 +66,7 @@ const INLINE_DECODE_MAX: usize = 2 * INLINE_MAX;
 
 macro_rules! item_cols {
     () => {
-        "session_id, item_id, seq, rev, kind, status, preview, body, blob_hash, ts"
+        "session_id, item_id, seq, rev, kind, status, preview, body, blob_hash, ts, parent"
     };
 }
 pub(crate) use item_cols;
@@ -86,6 +86,7 @@ pub(crate) fn item_from_row(r: &Row<'_>) -> Result<Item> {
         preview: r.get(6)?,
         body,
         blob_hash: r.get(8)?,
+        parent: r.get(10)?,
         ts: r.get(9)?,
     })
 }
@@ -267,10 +268,10 @@ impl Tx<'_> {
         let rev = self.next_rev();
         self.prepare_cached(concat!(
             "INSERT INTO items (", item_cols!(), ")
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(session_id, item_id) DO UPDATE SET
                  rev = excluded.rev, kind = excluded.kind, status = excluded.status, preview = excluded.preview,
-                 body = excluded.body, blob_hash = excluded.blob_hash, ts = excluded.ts"
+                 body = excluded.body, blob_hash = excluded.blob_hash, ts = excluded.ts, parent = excluded.parent"
         ))?
         .execute(params![
             id_blob(item.sid),
@@ -283,6 +284,7 @@ impl Tx<'_> {
             enc.body,
             enc.blob_hash,
             item.ts,
+            item.parent,
         ])?;
         self.clear_tombstone(Entity::Item, &item_key(item.sid, &item.item_id))?; // ids can come back
         if let Some(old) = replaced.filter(|h| Some(*h) != enc.blob_hash) {
@@ -308,6 +310,7 @@ impl Tx<'_> {
             },
             blob_hash: enc.blob_hash,
             ts: item.ts,
+            parent: item.parent.clone(),
         })
     }
 

@@ -364,6 +364,7 @@ mod tests {
                 preview: String::new(),
                 body: Some(body.to_string()),
                 blob_hash: None,
+                parent: None,
                 ts: self.ts,
             })]);
         }
@@ -651,6 +652,7 @@ mod tests {
             preview: "x".into(),
             body: None,
             blob_hash: None,
+            parent: None,
             ts: 0,
         })]);
         assert_eq!(keys(&layout(&items, &none())), [Key::More, Key::Item(50)]);
@@ -768,6 +770,7 @@ mod tests {
             body: None,
             blob_hash: Some([9; 32]),
             ts: 1,
+            parent: None,
         })]);
         let line = tool_line(&b.items, b.items.get(1).unwrap());
         assert_eq!(
