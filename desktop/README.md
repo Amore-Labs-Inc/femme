@@ -234,7 +234,7 @@ Features: `font-kit`, `wayland`, `x11`, `runtime_shaders`; `profiler` (frame tim
 | `src/files.rs`, `src/files/` | The right panel's files tab: the session's directory as a lazy tree (`Req::FsList`); a click reads the file (`Req::FsRead`) and shows it with the viewer. |
 | `src/viewer.rs`, `src/viewer/` | `FileView`: images (raster, SVG), PDF pages, text and code with syntax highlighting, markdown, a hex dump for the rest. |
 | `src/board.rs`, `src/board/` | The drawing board: scene, editor state machine and PNG export (pure, tested on their own), the gpui layer over them; emits `BoardEvent::{Send, Closed}`. |
-| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview. |
+| `src/composer.rs`, `src/composer/` | The input under the transcript: a prompt, attachments uploaded with `Req::BlobPut` and shown as chips with a hover preview; `composer/disk.rs` keeps each session's unsent text in `~/.local/state/femme/drafts/` between runs. |
 | `src/display.rs` | `FEMME_DISPLAY`: picks the display (built-in by default) and the window rectangle on it. |
 | `src/theme.rs` | Colour tokens from `board/src/index.html`, embedded fonts, mapping onto gpui-component's `Theme`. |
 | `src/ui.rs`, `src/ui/gallery.rs` | The skin's building blocks (window, title bar, card, buttons, icons, chips, dots, menus, the dot-grid desk); the gallery lays every helper out in every state. |
