@@ -21,7 +21,7 @@ use super::draft::{Chip, ChipId, Upload};
 use super::sniff;
 use super::Composer;
 use crate::theme::{
-    BAD, FONT_MONO, FONT_PIXEL, FONT_UI, HOVER, INK, META_SIZE, MUTED, PANEL, PAPER, RULE,
+    bad, hover, ink, muted, panel, paper, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE,
 };
 use crate::ui::{dialog, meta, ruled};
 use crate::viewer::FileView;
@@ -82,9 +82,9 @@ fn chip(c: &Chip, previews: &Previews, cx: &mut Context<Composer>) -> impl IntoE
             .gap(px(8.))
             .p(px(4.))
             .max_w(px(260.))
-            .bg(PAPER),
+            .bg(paper()),
     )
-    .border_color(if failed { BAD } else { INK })
+    .border_color(if failed { bad() } else { ink() })
     .child(thumb(c))
     .child(info(c, cx))
     .child(button(("chip-x", c.id), "×").on_click(cx.listener({
@@ -122,9 +122,9 @@ fn button(id: impl Into<gpui::ElementId>, label: &'static str) -> gpui::Stateful
         .font_family(FONT_PIXEL)
         .text_size(px(20.))
         .line_height(relative(1.))
-        .text_color(INK)
+        .text_color(ink())
         .cursor_pointer()
-        .hover(|s| s.bg(HOVER))
+        .hover(|s| s.bg(hover()))
         .child(label)
 }
 
@@ -140,11 +140,11 @@ fn thumb(c: &Chip) -> impl IntoElement {
             .items_center()
             .justify_center()
             .size(px(48.))
-            .bg(PANEL)
+            .bg(panel())
             .font_family(FONT_PIXEL)
             .text_size(px(20.))
             .line_height(relative(1.))
-            .text_color(INK),
+            .text_color(ink()),
     )
     .when(matches!(c.upload, Upload::Uploading), |t| t.opacity(0.5));
     match &c.image {
@@ -167,11 +167,11 @@ fn info(c: &Chip, cx: &mut Context<Composer>) -> impl IntoElement {
         .gap(px(6.))
         .font_family(FONT_MONO)
         .text_size(META_SIZE)
-        .text_color(MUTED);
+        .text_color(muted());
     let status = match &c.upload {
         Upload::Uploading => status.child(spinner(c.id)).child("uploading"),
         Upload::Ready(_) => status.child(size_line(c)),
-        Upload::Failed(_) => status.child(div().text_color(BAD).child("failed")).child(
+        Upload::Failed(_) => status.child(div().text_color(bad()).child("failed")).child(
             button(("chip-retry", c.id), "retry").on_click(cx.listener({
                 let id = c.id;
                 move |this, _, _, cx| this.retry_chip(id, cx)
@@ -191,7 +191,7 @@ fn info(c: &Chip, cx: &mut Context<Composer>) -> impl IntoElement {
                 .whitespace_nowrap()
                 .font_family(FONT_UI)
                 .text_size(px(13.))
-                .text_color(if failed { BAD } else { INK })
+                .text_color(if failed { bad() } else { ink() })
                 .child(c.name.clone()),
         )
         .child(status)
@@ -273,7 +273,7 @@ fn preview_card(p: &Preview, previews: &Previews, cx: &mut App) -> impl IntoElem
                         div()
                             .font_family(FONT_UI)
                             .text_size(px(13.))
-                            .text_color(INK)
+                            .text_color(ink())
                             .child(p.name.clone()),
                     )
                     .child(meta(size)),
@@ -284,7 +284,7 @@ fn preview_card(p: &Preview, previews: &Previews, cx: &mut App) -> impl IntoElem
                         .max_w(px(420.))
                         .font_family(FONT_MONO)
                         .text_size(META_SIZE)
-                        .text_color(BAD)
+                        .text_color(bad())
                         .child(format!("upload failed: {why}")),
                 )
             })
