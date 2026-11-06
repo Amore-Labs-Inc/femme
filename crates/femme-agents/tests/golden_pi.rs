@@ -325,7 +325,7 @@ fn killed_mid_turn() {
     let exit = d.on_exit(None);
     let text_id = format!("o{}:0", lines[8].0);
     assert!(
-        matches!(&exit[0], AgentEvent::ItemCompleted { id, kind: ItemKind::AssistantMessage, status: ItemStatus::Failed, body } if *id == text_id && body["text"].as_str().unwrap().starts_with("1\n2\n"))
+        matches!(&exit[0], AgentEvent::ItemCompleted { id, kind: ItemKind::AssistantMessage, status: ItemStatus::Failed, body, .. } if *id == text_id && body["text"].as_str().unwrap().starts_with("1\n2\n"))
     );
     assert!(matches!(
         &exit[1],
@@ -858,13 +858,15 @@ fn on_exit_closes_everything() {
                 id: "o300:0".into(),
                 kind: ItemKind::Thinking,
                 status: ItemStatus::Failed,
-                body: json!({"text":"hm"})
+                body: json!({"text":"hm"}),
+                parent: None,
             },
             AgentEvent::ItemCompleted {
                 id: "t1".into(),
                 kind: ItemKind::ToolCall,
                 status: ItemStatus::Failed,
-                body: json!({"name":"bash","input":null,"call_id":"t1"})
+                body: json!({"name":"bash","input":null,"call_id":"t1"}),
+                parent: None,
             },
             AgentEvent::TurnEnded {
                 stop: StopReason::Interrupted,
@@ -881,7 +883,8 @@ fn on_exit_closes_everything() {
                 id: format!("o{end}:unsent0"),
                 kind: ItemKind::Event,
                 status: ItemStatus::Completed,
-                body: json!({"text":"Not sent, pi exited: b"})
+                body: json!({"text":"Not sent, pi exited: b"}),
+                parent: None,
             },
             AgentEvent::Exited { code: Some(1) },
         ]
@@ -923,7 +926,8 @@ fn aborted_tool_call_never_runs() {
                 id: "t1".into(),
                 kind: ItemKind::ToolCall,
                 status: ItemStatus::Failed,
-                body: json!({"name":"bash","input":{"command":"ls"},"call_id":"t1"})
+                body: json!({"name":"bash","input":{"command":"ls"},"call_id":"t1"}),
+                parent: None,
             },
         ]
     );

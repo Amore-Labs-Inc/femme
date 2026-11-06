@@ -197,6 +197,7 @@ fn tool_call_and_result_are_linked_items() {
                 kind: ItemKind::ToolCall,
                 status,
                 body,
+                ..
             } => Some((id, status, body)),
             _ => None,
         })
@@ -277,6 +278,7 @@ fn ask_user_question_becomes_a_question_not_a_tool_call() {
                 kind: ItemKind::Question,
                 status,
                 body,
+                ..
             } if id == item_id => Some((status, body)),
             _ => None,
         })
@@ -1026,6 +1028,7 @@ fn fold(ev: &[AgentEvent]) -> BTreeMap<String, (ItemKind, ItemStatus, Value)> {
             kind,
             status,
             body,
+            ..
         } = e
         {
             m.insert(id.clone(), (*kind, *status, body.clone()));

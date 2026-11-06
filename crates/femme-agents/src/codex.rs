@@ -482,6 +482,7 @@ impl CodexDriver {
             kind: ItemKind::Event,
             status,
             body: body(&items::Event { text }),
+            parent: None,
         });
     }
 
@@ -813,6 +814,7 @@ impl CodexDriver {
                 kind: o.kind,
                 status: ItemStatus::Failed,
                 body: b,
+                parent: None,
             });
         }
     }
@@ -828,6 +830,7 @@ impl CodexDriver {
                     id: m.id.clone(),
                     kind: ItemKind::ToolCall,
                     preview: preview(&t.preview),
+                    parent: None,
                 });
                 ev.push(AgentEvent::ItemUpdated {
                     id: m.id.clone(),
@@ -848,6 +851,7 @@ impl CodexDriver {
                     id: m.id.clone(),
                     kind: m.kind,
                     preview: preview(&m.text),
+                    parent: None,
                 });
                 self.open.insert(
                     m.id,
@@ -886,12 +890,14 @@ impl CodexDriver {
                     kind: ItemKind::ToolCall,
                     status,
                     body: body(&t.call),
+                    parent: None,
                 });
                 ev.push(AgentEvent::ItemCompleted {
                     id: format!("{}:result", m.id),
                     kind: ItemKind::ToolResult,
                     status,
                     body: body(&result),
+                    parent: None,
                 });
             }
             None => {
@@ -900,6 +906,7 @@ impl CodexDriver {
                     kind: m.kind,
                     status: ItemStatus::Completed,
                     body: text_body(m.kind, m.text),
+                    parent: None,
                 });
             }
         }
@@ -1074,6 +1081,7 @@ impl CodexDriver {
                         kind: ItemKind::Plan,
                         status: ItemStatus::Completed,
                         body: body(&items::Plan { text }),
+                        parent: None,
                     });
                 }
             }

@@ -411,6 +411,7 @@ impl ClaudeDriver {
                 id: id.clone(),
                 kind: ItemKind::AssistantMessage,
                 preview: String::new(),
+                parent: None,
             });
             self.off.item_open(&id, offset);
         } else if kind == BlockKind::Tool && !hidden(&name) {
@@ -419,6 +420,7 @@ impl ClaudeDriver {
                 id: id.clone(),
                 kind: ItemKind::ToolCall,
                 preview: preview(&name),
+                parent: None,
             });
             self.off.item_open(&id, offset);
         }
@@ -461,6 +463,7 @@ impl ClaudeDriver {
                         id: b.id.clone(),
                         kind: ItemKind::Thinking,
                         preview: String::new(),
+                        parent: None,
                     });
                     self.off.item_open(&b.id, offset);
                 }
@@ -591,6 +594,7 @@ impl ClaudeDriver {
                             id: id.clone(),
                             kind: ItemKind::ToolCall,
                             preview: preview(&name),
+                            parent: None,
                         });
                         self.off.item_open(&id, offset);
                     }
@@ -1359,6 +1363,7 @@ fn done(id: String, kind: ItemKind, status: ItemStatus, body: Value) -> AgentEve
         kind,
         status,
         body,
+        parent: None,
     }
 }
 

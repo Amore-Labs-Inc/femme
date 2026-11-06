@@ -447,6 +447,7 @@ impl PiDriver {
             id: id.clone(),
             kind,
             preview: String::new(),
+            parent: None,
         });
         id
     }
@@ -692,6 +693,7 @@ impl PiDriver {
             id: id.to_owned(),
             kind: ItemKind::ToolCall,
             preview: common::preview(name),
+            parent: None,
         });
     }
 
@@ -1302,6 +1304,7 @@ fn done(id: &str, kind: ItemKind, status: ItemStatus, body: Value) -> AgentEvent
         kind,
         status,
         body,
+        parent: None,
     }
 }
 

@@ -269,6 +269,10 @@ pub enum AgentEvent {
         /// thinking, whose text arrives as [`AgentEvent::ItemDelta`]s. It is not the first bytes
         /// of the final text; take that from `ItemCompleted`.
         preview: String,
+        /// The id of the `Agent` tool call whose subagent produced this item; `None` for the
+        /// main thread.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
     },
     /// Streaming text appended to an open item (assistant text, thinking).
     ItemDelta {
@@ -294,6 +298,10 @@ pub enum AgentEvent {
         status: ItemStatus,
         /// The final body (shape per [`items`]).
         body: Value,
+        /// The id of the `Agent` tool call whose subagent produced this item; `None` for the
+        /// main thread.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
     },
     /// The agent asks the user something and waits. Answer with [`Driver::answer`] using
     /// `q.request_id`. The daemon creates the `Question` item `item_id` as `Pending`.

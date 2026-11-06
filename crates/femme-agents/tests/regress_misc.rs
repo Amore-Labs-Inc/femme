@@ -182,7 +182,10 @@ fn item_started_preview_is_what_lib_rs_documents() {
                 }
             }
             for e in &events {
-                let AgentEvent::ItemStarted { id, kind, preview } = e else {
+                let AgentEvent::ItemStarted {
+                    id, kind, preview, ..
+                } = e
+                else {
                     continue;
                 };
                 let at = format!("{dir}/{name} {id}");

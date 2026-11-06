@@ -1444,9 +1444,15 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                     now,
                 )));
             }
-            AgentEvent::ItemStarted { id, kind, preview } => {
+            AgentEvent::ItemStarted {
+                id,
+                kind,
+                preview,
+                parent,
+            } => {
                 let mut item = new_item(sid, id, kind, ItemStatus::InProgress, None, now);
                 item.preview = preview;
+                item.parent = parent;
                 f.puts.push(Put::Start(item));
             }
             AgentEvent::ItemDelta { id, text } => {
@@ -1461,10 +1467,12 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 kind,
                 status,
                 body,
+                parent,
             } => {
                 st.streams.remove(&id);
-                f.puts
-                    .push(Put::Done(new_item(sid, id, kind, status, Some(&body), now)));
+                let mut item = new_item(sid, id, kind, status, Some(&body), now);
+                item.parent = parent;
+                f.puts.push(Put::Done(item));
             }
             AgentEvent::QuestionAsked { item_id, q } => {
                 f.asked = Some(q.prompt.clone());
@@ -1549,6 +1557,7 @@ fn is_final(s: ItemStatus) -> bool {
 fn same(old: &Item, new: &Item) -> bool {
     old.kind == new.kind
         && old.status == new.status
+        && old.parent == new.parent
         && match (&old.body, old.blob_hash, &new.body) {
             (Some(a), _, Some(b)) => a == b,
             (None, Some(h), Some(b)) => femme_store::sha256(b.as_bytes()) == h,
@@ -1906,6 +1915,7 @@ mod tests {
                 kind: ItemKind::AssistantMessage,
                 status: ItemStatus::Completed,
                 body: json!({"text": "hi"}),
+                parent: None,
             },
             AgentEvent::TurnEnded {
                 stop,

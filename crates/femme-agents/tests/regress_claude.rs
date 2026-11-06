@@ -198,6 +198,7 @@ fn completed<'a>(
             kind,
             status,
             body,
+            ..
         } if i == id => Some((kind, status, body)),
         _ => None,
     })
@@ -417,6 +418,7 @@ fn a_late_or_unknown_tool_result_only_adds_its_result() {
                 kind: ItemKind::ToolResult,
                 status: ItemStatus::Completed,
                 body: json!({"call_id":id,"output":output,"is_error":false}),
+                parent: None,
             }],
             "{id}"
         );
