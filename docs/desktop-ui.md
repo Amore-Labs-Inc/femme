@@ -35,6 +35,14 @@ Keep it current: when your module's public API changes, edit your section in the
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
   calls folded, questions as answerable rows.
+- **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
+  has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
+  `◂ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
+  answered); the thread on show is lit. A chip, or `open ›` on the Agent's tool row, shows that
+  subagent's items (its prompt, tool calls and text, with its own working line); `◂ main` or `Esc`
+  goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
+  ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
+  message sent while a subagent is on show goes to the session as always.
 - **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
   the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
