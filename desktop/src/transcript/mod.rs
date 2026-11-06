@@ -11,6 +11,7 @@ pub mod markdown;
 pub mod md_view;
 pub mod outbox;
 pub mod question;
+pub mod select;
 pub mod splice;
 pub mod thumb;
 pub mod turns;
