@@ -5,6 +5,13 @@
       "model": "claude-sonnet-5-5"
     }
   },
+  {
+    "Commands": [
+      "compact",
+      "context",
+      "help"
+    ]
+  },
   "TurnStarted",
   {
     "Status": "Working"
