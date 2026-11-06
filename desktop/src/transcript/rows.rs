@@ -10,7 +10,8 @@ use femme_proto::state::{ItemKind, ItemStatus};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, px, relative, AnyElement, Context, Div, InteractiveElement as _, IntoElement,
-    ParentElement as _, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    MouseDownEvent, ParentElement as _, Rgba, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
 use gpui_component::input::Input;
 
@@ -293,7 +294,11 @@ impl Transcript {
                 d.child(div().flex().flex_wrap().gap(px(8.)).children(
                     files.iter().enumerate().map(|(i, file)| {
                         let thumb = self.thumbs.get(&file.path);
-                        thumb::attachment(format!("attached-{seq}-{i}"), file, thumb)
+                        let path = file.path.clone();
+                        let menu = cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            this.thumb_menu(&path, ev.position, window, cx)
+                        });
+                        thumb::attachment(format!("attached-{seq}-{i}"), file, thumb, menu)
                     }),
                 ))
             });
