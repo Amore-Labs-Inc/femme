@@ -26,6 +26,7 @@ pub mod terminal;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
+pub mod video;
 pub mod viewer;
 
 use anyhow::Context as _;
