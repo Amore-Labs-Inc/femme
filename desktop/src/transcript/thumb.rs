@@ -1,6 +1,7 @@
 //! The files attached to a user message, and the files the agent shows (`femmed show`), in the
 //! transcript: a chip with the file's name for any file, and for an image a thumbnail (a bigger
-//! box for the agent's) that opens a larger preview while the pointer is on it. The
+//! box for the agent's) that opens a larger preview while the pointer is on it, and the whole
+//! window's [`crate::lightbox`] on a click. The
 //! bytes come from the box (`Req::FsRead`); the thumbnail and the preview both draw the picture
 //! with gpui's `img`, fitted whole into their box: it keeps its ratio, sits in the middle, and the
 //! panel colour shows around it. A right click on a thumbnail opens its menu (`copy image`, `open`),
@@ -159,9 +160,13 @@ fn framed(
         Some(Thumb::Ready { image, name }) => {
             let (image, name) = (image.clone(), SharedString::from(name.clone()));
             let thumb = picture(&image);
+            let opened = (name.clone(), image.clone());
             frame
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Right, on_menu)
+                .on_click(move |_, window, cx| {
+                    crate::lightbox::Lightbox::show(&opened.0, opened.1.clone(), window, cx)
+                })
                 .tooltip_show_delay(PREVIEW_DELAY)
                 .tooltip(move |_, cx: &mut App| {
                     let (name, image) = (name.clone(), image.clone());
