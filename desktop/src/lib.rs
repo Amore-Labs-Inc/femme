@@ -14,6 +14,7 @@ pub mod connect;
 pub mod display;
 pub mod files;
 pub mod frame;
+pub mod lightbox;
 pub mod menu;
 pub mod motion;
 pub mod net;

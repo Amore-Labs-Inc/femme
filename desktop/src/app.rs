@@ -323,6 +323,8 @@ pub struct FemmeApp {
     picker: Entity<Picker>,
     /// The drawing board: a layer over the whole window, empty while it is closed.
     board: Entity<Board>,
+    /// A picture opened over the whole window (a click on a transcript thumbnail).
+    lightbox: Entity<crate::lightbox::Lightbox>,
     /// The benchmark's synthetic terminals; empty otherwise.
     panes: Vec<Entity<TerminalPane>>,
     /// The window's own stop: the key context of the shell is always in the dispatch path.
@@ -365,6 +367,7 @@ impl FemmeApp {
         let accounts = cx.new(|cx| AccountsOverlay::new(net.clone(), cx));
         let picker = cx.new(|cx| Picker::new(net.clone(), cx));
         let board = cx.new(Board::new);
+        let lightbox = crate::lightbox::Lightbox::install(cx);
         // Synthetic terminals exist for the benchmark only; the app itself has no mock.
         let panes: Vec<Entity<TerminalPane>> = (0..cfg.panes)
             .filter(|_| cfg.bench.is_some())
@@ -455,6 +458,7 @@ impl FemmeApp {
             accounts,
             picker,
             board,
+            lightbox,
             panes,
             shown,
             right: Right::new(),
@@ -986,6 +990,7 @@ impl Render for FemmeApp {
             // Last, so that it paints over everything: the board's layer is as big as the window (and
             // empty while the board is closed).
             .child(self.board.clone())
+            .child(self.lightbox.clone())
             .into_any_element()
     }
 }
