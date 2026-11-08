@@ -44,11 +44,16 @@ pub struct FoldInfo {
     pub thoughts: usize,
     /// How long the turn ran.
     pub duration_ms: Option<u64>,
+    /// A run of tool calls in a turn still going says what they did instead: "ran 5 commands".
+    pub summary: Option<String>,
 }
 
 impl FoldInfo {
     /// The line: "worked for 3m · 12 tools", "thought for 5s".
     pub fn label(&self) -> String {
+        if let Some(summary) = &self.summary {
+            return summary.clone();
+        }
         let how_long = self.duration_ms.map(duration);
         let mut out = match (self.tools, how_long) {
             (0, Some(d)) => format!("thought for {d}"),
@@ -85,6 +90,45 @@ pub fn duration(ms: u64) -> String {
             m => format!("{}h {m}m", s / 3600),
         },
     }
+}
+
+/// The `open` key and fold key of a run of tool calls in a turn still going: its first item's
+/// `seq` with the top bit set, so opening the run does not open that item.
+pub const RUN: u64 = 1 << 63;
+
+/// What a run of tool calls did, by tool, the way Claude Code says it: "ran 3 commands, read 2
+/// files".
+fn run_summary(names: &[String]) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for name in names {
+        let verb = match name.as_str() {
+            "Bash" | "shell" | "exec_command" => "ran",
+            "Read" => "read",
+            "Grep" | "Glob" | "WebSearch" => "searched",
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch" => "edited",
+            "WebFetch" => "fetched",
+            _ => name.as_str(),
+        };
+        match counts.iter_mut().find(|(v, _)| *v == verb) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((verb, 1)),
+        }
+    }
+    let part = |(verb, n): (&str, usize)| {
+        let s = if n == 1 { "" } else { "s" };
+        match verb {
+            "ran" => format!("ran {n} command{s}"),
+            "read" | "edited" => format!("{verb} {n} file{s}"),
+            "searched" => format!("searched {n} time{s}"),
+            "fetched" => format!("fetched {n} page{s}"),
+            name => format!("{n} {name} call{s}"),
+        }
+    };
+    let mut out = counts.into_iter().map(part).collect::<Vec<_>>().join(", ");
+    if let Some(first) = out.get(..1) {
+        out.replace_range(..1, &first.to_uppercase());
+    }
+    out
 }
 
 /// The rows of the list, and what the fold lines among them say.
@@ -221,7 +265,8 @@ pub fn layout(items: &Items, view: Option<&str>, open: &HashSet<u64>) -> Layout 
     // A turn ends at its `TurnEnd` and starts after the previous end or at a `TurnStart`. Its
     // work is folded into a line standing where the first of it was.
     struct Fold {
-        end: usize,
+        /// Its `open` key and fold key: the `seq` of its `TurnEnd`, or [`RUN`] and its first item.
+        key: u64,
         work: Vec<usize>,
     }
     let mut folds_at: HashMap<usize, Fold> = HashMap::new();
@@ -269,12 +314,72 @@ pub fn layout(items: &Items, view: Option<&str>, open: &HashSet<u64>) -> Layout 
                         u64::try_from(end.item.ts.saturating_sub(entries[first].item.ts)).ok()
                     });
                     folds.insert(end.item.seq, info);
-                    folds_at.insert(first, Fold { end: j, work });
+                    folds_at.insert(
+                        first,
+                        Fold {
+                            key: end.item.seq,
+                            work,
+                        },
+                    );
                 }
                 start = j + 1;
             }
             _ => {}
         }
+    }
+
+    // In the turn still going, each run of tool calls folds into a line saying what it did, as
+    // Claude Code does; the last call of the run at the end stays a row, so what runs now shows.
+    let mut i = start;
+    while i < n {
+        let is_tool = |k: usize| {
+            matches!(
+                entries[k].item.kind,
+                ItemKind::ToolCall | ItemKind::ToolResult
+            ) || merged[k]
+        };
+        if !is_tool(i) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && is_tool(j) {
+            j += 1;
+        }
+        let mut work: Vec<usize> = (i..j).filter(|&k| !merged[k]).collect();
+        if j == n {
+            work.pop();
+        }
+        if let Some(&first) = work.first() {
+            let names: Vec<String> = work
+                .iter()
+                .map(|&k| match entries[k].item.kind {
+                    ItemKind::ToolCall => tool_line(items, entries[k]).name,
+                    _ => "tool".to_owned(),
+                })
+                .collect();
+            let info = FoldInfo {
+                tools: work.len(),
+                failed: work
+                    .iter()
+                    .filter(|&&k| match entries[k].item.kind {
+                        ItemKind::ToolCall => tool_line(items, entries[k]).failed,
+                        _ => {
+                            matches!(items.parsed(entries[k]), Parsed::ToolResult(t) if t.is_error)
+                        }
+                    })
+                    .count(),
+                summary: Some(run_summary(&names)),
+                ..FoldInfo::default()
+            };
+            for &k in &work {
+                hidden[k] = true;
+            }
+            let key = RUN | entries[first].item.seq;
+            folds.insert(key, info);
+            folds_at.insert(first, Fold { key, work });
+        }
+        i = j;
     }
 
     let item_row = |i: usize| -> Option<Row> {
@@ -304,7 +409,7 @@ pub fn layout(items: &Items, view: Option<&str>, open: &HashSet<u64>) -> Layout 
     }
     for i in 0..n {
         if let Some(fold) = folds_at.get(&i) {
-            let seq = entries[fold.end].item.seq;
+            let seq = fold.key;
             let opened = open.contains(&seq);
             let info = &folds[&seq];
             rows.push(Row {
@@ -438,12 +543,11 @@ mod tests {
         b.user("u");
         b.call("t1");
         b.result("t1", false);
-        b.say("a");
         let l = layout(&b.items, None, &none());
         assert_eq!(
             keys(&l),
-            [Key::Item(1), Key::Tool(2), Key::Item(4)],
-            "no turn ended: nothing folds, the result is not a row of its own"
+            [Key::Item(1), Key::Tool(2)],
+            "the last call of a turn still going is a row; its result is not a row of its own"
         );
         assert!(l.folds.is_empty());
     }
@@ -455,19 +559,15 @@ mod tests {
         b.call("t2");
         b.result("t2", false);
         b.result("t1", false);
-        let l = layout(&b.items, None, &none());
-        assert_eq!(keys(&l), [Key::Tool(1), Key::Tool(2)]);
+        let l = layout(&b.items, None, &HashSet::from([RUN | 1]));
+        assert_eq!(keys(&l), [Key::Fold(RUN | 1), Key::Tool(1), Key::Tool(2)]);
     }
 
     #[test]
     fn a_result_without_its_call_is_a_row_of_its_own() {
         let mut b = Build::new();
         b.result("gone", false);
-        b.say("a");
-        assert_eq!(
-            keys(&layout(&b.items, None, &none())),
-            [Key::Item(1), Key::Item(2)]
-        );
+        assert_eq!(keys(&layout(&b.items, None, &none())), [Key::Item(1)]);
     }
 
     #[test]
@@ -496,7 +596,8 @@ mod tests {
                 tools: 2,
                 failed: 1,
                 thoughts: 1,
-                duration_ms: Some(192_000)
+                duration_ms: Some(192_000),
+                summary: None
             }
         );
         assert_eq!(info.label(), "worked for 3m 12s · 2 tools · 1 failed");
@@ -663,11 +764,42 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_still_going_folds_each_run_of_calls_but_the_one_running() {
+        let mut b = Build::new();
+        b.user("u");
+        b.call("t1");
+        b.result("t1", false);
+        b.call("t2");
+        b.result("t2", true);
+        b.say("note");
+        b.call("t3");
+        b.result("t3", false);
+        b.call("t4");
+        let l = layout(&b.items, None, &none());
+        assert_eq!(
+            keys(&l),
+            [
+                Key::Item(1),
+                Key::Fold(RUN | 2),
+                Key::Item(6),
+                Key::Fold(RUN | 7),
+                Key::Tool(9)
+            ]
+        );
+        assert_eq!(l.folds[&(RUN | 2)].label(), "Ran 2 commands");
+        assert_eq!(l.folds[&(RUN | 2)].failed, 1);
+        assert_eq!(l.folds[&(RUN | 7)].label(), "Ran 1 command");
+        assert_eq!(
+            run_summary(&["Read".into(), "Bash".into(), "Read".into(), "Grep".into()]),
+            "Read 2 files, ran 1 command, searched 1 time"
+        );
+    }
+
+    #[test]
     fn a_rows_version_moves_only_when_it_changed() {
         let mut b = Build::new();
         b.user("u");
         b.call("t1");
-        b.say("a");
         let before = layout(&b.items, None, &none());
         assert_eq!(
             before,
@@ -680,7 +812,6 @@ mod tests {
         assert_eq!(keys(&before), keys(&after));
         assert_eq!(before.rows[0], after.rows[0]);
         assert_ne!(before.rows[1].ver, after.rows[1].ver);
-        assert_eq!(before.rows[2], after.rows[2]);
         // Opening a row changes its version, and only its.
         let opened = layout(&b.items, None, &HashSet::from([2]));
         assert_ne!(after.rows[1].ver, opened.rows[1].ver);
@@ -694,6 +825,7 @@ mod tests {
             failed,
             thoughts,
             duration_ms: ms,
+            summary: None,
         };
         assert_eq!(
             info(12, 0, 3, Some(180_000)).label(),
