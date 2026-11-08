@@ -1697,7 +1697,11 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.ctx_used = Some(used);
                 f.ctx_window = window.or(f.ctx_window);
             }
-            AgentEvent::Compacted { .. } => f.compacted += 1,
+            // The bar empties at the level up; the next model call says the new size.
+            AgentEvent::Compacted { .. } => {
+                f.compacted += 1;
+                f.ctx_used = Some(0);
+            }
             AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
         }
     }
@@ -2328,14 +2332,23 @@ mod tests {
     }
 
     #[test]
-    fn a_compaction_counts_and_leaves_what_was_read_and_the_window_alone() {
+    fn a_compaction_counts_empties_what_was_read_and_keeps_the_window() {
         assert_eq!(
             context_after(vec![
                 vec![say(45_000, Some(1_000_000))],
                 vec![compacted()],
                 vec![compacted()]
             ]),
-            ctx(45_000, 1_000_000, 2)
+            ctx(0, 1_000_000, 2)
+        );
+        assert_eq!(
+            context_after(vec![vec![
+                say(45_000, Some(1_000_000)),
+                compacted(),
+                say(9_000, None)
+            ]]),
+            ctx(9_000, 1_000_000, 1),
+            "a call after the compaction in the same batch says the new size"
         );
         assert_eq!(
             context_after(vec![vec![compacted()]]),
@@ -2356,12 +2369,19 @@ mod tests {
     }
 
     #[test]
-    fn within_one_line_the_last_context_wins_and_the_last_window_said_stays() {
+    fn within_one_line_the_last_word_wins_and_the_last_window_said_stays() {
         let evs = vec![say(10, Some(100)), say(20, None), compacted(), compacted()];
         let f = fold(&mut FoldState::default(), SID, "d0", evs, 1);
         assert_eq!(
             (f.ctx_used, f.ctx_window, f.compacted),
-            (Some(20), Some(100), 2)
+            (Some(0), Some(100), 2),
+            "the compactions came last: the bar is empty"
+        );
+        let evs = vec![say(10, Some(100)), compacted(), say(20, None)];
+        let f = fold(&mut FoldState::default(), SID, "d0", evs, 1);
+        assert_eq!(
+            (f.ctx_used, f.ctx_window, f.compacted),
+            (Some(20), Some(100), 1)
         );
     }
 
