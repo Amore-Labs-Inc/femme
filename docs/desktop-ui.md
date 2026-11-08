@@ -38,6 +38,12 @@ Keep it current: when your module's public API changes, edit your section in the
   `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
   hand over it): the words of a link are the target, not the dim address after them, and only web
   and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
+- **Compaction hand-off**: after `Conversation compacted`, Claude Code restarts the model with one
+  synthetic *user* message ("This session is being continued from a previous conversation…
+  Summary: …"). It arrives as `UserMessage` and is stored as one, but the transcript does not
+  draw it as the user's: the compact note and that message fold into one muted row
+  (`▸ · conversation compacted · summary`), a click shows the summary. Detection is the template's
+  prefix, display only.
 - **The agent shows a picture**: `femmed show <file> [caption]`, run inside a session (the holder
   sets `FEMME_SID`), uploads the file (`BlobPut`) and sends `Show`; the daemon keeps a copy in
   `<state>/uploads/<sid>/` and appends an assistant item whose text is the caption plus an
