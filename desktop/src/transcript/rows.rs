@@ -269,7 +269,7 @@ impl Transcript {
         }
         match kind {
             ItemKind::UserMessage => self.user_row(seq, sel, cx),
-            ItemKind::AssistantMessage => self.assistant_row(seq, sel),
+            ItemKind::AssistantMessage => self.assistant_row(seq, sel, cx),
             ItemKind::Plan => self.plan_row(seq, sel),
             ItemKind::Thinking => self.thinking_row(seq, sel, cx),
             ItemKind::Question => self.question_row(seq, sel, window, cx),
@@ -313,8 +313,13 @@ impl Transcript {
         column(div().flex().justify_end().child(bubble))
     }
 
-    fn assistant_row(&mut self, seq: u64, sel: &Sel) -> AnyElement {
+    fn assistant_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let (text, live) = self.text_of(seq);
+        // `Attached:` lines are what `femmed show` put there: the files it showed, as pictures.
+        let (text, files) = attach::split(&text);
+        for file in files.iter().filter(|f| f.image) {
+            self.want_thumb(&file.path, cx);
+        }
         let doc = self.doc(seq, &text);
         column(
             div()
@@ -324,6 +329,18 @@ impl Transcript {
                 .text_size(BODY_SIZE)
                 .when(!doc.blocks.is_empty(), |d| {
                     d.child(md_view::doc(&doc, ink(), sel))
+                })
+                .when(!files.is_empty(), |d| {
+                    d.child(div().flex().flex_wrap().gap(px(8.)).children(
+                        files.iter().enumerate().map(|(i, file)| {
+                            let thumb = self.thumbs.get(&file.path);
+                            let path = file.path.clone();
+                            let menu = cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                                this.thumb_menu(&path, ev.position, window, cx)
+                            });
+                            thumb::shown(format!("shown-{seq}-{i}"), file, thumb, menu)
+                        }),
+                    ))
                 })
                 .when(live, |d| d.child(streaming())),
         )

@@ -1,5 +1,6 @@
-//! The files attached to a user message, in the transcript: a chip with the file's name for any
-//! file, and for an image a thumbnail that opens a larger preview while the pointer is on it. The
+//! The files attached to a user message, and the files the agent shows (`femmed show`), in the
+//! transcript: a chip with the file's name for any file, and for an image a thumbnail (a bigger
+//! box for the agent's) that opens a larger preview while the pointer is on it. The
 //! bytes come from the box (`Req::FsRead`); the thumbnail and the preview both draw the picture
 //! with gpui's `img`, fitted whole into their box: it keeps its ratio, sits in the middle, and the
 //! panel colour shows around it. A right click on a thumbnail opens its menu (`copy image`, `open`),
@@ -25,6 +26,9 @@ use crate::ui::{clip, meta, ruled, tb};
 
 /// Side of a thumbnail's box.
 pub const THUMB: f32 = 88.;
+
+/// Size of a picture the agent shows (`femmed show`): big enough to read a screenshot.
+const SHOWN: (f32, f32) = (360., 240.);
 
 /// Size of the preview.
 const PREVIEW: (f32, f32) = (460., 380.);
@@ -117,16 +121,37 @@ pub fn attachment(
     thumb: Option<&Thumb>,
     on_menu: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    framed(id, file, thumb, on_menu, THUMB, THUMB)
+}
+
+/// A file the agent shows the user: a picture as a readable-sized box, any other file as a chip.
+pub fn shown(
+    id: impl Into<ElementId>,
+    file: &Attached,
+    thumb: Option<&Thumb>,
+    on_menu: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    framed(id, file, thumb, on_menu, SHOWN.0, SHOWN.1)
+}
+
+fn framed(
+    id: impl Into<ElementId>,
+    file: &Attached,
+    thumb: Option<&Thumb>,
+    on_menu: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    w: f32,
+    h: f32,
+) -> AnyElement {
     if !file.image {
         return chip(&file.name).into_any_element();
     }
-    let side = px(THUMB);
     let frame = ruled(
         div()
             .id(id.into())
             .relative()
             .flex_none()
-            .size(side)
+            .w(px(w))
+            .h(px(h))
             .bg(panel())
             .overflow_hidden(),
     );
