@@ -6,6 +6,8 @@
 //!   over QUIC.
 //! - `femmed open`: asks the daemon for a headless Claude session in this directory and prints its id.
 //!   A bare `claude` typed in a FEMME shell pane runs it (`server/claude-shim.sh`).
+//! - `femmed show <file> [caption]`: run by the agent inside a session, puts the file in the
+//!   transcript for the user to see (a screenshot of its work, say); the daemon keeps a copy.
 //! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
 //!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
@@ -72,6 +74,13 @@ pub enum Command {
         /// The directory to start in.
         #[arg(long, value_parser = NonEmptyStringValueParser::new())]
         cwd: Option<String>,
+    },
+    /// Show the user a file (a screenshot, a chart) in the transcript, from inside a session.
+    Show {
+        /// The file to show.
+        file: std::path::PathBuf,
+        /// A line to go with it.
+        caption: Option<String>,
     },
     /// Report a PTY-mode agent's status to the daemon (Claude hooks, Codex notify, the pi extension).
     Hook {
@@ -323,6 +332,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             }
         },
         Command::Open { cwd } => finish("open", open(cwd).await),
+        Command::Show { file, caption } => finish("show", show(&file, caption).await),
         Command::Hook {
             agent,
             event,
@@ -390,6 +400,54 @@ async fn open(cwd: Option<String>) -> anyhow::Result<String> {
     };
     match client.request_timeout(req, ANSWER_WAIT).await? {
         Resp::Session(sid) => Ok(sid.to_string()),
+        other => anyhow::bail!("unexpected answer {other:?}"),
+    }
+}
+
+/// `femmed show <file> [caption]`, run by the agent inside a session (`FEMME_SID` names it): uploads
+/// the file as a blob and asks the daemon to show it, over the socket like `open`. The daemon
+/// keeps a copy beside the session's uploads, so the file may go afterwards.
+async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
+    let sid: femme_proto::Sid = std::env::var("FEMME_SID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("not inside a FEMME session (no FEMME_SID)"))?;
+    let data = std::fs::read(file).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+    anyhow::ensure!(
+        data.len() <= femme_proto::rpc::MAX_BLOB_PUT,
+        "{} is {} bytes, the most is {}",
+        file.display(),
+        data.len(),
+        femme_proto::rpc::MAX_BLOB_PUT
+    );
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let sock = config::sock_path();
+    anyhow::ensure!(sock.exists(), "no daemon at {}", sock.display());
+    let mut proxy = tokio::process::Command::new(std::env::current_exe()?);
+    proxy.arg("proxy");
+    let mut cfg =
+        femme_client::Config::new(DeviceIdentity::generate("femmed show"), Ulid::generate());
+    cfg.ssh_command = Some(proxy);
+    let client = femme_client::Client::start(cfg);
+    let put = Req::BlobPut {
+        name: name.clone(),
+        data,
+    };
+    let blob = match client.request_timeout(put, ANSWER_WAIT).await? {
+        Resp::BlobHash(hash) => hash,
+        other => anyhow::bail!("unexpected answer {other:?}"),
+    };
+    let req = Req::Show {
+        sid,
+        name: name.clone(),
+        blob,
+        caption: caption.unwrap_or_default(),
+    };
+    match client.request_timeout(req, ANSWER_WAIT).await? {
+        Resp::Ok => Ok(format!("shown {name}")),
         other => anyhow::bail!("unexpected answer {other:?}"),
     }
 }
