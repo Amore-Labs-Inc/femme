@@ -13,8 +13,10 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use femme_proto::rpc::Attachment;
+use femme_proto::state::{Item, ItemKind, ItemStatus};
 use femme_proto::Sid;
 use femme_store::Store;
+use ulid::Ulid;
 
 use crate::core::{CoreError, PaneRef};
 use crate::daemon::{core_err, Daemon};
@@ -55,6 +57,66 @@ impl Daemon {
         // `name-2` beside them, and the session's purge sweeps them all. Deleting them would break
         // a prompt that was half delivered.
         self.pane_prompt(pane, &with_lines(text, &paths)).await
+    }
+
+    /// `Req::Show`: the agent in `sid` shows the user a file. The blob is saved in the session's
+    /// uploads folder (so the desktop reads it like an attachment, and it goes with the session)
+    /// and an assistant item carrying `caption` and the `Attached:` line is appended. `Bad` for an
+    /// unknown session or a blob that is not in the store.
+    pub async fn show(
+        &self,
+        sid: Sid,
+        name: &str,
+        blob: [u8; 32],
+        caption: &str,
+    ) -> Result<(), CoreError> {
+        let known = self
+            .store
+            .read(|c| femme_store::sessions::get_session(c, sid))
+            .map_err(core_err)?
+            .is_some();
+        if !known {
+            return Err(CoreError::Bad(format!("no session {sid}")));
+        }
+        let dir = self.cfg.state_path("uploads").join(sid.to_string());
+        let (store, name) = (self.store.clone(), file_name(name));
+        let path = tokio::task::spawn_blocking(move || {
+            let dir = std::path::absolute(&dir)
+                .map_err(|e| CoreError::Internal(format!("uploads folder: {e}")))?;
+            match store.get_blob(&blob) {
+                Ok(Some(bytes)) => save(&dir, &name, &bytes)
+                    .map_err(|e| CoreError::Internal(format!("cannot save {name}: {e}"))),
+                Ok(None) => Err(CoreError::Bad("the upload is gone, send it again".into())),
+                Err(e) => Err(core_err(e)),
+            }
+        })
+        .await
+        .map_err(|e| CoreError::Internal(format!("saving the file: {e}")))??;
+        let text = with_lines(caption.trim(), std::slice::from_ref(&path));
+        let preview = match caption.trim().lines().next() {
+            Some(line) => line.to_owned(),
+            None => format!(
+                "shows {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        };
+        self.write_items(|tx, now, published| {
+            let item = Item {
+                sid,
+                item_id: Ulid::generate().to_string(),
+                seq: 0,
+                rev: 0,
+                kind: ItemKind::AssistantMessage,
+                status: ItemStatus::Completed,
+                preview,
+                body: Some(serde_json::json!({ "text": text }).to_string()),
+                blob_hash: None,
+                ts: now,
+                parent: None,
+            };
+            published.push(tx.put_item(&item)?);
+            Ok(())
+        })
     }
 
     /// Drops a purged session's uploads.

@@ -177,6 +177,12 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::ServerInfo => Ok(server_info(d).await),
         Req::CyclePermission { sid } => done(d.cycle_permission(sid).await),
         Req::SessionLabel { sid, label } => done(d.update(sid, |s| s.label = label).map(drop)),
+        Req::Show {
+            sid,
+            name,
+            blob,
+            caption,
+        } => done(d.show(sid, &name, blob, &caption).await),
         Req::Commands => Ok(Resp::Commands {
             names: crate::headless::commands(d),
         }),
