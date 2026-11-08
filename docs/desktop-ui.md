@@ -52,7 +52,7 @@ Keep it current: when your module's public API changes, edit your section in the
   goes. Tell the agent in its CLAUDE.md: "to show the user a picture, run `femmed show <path>
   \"what it is\"`".
   A video (`.mp4`, `.mov`, `.webm`, `.mkv`, `.avi`, `.m4v`) goes up as a silent, looping animated
-  WebP that ffmpeg makes on the box: 640 px wide, the first minute, at most 200 frames (a longer
+  GIF that ffmpeg makes on the box (gpui animates a GIF held in memory, not a WebP): 640 px wide, the first minute, at most 200 frames (a longer
   clip plays at a lower rate), since gpui holds every frame decoded.
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:

@@ -8,7 +8,7 @@
 //!   A bare `claude` typed in a FEMME shell pane runs it (`server/claude-shim.sh`).
 //! - `femmed show <file> [caption]`: run by the agent inside a session, puts the file in the
 //!   transcript for the user to see (a screenshot of its work, say); the daemon keeps a copy.
-//!   A video goes as an animated WebP (ffmpeg), which the transcript plays like a picture.
+//!   A video goes as an animated GIF (ffmpeg), which the transcript plays like a picture.
 //! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
 //!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
@@ -413,15 +413,16 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
         .ok()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow::anyhow!("not inside a FEMME session (no FEMME_SID)"))?;
-    // a video goes as an animated WebP, which the desktop plays like any picture
-    let webp = if is_video(file) {
-        Some(to_webp(file).await?)
+    // a video goes as an animated GIF, which the desktop plays like any picture (gpui animates
+    // a GIF from memory, not a WebP)
+    let gif = if is_video(file) {
+        Some(to_gif(file).await?)
     } else {
         None
     };
-    let file = webp.as_deref().unwrap_or(file);
+    let file = gif.as_deref().unwrap_or(file);
     let read = std::fs::read(file).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()));
-    if let Some(dir) = webp.as_deref().and_then(Path::parent) {
+    if let Some(dir) = gif.as_deref().and_then(Path::parent) {
         let _ = std::fs::remove_dir_all(dir);
     }
     let data = read?;
@@ -464,7 +465,7 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
     }
 }
 
-/// A video `femmed show` turns into an animated WebP, by its extension.
+/// A video `femmed show` turns into an animated GIF, by its extension.
 fn is_video(file: &Path) -> bool {
     file.extension().and_then(|e| e.to_str()).is_some_and(|e| {
         matches!(
@@ -477,24 +478,24 @@ fn is_video(file: &Path) -> bool {
 /// The most frames a shown video keeps: ~180 MB decoded in the desktop at 640x360.
 const FRAMES: f64 = 200.;
 
-/// `file` as a silent, looping animated WebP named `<stem>.webp` in a temporary folder, small
+/// `file` as a silent, looping animated GIF named `<stem>.gif` in a temporary folder, small
 /// enough to go up as one blob: each try is smaller until one fits. The desktop holds every
 /// frame decoded (640x360 RGBA is ~0.9 MB), so a clip is at most [`FRAMES`] frames: a longer one
 /// plays at a lower rate. The caller removes its folder; a failed try removes it here.
 // ponytail: the first minute only, no sound; a real player when someone needs audio or length
-async fn to_webp(file: &Path) -> anyhow::Result<std::path::PathBuf> {
+async fn to_gif(file: &Path) -> anyhow::Result<std::path::PathBuf> {
     let dir = std::env::temp_dir().join(format!("femmed-show-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    let made = webp_in(file, &dir).await;
+    let made = gif_in(file, &dir).await;
     if made.is_err() {
         let _ = std::fs::remove_dir_all(&dir);
     }
     made
 }
 
-async fn webp_in(file: &Path, dir: &Path) -> anyhow::Result<std::path::PathBuf> {
+async fn gif_in(file: &Path, dir: &Path) -> anyhow::Result<std::path::PathBuf> {
     let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-    let out = dir.join(format!("{stem}.webp"));
+    let out = dir.join(format!("{stem}.gif"));
     let probe = tokio::process::Command::new("ffprobe")
         .args([
             "-v",
@@ -513,22 +514,18 @@ async fn webp_in(file: &Path, dir: &Path) -> anyhow::Result<std::path::PathBuf> 
         .parse()
         .unwrap_or(60.);
     let fps = (FRAMES / seconds.clamp(1., 60.)).clamp(2., 15.);
-    for (width, quality) in [(640, 70), (640, 50), (480, 40)] {
+    for width in [640, 480, 360] {
         let ran = tokio::process::Command::new("ffmpeg")
             .args(["-v", "error", "-y", "-t", "60", "-i"])
             .arg(file)
             .args([
                 "-vf",
-                &format!("fps={fps:.2},scale='min({width},iw)':-2:flags=lanczos"),
+                &format!(
+                    "fps={fps:.2},scale='min({width},iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle"
+                ),
                 "-an",
-                "-c:v",
-                "libwebp_anim",
                 "-loop",
                 "0",
-                "-q:v",
-                &quality.to_string(),
-                "-compression_level",
-                "4",
             ])
             .arg(&out)
             .stdin(std::process::Stdio::null())
