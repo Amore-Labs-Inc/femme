@@ -449,6 +449,13 @@ impl Composer {
         if let Some(draft) = self.session.and_then(|sid| self.drafts.get_mut(sid)) {
             draft.notice = None;
         }
+        // a model picked from `/model`'s list switches at once, as Claude Code's picker does
+        if slash::MODELS.contains(&name) {
+            input.update(cx, |input, cx| {
+                input.set_value(format!("/{name}"), window, cx)
+            });
+            self.send(PromptHow::Queue, window, cx);
+        }
         cx.notify();
     }
 

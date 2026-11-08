@@ -4,6 +4,15 @@
 /// The most rows the menu shows.
 pub const MAX: usize = 8;
 
+/// What `/model` offers, as menu rows: the names the daemon's `model_switch` knows.
+pub const MODELS: &[&str] = &[
+    "model opus",
+    "model sonnet",
+    "model haiku",
+    "model fable",
+    "model deepseek",
+];
+
 /// What follows the `/` while the user is still typing the command word: the text starts with `/`
 /// and holds no whitespace yet. `None` for anything else (a prompt, a command with arguments).
 pub fn query(text: &str) -> Option<&str> {
@@ -14,6 +23,18 @@ pub fn query(text: &str) -> Option<&str> {
 /// The names to offer for `text`, at most [`MAX`]: those that start with the query (case aside)
 /// alphabetically, then those that hold it elsewhere. An empty query offers the first names.
 pub fn matches<'a>(text: &str, names: &'a [String]) -> Vec<&'a str> {
+    // `/model ` and a name being typed: the models
+    if let Some(m) = text
+        .strip_prefix("/model ")
+        .filter(|m| !m.contains(char::is_whitespace))
+    {
+        let m = m.to_lowercase();
+        return MODELS
+            .iter()
+            .copied()
+            .filter(|row| row["model ".len()..].contains(&m))
+            .collect();
+    }
     let Some(q) = query(text) else {
         return Vec::new();
     };
@@ -36,9 +57,10 @@ pub fn matches<'a>(text: &str, names: &'a [String]) -> Vec<&'a str> {
 }
 
 /// Whether `text` is exactly `/` and one of the names: Enter then sends it rather than completing.
+/// Not `/model`: Enter on it opens the list of models.
 pub fn exact(text: &str, names: &[String]) -> bool {
     text.strip_prefix('/')
-        .is_some_and(|q| names.iter().any(|n| n == q))
+        .is_some_and(|q| q != "model" && names.iter().any(|n| n == q))
 }
 
 /// The input's text once `name` is picked: the command and a space for its arguments.
@@ -86,6 +108,15 @@ mod tests {
         let n = names(&["j", "i", "h", "g", "f", "e", "d", "c", "b", "a", "a"]);
         assert_eq!(matches("/", &n), ["a", "b", "c", "d", "e", "f", "g", "h"]);
         assert!(matches("/", &[]).is_empty());
+    }
+
+    #[test]
+    fn model_and_a_space_offers_the_models() {
+        let n = names(&["model", "review"]);
+        assert_eq!(matches("/model ", &n), MODELS);
+        assert_eq!(matches("/model so", &n), ["model sonnet"]);
+        assert!(matches("/model opus ", &n).is_empty());
+        assert!(!exact("/model", &n), "Enter on /model opens the list");
     }
 
     #[test]
