@@ -148,6 +148,9 @@ pub enum Req {
     CyclePermission { sid: Sid },
     /// Renames the session for the lists (`label`; `None` clears it).
     SessionLabel { sid: Sid, label: Option<String> },
+    /// `femmed show`: the agent shows the user a file. The blob (a `BlobPut`) is saved beside the
+    /// session's uploads and an assistant item with `caption` and an `Attached:` line is appended.
+    Show { sid: Sid, name: String, blob: [u8; 32], caption: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
