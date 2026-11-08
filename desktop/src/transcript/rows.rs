@@ -49,6 +49,12 @@ const FRESH_MS: i64 = 1000;
 /// How long after its first draw a fresh row is still sampled: its fade (180 ms) and a margin.
 const FADING: Duration = Duration::from_millis(400);
 
+/// Claude Code's compaction hand-off, which it sends as a user message: its own fixed template.
+fn is_handoff(text: &str) -> bool {
+    text.trim_start()
+        .starts_with("This session is being continued from a previous conversation")
+}
+
 /// `inner` in the text column, centred.
 fn column(inner: impl IntoElement) -> AnyElement {
     div()
@@ -260,6 +266,11 @@ impl Transcript {
             return div().into_any_element();
         };
         let kind = e.item.kind;
+        let handoff = is_handoff(&e.item.preview);
+        let before_handoff = self
+            .items
+            .get(seq + 1)
+            .is_some_and(|n| is_handoff(&n.item.preview));
         // A long message is stored as a blob: fetch it as soon as its row is on screen. Tool
         // output waits until its row is opened.
         if !matches!(kind, ItemKind::ToolCall | ItemKind::ToolResult) {
@@ -268,6 +279,9 @@ impl Transcript {
             }
         }
         match kind {
+            ItemKind::UserMessage if handoff => self.handoff_row(seq, sel, cx),
+            // The compact note's own row: the hand-off row after it says the same, with the summary.
+            ItemKind::Event if before_handoff => div().into_any_element(),
             ItemKind::UserMessage => self.user_row(seq, sel, cx),
             ItemKind::AssistantMessage => self.assistant_row(seq, sel, cx),
             ItemKind::Plan => self.plan_row(seq, sel),
@@ -415,6 +429,45 @@ impl Transcript {
                             .text_size(px(13.))
                             .line_height(relative(1.45))
                             .italic()
+                            .text_color(muted())
+                            .child(Selectable::new(sel.slot(), text)),
+                    )
+                }),
+        )
+    }
+
+    /// Claude Code's hand-off after a compaction: the summary it gave the new context arrives as a
+    /// user message, but the user did not write it. Folded, muted; a click shows the summary.
+    fn handoff_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
+        let (text, _) = self.text_of(seq);
+        let open = self.open.contains(&seq);
+        let head = div()
+            .id(("handoff", seq))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .py(px(2.))
+            .cursor_pointer()
+            .hover(|s| s.bg(panel()))
+            .on_click(cx.listener(move |this, click, _, cx| {
+                if select::plain_click(click) {
+                    this.toggle(seq, cx);
+                }
+            }))
+            .child(chevron(open))
+            .child(small("· conversation compacted · summary"));
+        column(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(head)
+                .when(open, |d| {
+                    d.child(
+                        div()
+                            .pl(px(18.))
+                            .text_size(px(13.))
+                            .line_height(relative(1.45))
                             .text_color(muted())
                             .child(Selectable::new(sel.slot(), text)),
                     )
