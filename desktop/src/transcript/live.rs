@@ -740,7 +740,8 @@ impl Transcript {
             .view
             .as_ref()
             .is_some_and(|v| !self.chips.iter().any(|c| c.running && c.id == *v));
-        if !self.busy(cx) || view_done {
+        let work = working::working(&self.items, self.view.as_deref());
+        if !self.busy(cx) || view_done || work.ended {
             self.ticker = None;
             return None;
         }
@@ -752,10 +753,7 @@ impl Transcript {
                 }
             }));
         }
-        Some(working::line(
-            &working::working(&self.items, self.view.as_deref()),
-            now_ms(),
-        ))
+        Some(working::line(&work, now_ms()))
     }
 
     /// The strip under the list: the main thread first, then one chip per subagent of the turn;

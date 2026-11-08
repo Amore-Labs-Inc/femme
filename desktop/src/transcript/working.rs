@@ -18,6 +18,9 @@ pub struct Working {
     pub since: Option<i64>,
     /// Bytes the agent has produced this turn: its text, thoughts and tool calls.
     pub bytes: usize,
+    /// The turn is over (it ended, or the user interrupted it) although the session may still
+    /// work: a background agent keeps a TUI session busy. No line then.
+    pub ended: bool,
 }
 
 /// The turn so far: everything after the last user message of the thread shown (`view`, as in
@@ -49,10 +52,16 @@ pub fn working(items: &Items, view: Option<&str>) -> Working {
         Some(ItemKind::ToolCall | ItemKind::ToolResult) => "Running a tool",
         _ => "Thinking",
     };
+    let ended = turn.iter().any(|e| match e.item.kind {
+        ItemKind::TurnEnd => true,
+        ItemKind::Event => items.shown(e).text.starts_with("[Request interrupted"),
+        _ => false,
+    });
     Working {
         verb,
         since: start.map(|i| all[i].item.ts),
         bytes,
+        ended,
     }
 }
 
@@ -164,5 +173,38 @@ mod tests {
         assert_eq!(line(&none, 0), "· Thinking…");
         assert_eq!(elapsed(3_725), "1h 2m");
         assert_eq!(tokens(3_999), "999");
+    }
+
+    #[test]
+    fn an_interrupted_or_ended_turn_has_no_line() {
+        use ItemKind::*;
+        use ItemStatus::*;
+        let open = items(vec![
+            item(1, UserMessage, Completed, "go", 0),
+            item(2, AssistantMessage, Completed, "on it", 0),
+        ]);
+        assert!(!working(&open, None).ended);
+        let stopped = items(vec![
+            item(1, UserMessage, Completed, "go", 0),
+            item(2, Event, Completed, "[Request interrupted by user]", 0),
+        ]);
+        assert!(working(&stopped, None).ended, "interrupted");
+        let done = items(vec![
+            item(1, UserMessage, Completed, "go", 0),
+            item(2, TurnEnd, Completed, "", 0),
+        ]);
+        assert!(
+            working(&done, None).ended,
+            "a background agent may still run"
+        );
+        let again = items(vec![
+            item(1, UserMessage, Completed, "go", 0),
+            item(2, TurnEnd, Completed, "", 0),
+            item(3, UserMessage, Completed, "next", 0),
+        ]);
+        assert!(
+            !working(&again, None).ended,
+            "a new message opens a new turn"
+        );
     }
 }
