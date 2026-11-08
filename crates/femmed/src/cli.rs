@@ -8,7 +8,7 @@
 //!   A bare `claude` typed in a FEMME shell pane runs it (`server/claude-shim.sh`).
 //! - `femmed show <file> [caption]`: run by the agent inside a session, puts the file in the
 //!   transcript for the user to see (a screenshot of its work, say); the daemon keeps a copy.
-//!   A video goes as an animated GIF (ffmpeg), which the transcript plays like a picture.
+//!   A video goes as it is (the desktop plays it); one over a blob's size as an animated GIF.
 //! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
 //!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
@@ -413,9 +413,11 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
         .ok()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow::anyhow!("not inside a FEMME session (no FEMME_SID)"))?;
-    // a video goes as an animated GIF, which the desktop plays like any picture (gpui animates
-    // a GIF from memory, not a WebP)
-    let gif = if is_video(file) {
+    // a video goes as it is, for the desktop's player; one too big for a blob goes as an
+    // animated GIF instead (gpui animates a GIF from memory, not a WebP)
+    let too_big =
+        std::fs::metadata(file).is_ok_and(|m| m.len() as usize > femme_proto::rpc::MAX_BLOB_PUT);
+    let gif = if is_video(file) && too_big {
         Some(to_gif(file).await?)
     } else {
         None
