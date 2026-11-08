@@ -199,7 +199,7 @@ fn numbered(name: &str, n: u32) -> String {
 
 /// The text with a blank line and an `Attached:` line per path after it (just the lines when the
 /// text is empty).
-fn with_lines(text: &str, paths: &[PathBuf]) -> String {
+pub(crate) fn with_lines(text: &str, paths: &[PathBuf]) -> String {
     let lines: Vec<String> = paths
         .iter()
         .map(|p| format!("Attached: {}", p.display()))

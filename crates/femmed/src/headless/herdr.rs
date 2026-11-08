@@ -402,11 +402,12 @@ impl Tail {
         self.read += data.len() as u64;
         let mut puts = std::mem::take(&mut self.pending);
         let mut out = Out::default();
+        let uploads = d.cfg.state_path("uploads").join(self.sid.to_string());
         while let Some((at, line)) = self.lines.next_line() {
             if std::mem::take(&mut self.skip) {
                 continue;
             }
-            let Some(line) = disk_line(&line) else {
+            let Some(line) = disk_line(&line, &uploads) else {
                 continue;
             };
             let events = self.driver.on_line(at, &line, &mut out);
@@ -584,13 +585,101 @@ fn read_from(path: &Path, at: u64) -> std::io::Result<Option<Vec<u8>>> {
 
 /// A line of Claude's transcript file as the driver reads it from `--output-format stream-json`,
 /// or `None` for the file's own bookkeeping. A typed prompt becomes the replay the stream would
-/// echo (`isReplay`), and a turn's `turn_duration` the `result` that ends it.
-fn disk_line(line: &[u8]) -> Option<Vec<u8>> {
-    let v: Value = serde_json::from_slice(line).ok()?;
+/// echo (`isReplay`), and a turn's `turn_duration` the `result` that ends it. A pasted picture is
+/// saved in `uploads` and named by an `Attached:` line, as a desktop attachment is.
+fn disk_line(line: &[u8], uploads: &Path) -> Option<Vec<u8>> {
+    let mut v: Value = serde_json::from_slice(line).ok()?;
     if v["isSidechain"] == true {
         return None;
     }
+    if v["type"] == "user" {
+        attach_images(&mut v, uploads);
+    }
     serde_json::to_vec(&disk_value(v)?).ok()
+}
+
+/// A typed message's pictures (base64 `image` blocks) as files in `dir`, and its content as text
+/// with an `Attached:` line per file in place of Claude's `[Image #N]` markers. A file is named by
+/// its bytes' hash, so reading the transcript again finds it instead of writing another.
+fn attach_images(v: &mut Value, dir: &Path) {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let Some(blocks) = v["message"]["content"].as_array() else {
+        return;
+    };
+    if blocks.iter().any(|b| b["type"] == "tool_result") {
+        return;
+    }
+    let mut text = Vec::new();
+    let mut paths = Vec::new();
+    for b in blocks {
+        match b["type"].as_str() {
+            Some("text") => text.push(b["text"].as_str().unwrap_or_default().to_owned()),
+            Some("image") => {
+                let Some(bytes) = b["source"]["data"]
+                    .as_str()
+                    .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+                else {
+                    continue;
+                };
+                let ext = match b["source"]["media_type"].as_str() {
+                    Some("image/jpeg") => "jpg",
+                    Some("image/gif") => "gif",
+                    Some("image/webp") => "webp",
+                    _ => "png",
+                };
+                let hash = sha2::Sha256::digest(&bytes);
+                let hex: String = hash[..6].iter().map(|b| format!("{b:02x}")).collect();
+                let path = dir.join(format!("paste-{hex}.{ext}"));
+                if path.exists() || save_new(dir, &path, &bytes).is_ok() {
+                    paths.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+    if paths.is_empty() {
+        return;
+    }
+    let text = text.join("\n");
+    let text = strip_image_marks(&text);
+    v["message"]["content"] = Value::String(crate::uploads::with_lines(text.trim(), &paths));
+}
+
+/// `path` with `bytes`, its folder and the file private (700, 600), as uploads are.
+fn save_new(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)
+}
+
+/// The text without Claude's `[Image #N]` markers (the pictures are attached instead).
+fn strip_image_marks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("[Image #") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + "[Image #".len()..];
+        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        match after[digits..].strip_prefix(']') {
+            Some(tail) if digits > 0 => rest = tail,
+            _ => {
+                out.push_str("[Image #");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A line of a subagent's transcript (every one a sidechain) as the stream shows a subagent's:
@@ -793,7 +882,8 @@ mod tests {
     }
 
     fn line(v: Value) -> Option<Value> {
-        disk_line(v.to_string().as_bytes()).map(|b| serde_json::from_slice(&b).unwrap())
+        disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))
+            .map(|b| serde_json::from_slice(&b).unwrap())
     }
 
     #[test]
@@ -843,6 +933,46 @@ mod tests {
         ] {
             assert_eq!(line(skipped), None);
         }
+    }
+
+    #[test]
+    fn a_pasted_picture_is_saved_and_attached() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfake";
+        let data = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(png)
+        };
+        let line = serde_json::json!({"type":"user","message":{"content":[
+            {"type":"text","text":"[Image #177] look at this"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":data}},
+        ]}})
+        .to_string();
+        let read = |l: &str| -> Value {
+            serde_json::from_slice(&disk_line(l.as_bytes(), dir.path()).unwrap()).unwrap()
+        };
+        let text = read(&line)["message"]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1);
+        let path = files[0].as_ref().unwrap().path();
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        assert_eq!(
+            text,
+            format!("look at this\n\nAttached: {}", path.display())
+        );
+        assert_eq!(
+            read(&line)["message"]["content"].as_str().unwrap(),
+            text,
+            "read again: the same file"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            strip_image_marks("a [Image #] b [Image #2]c"),
+            "a [Image #] b c"
+        );
     }
 
     #[test]
