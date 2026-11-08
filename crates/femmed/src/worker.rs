@@ -274,6 +274,7 @@ mod tests {
                         closed: None,
                         permission: None,
                         context: None,
+                        effort: None,
                     })?
                     .id)
             })

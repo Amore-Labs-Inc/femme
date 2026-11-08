@@ -53,6 +53,7 @@ fn session(name: Option<&str>) -> Session {
         closed: None,
         permission: None,
         context: None,
+        effort: None,
     }
 }
 
@@ -191,7 +192,7 @@ fn every_connection_gets_the_pragmas() {
     let version: i64 = s
         .read(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     // the file holds API keys: private from the first byte, and SQLite gives its side files the same mode
     for file in [
         path.clone(),

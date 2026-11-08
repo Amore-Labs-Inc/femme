@@ -72,6 +72,8 @@ pub struct Session {
     /// The agent's context window, once it reported one (Claude: every assistant message says
     /// what the call read, the turn's result how big the window is). The composer's XP bar.
     pub context: Option<Context>,
+    /// How hard Claude thinks (`low` ... `max`), when the daemon set it or `/effort` changed it.
+    pub effort: Option<String>,
 }
 
 /// How full an agent's context window is.
