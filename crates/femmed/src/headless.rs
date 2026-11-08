@@ -28,7 +28,7 @@ use femme_agents::{
 use femme_proto::holder::{HolderEvent, Target};
 use femme_proto::rpc::{Answer, PromptHow};
 use femme_proto::state::{
-    Agent, Attention, Item, ItemKind, ItemStatus, Mode, Question, Session, SessionStatus,
+    Agent, Attention, Context, Item, ItemKind, ItemStatus, Mode, Question, Session, SessionStatus,
 };
 use femme_proto::{Id, Sid};
 use femme_store::{items as store_items, sessions, Store, Tx};
@@ -888,6 +888,11 @@ impl Actor {
             driver: self.driver.status(),
             asked: f.asked.filter(|_| live_line),
             permission: f.permission,
+            // what the agent last said is the same row on a replay; a compaction is counted once,
+            // when its line is live
+            ctx_used: f.ctx_used,
+            ctx_window: f.ctx_window,
+            compacted: if live_line { f.compacted } else { 0 },
         };
         let first = row_first(row.state);
         if first {
@@ -904,6 +909,9 @@ impl Actor {
             && fx.model.is_none()
             && fx.state.is_none()
             && fx.permission.is_none()
+            && fx.ctx_used.is_none()
+            && fx.ctx_window.is_none()
+            && fx.compacted == 0
             && !fx.ready
         {
             return;
@@ -929,6 +937,7 @@ impl Actor {
                 s.status = status;
                 s.attention = attention;
             }
+            s.context = with_context(s.context, fx.ctx_used, fx.ctx_window, fx.compacted);
         });
     }
 
@@ -1297,6 +1306,29 @@ fn row_first(state: Option<(SessionStatus, Attention)>) -> bool {
     )
 }
 
+/// The row's context window after a batch: the agent's latest word on what it has read and on its
+/// window (kept when a batch does not repeat it), and the compactions the batch adds. An agent that
+/// never says leaves `None`; a window of 0 is "not said yet".
+fn with_context(
+    old: Option<Context>,
+    used: Option<u64>,
+    window: Option<u64>,
+    compacted: u32,
+) -> Option<Context> {
+    if used.is_none() && window.is_none() && compacted == 0 {
+        return old;
+    }
+    let mut c = old.unwrap_or_default();
+    if let Some(u) = used {
+        c.used = u;
+    }
+    if let Some(w) = window {
+        c.window = w;
+    }
+    c.compactions = c.compactions.saturating_add(compacted);
+    Some(c)
+}
+
 fn status_text(code: i32) -> String {
     if code < 0 {
         format!("killed by signal {}", -code)
@@ -1458,6 +1490,12 @@ struct Folded {
     /// The `/` commands the agent said it takes.
     commands: Option<Vec<String>>,
     permission: Option<String>,
+    /// What the agent's latest model call read, in tokens.
+    ctx_used: Option<u64>,
+    /// The agent's context window in tokens, when the batch said.
+    ctx_window: Option<u64>,
+    /// How many times the batch says the conversation was compacted.
+    compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
     turn_started: bool,
@@ -1474,6 +1512,12 @@ struct RowFx {
     driver: AgentStatus,
     asked: Option<String>,
     permission: Option<String>,
+    ctx_used: Option<u64>,
+    ctx_window: Option<u64>,
+    /// Compactions to count: only those of a live line. A restart replays the lines of the turn
+    /// that was running, and the row counted them the first time; the lines the agent wrote while
+    /// the daemon was away are read as that same replay, so they are not counted either.
+    compacted: u32,
 }
 
 fn new_item(
@@ -1649,10 +1693,12 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 st.done = false;
                 f.state = Some((SessionStatus::Idle, attention));
             }
-            AgentEvent::Exited { .. }
-            | AgentEvent::Raw(_)
-            | AgentEvent::Context { .. }
-            | AgentEvent::Compacted { .. } => {}
+            AgentEvent::Context { used, window } => {
+                f.ctx_used = Some(used);
+                f.ctx_window = window.or(f.ctx_window);
+            }
+            AgentEvent::Compacted { .. } => f.compacted += 1,
+            AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
         }
     }
     f
@@ -2226,6 +2272,120 @@ mod tests {
             1,
         );
         assert_eq!(f.usage, None);
+    }
+
+    fn say(used: u64, window: Option<u64>) -> AgentEvent {
+        AgentEvent::Context { used, window }
+    }
+
+    fn compacted() -> AgentEvent {
+        AgentEvent::Compacted {
+            pre_tokens: Some(45_000),
+        }
+    }
+
+    fn ctx(used: u64, window: u64, compactions: u32) -> Option<Context> {
+        Some(Context {
+            used,
+            window,
+            compactions,
+        })
+    }
+
+    /// What the row's context is after the batches, each folded as one spool line.
+    fn context_after(batches: Vec<Vec<AgentEvent>>) -> Option<Context> {
+        let mut st = FoldState::default();
+        let mut row = None;
+        for (i, events) in batches.into_iter().enumerate() {
+            let f = fold(&mut st, SID, &format!("d{i}"), events, 1);
+            row = with_context(row, f.ctx_used, f.ctx_window, f.compacted);
+        }
+        row
+    }
+
+    #[test]
+    fn a_context_event_sets_what_was_read_and_a_window_stays_until_one_is_said_again() {
+        assert_eq!(
+            context_after(vec![vec![say(44_302, None)]]),
+            ctx(44_302, 0, 0),
+            "the window is 0 until the agent says"
+        );
+        assert_eq!(
+            context_after(vec![
+                vec![say(44_302, None)],
+                vec![say(44_302, Some(1_000_000))]
+            ]),
+            ctx(44_302, 1_000_000, 0)
+        );
+        assert_eq!(
+            context_after(vec![
+                vec![say(44_302, Some(1_000_000))],
+                vec![say(45_000, None)]
+            ]),
+            ctx(45_000, 1_000_000, 0),
+            "a call that does not repeat the window leaves the one the row has"
+        );
+    }
+
+    #[test]
+    fn a_compaction_counts_and_leaves_what_was_read_and_the_window_alone() {
+        assert_eq!(
+            context_after(vec![
+                vec![say(45_000, Some(1_000_000))],
+                vec![compacted()],
+                vec![compacted()]
+            ]),
+            ctx(45_000, 1_000_000, 2)
+        );
+        assert_eq!(
+            context_after(vec![vec![compacted()]]),
+            ctx(0, 0, 1),
+            "nothing read is known yet, the level is already one up"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_never_says_leaves_the_row_without_a_context() {
+        assert_eq!(context_after(vec![turn(StopReason::EndTurn)]), None);
+        let kept = Context {
+            used: 1,
+            window: 2,
+            compactions: 3,
+        };
+        assert_eq!(with_context(Some(kept), None, None, 0), Some(kept));
+    }
+
+    #[test]
+    fn within_one_line_the_last_context_wins_and_the_last_window_said_stays() {
+        let evs = vec![say(10, Some(100)), say(20, None), compacted(), compacted()];
+        let f = fold(&mut FoldState::default(), SID, "d0", evs, 1);
+        assert_eq!(
+            (f.ctx_used, f.ctx_window, f.compacted),
+            (Some(20), Some(100), 2)
+        );
+    }
+
+    #[test]
+    fn a_replayed_context_changes_nothing_that_is_stored() {
+        let (store, sid) = store_with_session();
+        let write = |used, window, compacted| {
+            store
+                .write(|tx| {
+                    tx.update_session(sid, |s| {
+                        s.context = with_context(s.context, used, window, compacted)
+                    })
+                })
+                .unwrap()
+        };
+        let first = write(Some(44_302), Some(1_000_000), 0);
+        assert_eq!(first.context, ctx(44_302, 1_000_000, 0));
+        // the same lines again, as a restart replays them
+        let again = write(Some(44_302), Some(1_000_000), 0);
+        assert_eq!(again.rev, first.rev, "nothing changed, nothing was written");
+        // a compaction is not part of a replay (the actor adds 0 for it): it only counts live
+        let live = write(None, None, 1);
+        assert_eq!(live.context, ctx(44_302, 1_000_000, 1));
+        assert!(live.rev > first.rev);
     }
 
     #[test]

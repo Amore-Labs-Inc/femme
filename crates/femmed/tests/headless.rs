@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
 use femme_proto::rpc::{Answer, Attachment};
-use femme_proto::state::{Attention, Item, ItemKind, ItemStatus, Mode, SessionStatus};
+use femme_proto::state::{Attention, Context, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
 use femmed::core::{Core, CoreError, PaneRef};
 use femmed::daemon::Daemon;
@@ -22,6 +22,15 @@ fn items(d: &Daemon, sid: Sid) -> Vec<Item> {
         .unwrap();
     v.reverse();
     v
+}
+
+/// The context window the session row holds.
+fn context(d: &Daemon, sid: Sid) -> Option<Context> {
+    d.store
+        .read(|c| femme_store::sessions::get_session(c, sid))
+        .unwrap()
+        .unwrap()
+        .context
 }
 
 /// What a transcript says, without the ids and times that differ between runs.
@@ -332,6 +341,77 @@ async fn a_daemon_restart_mid_turn_resumes_from_the_committed_offset_with_an_ide
             .text
             .contains("tick 50"),
         "the screen is the transcript"
+    );
+    d.close_session(sid).await.unwrap();
+}
+
+/// The composer's XP bar: the session row follows what the agent says of its context window, and a
+/// daemon restarted while a turn that compacted still streams does not count the compaction again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_context_window_follows_the_agent_and_a_restart_does_not_count_a_compaction_twice() {
+    let b = Box_::new();
+    let (mut d, mut stop) = b.start(None).await;
+    let port = port_of(&d);
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(context(&d, sid), None, "the agent has said nothing yet");
+
+    // an ordinary turn: what its call read, and the window its end names
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    assert_eq!(
+        context(&d, sid),
+        Some(Context {
+            used: 2,
+            window: 200_000,
+            compactions: 0
+        })
+    );
+
+    // a big call, the compaction, a small call; the daemon restarted twice while it streams
+    d.prompt(&pane, "compact").await.unwrap();
+    let t0 = Instant::now();
+    while !matches!(context(&d, sid), Some(c) if c.compactions > 0) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "the compaction was not counted: {:?}",
+            context(&d, sid)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for n in 1..=2 {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        drop(stop);
+        drop(d);
+        (d, stop) = b.start(Some(port)).await;
+        d.reconcile().await;
+        let listed = d.terminals().await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.sid == sid && s.status == SessionStatus::Working),
+            "restart {n}: {listed:?}"
+        );
+    }
+    wait_for(&d, sid, "done", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle && s.attention == Attention::Done)
+    })
+    .await;
+    assert_eq!(
+        context(&d, sid),
+        Some(Context {
+            used: 2,
+            window: 200_000,
+            compactions: 1
+        }),
+        "one compaction, however often its line was read"
     );
     d.close_session(sid).await.unwrap();
 }

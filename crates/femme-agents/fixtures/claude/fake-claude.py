@@ -5,6 +5,7 @@
 #   ask    asks a question (options a / b) and waits for the answer
 #   ask2   headless only: asks two in one request ("Which?" a / b, "Second?" x / y), waits for both
 #   slow   50 lines 200 ms apart (an interrupt or a restart can land inside)
+#   compact  headless only: a big call (150002 tokens read), the compaction, then 50 lines 200 ms apart
 #   quit   exits 0 mid-turn        crash   exits 1 with text on stderr
 #   <any>  replies "echo: <any>", with a 100 ms pause mid-turn
 import json
@@ -134,6 +135,9 @@ def result(u, ok=True, n=4):
          "user_message_uuids": [u]}
     if ok:
         r.update(stop_reason="end_turn", terminal_reason="completed", result="")
+        # one entry per model the turn used; the window is what the composer's bar is measured against
+        r["modelUsage"] = {MODEL: {"inputTokens": 2, "outputTokens": n, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+                                   "contextWindow": 200000, "maxOutputTokens": 64000}}
         out(r)
         lifecycle(u, "completed")
     else:
@@ -268,6 +272,13 @@ def turn(v):
     if word in ("ask", "ask2"):
         ok = ask(u, word == "ask2")
     elif word == "slow":
+        ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u)
+    elif word == "compact":
+        big = {"input_tokens": 2, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 150000, "output_tokens": 1}
+        out({"type": "assistant", "message": {"model": MODEL, "id": f"msg_{uid()[:8]}", "type": "message", "role": "assistant",
+             "content": [], "stop_reason": None, "usage": big}, "parent_tool_use_id": None, "session_id": SID,
+             "uuid": uid(), "user_message_uuid": u, "user_message_uuids": [u]})
+        system("compact_boundary", compact_metadata={"trigger": "manual", "pre_tokens": 150002})
         ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u)
     else:
         ok = stream(f"msg_{uid()[:8]}", ["echo: ", text], 0.1, True, u)
