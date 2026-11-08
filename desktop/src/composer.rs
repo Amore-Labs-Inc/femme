@@ -13,13 +13,14 @@ mod files;
 mod permission;
 mod slash;
 mod sniff;
+mod xp;
 
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use femme_proto::rpc::{PromptHow, Req, Resp};
-use femme_proto::state::{Agent, SessionStatus};
+use femme_proto::state::{Agent, Context as Xp, SessionStatus};
 use femme_proto::Sid;
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
@@ -74,6 +75,10 @@ pub struct Composer {
     last_target: Target,
     /// The permission mode the last render's pill showed, to re-render when it changes.
     last_permission: Option<String>,
+    /// The context the XP bar last showed; the model is observed for a change of it.
+    last_xp: Option<Xp>,
+    /// When the bar last levelled up.
+    level_up: xp::LevelUp,
     previews: Previews,
     /// The right-click menu of the chips, and the preview its `open` keeps on screen.
     ctx: Entity<crate::ui::ctx::Menu>,
@@ -124,6 +129,7 @@ impl Composer {
                 this.link_up = up;
                 if this.target(cx) != this.last_target
                     || this.permission(cx) != this.last_permission
+                    || this.xp(cx) != this.last_xp
                 {
                     cx.notify();
                 }
@@ -142,6 +148,8 @@ impl Composer {
             pastes: 0,
             last_target: Target::NoSession,
             last_permission: None,
+            last_xp: None,
+            level_up: xp::LevelUp::default(),
             previews: Rc::default(),
             ctx: cx.new(crate::ui::ctx::Menu::new),
             commands: Vec::new(),
@@ -209,6 +217,15 @@ impl Composer {
         let session = net.read(cx).model.sessions.get(&sid)?;
         (session.agent == Agent::Claude)
             .then(|| session.permission.clone())
+            .flatten()
+    }
+
+    /// The selected session's context window, when it is a Claude session that reported one.
+    fn xp(&self, cx: &App) -> Option<Xp> {
+        let (net, sid) = self.net.as_ref().zip(self.session)?;
+        let session = net.read(cx).model.sessions.get(&sid)?;
+        (session.agent == Agent::Claude)
+            .then_some(session.context)
             .flatten()
     }
 
@@ -944,6 +961,19 @@ impl Render for Composer {
             .gap(px(5.))
             .children(square)
             .child(attach);
+        // The context XP bar above `send`, the square's twin on the right.
+        let ctx = self.xp(cx);
+        self.last_xp = ctx;
+        let ring = self
+            .level_up
+            .step(self.session, ctx.map(|c| xp::level(&c)), Instant::now());
+        let send = div()
+            .flex()
+            .flex_col()
+            .items_stretch()
+            .gap(px(5.))
+            .children(ctx.map(|c| xp::bar(c, ring)))
+            .child(send);
 
         let this = cx.entity().downgrade();
         let field = Textarea::new(&input)
