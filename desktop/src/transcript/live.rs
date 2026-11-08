@@ -41,6 +41,8 @@ use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
 use crate::theme::{accent_deep, bad, done, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL};
 use crate::ui::{dot, meta, ruled};
+use crate::video::Clip;
+use gpui::{Image, ImageFormat};
 
 /// How many older items one request asks for.
 const PAGE: u16 = 100;
@@ -540,6 +542,10 @@ impl Transcript {
         self.request(req, cx, move |this, answer, cx| {
             let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
             let thumb = match answer {
+                Ok(Resp::FsData(bytes)) if crate::video::is_video(&name) => {
+                    this.video_thumb(path, name, bytes, cx);
+                    return;
+                }
                 Ok(Resp::FsData(bytes)) => Thumb::from_bytes(&name, bytes),
                 Ok(_) => Thumb::Failed,
                 Err(e) => {
@@ -550,6 +556,32 @@ impl Transcript {
             this.thumbs.insert(path, thumb);
             cx.notify();
         });
+    }
+
+    /// A video's thumbnail: its file kept on this machine and a still of it, made off the main
+    /// thread (`ffmpeg`).
+    fn video_thumb(&mut self, path: String, name: String, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let made = cx.background_executor().spawn(async move {
+            let clip = Clip::from_bytes(&name, &bytes).map_err(|e| e.to_string())?;
+            let still = clip.poster()?;
+            Ok::<_, String>(Thumb::Ready {
+                image: Arc::new(Image::from_bytes(ImageFormat::Png, still)),
+                name,
+                clip: Some(clip),
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let thumb = made.await;
+            this.update(cx, |this, cx| {
+                if let Err(why) = &thumb {
+                    this.note = Some(format!("{path}: {why}"));
+                }
+                this.thumbs.insert(path, thumb.unwrap_or(Thumb::Failed));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {

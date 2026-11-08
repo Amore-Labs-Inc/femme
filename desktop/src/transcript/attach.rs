@@ -14,7 +14,7 @@ pub struct Attached {
     pub path: String,
     /// The file's name: the last component of the path.
     pub name: String,
-    /// The file is an image the view can show as a thumbnail.
+    /// The file is an image the view can show as a thumbnail, or a video shown by a still of it.
     pub image: bool,
 }
 
@@ -36,7 +36,7 @@ pub fn split(text: &str) -> (String, Vec<Attached>) {
 fn attached(path: &str) -> Attached {
     let name = path.rsplit('/').next().unwrap_or(path).to_owned();
     Attached {
-        image: image_format_of_name(&name).is_some(),
+        image: image_format_of_name(&name).is_some() || crate::video::is_video(&name),
         name,
         path: path.to_owned(),
     }

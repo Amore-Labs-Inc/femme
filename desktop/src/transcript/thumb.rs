@@ -17,13 +17,17 @@ use gpui::{
     Styled as _, StyledImage as _, Window,
 };
 
+use gpui::prelude::FluentBuilder as _;
+use gpui::Div;
 use gpui_component::WindowExt as _;
 
 use super::attach::{self, Attached};
 use super::live::Transcript;
+use crate::lightbox::Lightbox;
 use crate::theme::{self, bad, muted, panel, paper, FONT_MONO};
 use crate::ui::ctx::Item;
 use crate::ui::{clip, meta, ruled, tb};
+use crate::video::Clip;
 
 /// Side of a thumbnail's box.
 pub const THUMB: f32 = 88.;
@@ -48,6 +52,8 @@ pub enum Thumb {
         image: Arc<Image>,
         /// The file's name.
         name: String,
+        /// A video's file on this machine (the picture is a still of it): a click plays it.
+        clip: Option<Arc<Clip>>,
     },
     /// It could not be fetched, or it is not a picture.
     Failed,
@@ -60,6 +66,7 @@ impl Thumb {
             Some(format) => Thumb::Ready {
                 image: Arc::new(Image::from_bytes(format, bytes)),
                 name: name.to_owned(),
+                clip: None,
             },
             None => Thumb::Failed,
         }
@@ -79,6 +86,28 @@ fn picture(image: &Arc<Image>) -> Img {
         .object_fit(ObjectFit::Contain)
         .with_loading(|| div().size_full().bg(panel()).into_any_element())
         .with_fallback(|| note("cannot draw", bad()).into_any_element())
+}
+
+/// The ▶ on a video's still: a dark disc in the middle of the box.
+fn play_mark() -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(40.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x000000a0))
+                .text_color(gpui::white())
+                .text_size(px(18.))
+                .child("▶"),
+        )
 }
 
 /// The preview that opens over a thumbnail: the picture, fitted whole into a titled box.
@@ -157,15 +186,16 @@ fn framed(
             .overflow_hidden(),
     );
     match thumb {
-        Some(Thumb::Ready { image, name }) => {
+        Some(Thumb::Ready { image, name, clip }) => {
             let (image, name) = (image.clone(), SharedString::from(name.clone()));
             let thumb = picture(&image);
-            let opened = (name.clone(), image.clone());
+            let opened = (name.clone(), image.clone(), clip.clone());
             frame
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Right, on_menu)
-                .on_click(move |_, _, cx| {
-                    crate::lightbox::Lightbox::show(&opened.0, opened.1.clone(), cx)
+                .on_click(move |_, _, cx| match &opened.2 {
+                    Some(clip) => Lightbox::play(&opened.0, clip.clone(), cx),
+                    None => Lightbox::show(&opened.0, opened.1.clone(), cx),
                 })
                 .tooltip_show_delay(PREVIEW_DELAY)
                 .tooltip(move |_, cx: &mut App| {
@@ -173,6 +203,7 @@ fn framed(
                     cx.new(|_| Preview { name, image }).into()
                 })
                 .child(thumb)
+                .when(clip.is_some(), |d| d.child(play_mark()))
                 .into_any_element()
         }
         Some(Thumb::Failed) => frame.child(note("unavailable", bad())).into_any_element(),
@@ -217,7 +248,7 @@ impl Transcript {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(Thumb::Ready { image, name }) = self.thumbs.get(path) else {
+        let Some(Thumb::Ready { image, name, .. }) = self.thumbs.get(path) else {
             return;
         };
         if window.has_focused_input(cx) {
