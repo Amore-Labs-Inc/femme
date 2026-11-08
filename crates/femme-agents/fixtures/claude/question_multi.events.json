@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38056,
+      "window": null
+    }
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_01R6ZrTp12z2cR18mkS34Dox",
       "q": {
@@ -90,6 +96,12 @@
     }
   },
   {
+    "Context": {
+      "used": 42008,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvF51teYMX6fPpEw9uQ:1",
       "kind": "AssistantMessage",
@@ -134,6 +146,12 @@
       "body": {
         "text": "You chose **A** and **B**. You did not choose C."
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 42008,
+      "window": 1000000
     }
   },
   {

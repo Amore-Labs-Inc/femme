@@ -344,6 +344,18 @@ pub enum AgentEvent {
     Commands(Vec<String>),
     /// The permission mode the agent is in now (Claude's `bypassPermissions`, `plan`, ...).
     PermissionMode(String),
+    /// The agent's context window as of its latest model call.
+    Context {
+        /// Tokens the call read: the conversation so far (input + cache read + cache write).
+        used: u64,
+        /// The window in tokens, when the agent said (Claude: the turn's `result`).
+        window: Option<u64>,
+    },
+    /// The conversation was compacted: the context shrinks, the desktop's level goes up.
+    Compacted {
+        /// Tokens before compaction, when reported.
+        pre_tokens: Option<u64>,
+    },
     /// Coarse state transition; only emitted when the state actually changes.
     Status(AgentStatus),
     /// The process exited (from [`Driver::on_exit`]).

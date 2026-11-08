@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38063,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "toolu_017iemXU5V7rD2kfxAypX2oF",
       "kind": "ToolCall",
@@ -78,6 +84,12 @@
       "kind": "session",
       "percent": 32.0,
       "resets_at": 1793617200
+    }
+  },
+  {
+    "Context": {
+      "used": 43779,
+      "window": null
     }
   },
   {
@@ -175,6 +187,12 @@
     }
   },
   {
+    "Context": {
+      "used": 45227,
+      "window": null
+    }
+  },
+  {
     "ItemCompleted": {
       "id": "toolu_016h8PFN6VQ4cbAyRzfLGaYg",
       "kind": "Plan",
@@ -234,6 +252,12 @@
     }
   },
   {
+    "Context": {
+      "used": 45469,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvGNhYcnQYtxo3Y2T1J:1",
       "kind": "AssistantMessage",
@@ -254,6 +278,12 @@
       "body": {
         "text": "done"
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 45469,
+      "window": 1000000
     }
   },
   {

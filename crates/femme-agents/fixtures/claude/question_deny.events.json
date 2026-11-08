@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38052,
+      "window": null
+    }
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_01RJjnqMeDHQ9Mngo5dNyogE",
       "q": {
@@ -78,6 +84,12 @@
         "prompt": "Do you prefer A or B?",
         "request_id": "e5e63aec-0791-4dcd-9dc3-c69f274b8683"
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 41967,
+      "window": null
     }
   },
   {
@@ -143,6 +155,12 @@
       "body": {
         "text": "Declined. You didn't pick A or B, so I have no choice to report. Re-ask whenever you want."
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 41967,
+      "window": 1000000
     }
   },
   {

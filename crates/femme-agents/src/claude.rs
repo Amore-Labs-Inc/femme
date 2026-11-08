@@ -33,6 +33,13 @@
 //!   thread; a spool-offset id (`o<offset>`, no id on the line) becomes `<parent>/o<offset>`.
 //! * Thinking items exist only when the CLI sends readable thinking text (it normally sends
 //!   none, only a signature and a token estimate).
+//! * Context: every model call of the main thread says what it read (`usage` of its
+//!   `message_start` and of its `assistant` line: input + cache read + cache write), which is
+//!   [`AgentEvent::Context`], said again only when the number changes; a subagent's calls are its
+//!   own conversation and say nothing. The window comes with the turn's `result`
+//!   (`modelUsage[<model>].contextWindow`; the result's own `usage` is the turn's total over all
+//!   its calls, not a context size). `system/compact_boundary` is the "Conversation compacted"
+//!   event item and [`AgentEvent::Compacted`].
 //! * Prompts: every user message gets a fresh `uuid`; the CLI echoes it (`isReplay`) when it starts
 //!   working on the message, and that echo is what becomes the `UserMessage` item (id = the uuid).
 //! * Commands: the CLI reports every user message as a `command_lifecycle` `queued`, `started`,
@@ -177,6 +184,8 @@ pub struct ClaudeDriver {
     model: Option<String>,
     /// The permission mode the CLI last reported.
     permission: Option<String>,
+    /// Tokens the main thread's latest model call read, once a call said.
+    ctx_used: Option<u64>,
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
@@ -222,6 +231,7 @@ impl ClaudeDriver {
             announced: None,
             model: None,
             permission: None,
+            ctx_used: None,
             awaiting_init: false,
             exited: false,
             seq: 0,
@@ -407,7 +417,12 @@ impl ClaudeDriver {
                 }
                 self.permission_mode(v, ev);
             }
-            "compact_boundary" => ev.push(event_item(item_id(v, offset), "Conversation compacted")),
+            "compact_boundary" => {
+                ev.push(event_item(item_id(v, offset), "Conversation compacted"));
+                ev.push(AgentEvent::Compacted {
+                    pre_tokens: v["compact_metadata"]["pre_tokens"].as_u64(),
+                });
+            }
             // nothing is running and nothing is queued: a command the CLI reported and never ended
             // (it has no terminal frame, or ours was dropped silently) would keep `busy()` true forever
             "session_state_changed" if v["state"] == "idle" => self.end_cmds(
@@ -466,11 +481,38 @@ impl ClaudeDriver {
         }
     }
 
+    /// The main thread's latest model call read what `usage` says. A message says it more than
+    /// once (its `message_start`, then an `assistant` line per content block, all with the same
+    /// number): the repeats are not news. A subagent's calls are its own conversation, not the
+    /// session's context.
+    fn context(&mut self, usage: &Value, ev: &mut Vec<AgentEvent>) {
+        if self.parent.is_some() {
+            return;
+        }
+        if let Some(used) = context_of(usage).filter(|u| self.ctx_used != Some(*u)) {
+            self.ctx_used = Some(used);
+            ev.push(AgentEvent::Context { used, window: None });
+        }
+    }
+
+    /// The window of the session's model, from a `result`'s `modelUsage` (one entry per model the
+    /// turn used): our model's entry, else the first.
+    fn window_of(&self, model_usage: &Value) -> Option<u64> {
+        let models = model_usage.as_object()?;
+        let ours = self.model.as_deref().map(base_model);
+        let entry = ours
+            .and_then(|m| models.iter().find(|(k, _)| base_model(k) == m))
+            .or_else(|| models.iter().next())?
+            .1;
+        entry["contextWindow"].as_u64().filter(|w| *w > 0)
+    }
+
     fn stream_event(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
         self.activity(offset, ev);
         let e = &v["event"];
         match e["type"].as_str().unwrap_or("") {
             "message_start" => {
+                self.context(&e["message"]["usage"], ev);
                 self.close_blocks(ev);
                 let id = e["message"]["id"]
                     .as_str()
@@ -679,6 +721,7 @@ impl ClaudeDriver {
     fn assistant(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
         self.activity(offset, ev);
         let m = &v["message"];
+        self.context(&m["usage"], ev);
         let mid = m["id"]
             .as_str()
             .map_or_else(|| format!("o{offset}"), str::to_owned);
@@ -908,6 +951,13 @@ impl ClaudeDriver {
     }
 
     fn result(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
+        // the window, before the turn's end: the row that says the turn is over carries it
+        if let (Some(used), Some(window)) = (self.ctx_used, self.window_of(&v["modelUsage"])) {
+            ev.push(AgentEvent::Context {
+                used,
+                window: Some(window),
+            });
+        }
         if self.turn {
             // a subagent whose `Agent` call is still open ends with the turn; one that runs on in
             // the background (its call has returned) keeps its state while it has something open
@@ -1610,6 +1660,21 @@ fn usage_of(u: &Value) -> Option<Usage> {
     (u.is_object() && us != Usage::default()).then_some(us)
 }
 
+/// Tokens a model call read, from its `usage`: input plus cache read plus cache write. A call
+/// that was aborted reports zeros, which is "unknown", not an empty context (as in [`usage_of`]).
+fn context_of(u: &Value) -> Option<u64> {
+    let n = |k: &str| u[k].as_u64().unwrap_or(0);
+    let used = n("input_tokens")
+        .saturating_add(n("cache_read_input_tokens"))
+        .saturating_add(n("cache_creation_input_tokens"));
+    (u.is_object() && used > 0).then_some(used)
+}
+
+/// A model id without the context-size suffix the CLI takes on `--model` (`opus[1m]`).
+fn base_model(m: &str) -> &str {
+    m.split_once('[').map_or(m, |(base, _)| base)
+}
+
 fn stop_reason(r: &Value) -> StopReason {
     if r["terminal_reason"]
         .as_str()
@@ -1924,5 +1989,230 @@ mod tests {
         let mut out = Out::default();
         d.set_permission_mode("auto", &mut out).unwrap();
         assert!(String::from_utf8_lossy(&out.stdin).contains(r#""subtype":"set_permission_mode""#));
+    }
+
+    // ---- the context window (shapes of claude 2.1.302, made-up numbers) ----------------------
+
+    /// A driver fed whole lines at their offsets, as the daemon does.
+    struct Feed {
+        d: ClaudeDriver,
+        at: u64,
+    }
+
+    impl Feed {
+        fn new() -> Self {
+            Feed {
+                d: ClaudeDriver::new(),
+                at: 0,
+            }
+        }
+
+        fn line(&mut self, v: Value) -> Vec<AgentEvent> {
+            let text = v.to_string();
+            let ev = self
+                .d
+                .on_line(self.at, text.as_bytes(), &mut Out::default());
+            self.at += text.len() as u64 + 1;
+            ev
+        }
+    }
+
+    fn contexts(ev: Vec<AgentEvent>) -> Vec<AgentEvent> {
+        ev.into_iter()
+            .filter(|e| matches!(e, AgentEvent::Context { .. }))
+            .collect()
+    }
+
+    fn ctx(used: u64, window: Option<u64>) -> AgentEvent {
+        AgentEvent::Context { used, window }
+    }
+
+    /// `usage` as a call reports it: a fresh part, what it read from the cache, what it wrote.
+    fn usage(input: u64, read: u64, write: u64) -> Value {
+        json!({"input_tokens":input,"cache_creation_input_tokens":write,"cache_read_input_tokens":read,
+            "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":write},"output_tokens":6})
+    }
+
+    fn message_start(usage: Value, parent: Value) -> Value {
+        json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","type":"message",
+            "role":"assistant","content":[],"usage":usage}},"session_id":"s","parent_tool_use_id":parent,"uuid":"u1"})
+    }
+
+    fn assistant_line(usage: Value, parent: Value) -> Value {
+        json!({"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"hi"}],"usage":usage},"session_id":"s","parent_tool_use_id":parent,"uuid":"u2"})
+    }
+
+    fn init(model: &str) -> Value {
+        json!({"type":"system","subtype":"init","session_id":"s","model":model})
+    }
+
+    fn result_line(total: Value, models: Value) -> Value {
+        json!({"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":1,
+            "session_id":"s","duration_ms":9,"usage":total,"modelUsage":models,"uuid":"r1"})
+    }
+
+    #[test]
+    fn a_model_call_says_what_it_read_once_per_number() {
+        let mut f = Feed::new();
+        let first = usage(2, 0, 44300);
+        assert_eq!(
+            contexts(f.line(message_start(first.clone(), Value::Null))),
+            [ctx(44302, None)]
+        );
+        // the assistant line of the same message repeats the number: nothing new
+        assert!(contexts(f.line(assistant_line(first, Value::Null))).is_empty());
+        // the next call read more (what was written is now read)
+        let next = usage(1, 44300, 500);
+        assert_eq!(
+            contexts(f.line(message_start(next.clone(), Value::Null))),
+            [ctx(44801, None)]
+        );
+        assert!(contexts(f.line(assistant_line(next, Value::Null))).is_empty());
+        // an assistant line that comes alone (no stream) is a call too
+        assert_eq!(
+            contexts(f.line(assistant_line(usage(1, 44801, 70), Value::Null))),
+            [ctx(44872, None)]
+        );
+    }
+
+    #[test]
+    fn an_agent_without_a_cache_still_says_its_input() {
+        // another provider behind the CLI reports no cache fields at all
+        let mut f = Feed::new();
+        let plain = json!({"input_tokens":36654,"output_tokens":0});
+        assert_eq!(
+            contexts(f.line(message_start(plain, Value::Null))),
+            [ctx(36654, None)]
+        );
+    }
+
+    #[test]
+    fn a_call_that_read_nothing_is_unknown_not_empty() {
+        let mut f = Feed::new();
+        let zeros = usage(0, 0, 0);
+        assert!(contexts(f.line(message_start(zeros.clone(), Value::Null))).is_empty());
+        assert!(contexts(f.line(assistant_line(zeros, Value::Null))).is_empty());
+        assert!(contexts(f.line(message_start(Value::Null, Value::Null))).is_empty());
+        // and it does not make the driver forget what the call before said
+        assert_eq!(
+            contexts(f.line(message_start(usage(2, 0, 100), Value::Null))),
+            [ctx(102, None)]
+        );
+        assert!(contexts(f.line(message_start(usage(0, 0, 0), Value::Null))).is_empty());
+        assert!(contexts(f.line(assistant_line(usage(2, 0, 100), Value::Null))).is_empty());
+    }
+
+    #[test]
+    fn a_subagents_calls_are_not_the_sessions_context() {
+        let mut f = Feed::new();
+        let main = usage(2, 0, 90_000);
+        assert_eq!(
+            contexts(f.line(message_start(main.clone(), Value::Null))),
+            [ctx(90_002, None)]
+        );
+        // an `Agent` call's own conversation is small, and says nothing about ours
+        let sub = Value::from("toolu_agent");
+        let small = usage(2, 0, 5_000);
+        assert!(contexts(f.line(message_start(small.clone(), sub.clone()))).is_empty());
+        assert!(contexts(f.line(assistant_line(small, sub))).is_empty());
+        assert!(contexts(f.line(assistant_line(main, Value::Null))).is_empty());
+    }
+
+    #[test]
+    fn the_result_says_the_window_and_its_own_usage_is_no_context_size() {
+        let mut f = Feed::new();
+        f.line(message_start(usage(2, 0, 44300), Value::Null));
+        // the turn's total over all its calls: far more than any one call read
+        let total = usage(5, 900_000, 44_300);
+        let models = json!({"claude-fable-5-1":{"inputTokens":5,"outputTokens":9,
+            "cacheReadInputTokens":900_000,"cacheCreationInputTokens":44_300,"webSearchRequests":0,
+            "costUSD":0.9,"contextWindow":1_000_000,"maxOutputTokens":64_000}});
+        let ev = f.line(result_line(total, models));
+        let said = ev.iter().position(|e| *e == ctx(44302, Some(1_000_000)));
+        let ended = ev
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TurnEnded { .. }));
+        assert!(
+            said.is_some() && said < ended,
+            "the window comes before the end of the turn: {ev:?}"
+        );
+        assert_eq!(contexts(ev).len(), 1, "and used stays the last call's");
+        // the next call is the news again, without a window
+        assert_eq!(
+            contexts(f.line(message_start(usage(2, 44302, 90), Value::Null))),
+            [ctx(44394, None)]
+        );
+    }
+
+    #[test]
+    fn a_result_before_any_call_or_without_a_window_says_nothing() {
+        let models = json!({"claude-fable-5-1":{"contextWindow":1_000_000}});
+        let mut f = Feed::new();
+        assert!(contexts(f.line(result_line(usage(0, 0, 0), models.clone()))).is_empty());
+        f.line(message_start(usage(2, 0, 100), Value::Null));
+        assert!(contexts(f.line(result_line(usage(2, 0, 100), json!({})))).is_empty());
+        let none = json!({"claude-fable-5-1":{"inputTokens":2}});
+        assert!(contexts(f.line(result_line(usage(2, 0, 100), none))).is_empty());
+        let zero = json!({"claude-fable-5-1":{"contextWindow":0}});
+        assert!(contexts(f.line(result_line(usage(2, 0, 100), zero))).is_empty());
+        assert_eq!(
+            contexts(f.line(result_line(usage(2, 0, 100), models))),
+            [ctx(102, Some(1_000_000))]
+        );
+    }
+
+    #[test]
+    fn the_window_is_the_sessions_models_when_a_turn_used_two() {
+        // a subagent on a smaller model: its entry sorts first, ours is the one that counts
+        let models = json!({"claude-haiku-5-5":{"contextWindow":200_000},
+            "claude-opus-5-5":{"contextWindow":1_000_000}});
+        for model in ["claude-opus-5-5", "claude-opus-5-5[1m]"] {
+            let mut f = Feed::new();
+            f.line(init(model));
+            f.line(message_start(usage(2, 0, 100), Value::Null));
+            assert_eq!(
+                contexts(f.line(result_line(usage(2, 0, 100), models.clone()))),
+                [ctx(102, Some(1_000_000))],
+                "model {model}"
+            );
+        }
+        // a model the entries do not name: the first entry
+        let mut f = Feed::new();
+        f.line(init("an-alias"));
+        f.line(message_start(usage(2, 0, 100), Value::Null));
+        let one = json!({"claude-opus-5-5":{"contextWindow":1_000_000}});
+        assert_eq!(
+            contexts(f.line(result_line(usage(2, 0, 100), one))),
+            [ctx(102, Some(1_000_000))]
+        );
+    }
+
+    #[test]
+    fn a_compact_boundary_is_an_event_item_and_a_compaction() {
+        let mut f = Feed::new();
+        let at = |trigger: &str, uuid: &str, pre: Option<u64>| {
+            let mut v = json!({"type":"system","subtype":"compact_boundary","session_id":"s","uuid":uuid,
+                "compact_metadata":{"trigger":trigger}});
+            if let Some(p) = pre {
+                v["compact_metadata"]["pre_tokens"] = json!(p);
+            }
+            v
+        };
+        let ev = f.line(at("auto", "c1", Some(123_456)));
+        assert_eq!(
+            ev,
+            [
+                event_item("c1".into(), "Conversation compacted"),
+                AgentEvent::Compacted {
+                    pre_tokens: Some(123_456)
+                }
+            ]
+        );
+        // a boundary that does not say how big the conversation was
+        let ev = f.line(at("manual", "c2", None));
+        assert_eq!(ev.last(), Some(&AgentEvent::Compacted { pre_tokens: None }));
+        // the context itself is the next call's to say
+        assert!(contexts(ev).is_empty());
     }
 }

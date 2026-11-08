@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38023,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvGcxnZ1inHy2ZrZ4QB:1",
       "kind": "AssistantMessage",
@@ -532,6 +538,12 @@
     }
   },
   {
+    "Context": {
+      "used": 42481,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvGxNbo1ENopbiAVS3h:0",
       "kind": "AssistantMessage",
@@ -559,6 +571,12 @@
       "kind": "session",
       "percent": 33.0,
       "resets_at": 1793617200
+    }
+  },
+  {
+    "Context": {
+      "used": 42481,
+      "window": 1000000
     }
   },
   {

@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 39600,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvLLddbu8ez32mWPc6V:0",
       "kind": "AssistantMessage",
@@ -57,6 +63,12 @@
       "kind": "session",
       "percent": 35.0,
       "resets_at": 1793617200
+    }
+  },
+  {
+    "Context": {
+      "used": 39600,
+      "window": 1000000
     }
   },
   {

@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 39733,
+      "window": null
+    }
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_01EDYyY65rdNxroQBy5jYmAq",
       "q": {
@@ -83,6 +89,12 @@
     }
   },
   {
+    "Context": {
+      "used": 42032,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvEeJ6acw7n5hLRBVbf:0",
       "kind": "AssistantMessage",
@@ -103,6 +115,12 @@
       "body": {
         "text": "You chose **B**."
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 42032,
+      "window": 1000000
     }
   },
   {

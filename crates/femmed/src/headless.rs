@@ -1649,7 +1649,10 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 st.done = false;
                 f.state = Some((SessionStatus::Idle, attention));
             }
-            AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
+            AgentEvent::Exited { .. }
+            | AgentEvent::Raw(_)
+            | AgentEvent::Context { .. }
+            | AgentEvent::Compacted { .. } => {}
         }
     }
     f

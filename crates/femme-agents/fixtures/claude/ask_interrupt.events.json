@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38052,
+      "window": null
+    }
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_01DrRvd98DbGjurDMoPaJpsx",
       "q": {
@@ -89,6 +95,12 @@
       "body": {
         "text": "[Request interrupted by user for tool use]"
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 38052,
+      "window": 1000000
     }
   },
   {

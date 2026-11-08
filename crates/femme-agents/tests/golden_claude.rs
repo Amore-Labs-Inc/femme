@@ -137,6 +137,8 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Commands(_) => "commands".into(),
             AgentEvent::PermissionMode(m) => format!("permission:{m}"),
             AgentEvent::RateLimit { kind, .. } => format!("rl:{kind}"),
+            AgentEvent::Context { .. } => "context".into(),
+            AgentEvent::Compacted { .. } => "compacted".into(),
             AgentEvent::Exited { .. } => "exited".into(),
             AgentEvent::Raw(_) => "raw".into(),
         })

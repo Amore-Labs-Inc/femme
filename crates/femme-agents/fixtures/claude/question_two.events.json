@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38059,
+      "window": null
+    }
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_0154s4CM7jKcZFQSrQMHJaiG#0",
       "q": {
@@ -123,6 +129,12 @@
     }
   },
   {
+    "Context": {
+      "used": 42020,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvFUMLQG4RpeAiBJW5i:0",
       "kind": "AssistantMessage",
@@ -155,6 +167,12 @@
       "body": {
         "text": "Color: Blue\nSize: Large"
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 42020,
+      "window": 1000000
     }
   },
   {

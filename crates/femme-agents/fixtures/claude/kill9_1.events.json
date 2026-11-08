@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38040,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "toolu_01Dk4RUDHmKqN1KVbDKpdscV",
       "kind": "ToolCall",

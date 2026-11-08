@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 38026,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
       "kind": "ToolCall",
@@ -94,6 +100,12 @@
     }
   },
   {
+    "Context": {
+      "used": 42006,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvJD2RbK3ki6viVTo3j:1",
       "kind": "AssistantMessage",
@@ -127,6 +139,12 @@
       "kind": "session",
       "percent": 34.0,
       "resets_at": 1793617200
+    }
+  },
+  {
+    "Context": {
+      "used": 42006,
+      "window": 1000000
     }
   },
   {

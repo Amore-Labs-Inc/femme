@@ -30,6 +30,12 @@
     }
   },
   {
+    "Context": {
+      "used": 40598,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "toolu_01JBjzExyVfbT78Xq8F96Eoa",
       "kind": "ToolCall",
@@ -84,6 +90,12 @@
     }
   },
   {
+    "Context": {
+      "used": 41755,
+      "window": null
+    }
+  },
+  {
     "ItemStarted": {
       "id": "msg_011CgdvEAggEcb7NCwh5GvLe:0",
       "kind": "AssistantMessage",
@@ -104,6 +116,12 @@
       "body": {
         "text": "done"
       }
+    }
+  },
+  {
+    "Context": {
+      "used": 41755,
+      "window": 1000000
     }
   },
   {
