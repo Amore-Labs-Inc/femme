@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."  # the checkout root: .env and every path below are rela
 . ./.env
 r() { rsync -az --mkpath "$@"; }
 
-r --delete --exclude=board/target ./ "$HOST:femme/"  # bootstrap.sh builds the board there
+# no .git/index: a per-machine stat cache, rewritten in place (a mid-write copy shows files deleted)
+r --delete --exclude=board/target --exclude=.git/index --exclude=.git/index.lock ./ "$HOST:femme/"  # bootstrap.sh builds the board there
+ssh "$HOST" 'cd ~/femme && [ -e .git/index ] || git reset -q'  # first copy: index from HEAD
 
 cd ~
 r -R --ignore-missing-args \

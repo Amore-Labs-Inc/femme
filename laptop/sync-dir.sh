@@ -22,12 +22,15 @@ if ! mutagen sync list "$name" >/dev/null 2>&1; then
   while read -r p; do case $p in !*) ;; *) set -- "$@" --exclude="$p" ;; esac; done <<EOF
 $(patterns)
 EOF
-  rsync -az --mkpath --update --partial "$@" "$dir/" "$host:$dir/"  # --partial: big files resume
+  # git's index is a per-machine stat cache and git rewrites it in place: a seed copy taken mid-write
+  # left a laptop with a 90-entry index (570 files shown deleted). Each side builds its own.
+  rsync -az --mkpath --update --partial --exclude=.git/index --exclude=.git/index.lock "$@" "$dir/" "$host:$dir/"  # --partial: big files resume
+  # a fresh copy has no index, which git reads as every file deleted: build it from HEAD
+  ssh "$host" "cd '$dir' && if [ -d .git ] && [ ! -e .git/index ]; then git reset -q; fi"
   set --
   while read -r p; do set -- "$@" -i "$p"; done <<EOF
 $(patterns)
 EOF
-  # git's index is a per-machine stat cache: seeded once above, then each side keeps its own.
   set -- "$@" -i .git/index -i .git/index.lock
   mutagen sync create --name "$name" -m two-way-safe --symlink-mode posix-raw "$@" "$dir" "$host:$dir" >/dev/null
 fi
