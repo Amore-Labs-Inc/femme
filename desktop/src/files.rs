@@ -32,6 +32,7 @@ use gpui::{
 };
 use gpui_component::scroll::Scrollbar;
 
+use crate::lightbox::{self, Lightbox};
 use crate::net::Net;
 use crate::theme::{
     bad, bar, bar_dim, bar_text, ink, muted, neon, on_accent_strong, panel, paper, FONT_MONO,
@@ -77,6 +78,8 @@ enum Notice {
     TooBig { name: String, len: u64 },
     /// A directory could not be listed; gone when it is listed after all.
     ListFailed { path: String, text: String },
+    /// A video is being made playable for the lightbox.
+    Converting(String),
     /// Another request failed.
     Error(String),
 }
@@ -314,8 +317,40 @@ impl FilesPanel {
         cx.notify();
     }
 
-    /// Switches to the viewer page with `data`.
+    /// Switches to the viewer page with `data`. A picture opens in the lightbox instead, and a
+    /// video plays there once ffmpeg made it an animated picture.
     fn show_file(&mut self, name: String, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        if let Some(format) = crate::transcript::attach::image_format(&name, &data) {
+            let image = Arc::new(gpui::Image::from_bytes(format, data.to_vec()));
+            Lightbox::show(&name, image, cx);
+            return;
+        }
+        if lightbox::is_video(&name) {
+            self.notice = Some(Notice::Converting(name.clone()));
+            let made = cx
+                .background_executor()
+                .spawn(async move { lightbox::video_webp(&name, &data).map(|w| (name, w)) });
+            cx.spawn(async move |this, cx| {
+                let made = made.await;
+                this.update(cx, |t, cx| {
+                    t.notice = match made {
+                        Ok((name, webp)) => {
+                            let image =
+                                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Webp, webp));
+                            Lightbox::show(&name, image, cx);
+                            None
+                        }
+                        Err(why) => Some(Notice::Error(format!("can't play it: {why}"))),
+                    };
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+            self.ensure_ticker(cx);
+            cx.notify();
+            return;
+        }
         let size = data.len();
         let view = cx.new(|cx| FileView::new(name.clone(), data.to_vec(), cx));
         self.view_scroll = ScrollHandle::new();
@@ -325,7 +360,11 @@ impl FilesPanel {
 
     /// Whether something is on its way (the spinner turns).
     fn busy(&self) -> bool {
-        self.tree.busy() || matches!(self.notice, Some(Notice::Reading { .. }))
+        self.tree.busy()
+            || matches!(
+                self.notice,
+                Some(Notice::Reading { .. } | Notice::Converting(_))
+            )
     }
 
     /// Redraws a few times a second while something is on its way, so the spinner turns even in a
@@ -474,6 +513,10 @@ impl FilesPanel {
             Notice::Reading { name, len } => strip(panel())
                 .child(spinner(self.spin()))
                 .child(text(format!("reading {name} ({})", fmt_size(*len))))
+                .into_any_element(),
+            Notice::Converting(name) => strip(panel())
+                .child(spinner(self.spin()))
+                .child(text(format!("making {name} playable")))
                 .into_any_element(),
             Notice::Confirm { path, len, .. } => {
                 let (path, len) = (path.clone(), *len);
