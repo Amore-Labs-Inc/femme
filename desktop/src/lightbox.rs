@@ -33,6 +33,8 @@ pub struct Lightbox {
     focus: FocusHandle,
     /// Who had the keyboard before it opened.
     restore: Option<FocusHandle>,
+    /// Just opened: the next frame takes the keyboard.
+    want_focus: bool,
 }
 
 struct Installed(Entity<Lightbox>);
@@ -47,25 +49,23 @@ impl Lightbox {
             open: None,
             focus: cx.focus_handle(),
             restore: None,
+            want_focus: false,
         });
         cx.set_global(Installed(this.clone()));
         this
     }
 
     /// Opens `image`, called `name`, over the window and gives it the keyboard.
-    pub fn show(name: &str, image: Arc<Image>, window: &mut Window, cx: &mut App) {
+    pub fn show(name: &str, image: Arc<Image>, cx: &mut App) {
         let Some(this) = cx.try_global::<Installed>().map(|g| g.0.clone()) else {
             return;
         };
         this.update(cx, |t, cx| {
-            if t.open.is_none() {
-                t.restore = window.focused(cx);
-            }
+            t.want_focus |= t.open.is_none();
             t.open = Some(Open {
                 name: name.to_owned().into(),
                 image,
             });
-            window.focus(&t.focus, cx);
             cx.notify();
         });
     }
@@ -90,7 +90,11 @@ impl Lightbox {
 }
 
 impl Render for Lightbox {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.open.is_some() && std::mem::take(&mut self.want_focus) {
+            self.restore = window.focused(cx);
+            window.focus(&self.focus, cx);
+        }
         let Some(open) = &self.open else {
             return div().into_any_element();
         };
@@ -152,5 +156,108 @@ impl Render for Lightbox {
             )
             .child(card)
             .into_any_element()
+    }
+}
+
+/// Whether a file is a video the lightbox plays (as an animated WebP), by its name.
+pub fn is_video(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "mp4" | "mov" | "webm" | "mkv" | "avi" | "m4v"
+        )
+    })
+}
+
+/// The most frames a video keeps: every one is held decoded (640x360 RGBA is ~0.9 MB).
+const FRAMES: f64 = 200.;
+
+/// A video's `bytes` as a silent, looping animated WebP, by `ffmpeg` on this machine: 640 px wide,
+/// the first minute, at most [`FRAMES`] frames (a longer clip at a lower rate). Blocking: run it
+/// off the main thread. The same recipe as `femmed show`.
+pub fn video_webp(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use std::process::{Command, Stdio};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("femme-video-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let made = (|| {
+        let ext = name.rsplit_once('.').map_or("mp4", |(_, e)| e);
+        let (input, out) = (dir.join(format!("in.{ext}")), dir.join("out.webp"));
+        std::fs::write(&input, bytes).map_err(|e| e.to_string())?;
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&input)
+            .output()
+            .map_err(|e| format!("playing a video needs ffmpeg: {e}"))?;
+        let seconds: f64 = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(60.);
+        let fps = (FRAMES / seconds.clamp(1., 60.)).clamp(2., 15.);
+        let ran = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-t", "60", "-i"])
+            .arg(&input)
+            .args([
+                "-vf",
+                &format!("fps={fps:.2},scale='min(640,iw)':-2:flags=lanczos"),
+                "-an",
+                "-c:v",
+                "libwebp_anim",
+                "-loop",
+                "0",
+                "-q:v",
+                "70",
+            ])
+            .arg(&out)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("playing a video needs ffmpeg: {e}"))?;
+        if !ran.status.success() {
+            return Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned());
+        }
+        std::fs::read(&out).map_err(|e| e.to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    made
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_video_becomes_an_animated_webp() {
+        assert!(is_video("clip.MP4") && is_video("a.b.webm") && !is_video("shot.png"));
+        let dir = std::env::temp_dir().join(format!("femme-video-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("clip.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .args([
+                "testsrc2=size=320x180:rate=10",
+                "-t",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&clip)
+            .status();
+        // ponytail: no ffmpeg here, nothing to check
+        if !made.is_ok_and(|s| s.success()) {
+            return;
+        }
+        let webp = video_webp("clip.mp4", &std::fs::read(&clip).unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(&webp[..4], b"RIFF");
+        assert_eq!(&webp[8..12], b"WEBP");
+        assert!(video_webp("x.mp4", b"not a video").is_err());
     }
 }

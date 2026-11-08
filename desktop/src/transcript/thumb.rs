@@ -164,8 +164,8 @@ fn framed(
             frame
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Right, on_menu)
-                .on_click(move |_, window, cx| {
-                    crate::lightbox::Lightbox::show(&opened.0, opened.1.clone(), window, cx)
+                .on_click(move |_, _, cx| {
+                    crate::lightbox::Lightbox::show(&opened.0, opened.1.clone(), cx)
                 })
                 .tooltip_show_delay(PREVIEW_DELAY)
                 .tooltip(move |_, cx: &mut App| {
