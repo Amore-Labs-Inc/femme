@@ -421,8 +421,11 @@ impl ClaudeDriver {
             "task_notification" => ev.push(task_end(item_id(v, offset), v)),
             "compact_boundary" => {
                 ev.push(event_item(item_id(v, offset), "Conversation compacted"));
+                // the stream says `compact_metadata`, the transcript on disk `compactMetadata`
                 ev.push(AgentEvent::Compacted {
-                    pre_tokens: v["compact_metadata"]["pre_tokens"].as_u64(),
+                    pre_tokens: v["compact_metadata"]["pre_tokens"]
+                        .as_u64()
+                        .or_else(|| v["compactMetadata"]["preTokens"].as_u64()),
                 });
             }
             // nothing is running and nothing is queued: a command the CLI reported and never ended
@@ -493,7 +496,10 @@ impl ClaudeDriver {
         }
         if let Some(used) = context_of(usage).filter(|u| self.ctx_used != Some(*u)) {
             self.ctx_used = Some(used);
-            ev.push(AgentEvent::Context { used, window: None });
+            ev.push(AgentEvent::Context {
+                used,
+                window: known_window(self.model.as_deref()),
+            });
         }
     }
 
@@ -723,6 +729,13 @@ impl ClaudeDriver {
     fn assistant(&mut self, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
         self.activity(offset, ev);
         let m = &v["message"];
+        // a transcript read from disk has no `init`: the message says the model
+        if self.parent.is_none() && self.model.is_none() {
+            if let Some(model) = m["model"].as_str() {
+                self.model = Some(model.to_owned());
+                ev.push(AgentEvent::ModelChanged(model.to_owned()));
+            }
+        }
         self.context(&m["usage"], ev);
         let mid = m["id"]
             .as_str()
@@ -1697,6 +1710,16 @@ fn base_model(m: &str) -> &str {
     m.split_once('[').map_or(m, |(base, _)| base)
 }
 
+/// The window of a model the CLI has reported one for. Its `result` line says the real one at
+/// the turn's end (and wins), but a transcript read from disk never has that line.
+// ponytail: the two models seen so far; extend as the result lines report others
+fn known_window(model: Option<&str>) -> Option<u64> {
+    match base_model(model?) {
+        "claude-fable-5-1" | "claude-opus-5-5" => Some(1_000_000),
+        _ => None,
+    }
+}
+
 fn stop_reason(r: &Value) -> StopReason {
     if r["terminal_reason"]
         .as_str()
@@ -2112,6 +2135,29 @@ mod tests {
     }
 
     #[test]
+    fn a_known_model_says_its_window_with_every_call() {
+        let mut f = Feed::new();
+        f.line(init("claude-fable-5-1"));
+        assert_eq!(
+            contexts(f.line(message_start(usage(2, 0, 44300), Value::Null))),
+            [ctx(44302, Some(1_000_000))]
+        );
+        // a transcript on disk has no init line: its first message says the model
+        let mut f = Feed::new();
+        let mut line = assistant_line(usage(2, 40_000, 500), Value::Null);
+        line["message"]["model"] = json!("claude-opus-5-5");
+        let ev = f.line(line);
+        assert!(ev.contains(&AgentEvent::ModelChanged("claude-opus-5-5".into())));
+        assert_eq!(contexts(ev), [ctx(40_502, Some(1_000_000))]);
+        assert_eq!(known_window(Some("claude-opus-5-5[1m]")), Some(1_000_000));
+        assert_eq!(
+            known_window(Some("deepseek/deepseek-v4.1-flash-ultrafast")),
+            None
+        );
+        assert_eq!(known_window(None), None);
+    }
+
+    #[test]
     fn an_agent_without_a_cache_still_says_its_input() {
         // another provider behind the CLI reports no cache fields at all
         let mut f = Feed::new();
@@ -2249,5 +2295,16 @@ mod tests {
         assert_eq!(ev.last(), Some(&AgentEvent::Compacted { pre_tokens: None }));
         // the context itself is the next call's to say
         assert!(contexts(ev).is_empty());
+        // the transcript on disk spells it its own way
+        let ev = f.line(
+            json!({"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"c3",
+            "compactMetadata":{"trigger":"auto","preTokens":310172,"postTokens":31302}}),
+        );
+        assert_eq!(
+            ev.last(),
+            Some(&AgentEvent::Compacted {
+                pre_tokens: Some(310_172)
+            })
+        );
     }
 }
