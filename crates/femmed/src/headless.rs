@@ -548,11 +548,15 @@ impl Actor {
             .prompt(text, PromptHow::Queue, &mut self.out)
             .map_err(driver_err)?;
         self.flush().await;
+        let effort = effort_switch(text);
         // The agent's own turn starts a moment later: say `working` first, so a reader never takes
         // the last task as finished in between.
         self.update(d, None, |s| {
             s.status = SessionStatus::Working;
             s.attention = Attention::None;
+            if effort.is_some() {
+                s.effort = effort;
+            }
         });
         self.commit(d, Vec::new()).await;
         Ok(())
@@ -1038,6 +1042,7 @@ impl Actor {
         // ponytail: the desktop's chats think at medium; /effort changes it until the next start
         let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
             .then(|| "medium".to_owned());
+        self.update(d, None, |s| s.effort = effort.clone());
         let launch = Launch {
             cwd: s.cwd,
             model: s.model,
@@ -1375,6 +1380,12 @@ pub(crate) fn model_switch(text: &str) -> Option<String> {
         m if m.contains('/') || m.starts_with("claude-") => m.to_owned(),
         _ => return None,
     })
+}
+
+/// The level an `/effort <level>` prompt sets.
+fn effort_switch(text: &str) -> Option<String> {
+    let level = text.trim().strip_prefix("/effort ")?.trim();
+    (!level.is_empty() && !level.contains(char::is_whitespace)).then(|| level.to_lowercase())
 }
 
 /// The mode after `now` in Claude's Shift+Tab order.
@@ -2567,6 +2578,9 @@ mod tests {
             Some("claude-haiku-5-5")
         );
         assert_eq!(model_switch("/model whatever"), None);
+        assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
+        assert_eq!(effort_switch("/effort"), None);
+        assert_eq!(effort_switch("/effort a b"), None);
         assert_eq!(model_switch("use the opus model"), None);
         assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
         let mut at = None;
