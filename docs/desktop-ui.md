@@ -38,6 +38,13 @@ Keep it current: when your module's public API changes, edit your section in the
   `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
   hand over it): the words of a link are the target, not the dim address after them, and only web
   and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
+- **The agent shows a picture**: `femmed show <file> [caption]`, run inside a session (the holder
+  sets `FEMME_SID`), uploads the file (`BlobPut`) and sends `Show`; the daemon keeps a copy in
+  `<state>/uploads/<sid>/` and appends an assistant item whose text is the caption plus an
+  `Attached: <path>` line. The transcript draws an assistant row's `Attached:` images as 360×240
+  pictures (hover = preview, right click = copy image / open), so the picture stays with the session even when the original file
+  goes. Tell the agent in its CLAUDE.md: "to show the user a picture, run `femmed show <path>
+  \"what it is\"`".
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
@@ -135,6 +142,7 @@ Not touched by anyone: `desktop/src/connect.rs`, `display.rs`, `terminal/element
 | Request | Answer | Semantics (daemon agent) |
 |---|---|---|
 | `BoardApi{method, path, body}` | `BoardApi{status, body}` | The daemon calls the web app on the box: `http://127.0.0.1:8787` + `path` when it runs beside the board (`FEMMED=1`), its own `http_bind` when it is the board (`FEMMED=2`), or the base URL in `FEMME_BOARD_API` when that is set; with the owner bearer (`<state>/worker.token`, read on every call; a missing one is `Internal`). Only GET, POST, DELETE and a `path` under `/api/accounts`, `/api/keys`, `/api/meta` (no `..`, encoded dots or slashes, spaces), else `Bad`; 10 s timeout, no redirects; body ≤ 1 MiB each way. The board's status and body come back as they are (`BoardApi{status: 404, ..}` is an answer, not an error); a board that is down, slow, or answers over 1 MiB is `Internal`. A GET only runs; a POST or DELETE runs once per op id, so a retry gets the first answer (that is how a lost reply to `POST /api/keys`, which shows the new key once, is not a 409). |
+| `Show{sid, name, blob, caption}` | `Ok` | `femmed show`: the blob is saved as `<state>/uploads/<sid>/<name>` like an attachment and an `AssistantMessage` item (`{"text": "<caption>\n\nAttached: <path>"}`) is appended to the session. `Bad` for an unknown session or a blob that is gone. |
 | `BlobPut{name, data}` | `BlobHash(h)` | `data` ≤ `MAX_BLOB_PUT` (8 MiB; this request may weigh that much, every other one 1 MiB) into the `blobs` table (hash = sha256); `name` is not kept. A `Prompt` whose `attachments` name blobs: each is written to `<state>/uploads/<sid>/<name>` (last path component, control characters become `_`, leading dots dropped, `-2` before the extension for a taken name; at most 16; a blob that is gone is `Bad`) and the prompt text gets a blank line and one `Attached: <absolute path>` line per file. **`BlobGet` serves an upload only until retention sweeps it**: a blob no transcript item refers to goes at the next daemon start or daily sweep. So `BlobPut` and `Prompt` close together, and a transcript row that shows an attachment reads the file at its `Attached:` path with `FsRead`. |
 | `Caps` / `SetCap{account, five_hour, weekly}` | `Caps(Vec<AccountCap>)` / `Ok` | Stored in `<state>/caps.json` (`{"<number>": {"five_hour": 80, "weekly": 90}}`), written atomically. `server/fable-cap.sh` reads it: an account past *its* cap (either window) is `cswap disable`d and, if active, the box `cswap switch --strategy best`; below it again → `cswap enable`. `femme-cswap.service` keeps the global `CAP`, which still moves the box off the active account, so a per-account cap above it cannot keep an account in use longer. A cap is 50 to 99 (else `Bad`) and `account` is cswap's number, from 1; both `None` clears. The scheduler's pause at `CAP` stays global (`/usage` carries no account). |
 | `ServerInfo` | `ServerInfo{version, deployed}` | `env!("CARGO_PKG_VERSION")` and `<state>/deployed` trimmed. |
