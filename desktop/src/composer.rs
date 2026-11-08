@@ -66,7 +66,7 @@ pub struct Composer {
     /// The session changed: the next render puts its draft text into the input.
     reload: bool,
     /// The placeholder the input shows now.
-    placeholder: &'static str,
+    placeholder: String,
     /// Whether the input holds no text, kept so the send button follows without re-reading it.
     input_empty: bool,
     /// Images pasted so far: names the next `paste-<n>.png`.
@@ -130,6 +130,7 @@ impl Composer {
                 if this.target(cx) != this.last_target
                     || this.permission(cx) != this.last_permission
                     || this.xp(cx) != this.last_xp
+                    || this.hint(cx) != this.placeholder
                 {
                     cx.notify();
                 }
@@ -143,7 +144,7 @@ impl Composer {
             drafts: Drafts::default(),
             disk: disk::default_dir(),
             reload: true,
-            placeholder: "",
+            placeholder: String::new(),
             input_empty: true,
             pastes: 0,
             last_target: Target::NoSession,
@@ -218,6 +219,19 @@ impl Composer {
         (session.agent == Agent::Claude)
             .then(|| session.permission.clone())
             .flatten()
+    }
+
+    /// The placeholder for the selected session: `message opus 5.5 · high` for a Claude one.
+    fn hint(&self, cx: &App) -> String {
+        let session = self
+            .net
+            .as_ref()
+            .zip(self.session)
+            .and_then(|(net, sid)| net.read(cx).model.sessions.get(&sid));
+        self.target(cx).placeholder_with(
+            session.and_then(|s| s.model.as_deref()),
+            session.and_then(|s| s.effort.as_deref()),
+        )
     }
 
     /// The selected session's context window, when it is a Claude session that reported one.
@@ -311,7 +325,6 @@ impl Composer {
     fn sync_input(
         &mut self,
         input: &Entity<TextareaState>,
-        target: Target,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -335,9 +348,9 @@ impl Composer {
                 input.set_selected_range(end..end, cx);
             });
         }
-        let hint = target.placeholder();
+        let hint = self.hint(cx);
         if hint != self.placeholder {
-            self.placeholder = hint;
+            self.placeholder = hint.clone();
             input.update(cx, |input, cx| input.set_placeholder(hint, window, cx));
         }
     }
@@ -915,7 +928,7 @@ impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let input = self.ensure_input(window, cx);
         let target = self.target(cx);
-        self.sync_input(&input, target, window, cx);
+        self.sync_input(&input, window, cx);
         self.last_target = target;
 
         let takes = target.takes_prompts();

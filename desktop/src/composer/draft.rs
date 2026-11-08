@@ -161,6 +161,20 @@ impl Target {
     }
 
     /// The input's placeholder: what to type, or why nothing can be typed.
+    /// The placeholder, with the Claude model and effort after `message claude` when known:
+    /// `message opus 5.5 · high`.
+    pub fn placeholder_with(self, model: Option<&str>, effort: Option<&str>) -> String {
+        let label = [model.map(model_name), effort.map(str::to_owned)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        match self {
+            Target::Agent(Agent::Claude) if !label.is_empty() => format!("message {label}"),
+            _ => self.placeholder().to_owned(),
+        }
+    }
+
     pub fn placeholder(self) -> &'static str {
         match self {
             Target::Offline => "not connected",
@@ -170,6 +184,22 @@ impl Target {
             Target::Agent(Agent::Pi) => "message pi",
             Target::Agent(_) => "message claude",
         }
+    }
+}
+
+/// A model id as people say it: `claude-opus-5-5` is `opus 5.5`, `claude-fable-5-1[1m]` is
+/// `fable 5.1`; a gateway id loses its provider (`deepseek/deepseek-v4.1` is `deepseek-v4.1`).
+pub fn model_name(id: &str) -> String {
+    let id = id.split('[').next().unwrap_or(id);
+    let id = id.rsplit('/').next().unwrap_or(id);
+    match id
+        .strip_prefix("claude-")
+        .map(|r| r.split('-').collect::<Vec<_>>())
+    {
+        Some(parts) if parts.len() >= 2 && parts[1..].iter().all(|p| p.parse::<u32>().is_ok()) => {
+            format!("{} {}", parts[0], parts[1..].join("."))
+        }
+        _ => id.to_owned(),
     }
 }
 
@@ -852,5 +882,30 @@ mod tests {
         let mut ds = Drafts::default();
         let ids: Vec<_> = (0..4).map(|_| ds.new_id()).collect();
         assert_eq!(ids, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_placeholder_names_the_model_and_effort() {
+        assert_eq!(model_name("claude-opus-5-5"), "opus 5.5");
+        assert_eq!(model_name("claude-fable-5-1[1m]"), "fable 5.1");
+        assert_eq!(
+            model_name("deepseek/deepseek-v4.1-flash"),
+            "deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            model_name("claude-sonnet-4-5-20250929"),
+            "sonnet 4.5.20250929"
+        );
+        let claude = Target::Agent(Agent::Claude);
+        assert_eq!(
+            claude.placeholder_with(Some("claude-opus-5-5"), Some("high")),
+            "message opus 5.5 · high"
+        );
+        assert_eq!(claude.placeholder_with(None, Some("max")), "message max");
+        assert_eq!(claude.placeholder_with(None, None), "message claude");
+        assert_eq!(
+            Target::Agent(Agent::Codex).placeholder_with(Some("gpt"), None),
+            "message codex"
+        );
     }
 }
