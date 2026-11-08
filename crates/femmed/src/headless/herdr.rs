@@ -312,6 +312,11 @@ struct Tail {
     fold: FoldState,
     model: Option<String>,
     permission: Option<String>,
+    /// What the lines read so far said of the context, for the row: what the last call read,
+    /// the window, and the compactions since the last row write.
+    ctx_used: Option<u64>,
+    ctx_window: Option<u64>,
+    compacted: u32,
     pending: Vec<Put>,
     /// The subagent transcripts beside it, by path.
     // ponytail: their offsets live only here, so a daemon restart reads them again from the start;
@@ -346,6 +351,9 @@ impl Tail {
             fold: FoldState::default(),
             model: None,
             permission: None,
+            ctx_used: None,
+            ctx_window: None,
+            compacted: 0,
             pending: Vec::new(),
             subs: HashMap::new(),
         }
@@ -416,6 +424,13 @@ impl Tail {
             if f.permission.is_some() {
                 self.permission = f.permission;
             }
+            if f.ctx_used.is_some() {
+                self.ctx_used = f.ctx_used;
+            }
+            if f.ctx_window.is_some() {
+                self.ctx_window = f.ctx_window;
+            }
+            self.compacted += f.compacted;
         }
         for (path, parent, at, data) in subs {
             self.tail_sub(path, parent, at, data, &mut puts, &mut out);
@@ -443,6 +458,19 @@ impl Tail {
         }
         if let Some(p) = self.permission.take() {
             let _ = d.update(sid, |s| s.permission = Some(p));
+        }
+        let (used, window, compacted) = (
+            self.ctx_used.take(),
+            self.ctx_window.take(),
+            std::mem::take(&mut self.compacted),
+        );
+        if used.is_some() || window.is_some() || compacted > 0 {
+            // ponytail: a file rewritten under us is read again from its start and its
+            // compactions counted again (the level overstates); keep the count in the row's
+            // store if that ever shows
+            let _ = d.update(sid, |s| {
+                s.context = super::with_context(s.context, used, window, compacted);
+            });
         }
     }
 }
@@ -857,7 +885,8 @@ mod tests {
 {"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"x.rs"}]}}
 {"type":"attachment","attachment":{}}
-{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"one file"}]}}
+{"type":"system","subtype":"compact_boundary","uuid":"c1","compactMetadata":{"trigger":"auto","preTokens":310172}}
+{"type":"assistant","message":{"id":"a2","model":"claude-fable-5-1","content":[{"type":"text","text":"one file"}],"usage":{"input_tokens":2,"cache_read_input_tokens":40000,"cache_creation_input_tokens":500,"output_tokens":6}}}
 {"type":"system","subtype":"turn_duration","durationMs":12}
 "#;
 
@@ -893,9 +922,20 @@ mod tests {
                 (ItemKind::UserMessage, ItemStatus::Completed),
                 (ItemKind::ToolCall, ItemStatus::Completed),
                 (ItemKind::ToolResult, ItemStatus::Completed),
+                (ItemKind::Event, ItemStatus::Completed),
                 (ItemKind::AssistantMessage, ItemStatus::Completed),
                 (ItemKind::TurnEnd, ItemStatus::Completed),
             ]
+        );
+        // the row says what the last call read, the model's window, and the compaction
+        let s = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(
+            s[0].context,
+            Some(femme_proto::state::Context {
+                used: 40_502,
+                window: 1_000_000,
+                compactions: 1
+            })
         );
         // read again: nothing new, nothing written twice
         for t in tails.values_mut() {
