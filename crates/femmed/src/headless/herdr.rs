@@ -623,12 +623,21 @@ fn disk_value(mut v: Value) -> Option<Value> {
                 _ => "",
             };
             if let Some(n) = text.trim_start().strip_prefix("<task-notification>") {
-                // a background task's report, not something typed: its summary as an event
-                let summary = n
-                    .split_once("<summary>")
-                    .and_then(|(_, r)| r.split_once("</summary>"))
-                    .map_or("A background task reported", |(s, _)| s.trim());
-                v["message"]["content"] = Value::String(summary.to_owned());
+                // a background task's report, not something typed: the stream's
+                // `task_notification`, so the call it names (a background agent) is let go
+                let tag = |t: &str| {
+                    n.split_once(&format!("<{t}>"))
+                        .and_then(|(_, r)| r.split_once(&format!("</{t}>")))
+                        .map(|(s, _)| s.trim().to_owned())
+                };
+                v = serde_json::json!({
+                    "type": "system",
+                    "subtype": "task_notification",
+                    "tool_use_id": tag("tool-use-id"),
+                    "status": tag("status"),
+                    "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
+                    "uuid": v["uuid"],
+                });
             } else if !result && !text.starts_with("[Request interrupted") {
                 v["isReplay"] = Value::Bool(true);
             }
@@ -800,11 +809,26 @@ mod tests {
         let end =
             line(serde_json::json!({"type":"system","subtype":"turn_duration","durationMs":5}));
         assert_eq!(end.unwrap()["type"], "result");
-        let note = line(serde_json::json!({"type":"user","message":{"content":
-            "<task-notification>\n<status>completed</status>\n<summary>Build done</summary>\n</task-notification>"}}))
+        let note = line(serde_json::json!({"type":"user","uuid":"u1","message":{"content":
+            "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Build done</summary>\n</task-notification>"}}))
         .unwrap();
-        assert_eq!(note["isReplay"], Value::Null);
-        assert_eq!(note["message"]["content"], "Build done");
+        assert_eq!(
+            (
+                &note["subtype"],
+                &note["tool_use_id"],
+                &note["status"],
+                &note["summary"],
+                &note["uuid"]
+            ),
+            (
+                &Value::from("task_notification"),
+                &Value::from("toolu_1"),
+                &Value::from("completed"),
+                &Value::from("Build done"),
+                &Value::from("u1")
+            ),
+            "the stream's shape, so the driver ends the call's task"
+        );
         let mode =
             line(serde_json::json!({"type":"permission-mode","permissionMode":"plan"})).unwrap();
         assert_eq!(
