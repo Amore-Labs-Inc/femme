@@ -593,6 +593,7 @@ mod tests {
             created,
             closed: None,
             permission: None,
+            context: None,
         }
     }
 

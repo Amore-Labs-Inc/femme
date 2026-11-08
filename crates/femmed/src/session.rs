@@ -652,6 +652,7 @@ impl Daemon {
                 created: now,
                 closed: None,
                 permission: None,
+                context: None,
             })?;
             let p = tx.upsert_pane(&Pane {
                 id: PaneId {
@@ -875,6 +876,7 @@ mod tests {
             created: 0,
             closed: None,
             permission: None,
+            context: None,
         }
     }
 

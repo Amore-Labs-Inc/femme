@@ -2085,6 +2085,7 @@ mod tests {
             created: 0,
             closed: None,
             permission: None,
+            context: None,
         }
     }
 

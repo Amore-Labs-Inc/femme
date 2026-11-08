@@ -69,6 +69,21 @@ pub struct Session {
     /// Claude's permission mode (`manual`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`,
     /// ...), when known.
     pub permission: Option<String>,
+    /// The agent's context window, once it reported one (Claude: every assistant message says
+    /// what the call read, the turn's result how big the window is). The composer's XP bar.
+    pub context: Option<Context>,
+}
+
+/// How full an agent's context window is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Context {
+    /// Tokens the latest model call read: the conversation so far (input, cache read and cache
+    /// write).
+    pub used: u64,
+    /// The window in tokens; 0 until the agent said (Claude: at the end of the first turn).
+    pub window: u64,
+    /// Times the conversation was compacted. The XP bar's level is one more than this.
+    pub compactions: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

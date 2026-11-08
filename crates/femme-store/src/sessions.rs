@@ -10,7 +10,7 @@
 //! get no tombstones of their own. Issues that pointed at the session keep a dangling
 //! `session` id: clear it with [`Tx::update_issue`](crate::Tx::update_issue) if that matters.
 
-use femme_proto::state::{Entity, Pane, Session, SessionStatus};
+use femme_proto::state::{Context, Entity, Pane, Session, SessionStatus};
 use femme_proto::{Id, PaneId, Sid};
 use rusqlite::{params, Connection, Row};
 
@@ -19,7 +19,7 @@ use crate::{all, blob_id, enum_col, exists, id_blob, one, Error, Result, Tx};
 
 macro_rules! session_cols {
     () => {
-        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission"
+        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission, ctx_used, ctx_window, compactions"
     };
 }
 macro_rules! pane_cols {
@@ -48,6 +48,16 @@ pub(crate) fn session_from_row(r: &Row<'_>) -> Result<Session> {
         created: r.get(13)?,
         closed: r.get(14)?,
         permission: r.get(15)?,
+        context: context_cols(r.get(16)?, r.get(17)?, r.get(18)?),
+    })
+}
+
+/// Three nullable columns make one `Context`: NULL `ctx_used` means the agent never said.
+fn context_cols(used: Option<i64>, window: Option<i64>, compactions: Option<i64>) -> Option<Context> {
+    Some(Context {
+        used: used? as u64,
+        window: window.unwrap_or(0) as u64,
+        compactions: compactions.unwrap_or(0) as u32,
     })
 }
 
@@ -235,7 +245,7 @@ impl Tx<'_> {
         self.prepare_cached(concat!(
             "INSERT INTO sessions (",
             session_cols!(),
-            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
         ))?
         .execute(params![
             id_blob(s.id),
@@ -254,6 +264,9 @@ impl Tx<'_> {
             s.created,
             s.closed,
             s.permission,
+            s.context.map(|c| c.used as i64),
+            s.context.map(|c| c.window as i64),
+            s.context.map(|c| i64::from(c.compactions)),
         ])?;
         self.clear_tombstone(Entity::Session, &s.id.to_string())?; // an explicit id may come back (restore)
         Ok(s)
@@ -284,7 +297,7 @@ impl Tx<'_> {
         self.prepare_cached(
             "UPDATE sessions SET rev = ?2, name = ?3, owner = ?4, agent = ?5, mode = ?6, cwd = ?7, label = ?8,
                     agent_sid = ?9, model = ?10, status = ?11, attention = ?12, closed = ?13,
-                    permission = ?14
+                    permission = ?14, ctx_used = ?15, ctx_window = ?16, compactions = ?17
              WHERE id = ?1",
         )?
         .execute(params![
@@ -302,6 +315,9 @@ impl Tx<'_> {
             attention_str(after.attention),
             after.closed,
             after.permission,
+            after.context.map(|c| c.used as i64),
+            after.context.map(|c| c.window as i64),
+            after.context.map(|c| i64::from(c.compactions)),
         ])?;
         Ok(after)
     }

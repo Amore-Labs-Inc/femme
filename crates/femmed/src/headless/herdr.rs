@@ -279,6 +279,7 @@ fn insert(d: &Daemon, p: &HPane) -> Result<Session, CoreError> {
             created: now,
             closed: None,
             permission: None,
+            context: None,
         })?;
         tx.upsert_pane(&Pane {
             id: PaneId {

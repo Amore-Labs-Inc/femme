@@ -10,8 +10,8 @@ use std::sync::Barrier;
 
 use femme_proto::rpc::{IssueField, Scope};
 use femme_proto::state::{
-    Agent, Attention, Entity, Issue, IssueStatus, Item, ItemKind, ItemStatus, Mode, Pane, PaneKind,
-    Row, Session, SessionStatus,
+    Agent, Attention, Context, Entity, Issue, IssueStatus, Item, ItemKind, ItemStatus, Mode, Pane,
+    PaneKind, Row, Session, SessionStatus,
 };
 use femme_proto::{Id, PaneId, Sid};
 use femme_store::items::{
@@ -52,6 +52,7 @@ fn session(name: Option<&str>) -> Session {
         created: NOW,
         closed: None,
         permission: None,
+        context: None,
     }
 }
 
@@ -190,7 +191,7 @@ fn every_connection_gets_the_pragmas() {
     let version: i64 = s
         .read(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     // the file holds API keys: private from the first byte, and SQLite gives its side files the same mode
     for file in [
         path.clone(),
@@ -528,6 +529,30 @@ fn names_are_unique_among_open_sessions_only() {
     // two sessions without a name are fine
     insert_session(&s, None);
     insert_session(&s, None);
+}
+
+#[test]
+fn a_session_keeps_its_context_window() {
+    let s = store();
+    let a = insert_session(&s, Some("alpha"));
+    assert_eq!(a.context, None);
+    let ctx = Context {
+        used: 123_456,
+        window: 1_000_000,
+        compactions: 2,
+    };
+    let up = s
+        .write(|tx| tx.update_session(a.id, |s| s.context = Some(ctx)))
+        .unwrap();
+    assert_eq!(up.context, Some(ctx));
+    assert!(up.rev > a.rev);
+    let back = s.read(|c| sessions::get_session(c, a.id)).unwrap().unwrap();
+    assert_eq!(back.context, Some(ctx));
+    // the same context again is not a change
+    let same = s
+        .write(|tx| tx.update_session(a.id, |s| s.context = Some(ctx)))
+        .unwrap();
+    assert_eq!(same.rev, up.rev);
 }
 
 #[test]

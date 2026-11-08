@@ -487,6 +487,7 @@ mod tests {
             created: n as i64,
             closed: None,
             permission: None,
+            context: None,
         }
     }
 
