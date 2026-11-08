@@ -67,7 +67,8 @@ use crate::common::{
     drop_held, held, hold, parse, preview, raw_text, set_status, uuid_v4, Offsets,
 };
 use crate::items::{
-    body, AssistantMessage, Event, Plan, QuestionItem, Thinking, ToolCall, ToolResult, UserMessage,
+    body, AssistantMessage, Event, Plan, QuestionItem, TaskEnd, Thinking, ToolCall, ToolResult,
+    UserMessage,
 };
 use crate::{
     AgentEvent, AgentStatus, Attach, Driver, DropReason, Error, HeldPrompt, Launch, Out, Spawn,
@@ -417,6 +418,7 @@ impl ClaudeDriver {
                 }
                 self.permission_mode(v, ev);
             }
+            "task_notification" => ev.push(task_end(item_id(v, offset), v)),
             "compact_boundary" => {
                 ev.push(event_item(item_id(v, offset), "Conversation compacted"));
                 ev.push(AgentEvent::Compacted {
@@ -1583,6 +1585,26 @@ fn event_item(id: String, text: &str) -> AgentEvent {
         ItemStatus::Completed,
         body(&Event {
             text: text.to_owned(),
+            task: None,
+        }),
+    )
+}
+
+/// A background task stopped (an `Agent` run in the background, a shell command): an event line
+/// that names the call, so a client showing the agent at work can let it go.
+fn task_end(id: String, v: &Value) -> AgentEvent {
+    let status = v["status"].as_str().unwrap_or("stopped");
+    let summary = v["summary"].as_str().unwrap_or("background task");
+    done(
+        id,
+        ItemKind::Event,
+        ItemStatus::Completed,
+        body(&Event {
+            text: format!("{summary}: {status}"),
+            task: v["tool_use_id"].as_str().map(|call| TaskEnd {
+                call: call.to_owned(),
+                status: status.to_owned(),
+            }),
         }),
     )
 }
@@ -1934,7 +1956,21 @@ mod tests {
         let note = r#"{"type":"system","subtype":"task_notification","task_id":"bb8jg4woe","tool_use_id":"toolu_01QY","status":"stopped","output_file":"","summary":"Background shell command didn't finish before the previous session ended","uuid":"26ebf08c","session_id":"0cbc4120"}"#;
         let result = r#"{"is_error":false,"duration_api_ms":0,"num_turns":0,"stop_reason":null,"session_id":"0cbc4120","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{},"origin":{"kind":"task-notification"},"subtype":"success","result":"","type":"result","duration_ms":276,"uuid":"8fa0f031","queued_turn_count":0,"result_index":0}"#;
         let (mut d, mut out) = (ClaudeDriver::new(), Out::default());
-        assert!(d.on_line(0, note.as_bytes(), &mut out).is_empty());
+        // the note itself is an event line naming the call, for the subagent strip
+        let ev = d.on_line(0, note.as_bytes(), &mut out);
+        assert_eq!(ev.len(), 1);
+        match &ev[0] {
+            AgentEvent::ItemCompleted { kind, body, .. } => {
+                assert_eq!(*kind, ItemKind::Event);
+                assert_eq!(
+                    body["text"],
+                    "Background shell command didn't finish before the previous session ended: stopped"
+                );
+                assert_eq!(body["task"]["call"], "toolu_01QY");
+                assert_eq!(body["task"]["status"], "stopped");
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(d
             .on_line(note.len() as u64 + 1, result.as_bytes(), &mut out)
             .is_empty());
@@ -1982,10 +2018,9 @@ mod tests {
         let ev = d.on_line(1, status.to_string().as_bytes(), &mut Out::default());
         assert_eq!(ev, [AgentEvent::PermissionMode("plan".into())]);
         // the same mode again says nothing
-        assert!(
-            d.on_line(2, status.to_string().as_bytes(), &mut Out::default())
-                .is_empty()
-        );
+        assert!(d
+            .on_line(2, status.to_string().as_bytes(), &mut Out::default())
+            .is_empty());
         let mut out = Out::default();
         d.set_permission_mode("auto", &mut out).unwrap();
         assert!(String::from_utf8_lossy(&out.stdin).contains(r#""subtype":"set_permission_mode""#));

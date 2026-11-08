@@ -1272,7 +1272,7 @@ impl Driver for PiDriver {
                 &id,
                 ItemKind::Event,
                 ItemStatus::Completed,
-                body(&items::Event { text }),
+                body(&items::Event { text, task: None }),
             ));
         }
         ev.push(AgentEvent::Exited { code });
@@ -1314,7 +1314,7 @@ fn note(offset: u64, text: String) -> AgentEvent {
         &format!("o{offset}"),
         ItemKind::Event,
         ItemStatus::Completed,
-        body(&items::Event { text }),
+        body(&items::Event { text, task: None }),
     )
 }
 

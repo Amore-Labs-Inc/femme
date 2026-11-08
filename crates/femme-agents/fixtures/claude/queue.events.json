@@ -64,6 +64,20 @@
   },
   {
     "ItemCompleted": {
+      "id": "410a3c03-72b8-4f0f-b1a7-3f49bf5e4b7c",
+      "kind": "Event",
+      "status": "Completed",
+      "body": {
+        "task": {
+          "call": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
+          "status": "completed"
+        },
+        "text": "Sleep for 5 seconds: completed"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
       "id": "toolu_01YJ7xL2mCXFRe179bVGQuEG",
       "kind": "ToolCall",
       "status": "Completed",

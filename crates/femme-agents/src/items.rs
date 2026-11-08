@@ -81,6 +81,20 @@ pub struct Plan {
 pub struct Event {
     /// The line.
     pub text: String,
+    /// Set when the line says a background task stopped: which call, and how.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskEnd>,
+}
+
+/// A background task's end (Claude's `task_notification`): an `Agent` run in the background or a
+/// shell command. A client that shows the agent as working while its items arrive takes this
+/// as the sign that it stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskEnd {
+    /// The id of the tool call that started it.
+    pub call: String,
+    /// `completed`, `failed`, `killed`, `stopped`, ... as the agent said.
+    pub status: String,
 }
 
 /// `ItemKind::UserMessage`: something the user (or the daemon on their behalf) sent.
