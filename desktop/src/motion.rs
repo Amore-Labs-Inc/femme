@@ -50,7 +50,12 @@ impl Appear {
 
 /// Sample `id`'s appearance this frame: `None` when it is gone and need not be drawn, `Some`
 /// while it enters, stays or leaves. Draw the element whenever it is `Some`.
-pub fn appear(id: impl Into<ElementId>, present: bool, window: &mut Window, cx: &mut App) -> Option<Appear> {
+pub fn appear(
+    id: impl Into<ElementId>,
+    present: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Appear> {
     let s = Presence::new(id.into(), present)
         .transition(Transition::new(scaled(APPEAR)).ease(cubic_bezier(0.32, 0.72, 0., 1.)))
         .sample(window, cx);
@@ -61,7 +66,12 @@ pub fn appear(id: impl Into<ElementId>, present: bool, window: &mut Window, cx: 
 
 /// A width (or any length) on its way to `target`: 160 ms ease-out, the same curve. The value is
 /// `target` at once under reduce motion.
-pub fn slide(id: impl Into<ElementId>, target: Pixels, window: &mut Window, cx: &mut App) -> Pixels {
+pub fn slide(
+    id: impl Into<ElementId>,
+    target: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Pixels {
     gpui_base::transition(
         id.into(),
         target,

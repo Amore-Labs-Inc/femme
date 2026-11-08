@@ -255,7 +255,11 @@ impl Picker {
                 cx.notify();
             }
             "tab" => {
-                let names: Vec<&str> = rows.iter().map(String::as_str).filter(|r| *r != "..").collect();
+                let names: Vec<&str> = rows
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|r| *r != "..")
+                    .collect();
                 if let [only] = names.as_slice() {
                     self.set_text(into(&dir, only), window, cx);
                 } else if let Some(c) = common(&names).filter(|c| c.len() > filter.len()) {
@@ -320,12 +324,14 @@ impl Picker {
             let input = cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Enter path (e.g. ~/projects/my-app)")
             });
-            self._subs = vec![cx.subscribe_in(&input, window, |t, _, ev: &InputEvent, _, cx| {
-                if matches!(ev, InputEvent::Change) {
-                    t.pick = None;
-                    t.changed(cx);
-                }
-            })];
+            self._subs = vec![
+                cx.subscribe_in(&input, window, |t, _, ev: &InputEvent, _, cx| {
+                    if matches!(ev, InputEvent::Change) {
+                        t.pick = None;
+                        t.changed(cx);
+                    }
+                }),
+            ];
             self.input = Some(input);
         }
         if std::mem::take(&mut self.focus_field) {
@@ -340,16 +346,19 @@ impl Picker {
 
     fn folder_row(&self, ix: usize, name: &str, dir: &str, cx: &mut Context<Self>) -> AnyElement {
         let path = into(dir, name);
-        row(SharedString::from(format!("pp-{ix}")), self.pick == Some(ix))
-            .min_h(px(26.))
-            .font_family(FONT_MONO)
-            .on_click(cx.listener(move |t, _, window, cx| t.set_text(path.clone(), window, cx)))
-            .child(div().truncate().child(if name == ".." {
-                "..".to_string()
-            } else {
-                format!("{name}/")
-            }))
-            .into_any_element()
+        row(
+            SharedString::from(format!("pp-{ix}")),
+            self.pick == Some(ix),
+        )
+        .min_h(px(26.))
+        .font_family(FONT_MONO)
+        .on_click(cx.listener(move |t, _, window, cx| t.set_text(path.clone(), window, cx)))
+        .child(div().truncate().child(if name == ".." {
+            "..".to_string()
+        } else {
+            format!("{name}/")
+        }))
+        .into_any_element()
     }
 
     fn card(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -357,7 +366,11 @@ impl Picker {
         let dir = split(&text).0.to_string();
         let rows = self.rows(cx);
         let creates = self.creates(cx);
-        let mod_key = if cfg!(target_os = "macos") { "⌘" } else { "ctrl" };
+        let mod_key = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "ctrl"
+        };
         let hint = if self.pick.is_some() {
             format!("{mod_key} enter")
         } else {
@@ -369,8 +382,20 @@ impl Picker {
             .gap(px(6.))
             .p(px(6.))
             .child(
-                ruled(div().flex_1().min_w_0().h(px(28.)).flex().items_center().bg(paper()))
-                    .child(Input::new(self.input.as_ref().unwrap()).appearance(false).small()),
+                ruled(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .bg(paper()),
+                )
+                .child(
+                    Input::new(self.input.as_ref().unwrap())
+                        .appearance(false)
+                        .small(),
+                ),
             )
             .child(
                 button("pp-add", if creates { "Create & Add" } else { "Add" })
@@ -411,12 +436,7 @@ impl Picker {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(title_bar("add project"))
             .child(field)
-            .child(
-                div()
-                    .px(px(10.))
-                    .pb(px(2.))
-                    .child(meta("Directories")),
-            )
+            .child(div().px(px(10.)).pb(px(2.)).child(meta("Directories")))
             .child(list)
             .when_some(empty, |d, e| {
                 d.child(div().px(px(10.)).py(px(6.)).child(meta(e)))

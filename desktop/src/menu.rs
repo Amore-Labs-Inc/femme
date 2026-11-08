@@ -491,19 +491,24 @@ impl FemmeMenu {
     }
 
     /// Starts the PC's updater now (`laptop/femme-desktop-update.sh`, the unit its timer runs) instead
-/// of waiting for the timer's next tick. Best effort: no systemd (macOS), no unit (the checkout
-/// was not set up with pc-setup.sh), a build already running: nothing happens and the timer still
-/// does its work.
-fn start_updater() {
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "start", "--no-block", "femme-desktop-update.service"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
+    /// of waiting for the timer's next tick. Best effort: no systemd (macOS), no unit (the checkout
+    /// was not set up with pc-setup.sh), a build already running: nothing happens and the timer still
+    /// does its work.
+    fn start_updater() {
+        let _ = std::process::Command::new("systemctl")
+            .args([
+                "--user",
+                "start",
+                "--no-block",
+                "femme-desktop-update.service",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 
-/// Shows `verdict` under the item for [`RESULT_FOR`].
+    /// Shows `verdict` under the item for [`RESULT_FOR`].
     fn finish(&mut self, verdict: Verdict, cx: &mut Context<Self>) {
         self.check = Some(Phase::Done(verdict));
         cx.notify();

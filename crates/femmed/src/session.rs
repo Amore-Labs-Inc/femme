@@ -882,9 +882,18 @@ mod tests {
 
     #[test]
     fn the_sweep_stops_only_holders_this_store_knows_and_does_not_claim() {
-        assert!(sweepable(true, false), "a known, unclaimed holder is an orphan of ours");
-        assert!(!sweepable(true, true), "a claimed holder is reattached, not stopped");
-        assert!(!sweepable(false, false), "a holder with no row is another daemon's");
+        assert!(
+            sweepable(true, false),
+            "a known, unclaimed holder is an orphan of ours"
+        );
+        assert!(
+            !sweepable(true, true),
+            "a claimed holder is reattached, not stopped"
+        );
+        assert!(
+            !sweepable(false, false),
+            "a holder with no row is another daemon's"
+        );
         assert!(!sweepable(false, true));
     }
 
