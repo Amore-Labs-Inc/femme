@@ -1399,6 +1399,9 @@ impl Driver for ClaudeDriver {
                 self.resolve(v["request_id"].as_str().unwrap_or(""), &mut ev)
             }
             "control_response" => self.control_response(offset, &v, &mut ev),
+            // the transcript on disk has no `task_notification`: a background task's end is the
+            // `<task-notification>` the TUI queues for the model
+            "queue-operation" => ev.extend(queued_task_end(offset, &v)),
             "keep_alive"
             | "tool_progress"
             | "transcript_mirror"
@@ -1622,6 +1625,23 @@ fn task_end(id: String, v: &Value) -> AgentEvent {
     )
 }
 
+/// A `<task-notification>` queued on disk as the `task_notification` the stream sends.
+fn queued_task_end(offset: u64, v: &Value) -> Option<AgentEvent> {
+    if v["operation"] != "enqueue" {
+        return None;
+    }
+    let text = v["content"].as_str()?;
+    if !text.trim_start().starts_with("<task-notification>") {
+        return None;
+    }
+    let note = serde_json::json!({
+        "tool_use_id": tag(text, "tool-use-id"),
+        "status": tag(text, "status"),
+        "summary": tag(text, "summary"),
+    });
+    Some(task_end(item_id(v, offset), &note))
+}
+
 /// The line's own uuid, else a spool-offset id.
 fn item_id(v: &Value, offset: u64) -> String {
     v["uuid"]
@@ -1632,18 +1652,20 @@ fn item_id(v: &Value, offset: u64) -> String {
 /// A slash command as the TUI records it (`<command-name>/x</command-name>` and its
 /// `<command-args>`) as the line typed: `/x args`.
 fn command_line(text: &str) -> Option<String> {
-    let tag = |t: &str| {
-        let (_, rest) = text.split_once(&format!("<{t}>"))?;
-        rest.split_once(&format!("</{t}>")).map(|(v, _)| v.trim())
-    };
     if !text.trim_start().starts_with("<command-") {
         return None;
     }
-    let name = tag("command-name")?;
-    Some(match tag("command-args").filter(|a| !a.is_empty()) {
+    let name = tag(text, "command-name")?;
+    Some(match tag(text, "command-args").filter(|a| !a.is_empty()) {
         Some(args) => format!("{name} {args}"),
         None => name.to_owned(),
     })
+}
+
+/// What the first `<t>...</t>` in `text` holds, trimmed.
+fn tag<'a>(text: &'a str, t: &str) -> Option<&'a str> {
+    let (_, rest) = text.split_once(&format!("<{t}>"))?;
+    rest.split_once(&format!("</{t}>")).map(|(v, _)| v.trim())
 }
 
 /// Text without its ANSI escape sequences (`ESC [ ... letter`).
@@ -1970,6 +1992,40 @@ mod tests {
             r(json!({"subtype":"success","stop_reason":"tool_use"})),
             StopReason::Other("tool_use".into())
         );
+    }
+
+    /// The transcript on disk (a mirrored TUI session) carries a background agent's end only as
+    /// the `<task-notification>` queued for the model; it ends the call's task as the stream does.
+    #[test]
+    fn a_queued_task_notification_on_disk_ends_the_task() {
+        let line = json!({
+            "type": "queue-operation",
+            "operation": "enqueue",
+            "timestamp": "2026-11-08T10:00:45.211Z",
+            "sessionId": "766de32b",
+            "content": "<task-notification>\n<task-id>a464</task-id>\n<tool-use-id>toolu_01Vp</tool-use-id>\n<status>completed</status>\n<summary>Agent \"CV reader\" finished</summary>\n<result>done</result>\n</task-notification>"
+        })
+        .to_string();
+        let mut d = ClaudeDriver::new();
+        let ev = d.on_line(7, line.as_bytes(), &mut Out::default());
+        match &ev[..] {
+            [AgentEvent::ItemCompleted { kind, body, .. }] => {
+                assert_eq!(*kind, ItemKind::Event);
+                assert_eq!(body["text"], "Agent \"CV reader\" finished: completed");
+                assert_eq!(body["task"]["call"], "toolu_01Vp");
+                assert_eq!(body["task"]["status"], "completed");
+            }
+            other => panic!("{other:?}"),
+        }
+        // its removal, and a queued prompt the user typed, are not events
+        for other in [
+            json!({"type":"queue-operation","operation":"remove","content":"<task-notification>\n<tool-use-id>x</tool-use-id>\n</task-notification>"}),
+            json!({"type":"queue-operation","operation":"enqueue","content":"also check the tests"}),
+        ] {
+            assert!(d
+                .on_line(9, other.to_string().as_bytes(), &mut Out::default())
+                .is_empty());
+        }
     }
 
     /// After a resume the CLI says its previous background task died, then reports an empty
