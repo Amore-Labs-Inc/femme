@@ -51,9 +51,14 @@ Keep it current: when your module's public API changes, edit your section in the
   pictures (hover = preview, right click = copy image / open), so the picture stays with the session even when the original file
   goes. Tell the agent in its CLAUDE.md: "to show the user a picture, run `femmed show <path>
   \"what it is\"`".
-  A video (`.mp4`, `.mov`, `.webm`, `.mkv`, `.avi`, `.m4v`) goes up as a silent, looping animated
-  GIF that ffmpeg makes on the box (gpui animates a GIF held in memory, not a WebP): 640 px wide, the first minute, at most 200 frames (a longer
-  clip plays at a lower rate), since gpui holds every frame decoded.
+  A video (`.mp4`, `.mov`, `.webm`, `.mkv`, `.avi`, `.m4v`) goes up as it is when it fits one
+  blob (8 MiB); the transcript shows a still of it with a ▶, and a click plays it in the lightbox
+  (`desktop/src/video.rs`: `ffmpeg` decodes raw frames and the sound, `pw-play` or `paplay` plays
+  it). A bigger one goes as a silent, looping animated GIF that ffmpeg makes on the box (640 px,
+  the first minute, at most 200 frames; gpui animates a GIF held in memory, not a WebP).
+- **The lightbox**: a click on a picture or video, in the transcript or the files panel, opens it
+  over the whole window like the board. A video has play/pause, the time, a track to click or drag,
+  and the sound; space, left/right (5 s) and `m` work too. Esc, `‹` or the backdrop close it.
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
