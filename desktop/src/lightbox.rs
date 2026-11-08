@@ -1,30 +1,54 @@
-//! A picture (or a video the agent showed, which is an animated picture) opened over the whole
-//! window, the way the drawing board opens: a dim backdrop and a card with `‹ name` over the
-//! picture, fitted whole. A left click on a transcript thumbnail opens it; Esc, `‹` or a click on
-//! the backdrop closes it, and the keyboard goes back to whoever had it.
+//! A picture or a video opened over the whole window, the way the drawing board opens: a dim
+//! backdrop and a card with `‹ name` over the picture, fitted whole. A left click on a transcript
+//! thumbnail or on a picture or video in the files panel opens it; Esc, `‹` or a click on the
+//! backdrop closes it, and the keyboard goes back to whoever had it.
+//!
+//! A video plays in [`crate::video::Player`] with a bar under it: play/pause, the time, a track
+//! to click or drag to a place, and the sound. Keys: space plays and pauses, left and right step
+//! five seconds, `m` mutes.
 //!
 //! The shell makes the one entity ([`Lightbox::install`]) and renders it last, like the board; any
-//! view opens it with [`Lightbox::show`], without a handle passed down.
+//! view opens it with [`Lightbox::show`] or [`Lightbox::play`], without a handle passed down.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, img, px, relative, App, AppContext as _, Context, Entity, FocusHandle, Global, Image,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ObjectFit, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    canvas, div, img, px, relative, AnyElement, App, AppContext as _, Bounds, Context, Div, Entity,
+    FocusHandle, Global, Image, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
 };
 
-use crate::theme::{self, bar, bar_text, ink, panel, paper, FONT_PIXEL, FONT_UI, TB_SIZE};
-use crate::ui::{ruled, title_button, Glyph};
+use crate::theme::{
+    self, bad, bar, bar_text, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL, FONT_UI,
+    TB_SIZE,
+};
+use crate::ui::{button, ruled, title_button, Glyph};
+use crate::video::{clock, Clip, Player};
 
 /// The card's size as a share of the window, as the board's.
 const CARD_W: f32 = 0.94;
 const CARD_H: f32 = 0.92;
 
-/// What is open: its name and its picture.
+/// How far left and right step, in seconds.
+const STEP: f64 = 5.;
+
+/// What the card shows.
+enum Body {
+    Picture(Arc<Image>),
+    /// `ffprobe` and the first frame are on their way.
+    Opening,
+    Video(Player),
+    Failed(String),
+}
+
+/// What is open: its name and what it shows.
 struct Open {
     name: SharedString,
-    image: Arc<Image>,
+    body: Body,
 }
 
 /// The layer over the window: empty while nothing is open.
@@ -35,11 +59,21 @@ pub struct Lightbox {
     restore: Option<FocusHandle>,
     /// Just opened: the next frame takes the keyboard.
     want_focus: bool,
+    /// Where the video's track was last drawn, for a click on it to find its place.
+    track: Rc<Cell<Bounds<Pixels>>>,
+    /// The track is being dragged.
+    scrubbing: bool,
+    /// Counts opens, so a video that finishes opening after another took its place is let go.
+    opened: u64,
 }
 
 struct Installed(Entity<Lightbox>);
 
 impl Global for Installed {}
+
+fn installed(cx: &App) -> Option<Entity<Lightbox>> {
+    cx.try_global::<Installed>().map(|g| g.0.clone())
+}
 
 impl Lightbox {
     /// Makes the one lightbox and lets [`Lightbox::show`] find it. The shell renders what this
@@ -50,6 +84,9 @@ impl Lightbox {
             focus: cx.focus_handle(),
             restore: None,
             want_focus: false,
+            track: Rc::default(),
+            scrubbing: false,
+            opened: 0,
         });
         cx.set_global(Installed(this.clone()));
         this
@@ -57,36 +94,273 @@ impl Lightbox {
 
     /// Opens `image`, called `name`, over the window and gives it the keyboard.
     pub fn show(name: &str, image: Arc<Image>, cx: &mut App) {
-        let Some(this) = cx.try_global::<Installed>().map(|g| g.0.clone()) else {
+        if let Some(this) = installed(cx) {
+            this.update(cx, |t, cx| t.set(name, Body::Picture(image), cx));
+        }
+    }
+
+    /// Opens the video `clip`, called `name`, and plays it.
+    pub fn play(name: &str, clip: Arc<Clip>, cx: &mut App) {
+        let Some(this) = installed(cx) else {
             return;
         };
-        this.update(cx, |t, cx| {
-            t.want_focus |= t.open.is_none();
-            t.open = Some(Open {
-                name: name.to_owned().into(),
-                image,
-            });
-            cx.notify();
+        let opened = this.update(cx, |t, cx| {
+            t.set(name, Body::Opening, cx);
+            t.opened
         });
+        let player = cx
+            .background_executor()
+            .spawn(async move { Player::open(clip) });
+        cx.spawn(async move |cx| {
+            let player = player.await;
+            this.update(cx, |t, cx| {
+                let Some(open) = t.open.as_mut().filter(|_| t.opened == opened) else {
+                    return;
+                };
+                open.body = match player {
+                    Ok(p) => Body::Video(p),
+                    Err(why) => Body::Failed(why),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set(&mut self, name: &str, body: Body, cx: &mut Context<Self>) {
+        self.forget(cx);
+        self.want_focus |= self.open.is_none();
+        self.opened += 1;
+        self.open = Some(Open {
+            name: name.to_owned().into(),
+            body,
+        });
+        cx.notify();
+    }
+
+    /// Lets go of what is open: a video stops and its frames leave the sprite atlas.
+    fn forget(&mut self, cx: &mut App) {
+        self.scrubbing = false;
+        if let Some(Open {
+            body: Body::Video(mut p),
+            ..
+        }) = self.open.take()
+        {
+            for image in p.images() {
+                cx.drop_image(image, None);
+            }
+        }
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open.take().is_none() {
+        if self.open.is_none() {
             return;
         }
+        self.forget(cx);
         if let Some(back) = self.restore.take() {
             window.focus(&back, cx);
         }
         cx.notify();
     }
 
+    fn player(&mut self) -> Option<&mut Player> {
+        match self.open.as_mut().map(|o| &mut o.body) {
+            Some(Body::Video(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Runs `f` on the video, and shows what went wrong in its place.
+    fn with_player(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Player) -> Result<(), String>,
+    ) {
+        let Some(p) = self.player() else { return };
+        if let Err(why) = f(p) {
+            if let Some(open) = self.open.as_mut() {
+                open.body = Body::Failed(why);
+            }
+        }
+        cx.notify();
+    }
+
     fn key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if ev.keystroke.key == "escape" {
-            self.close(window, cx);
+        match ev.keystroke.key.as_str() {
+            "escape" => self.close(window, cx),
+            "space" => self.with_player(cx, Player::toggle),
+            "left" => self.with_player(cx, |p| p.seek(p.position() - STEP)),
+            "right" => self.with_player(cx, |p| p.seek(p.position() + STEP)),
+            "m" => self.with_player(cx, |p| {
+                p.toggle_mute();
+                Ok(())
+            }),
+            _ => {}
         }
         // its keys stay here: the composer behind it must not type
         cx.stop_propagation();
     }
+
+    /// The place on the track under `at`, in seconds.
+    fn track_at(&self, at: Point<Pixels>, duration: f64) -> f64 {
+        let b = self.track.get();
+        let w = f32::from(b.size.width).max(1.);
+        f64::from(((f32::from(at.x) - f32::from(b.origin.x)) / w).clamp(0., 1.)) * duration
+    }
+
+    fn scrub(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(d) = self.player().map(|p| p.duration()) else {
+            return;
+        };
+        let to = self.track_at(at, d);
+        self.with_player(cx, |p| p.seek(to));
+    }
+
+    /// The video's frame, fitted, and the bar under it.
+    fn video(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let Some(p) = self.player() else {
+            return div();
+        };
+        let (frame, gone) = p.frame();
+        for image in gone {
+            cx.drop_image(image, Some(window));
+        }
+        let (playing, decoding, at, length, silent, sound) = (
+            p.playing(),
+            p.decoding(),
+            p.position(),
+            p.duration(),
+            p.muted(),
+            p.has_sound(),
+        );
+        if playing || decoding {
+            window.request_animation_frame();
+        }
+        let picture = div()
+            .id("lightbox-video")
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .bg(gpui::black())
+            .cursor_pointer()
+            .on_click(cx.listener(|t, _, _, cx| t.with_player(cx, Player::toggle)))
+            .when_some(frame, |d, frame| {
+                d.child(
+                    img(frame)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                )
+            });
+        let share = if length > 0. {
+            (at / length) as f32
+        } else {
+            0.
+        };
+        let track = self.track.clone();
+        let rail = div()
+            .id("lightbox-track")
+            .relative()
+            .flex_1()
+            .h(px(18.))
+            .cursor_pointer()
+            .child(
+                canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(7.))
+                    .h(px(4.))
+                    .bg(muted()),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(7.))
+                    .h(px(4.))
+                    .w(relative(share.clamp(0., 1.)))
+                    .bg(neon()),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|t, ev: &gpui::MouseDownEvent, _, cx| {
+                    t.scrubbing = true;
+                    t.scrub(ev.position, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|t, ev: &MouseMoveEvent, _, cx| {
+                if t.scrubbing && ev.dragging() {
+                    t.scrub(ev.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|t, _, _, _| t.scrubbing = false),
+            );
+        let controls = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(10.))
+            .px(px(8.))
+            .py(px(5.))
+            .bg(panel())
+            .font_family(FONT_MONO)
+            .text_size(px(13.))
+            .child(
+                button("lightbox-play", if playing { "pause" } else { "play" })
+                    .on_click(cx.listener(|t, _, _, cx| t.with_player(cx, Player::toggle))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(format!("{} / {}", clock(at), clock(length))),
+            )
+            .child(rail)
+            .when(sound, |d| {
+                d.child(
+                    button(
+                        "lightbox-mute",
+                        if silent { "sound off" } else { "sound on" },
+                    )
+                    .on_click(cx.listener(|t, _, _, cx| {
+                        t.with_player(cx, |p| {
+                            p.toggle_mute();
+                            Ok(())
+                        })
+                    })),
+                )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .child(picture)
+            .child(controls)
+    }
+}
+
+/// A line in the middle of the card: what is on its way, or what went wrong.
+fn note(text: impl Into<SharedString>, color: gpui::Rgba) -> Div {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(panel())
+        .font_family(FONT_MONO)
+        .text_color(color)
+        .child(text.into())
 }
 
 impl Render for Lightbox {
@@ -97,6 +371,27 @@ impl Render for Lightbox {
         }
         let Some(open) = &self.open else {
             return div().into_any_element();
+        };
+        let name = open.name.clone();
+        let body: AnyElement = match &open.body {
+            Body::Picture(image) => div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .bg(panel())
+                .child(
+                    img(image.clone())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                )
+                .into_any_element(),
+            Body::Opening => note("opening the video", muted()).into_any_element(),
+            Body::Failed(why) => note(format!("can't play it: {why}"), bad()).into_any_element(),
+            Body::Video(_) => self.video(window, cx).into_any_element(),
         };
         let title = div()
             .flex()
@@ -114,21 +409,7 @@ impl Render for Lightbox {
                 title_button("lightbox-close", Glyph::Back)
                     .on_click(cx.listener(|t, _, window, cx| t.close(window, cx))),
             )
-            .child(div().flex_1().truncate().child(open.name.clone()));
-        let picture = div()
-            .relative()
-            .flex_1()
-            .min_h(px(0.))
-            .w_full()
-            .bg(panel())
-            .child(
-                img(open.image.clone())
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .object_fit(ObjectFit::Contain),
-            );
+            .child(div().flex_1().truncate().child(name));
         let card = ruled(div().flex().flex_col().bg(paper()))
             .shadow(theme::hard_shadow())
             .w(relative(CARD_W))
@@ -137,7 +418,7 @@ impl Render for Lightbox {
             // a click on the card is not a click on the backdrop
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(title)
-            .child(picture);
+            .child(body);
         div()
             .absolute()
             .inset_0()
@@ -156,106 +437,5 @@ impl Render for Lightbox {
             )
             .child(card)
             .into_any_element()
-    }
-}
-
-/// Whether a file is a video the lightbox plays (as an animated GIF), by its name.
-pub fn is_video(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(_, ext)| {
-        matches!(
-            ext.to_ascii_lowercase().as_str(),
-            "mp4" | "mov" | "webm" | "mkv" | "avi" | "m4v"
-        )
-    })
-}
-
-/// The most frames a video keeps: every one is held decoded (640x360 RGBA is ~0.9 MB).
-const FRAMES: f64 = 200.;
-
-/// A video's `bytes` as a silent, looping animated GIF (gpui animates a GIF from memory, not a
-/// WebP), by `ffmpeg` on this machine: 640 px wide,
-/// the first minute, at most [`FRAMES`] frames (a longer clip at a lower rate). Blocking: run it
-/// off the main thread. The same recipe as `femmed show`.
-pub fn video_gif(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    use std::process::{Command, Stdio};
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("femme-video-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let made = (|| {
-        let ext = name.rsplit_once('.').map_or("mp4", |(_, e)| e);
-        let (input, out) = (dir.join(format!("in.{ext}")), dir.join("out.gif"));
-        std::fs::write(&input, bytes).map_err(|e| e.to_string())?;
-        let probe = Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
-            ])
-            .arg(&input)
-            .output()
-            .map_err(|e| format!("playing a video needs ffmpeg: {e}"))?;
-        let seconds: f64 = String::from_utf8_lossy(&probe.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(60.);
-        let fps = (FRAMES / seconds.clamp(1., 60.)).clamp(2., 15.);
-        let ran = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-t", "60", "-i"])
-            .arg(&input)
-            .args([
-                "-vf",
-                &format!(
-                    "fps={fps:.2},scale='min(640,iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle"
-                ),
-                "-an",
-                "-loop",
-                "0",
-            ])
-            .arg(&out)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("playing a video needs ffmpeg: {e}"))?;
-        if !ran.status.success() {
-            return Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned());
-        }
-        std::fs::read(&out).map_err(|e| e.to_string())
-    })();
-    let _ = std::fs::remove_dir_all(&dir);
-    made
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_video_becomes_an_animated_gif() {
-        assert!(is_video("clip.MP4") && is_video("a.b.webm") && !is_video("shot.png"));
-        let dir = std::env::temp_dir().join(format!("femme-video-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let clip = dir.join("clip.mp4");
-        let made = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
-            .args([
-                "testsrc2=size=320x180:rate=10",
-                "-t",
-                "2",
-                "-pix_fmt",
-                "yuv420p",
-            ])
-            .arg(&clip)
-            .status();
-        // ponytail: no ffmpeg here, nothing to check
-        if !made.is_ok_and(|s| s.success()) {
-            return;
-        }
-        let gif = video_gif("clip.mp4", &std::fs::read(&clip).unwrap()).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(&gif[..6], b"GIF89a");
-        assert!(video_gif("x.mp4", b"not a video").is_err());
     }
 }
