@@ -51,8 +51,10 @@ Keep it current: when your module's public API changes, edit your section in the
   answered); the thread on show is lit. A chip, or `open ›` on the Agent's tool row, shows that
   subagent's items (its prompt, tool calls and text, with its own working line); `‹ main` or `Esc`
   goes back (`Esc` only interrupts the session from the main thread). The chips go when the turn
-  ends; the Agent row stays in the main thread as the way back in. The composer is unchanged: a
-  message sent while a subagent is on show goes to the session as always.
+  ends, except an agent launched in the background (its items keep coming after the turn): its
+  chip stays, `●` and counting, until the agent reports it stopped, as Claude Code's own list of
+  background tasks does. The Agent row stays in the main thread as the way back in. The composer
+  is unchanged: a message sent while a subagent is on show goes to the session as always.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text
