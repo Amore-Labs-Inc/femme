@@ -159,7 +159,7 @@ impl Render for Lightbox {
     }
 }
 
-/// Whether a file is a video the lightbox plays (as an animated WebP), by its name.
+/// Whether a file is a video the lightbox plays (as an animated GIF), by its name.
 pub fn is_video(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, ext)| {
         matches!(
@@ -172,10 +172,11 @@ pub fn is_video(name: &str) -> bool {
 /// The most frames a video keeps: every one is held decoded (640x360 RGBA is ~0.9 MB).
 const FRAMES: f64 = 200.;
 
-/// A video's `bytes` as a silent, looping animated WebP, by `ffmpeg` on this machine: 640 px wide,
+/// A video's `bytes` as a silent, looping animated GIF (gpui animates a GIF from memory, not a
+/// WebP), by `ffmpeg` on this machine: 640 px wide,
 /// the first minute, at most [`FRAMES`] frames (a longer clip at a lower rate). Blocking: run it
 /// off the main thread. The same recipe as `femmed show`.
-pub fn video_webp(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub fn video_gif(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::process::{Command, Stdio};
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -183,7 +184,7 @@ pub fn video_webp(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let made = (|| {
         let ext = name.rsplit_once('.').map_or("mp4", |(_, e)| e);
-        let (input, out) = (dir.join(format!("in.{ext}")), dir.join("out.webp"));
+        let (input, out) = (dir.join(format!("in.{ext}")), dir.join("out.gif"));
         std::fs::write(&input, bytes).map_err(|e| e.to_string())?;
         let probe = Command::new("ffprobe")
             .args([
@@ -207,14 +208,12 @@ pub fn video_webp(name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
             .arg(&input)
             .args([
                 "-vf",
-                &format!("fps={fps:.2},scale='min(640,iw)':-2:flags=lanczos"),
+                &format!(
+                    "fps={fps:.2},scale='min(640,iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle"
+                ),
                 "-an",
-                "-c:v",
-                "libwebp_anim",
                 "-loop",
                 "0",
-                "-q:v",
-                "70",
             ])
             .arg(&out)
             .stdin(Stdio::null())
@@ -234,7 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_video_becomes_an_animated_webp() {
+    fn a_video_becomes_an_animated_gif() {
         assert!(is_video("clip.MP4") && is_video("a.b.webm") && !is_video("shot.png"));
         let dir = std::env::temp_dir().join(format!("femme-video-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -254,10 +253,9 @@ mod tests {
         if !made.is_ok_and(|s| s.success()) {
             return;
         }
-        let webp = video_webp("clip.mp4", &std::fs::read(&clip).unwrap()).unwrap();
+        let gif = video_gif("clip.mp4", &std::fs::read(&clip).unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(&webp[..4], b"RIFF");
-        assert_eq!(&webp[8..12], b"WEBP");
-        assert!(video_webp("x.mp4", b"not a video").is_err());
+        assert_eq!(&gif[..6], b"GIF89a");
+        assert!(video_gif("x.mp4", b"not a video").is_err());
     }
 }

@@ -329,14 +329,14 @@ impl FilesPanel {
             self.notice = Some(Notice::Converting(name.clone()));
             let made = cx
                 .background_executor()
-                .spawn(async move { lightbox::video_webp(&name, &data).map(|w| (name, w)) });
+                .spawn(async move { lightbox::video_gif(&name, &data).map(|g| (name, g)) });
             cx.spawn(async move |this, cx| {
                 let made = made.await;
                 this.update(cx, |t, cx| {
                     t.notice = match made {
-                        Ok((name, webp)) => {
+                        Ok((name, gif)) => {
                             let image =
-                                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Webp, webp));
+                                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Gif, gif));
                             Lightbox::show(&name, image, cx);
                             None
                         }
