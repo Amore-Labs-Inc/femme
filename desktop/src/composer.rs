@@ -424,9 +424,6 @@ impl Composer {
         }
         let text = input.read(cx).value();
         slash::matches(&text, &self.commands)
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
     }
 
     /// Puts the picked command into the input, with a space for its arguments.
@@ -449,12 +446,26 @@ impl Composer {
         if let Some(draft) = self.session.and_then(|sid| self.drafts.get_mut(sid)) {
             draft.notice = None;
         }
-        // a model picked from `/model`'s list switches at once, as Claude Code's picker does
-        if slash::MODELS.contains(&name) {
-            input.update(cx, |input, cx| {
-                input.set_value(format!("/{name}"), window, cx)
-            });
+        // `/model`'s list: a Claude model asks for its effort next, then both are sent; DeepSeek
+        // (no effort) switches at once
+        let send = match slash::model_and_effort(name) {
+            Some((model, effort)) => Some((model, Some(effort))),
+            None => (name == "model deepseek").then(|| (format!("/{name}"), None)),
+        };
+        if let Some((model, effort)) = send {
+            input.update(cx, |input, cx| input.set_value(model, window, cx));
             self.send(PromptHow::Queue, window, cx);
+            // ponytail: sent alongside, not after the model's answer; fine while both are
+            // instant CLI commands, a switch off DeepSeek restarts claude and may miss it
+            if let (Some(effort), Some(net), Some(sid)) = (effort, self.net.clone(), self.session) {
+                let req = Req::Prompt {
+                    sid,
+                    text: effort,
+                    attachments: Vec::new(),
+                    how: PromptHow::Queue,
+                };
+                request(&net, req, cx).detach();
+            }
         }
         cx.notify();
     }

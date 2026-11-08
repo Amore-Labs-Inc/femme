@@ -13,6 +13,16 @@ pub const MODELS: &[&str] = &[
     "model deepseek",
 ];
 
+/// How hard a Claude model thinks (`/effort`), offered once its model is picked.
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// A picked `model <name> <effort>` row: the two commands it sends, `/model <name>` then
+/// `/effort <effort>`.
+pub fn model_and_effort(row: &str) -> Option<(String, String)> {
+    let (model, effort) = row.strip_prefix("model ")?.split_once(' ')?;
+    Some((format!("/model {model}"), format!("/effort {effort}")))
+}
+
 /// What follows the `/` while the user is still typing the command word: the text starts with `/`
 /// and holds no whitespace yet. `None` for anything else (a prompt, a command with arguments).
 pub fn query(text: &str) -> Option<&str> {
@@ -22,18 +32,27 @@ pub fn query(text: &str) -> Option<&str> {
 
 /// The names to offer for `text`, at most [`MAX`]: those that start with the query (case aside)
 /// alphabetically, then those that hold it elsewhere. An empty query offers the first names.
-pub fn matches<'a>(text: &str, names: &'a [String]) -> Vec<&'a str> {
-    // `/model ` and a name being typed: the models
-    if let Some(m) = text
-        .strip_prefix("/model ")
-        .filter(|m| !m.contains(char::is_whitespace))
-    {
-        let m = m.to_lowercase();
-        return MODELS
-            .iter()
-            .copied()
-            .filter(|row| row["model ".len()..].contains(&m))
-            .collect();
+pub fn matches(text: &str, names: &[String]) -> Vec<String> {
+    if let Some(rest) = text.strip_prefix("/model ") {
+        let words: Vec<&str> = rest.split(' ').collect();
+        return match words[..] {
+            // a name being typed: the models
+            [m] => {
+                let m = m.to_lowercase();
+                MODELS
+                    .iter()
+                    .filter(|row| row["model ".len()..].contains(&m))
+                    .map(|row| (*row).to_owned())
+                    .collect()
+            }
+            // a Claude model picked, its effort being typed: the efforts
+            [m, e] if m != "deepseek" && MODELS.contains(&format!("model {m}").as_str()) => EFFORTS
+                .iter()
+                .filter(|x| x.starts_with(&e.to_lowercase()))
+                .map(|x| format!("model {m} {x}"))
+                .collect(),
+            _ => Vec::new(),
+        };
     }
     let Some(q) = query(text) else {
         return Vec::new();
@@ -53,7 +72,7 @@ pub fn matches<'a>(text: &str, names: &'a [String]) -> Vec<&'a str> {
     }
     prefix.extend(inside);
     prefix.truncate(MAX);
-    prefix
+    prefix.into_iter().map(str::to_owned).collect()
 }
 
 /// Whether `text` is exactly `/` and one of the names: Enter then sends it rather than completing.
@@ -115,7 +134,27 @@ mod tests {
         let n = names(&["model", "review"]);
         assert_eq!(matches("/model ", &n), MODELS);
         assert_eq!(matches("/model so", &n), ["model sonnet"]);
-        assert!(matches("/model opus ", &n).is_empty());
+        assert_eq!(
+            matches("/model opus ", &n),
+            [
+                "model opus low",
+                "model opus medium",
+                "model opus high",
+                "model opus xhigh",
+                "model opus max"
+            ]
+        );
+        assert_eq!(matches("/model opus x", &n), ["model opus xhigh"]);
+        assert!(
+            matches("/model deepseek ", &n).is_empty(),
+            "no effort off Claude"
+        );
+        assert!(matches("/model opus high ", &n).is_empty());
+        assert_eq!(
+            model_and_effort("model opus high"),
+            Some(("/model opus".into(), "/effort high".into()))
+        );
+        assert_eq!(model_and_effort("model opus"), None);
         assert!(!exact("/model", &n), "Enter on /model opens the list");
     }
 
