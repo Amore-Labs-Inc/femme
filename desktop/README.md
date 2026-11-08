@@ -58,7 +58,8 @@ names, and refuses the `--daemon` and `--ssh` flags.
 - **Sessions**: the left column. `ctrl-b` or the `‹` in its title bar collapses it to a 28 px strip of status
   dots (a click on a dot opens that session); it draws its own box and the frame follows its width.
 - **Centre**: what the current session needs. A Claude session shows its transcript with the composer
-  under it. A shell session (and any session in TUI mode) shows its terminal filling the centre, "starting"
+  under it; the thin bar above `send` is its context window filling up like an experience bar (hover
+  for the numbers), and every compaction is a level up. A shell session (and any session in TUI mode) shows its terminal filling the centre, "starting"
   until the pane is attached; a closed one says so. With no session the centre is a card that says why:
   `no daemon configured`, `connecting`, `offline: <reason>`, or `no session`.
 - **Right panel**: a 28 px strip on the right edge with two icons, terminal and files. The pointer resting
