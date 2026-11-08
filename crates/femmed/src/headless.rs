@@ -1549,7 +1549,10 @@ fn event_item(sid: Sid, id: String, text: &str, now: i64) -> Item {
         id,
         ItemKind::Event,
         ItemStatus::Completed,
-        Some(&body(&Event { text: text.into() })),
+        Some(&body(&Event {
+            text: text.into(),
+            task: None,
+        })),
         now,
     )
 }
