@@ -196,6 +196,8 @@ pub struct ToolLine {
     pub failed: bool,
     /// It has not answered yet and the daemon still says the call is running.
     pub running: bool,
+    /// The hint is a link: the claude.ai page of an `Artifact` call.
+    pub link: Option<String>,
 }
 
 fn first_line(text: &str) -> String {
@@ -220,23 +222,35 @@ pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
         }
     };
     let result = result_of(items, call);
-    let (answer, answer_failed) = match result {
-        None => (None, false),
+    let (answer, answer_failed, page) = match result {
+        None => (None, false, None),
         Some(r) => match items.parsed(r) {
-            Parsed::ToolResult(t) => (Some(first_line(&t.output)), t.is_error),
-            _ => (Some(first_line(&r.item.preview)), false),
+            Parsed::ToolResult(t) => (Some(first_line(&t.output)), t.is_error, t.link.clone()),
+            _ => (Some(first_line(&r.item.preview)), false, None),
         },
     };
     let failed = answer_failed
         || call.item.status == ItemStatus::Failed
         || result.is_some_and(|r| r.item.status == ItemStatus::Failed);
-    ToolLine {
+    let mut line = ToolLine {
         name,
         hint,
         running: result.is_none() && call.item.status == ItemStatus::InProgress,
         result: answer,
         failed,
+        link: None,
+    };
+    // An Artifact call is one readable line: `artifact · <title> ↗`, the title opens the page.
+    if let Some(p) = page.filter(|_| !failed) {
+        line.name = "artifact".into();
+        line.hint = format!("· {} ↗", p.title);
+        line.result = match p.version {
+            Some(v) if p.updated => Some(format!("updated · v{v}")),
+            _ => None,
+        };
+        line.link = Some(p.url);
     }
+    line
 }
 
 /// The rows for one thread of `items` (see [`Items::view`]). `open` holds the `seq`s the user
@@ -868,8 +882,70 @@ mod tests {
                 result: Some("first".into()),
                 failed: false,
                 running: false,
+                link: None,
             }
         );
+    }
+
+    #[test]
+    fn an_artifact_call_is_one_line_with_its_page_as_link() {
+        let mut b = Build::new();
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t1",
+            json!({"name":"Artifact","input":{"file_path":"/tmp/x/page.html"},"call_id":"t1"}),
+        );
+        b.add(
+            ItemKind::ToolResult,
+            ItemStatus::Completed,
+            "t1:result",
+            json!({"call_id":"t1","is_error":false,
+                "link":{"url":"https://claude.ai/artifact/AbC123","title":"FEMME artifact test","version":1},
+                "output":"Published /tmp/x/page.html at https://claude.ai/artifact/AbC123 (Version 1, version id 1-1)"}),
+        );
+        let line = tool_line(&b.items, b.items.get(1).unwrap());
+        assert_eq!(
+            (
+                line.name.as_str(),
+                line.hint.as_str(),
+                line.result.as_deref()
+            ),
+            ("artifact", "· FEMME artifact test ↗", None)
+        );
+        assert_eq!(
+            line.link.as_deref(),
+            Some("https://claude.ai/artifact/AbC123")
+        );
+
+        // a publish that changed an existing page says so
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t2",
+            json!({"name":"Artifact","input":{"file_path":"/tmp/x/page.html"},"call_id":"t2"}),
+        );
+        b.add(
+            ItemKind::ToolResult,
+            ItemStatus::Completed,
+            "t2:result",
+            json!({"call_id":"t2","is_error":false,
+                "link":{"url":"https://claude.ai/artifact/AbC123","title":"FEMME artifact test","version":2,"updated":true},
+                "output":"Published …"}),
+        );
+        let line = tool_line(&b.items, b.items.get(3).unwrap());
+        assert_eq!(line.result.as_deref(), Some("updated · v2"));
+
+        // without a link (a list, a failure) the row is the plain tool row
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t3",
+            json!({"name":"Artifact","input":{"action":"list"},"call_id":"t3"}),
+        );
+        b.result("t3", false);
+        let line = tool_line(&b.items, b.items.get(5).unwrap());
+        assert_eq!((line.name.as_str(), line.link), ("Artifact", None));
     }
 
     #[test]
