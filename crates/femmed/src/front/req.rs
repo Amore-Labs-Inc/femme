@@ -184,6 +184,14 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::ServerInfo => Ok(server_info(d).await),
         Req::CyclePermission { sid } => done(d.cycle_permission(sid).await),
         Req::SessionLabel { sid, label } => done(d.update(sid, |s| s.label = label).map(drop)),
+        Req::SessionOf { agent_sid } => d
+            .store
+            .read(|c| femme_store::sessions::list_sessions(c, true))
+            .map_err(|e| wire(core_err(e)))?
+            .into_iter()
+            .find(|s| s.agent_sid.as_deref() == Some(agent_sid.as_str()))
+            .map(|s| Resp::Session(s.id))
+            .ok_or_else(|| wire(CoreError::NotFound)),
         Req::Show {
             sid,
             name,
