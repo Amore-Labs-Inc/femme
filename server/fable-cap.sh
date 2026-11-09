@@ -6,7 +6,10 @@
 #   - an account with an entry in $STATE/caps.json, which femmed writes for the desktop app and this
 #     loop re-reads every pass ({"<number>": {"five_hour": 80, "weekly": 90}}, either key optional):
 #     its 5-hour or its 7-day window is at that cap or more. A cap is a whole number from 50 to 99;
-#     any other value, or a caps.json that is not one JSON object, is ignored with a log line.
+#     any other value, or a caps.json that is not one JSON object, is ignored with a log line;
+#   - every account: its claude.ai sign-in has ended (`loginExpiresAt` in `cswap list --json` is in
+#     the past), so every run on it would fail at sign-in. No date, or one that is not ISO 8601 UTC:
+#     no sign-in rule for that account. A new sign-in that moves the date ahead clears it.
 # If the active account trips, the box moves: `cswap switch --strategy best`, plus `--model Fable`
 # when its Fable rule tripped (cswap only moves to an account with more headroom; the next pass
 # retries). A held account comes back (`cswap enable`) once none of its rules trips; only accounts
@@ -44,26 +47,34 @@ caps_problems=$is_cap'
     end'
 
 # jq over `cswap list --json`: one line per account, "number active disabled fable_tripped tripped
-# all_known what", where what names the tripped rules (else all of them) with their pct and cap.
-# A rule's pct is null when unknown: it then neither trips nor counts as known.
+# all_known what", where what names the tripped rules (else all of them) with their pct and cap, or
+# the sign-in date. A usage rule whose pct is unknown (null) neither trips nor counts as known; an
+# account without a usable loginExpiresAt has no sign-in rule at all. $now is ISO 8601 UTC with
+# whole seconds, so it compares with the date (fraction cut) as a string.
 # shellcheck disable=SC2016
 rows_jq=$is_cap'
   def pct: if type == "object" and (.pct | type) == "number" then .pct | floor else null end;
+  def usage_rule: . + {trip: (if .pct == null then null else .pct >= .cap end),
+                       what: "\(.name) at \(.pct)% (cap \(.cap)%)"};
   ($fable_cap | tonumber) as $fcap
   | .accounts[] | select((.number | type) == "number")
   | (.number | tostring) as $n
   | (.usage | if type == "object" then . else null end) as $u
   | ($caps[$n] | if type == "object" then . else {} end) as $c
-  | [ {name: "Fable weekly", fable: true, cap: $fcap,
-       pct: (if $u == null then null
-             else first($u.scoped[]? | select(.name? == "Fable")) // {pct: 0} | pct end)},
-      ($c.five_hour | select(is_cap) | {name: "5-hour", cap: ., pct: ($u.fiveHour | pct)}),
-      ($c.weekly | select(is_cap) | {name: "7-day", cap: ., pct: ($u.sevenDay | pct)})
+  | [ ({name: "Fable weekly", fable: true, cap: $fcap,
+        pct: (if $u == null then null
+              else first($u.scoped[]? | select(.name? == "Fable")) // {pct: 0} | pct end)} | usage_rule),
+      ($c.five_hour | select(is_cap) | {name: "5-hour", cap: ., pct: ($u.fiveHour | pct)} | usage_rule),
+      ($c.weekly | select(is_cap) | {name: "7-day", cap: ., pct: ($u.sevenDay | pct)} | usage_rule),
+      (.loginExpiresAt
+       | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
+       | (sub("\\.[0-9]+Z$"; "Z") <= $now) as $ended
+       | {trip: $ended, what: (if $ended then "sign-in ended \(.)" else "sign-in ends \(.)" end)})
     ] as $rules
-  | [$rules[] | select(.pct != null and .pct >= .cap)] as $trips
+  | [$rules[] | select(.trip == true)] as $trips
   | [$n, .active == true, .disabled == true, any($trips[]; .fable == true), $trips != [],
-     all($rules[]; .pct != null),
-     (if $trips == [] then $rules else $trips end | map("\(.name) at \(.pct)% (cap \(.cap)%)") | join(", "))]
+     all($rules[]; .trip != null),
+     (if $trips == [] then $rules else $trips end | map(.what) | join(", "))]
   | map(tostring) | join(" ")'
 
 # Sets caps to caps.json for this pass: {} when the file is missing or empty, and also {} (with a
@@ -109,7 +120,8 @@ pass() {
   fi
   load_caps
   if ! rows=$(printf '%s\n' "$list" \
-      | jq -r --argjson caps "$caps" --arg fable_cap "$FABLE_CAP" "$rows_jq" 2>/dev/null); then
+      | jq -r --argjson caps "$caps" --arg fable_cap "$FABLE_CAP" \
+        --arg now "$(date -u +%FT%TZ)" "$rows_jq" 2>/dev/null); then
     log "cswap list --json gave no account list: nothing changed this pass"
     return 0
   fi
