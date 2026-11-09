@@ -139,15 +139,23 @@ Keep it current: when your module's public API changes, edit your section in the
   "daemon too old for pull requests". `refresh` in the title bar and every open read the list again.
   `Esc` or `‹` closes it; the deploy watch goes on while it is closed.
   **Conflicts**: a row whose `Pr::mergeable` is `Some(false)` carries a red `conflicts` pill (`None`:
-  a faint `checking`; `Some(true)`: nothing), and its `Merge & deploy` becomes `Fix with Claude`:
-  `Req::PrFix` → `Resp::Session(sid)`, a real Claude chat labelled `fix #n` that merges main into
-  the branch, resolves, tests and pushes; the card closes and the centre switches to that chat
-  (`Net::set_current`, as a sidebar click) so the user watches and steers it. While `Pr::fixing` is
-  set the row shows a `fixing…` pill and the detail `Open fix chat` (also next to `Merge & deploy`
-  once the push makes it mergeable). While anything is fixing or `checking`, the open card reads
-  the list every 10 s, at most 60 times per opening. A merge refused for conflicts reads
-  `#n conflicts with main — Fix with Claude` (other errors as the daemon says them) and flips the
-  button at once. The footer's `Auto-fix conflicts after a merge` toggle is `Req::PrAutoFix`
+  a faint `checking`; `Some(true)`: nothing). `Merge & deploy` stays the main button on it too, with
+  a line under the buttons: `conflicts with main: Claude resolves them, then it merges and deploys
+  by itself`. The daemon answers that `PrMerge` with `Ok` as for a clean merge, but queues it
+  behind a conflict fix (`Pr::merging`); the card reads the list after every `Ok`: the pull request
+  gone means merged (the deploy watch above), still there with `merging` means queued. A queued one
+  shows an accent `merging…` pill, the detail says `Claude is resolving the conflicts; it merges and
+  deploys by itself` and has no merge or fix button (`Watch demo`, `Close PR` and an `Open fix
+  chat` stay). The card reads the list every 10 s until it leaves the list (open or closed, past the
+  60-read cap), then watches its deploy; listed again without `merging`, it says the fix stopped.
+  `Fix with Claude` sits beside `Merge & deploy` on a conflicting row for steering: `Req::PrFix` →
+  `Resp::Session(sid)`, a real Claude chat labelled `fix #n` that merges main into the branch,
+  resolves, tests and pushes; the card closes and the centre switches to that chat
+  (`Net::set_current`, as a sidebar click). While `Pr::fixing` is set the row shows a `fixing…` pill
+  and the detail `Open fix chat` in its place. While anything is merging, fixing or `checking`, the
+  open card reads the list every 10 s, at most 60 times per opening. An older daemon that refuses a
+  conflicting merge reads `#n conflicts with main — Fix with Claude` (other errors as the daemon
+  says them). The footer's `Auto-fix conflicts after a merge` toggle is `Req::PrAutoFix`
   (`on: None` reads it at open, a click sends `Some(!cur)`; off by default; hidden when the daemon
   does not know it): with it on, each merge starts a fix chat for every `claude-update/*` pull
   request it leaves conflicting (uses Claude usage).
