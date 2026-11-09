@@ -12,7 +12,7 @@ use gpui::{
 
 use femme_proto::rpc::Pr;
 
-use super::{badge, primary, Badge, Confirm, Load, Primary, PrsOverlay};
+use super::{actions, badge, merge_waits, Badge, Confirm, FixButton, Load, PrsOverlay};
 use crate::motion::Appear;
 use crate::theme::{
     self, accent_text, bad, bar, hover, ink, muted, on_bar, paper, work, BODY_SIZE, FONT_PIXEL,
@@ -82,9 +82,10 @@ fn diff(pr: &Pr) -> Div {
         .child(meta(format!("−{}", pr.deletions)).text_color(bad()))
 }
 
-/// The row's mark: "fixing…" and "conflicts" as status pills, "checking" faint.
+/// The row's mark: "merging…", "fixing…" and "conflicts" as status pills, "checking" faint.
 fn badge_el(b: Badge) -> Div {
     match b {
+        Badge::Merging => st("merging…", theme::accent()).flex_none(),
         Badge::Fixing => st("fixing…", theme::warn()).flex_none(),
         Badge::Conflicts => st("conflicts", theme::danger()).flex_none(),
         Badge::Checking => meta("checking").flex_none().text_color(theme::muted_text()),
@@ -351,14 +352,24 @@ impl PrsOverlay {
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 )
                 .child(self.actions(&pr, cx))
+                .children(merge_waits(&pr).then(|| {
+                    meta("conflicts with main: Claude resolves them, then it merges and deploys by itself")
+                }))
+                .children(pr.merging.then(|| {
+                    div().text_color(accent_text()).child(
+                        "Claude is resolving the conflicts; it merges and deploys by itself",
+                    )
+                }))
                 .children(self.confirm_row(cx))
                 .child(card().child(doc)),
         )
     }
 
-    /// `Watch demo  Merge & deploy  Close PR` (`Fix with Claude` or `Open fix chat` in the middle
-    /// when it conflicts), and what a button is doing.
+    /// `Watch demo  Merge & deploy  Close PR`, with `Fix with Claude` or `Open fix chat` after the
+    /// merge when it conflicts or a fix runs (no merge or fix while a queued merge runs), and what a
+    /// button is doing.
     fn actions(&self, pr: &Pr, cx: &mut Context<Self>) -> Div {
+        let what = actions(pr);
         let n = pr.number;
         let off = self.busy.is_some();
         let demo = pr.video.clone().map(|name| {
@@ -372,25 +383,20 @@ impl PrsOverlay {
             .items_center()
             .gap(px(8.))
             .children(demo)
-            .child(match primary(pr) {
-                Primary::Merge => button_dark("pr-merge", "Merge & deploy")
+            .children(what.merge.then(|| {
+                button_dark("pr-merge", "Merge & deploy")
                     .when(off, |b| b.opacity(0.5))
-                    .on_click(cx.listener(move |t, _, _, cx| t.ask(Confirm::Merge(n), cx))),
-                Primary::Fix => button_dark("pr-fix", "Fix with Claude")
-                    .when(off, |b| b.opacity(0.5))
-                    .on_click(cx.listener(move |t, _, _, cx| t.fix(n, cx))),
-                Primary::OpenFix(sid) => button_dark("pr-open-fix", "Open fix chat")
-                    .on_click(cx.listener(move |t, _, _, cx| t.show_chat(sid, cx))),
-            })
-            // A fix that pushed: merging is back, its chat is still a click away.
-            .children(
-                pr.fixing
-                    .filter(|_| primary(pr) == Primary::Merge)
-                    .map(|sid| {
-                        button("pr-open-fix", "Open fix chat")
-                            .on_click(cx.listener(move |t, _, _, cx| t.show_chat(sid, cx)))
-                    }),
-            )
+                    .on_click(cx.listener(move |t, _, _, cx| t.ask(Confirm::Merge(n), cx)))
+            }))
+            .children(what.fix.map(|f| {
+                match f {
+                    FixButton::Start => button("pr-fix", "Fix with Claude")
+                        .when(off, |b| b.opacity(0.5))
+                        .on_click(cx.listener(move |t, _, _, cx| t.fix(n, cx))),
+                    FixButton::Open(sid) => button("pr-open-fix", "Open fix chat")
+                        .on_click(cx.listener(move |t, _, _, cx| t.show_chat(sid, cx))),
+                }
+            }))
             .child(
                 button("pr-close", "Close PR")
                     .when(off, |b| b.opacity(0.5))

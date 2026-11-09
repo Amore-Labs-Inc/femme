@@ -2,12 +2,16 @@
 //! over the window. The list on the left (number, title, branch, +adds/−dels, author), the selected
 //! one on the right: its title, its link, its description as Markdown, "Watch demo" when the branch
 //! has a demo video, and "Merge & deploy" / "Close PR", each asked twice (merging ships to prod).
-//! A pull request that conflicts with main (`Pr::mergeable` is `Some(false)`) has "Fix with Claude"
-//! instead of "Merge & deploy": `Req::PrFix` starts a FEMME Claude chat (`fix #n`) that merges main
-//! in, resolves, tests and pushes, and the card closes onto that chat. While a fix runs
-//! (`Pr::fixing`) the row says "fixing…" and the detail has "Open fix chat"; the card reads the list
-//! again every [`WATCH`] while anything is fixing or not worked out yet, at most [`WATCH_ROUNDS`]
-//! times per opening. The footer's "Auto-fix conflicts after a merge" is `Req::PrAutoFix`.
+//! "Merge & deploy" is always the main button, also on a pull request that conflicts with main
+//! (`Pr::mergeable` is `Some(false)`): the daemon then queues the merge behind a Claude chat that
+//! resolves the conflicts (`Pr::merging`), and merges and deploys by itself once it is green. While
+//! that runs the row says "merging…" and the detail has no merge or fix button. A conflicting one
+//! also has "Fix with Claude" on the side (`Req::PrFix` starts a FEMME Claude chat, `fix #n`, and
+//! the card closes onto it); while a fix runs (`Pr::fixing`) the row says "fixing…" and the detail
+//! has "Open fix chat". The card reads the list again every [`WATCH`] while anything is merging,
+//! fixing or not worked out yet: at most [`WATCH_ROUNDS`] times per opening, except that a merge it
+//! queued is watched until it lands, card open or not, and its deploy is then watched as any merge.
+//! The footer's "Auto-fix conflicts after a merge" is `Req::PrAutoFix`.
 //!
 //! The data is the daemon's: `Req::Prs` lists them, `Req::PrVideo` fetches a demo, `Req::PrMerge`
 //! and `Req::PrClose` act. After a merge the card asks `Req::ServerInfo` every [`POLL`] until the
@@ -106,29 +110,49 @@ pub enum Deploy {
     },
 }
 
-/// The detail's main button for a pull request.
+/// The detail's buttons for a pull request, besides "Watch demo" and "Close PR".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Primary {
-    /// It merges cleanly (or GitHub has not said yet): "Merge & deploy".
-    Merge,
-    /// It conflicts with main and nothing is fixing it: "Fix with Claude".
-    Fix,
-    /// It conflicts and this chat is fixing it: "Open fix chat".
-    OpenFix(Sid),
+pub struct Actions {
+    /// "Merge & deploy", the main button: always, unless a queued merge is already running.
+    pub merge: bool,
+    /// The side button that steers a conflict fix.
+    pub fix: Option<FixButton>,
 }
 
-/// Which main button `pr` gets.
-pub fn primary(pr: &Pr) -> Primary {
-    match (pr.mergeable, pr.fixing) {
-        (Some(false), Some(sid)) => Primary::OpenFix(sid),
-        (Some(false), None) => Primary::Fix,
-        _ => Primary::Merge,
+/// The side button for a conflict fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixButton {
+    /// It conflicts with main and nothing is fixing it: "Fix with Claude".
+    Start,
+    /// This chat is fixing it: "Open fix chat".
+    Open(Sid),
+}
+
+/// Which buttons `pr` gets. While a queued merge runs (`Pr::merging`) there is nothing to merge or
+/// start, but its fix chat is still a click away.
+pub fn actions(pr: &Pr) -> Actions {
+    let fix = match (pr.fixing, pr.mergeable) {
+        (Some(sid), _) => Some(FixButton::Open(sid)),
+        (None, Some(false)) if !pr.merging => Some(FixButton::Start),
+        _ => None,
+    };
+    Actions {
+        merge: !pr.merging,
+        fix,
     }
+}
+
+/// Whether the detail says, under the buttons, what a merge of `pr` does: it conflicts, so Claude
+/// resolves first.
+pub fn merge_waits(pr: &Pr) -> bool {
+    pr.mergeable == Some(false) && !pr.merging
 }
 
 /// The mark a list row carries next to its title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Badge {
+    /// A merge is queued behind a conflict fix (accent).
+    Merging,
     /// A fix chat is working on it.
     Fixing,
     /// It conflicts with main.
@@ -139,6 +163,9 @@ pub enum Badge {
 
 /// The row's mark for `pr`; none when it merges cleanly.
 pub fn badge(pr: &Pr) -> Option<Badge> {
+    if pr.merging {
+        return Some(Badge::Merging);
+    }
     match (pr.fixing, pr.mergeable) {
         (Some(_), _) => Some(Badge::Fixing),
         (None, Some(false)) => Some(Badge::Conflicts),
@@ -147,11 +174,39 @@ pub fn badge(pr: &Pr) -> Option<Badge> {
     }
 }
 
-/// Whether the list is worth reading again soon: a fix is running, or GitHub has not said whether
-/// one merges cleanly.
+/// Whether the list is worth reading again soon: a queued merge or a fix is running, or GitHub has
+/// not said whether one merges cleanly.
 pub fn unsettled(prs: &[Pr]) -> bool {
     prs.iter()
-        .any(|p| p.fixing.is_some() || p.mergeable.is_none())
+        .any(|p| p.merging || p.fixing.is_some() || p.mergeable.is_none())
+}
+
+/// What a `PrMerge` that answered `Ok` did, read off the list that came after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeOk {
+    /// Merged: the deploy is next.
+    Merged,
+    /// Queued behind a conflict fix: it merges by itself.
+    Queued,
+}
+
+/// `number`'s fate after an `Ok` merge: still listed and `merging`, queued; otherwise merged (a
+/// list that still names it without `merging` is GitHub catching up).
+pub fn merge_ok(prs: &[Pr], number: u64) -> MergeOk {
+    match prs.iter().find(|p| p.number == number) {
+        Some(p) if p.merging => MergeOk::Queued,
+        _ => MergeOk::Merged,
+    }
+}
+
+/// A queued merge's fate in a new list: gone from it, it merged (`Some(true)`); still `merging`,
+/// running (`None`); listed but no longer merging, it stopped without merging (`Some(false)`).
+pub fn queued_outcome(prs: &[Pr], number: u64) -> Option<bool> {
+    match prs.iter().find(|p| p.number == number) {
+        None => Some(true),
+        Some(p) if p.merging => None,
+        Some(_) => Some(false),
+    }
 }
 
 /// Whether a failed merge failed because the branch conflicts with main.
@@ -238,6 +293,11 @@ pub struct PrsOverlay {
     watch: Option<Task<()>>,
     /// Reads [`watch`](Self::watch) made since the card opened.
     watched: u32,
+    /// A merge the daemon said `Ok` to, until the next list tells whether it merged or queued:
+    /// its number and the commit the box ran before it.
+    pending: Option<(u64, Option<String>)>,
+    /// Merges queued behind a conflict fix: watched until they leave the list (merged).
+    queued: Vec<u64>,
     /// Whether merges start fixes (`Req::PrAutoFix`); `None` until the daemon says (or when it
     /// does not know the request), and then the footer has no toggle.
     auto_fix: Option<bool>,
@@ -274,6 +334,8 @@ impl PrsOverlay {
             poll: None,
             watch: None,
             watched: 0,
+            pending: None,
+            queued: Vec::new(),
             auto_fix: None,
             auto: None,
         }
@@ -353,10 +415,17 @@ impl PrsOverlay {
                 match answer {
                     Ok(Resp::Prs(prs)) => {
                         t.take(prs);
+                        t.settle_merges(cx);
                         t.watch_list(cx);
                     }
-                    Ok(other) => t.fail(format!("unexpected answer: {other:?}")),
-                    Err(why) => t.fail(explain(&why)),
+                    Ok(other) => {
+                        t.fail(format!("unexpected answer: {other:?}"));
+                        t.unknown_merge(cx);
+                    }
+                    Err(why) => {
+                        t.fail(explain(&why));
+                        t.unknown_merge(cx);
+                    }
                 }
                 cx.notify();
             })
@@ -373,17 +442,96 @@ impl PrsOverlay {
         self.list = Load::Ready(prs);
     }
 
-    /// Reads the list every [`WATCH`] while the card is open and the list [`unsettled`], at most
-    /// [`WATCH_ROUNDS`] times per opening.
+    /// Reads what a fresh list says about the merge just answered and the merges queued: merged
+    /// ones start the deploy watch, a queued one joins [`queued`](Self::queued).
+    fn settle_merges(&mut self, cx: &mut Context<Self>) {
+        if let Some((number, from)) = self.pending.take() {
+            match merge_ok(self.prs(), number) {
+                MergeOk::Merged => self.deploying(number, from, cx),
+                MergeOk::Queued => {
+                    if !self.queued.contains(&number) {
+                        self.queued.push(number);
+                    }
+                    self.say(
+                        format!(
+                            "#{number} conflicts with main: Claude resolves them, then it merges \
+                             and deploys by itself"
+                        ),
+                        false,
+                    );
+                }
+            }
+        }
+        let outcomes: Vec<(u64, Option<bool>)> = self
+            .queued
+            .iter()
+            .map(|&n| (n, queued_outcome(self.prs(), n)))
+            .collect();
+        for (number, outcome) in outcomes {
+            let Some(merged) = outcome else {
+                continue;
+            };
+            self.queued.retain(|&n| n != number);
+            if merged {
+                self.deploying_now(number, cx);
+            } else {
+                self.say(
+                    format!("#{number} not merged: the conflict fix stopped"),
+                    true,
+                );
+            }
+        }
+    }
+
+    /// The list after a merge's `Ok` did not come: the merge most likely went through (the daemon
+    /// restarts as a deploy lands), so watch the deploy.
+    fn unknown_merge(&mut self, cx: &mut Context<Self>) {
+        if let Some((number, from)) = self.pending.take() {
+            self.deploying(number, from, cx);
+        }
+    }
+
+    /// `number` merged while the box ran `from`: watch the box for the new commit.
+    fn deploying(&mut self, number: u64, from: Option<String>, cx: &mut Context<Self>) {
+        self.deploy = Some(Deploy::Waiting {
+            number,
+            from,
+            polls: 0,
+        });
+        self.watch_deploy(cx);
+        cx.notify();
+    }
+
+    /// A queued merge just left the list: note the commit the box runs now and watch for the next.
+    fn deploying_now(&mut self, number: u64, cx: &mut Context<Self>) {
+        let info = self.send(Req::ServerInfo, cx);
+        cx.spawn(async move |this, cx| {
+            let from = match info.await {
+                Ok(Resp::ServerInfo { deployed, .. }) => deployed,
+                _ => None,
+            };
+            this.update(cx, |t, cx| t.deploying(number, from, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Whether the list is worth reading again: a merge this card queued is running (card open or
+    /// not), or the card is open, the list [`unsettled`] and [`WATCH_ROUNDS`] not used up.
+    fn keep_watching(&self) -> bool {
+        !self.queued.is_empty()
+            || (self.open && self.watched < WATCH_ROUNDS && unsettled(self.prs()))
+    }
+
+    /// Reads the list every [`WATCH`] while [`keep_watching`](Self::keep_watching).
     fn watch_list(&mut self, cx: &mut Context<Self>) {
-        if !self.open || self.watch.is_some() || !unsettled(self.prs()) {
+        if self.watch.is_some() || !self.keep_watching() {
             return;
         }
         self.watch = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(WATCH).await;
             let go = this
                 .update(cx, |t, cx| {
-                    if !t.open || t.watched >= WATCH_ROUNDS || !unsettled(t.prs()) {
+                    if !t.keep_watching() {
                         t.watch = None;
                         return false;
                     }
@@ -593,7 +741,8 @@ impl PrsOverlay {
         cx.notify();
     }
 
-    /// Notes the commit the box runs, merges, and watches the box for the new one.
+    /// Notes the commit the box runs and merges; the list read after it says whether to watch the
+    /// box for the new commit or the queued merge.
     fn merge(&mut self, number: u64, cx: &mut Context<Self>) {
         self.busy = Some("merging");
         self.notice = None;
@@ -610,13 +759,9 @@ impl PrsOverlay {
             this.update(cx, |t, cx| {
                 t.busy = None;
                 match answer {
+                    // Merged now or queued behind a conflict fix: the list says which.
                     Ok(_) => {
-                        t.deploy = Some(Deploy::Waiting {
-                            number,
-                            from,
-                            polls: 0,
-                        });
-                        t.watch_deploy(cx);
+                        t.pending = Some((number, from));
                         t.refresh(cx);
                     }
                     Err(why) => {
@@ -770,18 +915,63 @@ mod tests {
             video: None,
             mergeable,
             fixing,
+            merging: false,
+        }
+    }
+
+    fn merging(fixing: Option<Sid>) -> Pr {
+        Pr {
+            merging: true,
+            ..pr(Some(false), fixing)
         }
     }
 
     #[test]
-    fn a_conflicting_pr_gets_fix_with_claude_or_its_fix_chat() {
+    fn merge_is_always_the_main_button_and_a_conflict_adds_a_fix_on_the_side() {
         let sid = Sid::new();
-        assert_eq!(primary(&pr(Some(true), None)), Primary::Merge);
-        assert_eq!(primary(&pr(None, None)), Primary::Merge);
-        assert_eq!(primary(&pr(Some(false), None)), Primary::Fix);
-        assert_eq!(primary(&pr(Some(false), Some(sid))), Primary::OpenFix(sid));
-        // The fix pushed and GitHub says it merges: merge again.
-        assert_eq!(primary(&pr(Some(true), Some(sid))), Primary::Merge);
+        let a = |merge, fix| Actions { merge, fix };
+        assert_eq!(actions(&pr(Some(true), None)), a(true, None));
+        assert_eq!(actions(&pr(None, None)), a(true, None));
+        // Conflicting: still merge (the daemon queues it behind a fix), "Fix with Claude" beside.
+        assert_eq!(
+            actions(&pr(Some(false), None)),
+            a(true, Some(FixButton::Start))
+        );
+        assert_eq!(
+            actions(&pr(Some(false), Some(sid))),
+            a(true, Some(FixButton::Open(sid)))
+        );
+        // The fix pushed and GitHub says it merges: its chat is still a click away.
+        assert_eq!(
+            actions(&pr(Some(true), Some(sid))),
+            a(true, Some(FixButton::Open(sid)))
+        );
+        // A queued merge runs: nothing to merge or start, its chat still opens.
+        assert_eq!(actions(&merging(None)), a(false, None));
+        assert_eq!(
+            actions(&merging(Some(sid))),
+            a(false, Some(FixButton::Open(sid)))
+        );
+        assert!(merge_waits(&pr(Some(false), None)));
+        assert!(!merge_waits(&pr(Some(true), None)));
+        assert!(!merge_waits(&merging(None)));
+    }
+
+    #[test]
+    fn an_ok_merge_is_merged_unless_the_list_says_it_is_merging() {
+        let other = Pr {
+            number: 44,
+            ..pr(Some(true), None)
+        };
+        assert_eq!(merge_ok(std::slice::from_ref(&other), 43), MergeOk::Merged);
+        assert_eq!(merge_ok(&[pr(Some(true), None)], 43), MergeOk::Merged);
+        assert_eq!(
+            merge_ok(&[other.clone(), merging(None)], 43),
+            MergeOk::Queued
+        );
+        assert_eq!(queued_outcome(&[other], 43), Some(true));
+        assert_eq!(queued_outcome(&[merging(None)], 43), None);
+        assert_eq!(queued_outcome(&[pr(Some(false), None)], 43), Some(false));
     }
 
     #[test]
@@ -791,6 +981,8 @@ mod tests {
         assert_eq!(badge(&pr(Some(false), None)), Some(Badge::Conflicts));
         assert_eq!(badge(&pr(None, None)), Some(Badge::Checking));
         assert_eq!(badge(&pr(Some(false), Some(sid))), Some(Badge::Fixing));
+        assert_eq!(badge(&merging(Some(sid))), Some(Badge::Merging));
+        assert!(unsettled(&[pr(Some(true), None), merging(None)]));
         assert!(!unsettled(&[pr(Some(true), None), pr(Some(false), None)]));
         assert!(unsettled(&[pr(Some(true), None), pr(None, None)]));
         assert!(unsettled(&[pr(Some(false), Some(sid))]));
