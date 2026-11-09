@@ -131,6 +131,9 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             done(d.prompt_attached(&pane, &text, &attachments).await)
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
+        Req::Background { sid, tool_use_id } => {
+            done(d.background(sid, tool_use_id.as_deref()).await)
+        }
         Req::AnswerQuestion {
             sid,
             request_id,

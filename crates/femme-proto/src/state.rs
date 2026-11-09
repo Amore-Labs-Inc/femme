@@ -215,7 +215,11 @@ pub enum Row {
     Item(Item),
     Issue(Issue),
     /// `id` is the entity's id as text (session ULID, `sid:no`, `sid/item_id`, issue number).
-    Tombstone { entity: Entity, id: String, rev: u64 },
+    Tombstone {
+        entity: Entity,
+        id: String,
+        rev: u64,
+    },
 }
 
 impl Row {

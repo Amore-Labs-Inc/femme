@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use femme_proto::rpc::{Err as WireErr, ErrCode, MAX_BLOB_PUT, Pr, Resp};
+use femme_proto::rpc::{Err as WireErr, ErrCode, Pr, Resp, MAX_BLOB_PUT};
 use serde::Deserialize;
 use tokio::process::Command;
 

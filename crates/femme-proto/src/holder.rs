@@ -21,7 +21,9 @@ pub enum ScreenFmt {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HolderReq {
-    Hello { v: u16 },
+    Hello {
+        v: u16,
+    },
     SpawnPty {
         no: u16,
         cmd: Vec<String>,
@@ -30,7 +32,9 @@ pub enum HolderReq {
         cols: u16,
         rows: u16,
     },
-    ClosePane { no: u16 },
+    ClosePane {
+        no: u16,
+    },
     /// Headless agent: stdin kept open, stdout appended to the spool file, stderr tail kept.
     SpawnAgent {
         cmd: Vec<String>,
@@ -40,15 +44,30 @@ pub enum HolderReq {
     AgentWrite(Vec<u8>),
     AgentCloseStdin,
     /// The daemon has durably consumed the spool up to `offset`; bytes below may be truncated.
-    SpoolCommit { offset: u64 },
-    Signal { target: Target, sig: i32 },
-    Screen { pane: u16, fmt: ScreenFmt },
+    SpoolCommit {
+        offset: u64,
+    },
+    Signal {
+        target: Target,
+        sig: i32,
+    },
+    Screen {
+        pane: u16,
+        fmt: ScreenFmt,
+    },
     Shutdown,
     /// Pane view role.
-    Attach { pane: u16, epoch: u64, have_rev: u64, client_instance: u128 },
+    Attach {
+        pane: u16,
+        epoch: u64,
+        have_rev: u64,
+        client_instance: u128,
+    },
     Term(TermUp),
     /// Spool role: stream bytes from `from`, then follow.
-    SpoolRead { from: u64 },
+    SpoolRead {
+        from: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,11 +104,23 @@ pub struct HolderInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HolderEvent {
-    ChildExited { target: Target, status: i32 },
-    Bell { pane: u16 },
-    Title { pane: u16, title: String },
+    ChildExited {
+        target: Target,
+        status: i32,
+    },
+    Bell {
+        pane: u16,
+    },
+    Title {
+        pane: u16,
+        title: String,
+    },
     /// OSC 9 / 777 notifications from the pane.
-    Notify { pane: u16, title: String, body: String },
+    Notify {
+        pane: u16,
+        title: String,
+        body: String,
+    },
     /// Last stderr bytes of the agent, sent with `ChildExited { Agent }`.
     AgentStderr(String),
 }

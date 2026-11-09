@@ -781,6 +781,11 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
                     let _ = reply.send(r.map(drop));
                 }
+                // the TUI backgrounds its foreground task on Ctrl+B (every one: it has no per-call key)
+                Cmd::Background { reply, .. } => {
+                    let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "ctrl+b"]).await;
+                    let _ = reply.send(r.map(drop));
+                }
                 // the TUI steps through its modes on Shift+Tab; the file says where it landed
                 Cmd::SetPermission { reply, .. } => {
                     let r =

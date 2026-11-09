@@ -79,10 +79,21 @@ pub enum IssueField {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Req {
     /// Rows with rev > `after` (or everything when `None`), then live changes.
-    Subscribe { scope: Scope, after: Option<u64> },
-    Unsubscribe { scope: Scope },
-    TranscriptPage { sid: Sid, before_seq: u64, limit: u16 },
-    BlobGet { hash: [u8; 32] },
+    Subscribe {
+        scope: Scope,
+        after: Option<u64>,
+    },
+    Unsubscribe {
+        scope: Scope,
+    },
+    TranscriptPage {
+        sid: Sid,
+        before_seq: u64,
+        limit: u16,
+    },
+    BlobGet {
+        hash: [u8; 32],
+    },
     SessionCreate {
         cwd: String,
         agent: Agent,
@@ -94,31 +105,79 @@ pub enum Req {
         /// (`deepseek/deepseek-v4.1-flash-ultrafast`) runs through OpenGateway.
         model: Option<String>,
     },
-    SessionClose { sid: Sid },
+    SessionClose {
+        sid: Sid,
+    },
     Prompt {
         sid: Sid,
         text: String,
         attachments: Vec<Attachment>,
         how: PromptHow,
     },
-    Interrupt { sid: Sid },
-    AnswerQuestion { sid: Sid, request_id: String, answer: Answer },
-    Takeover { sid: Sid, to: Mode },
-    SetModel { sid: Sid, model: String },
-    PaneOpen { sid: Sid },
-    PaneClose { pane: PaneId },
-    IssueCreate { repo: String, title: String, body: String },
+    Interrupt {
+        sid: Sid,
+    },
+    /// Moves the task the turn waits for (a Bash command or a subagent; the tool call
+    /// `tool_use_id`, or every foreground task with `None`) to the background, as Ctrl+B does in
+    /// Claude's TUI: the turn goes on and the task's end comes later as an event. `Busy` when
+    /// nothing runs in the foreground.
+    Background {
+        sid: Sid,
+        tool_use_id: Option<String>,
+    },
+    AnswerQuestion {
+        sid: Sid,
+        request_id: String,
+        answer: Answer,
+    },
+    Takeover {
+        sid: Sid,
+        to: Mode,
+    },
+    SetModel {
+        sid: Sid,
+        model: String,
+    },
+    PaneOpen {
+        sid: Sid,
+    },
+    PaneClose {
+        pane: PaneId,
+    },
+    IssueCreate {
+        repo: String,
+        title: String,
+        body: String,
+    },
     /// Per-field merge: 409 only when a changed field moved past `base_rev`.
-    IssuePatch { id: u64, base_rev: u64, fields: Vec<IssueField> },
-    IssueDelete { id: u64 },
+    IssuePatch {
+        id: u64,
+        base_rev: u64,
+        fields: Vec<IssueField>,
+    },
+    IssueDelete {
+        id: u64,
+    },
     /// Opens a `bulk` stream for the bytes; `Resp::UploadStream` names it.
-    Upload { name: String, len: u64 },
-    FsList { sid: Sid, path: String },
-    FsRead { sid: Sid, path: String },
+    Upload {
+        name: String,
+        len: u64,
+    },
+    FsList {
+        sid: Sid,
+        path: String,
+    },
+    FsRead {
+        sid: Sid,
+        path: String,
+    },
     /// The folders inside `path`, for picking a project's folder before any session runs there:
     /// `~` and a relative path mean the home folder, and the folder must lie under it. With
     /// `make` a missing folder is created first. Answered with `Resp::Folders`.
-    Folders { path: String, make: bool },
+    Folders {
+        path: String,
+        make: bool,
+    },
     /// One call of the web app's JSON API (`/api/accounts`, `/api/keys`, …) made by the daemon
     /// on the desktop's behalf, as the owner: the accounts overlay shows what the board shows.
     /// `method` is GET, POST or DELETE; `body` is the JSON to send (empty for none).
@@ -129,7 +188,10 @@ pub enum Req {
     },
     /// Stores `data` as a blob and answers its hash: what a `Prompt` attachment names. At most
     /// [`MAX_BLOB_PUT`] bytes.
-    BlobPut { name: String, data: Vec<u8> },
+    BlobPut {
+        name: String,
+        data: Vec<u8>,
+    },
     /// The per-account rotation caps (percent of the 5-hour and the 7-day window at which the
     /// box moves off an account); accounts without one use the box's `CAP` / `FABLE_CAP`.
     Caps,
@@ -145,21 +207,37 @@ pub enum Req {
     /// FEMME's own `btw`). Answered with `Resp::Commands`.
     Commands,
     /// The session's next permission mode, the way Shift+Tab steps through them in Claude.
-    CyclePermission { sid: Sid },
+    CyclePermission {
+        sid: Sid,
+    },
     /// Renames the session for the lists (`label`; `None` clears it).
-    SessionLabel { sid: Sid, label: Option<String> },
+    SessionLabel {
+        sid: Sid,
+        label: Option<String>,
+    },
     /// `femmed show`: the agent shows the user a file. The blob (a `BlobPut`) is saved beside the
     /// session's uploads and an assistant item with `caption` and an `Attached:` line is appended.
-    Show { sid: Sid, name: String, blob: [u8; 32], caption: String },
+    Show {
+        sid: Sid,
+        name: String,
+        blob: [u8; 32],
+        caption: String,
+    },
     /// The box repo's open pull requests (`gh pr list`). Answered with `Resp::Prs`.
     Prs,
     /// A pull request's demo video, `Pr::video` (a file in `<state>/pr-videos`). Answered with
     /// `Resp::Blob`.
-    PrVideo { name: String },
+    PrVideo {
+        name: String,
+    },
     /// Squash-merges the pull request into main; the box's deploy timer then ships it.
-    PrMerge { number: u64 },
+    PrMerge {
+        number: u64,
+    },
     /// Closes the pull request without merging and deletes its branch.
-    PrClose { number: u64 },
+    PrClose {
+        number: u64,
+    },
 }
 
 /// One open pull request, as `Resp::Prs` lists it.
@@ -202,16 +280,25 @@ pub enum Resp {
     Ok,
     Session(Sid),
     Pane(PaneId),
-    Page { items: Vec<Item>, next_before: Option<u64> },
+    Page {
+        items: Vec<Item>,
+        next_before: Option<u64>,
+    },
     Blob(Vec<u8>),
     Issue(u64),
     UploadStream(u64),
     FsEntries(Vec<FsEntry>),
     FsData(Vec<u8>),
     /// The answer to `Folders`: the folder as an absolute path, and the names of the folders in it.
-    Folders { path: String, names: Vec<String> },
+    Folders {
+        path: String,
+        names: Vec<String>,
+    },
     /// The web app's answer to `BoardApi`: its HTTP status and body (JSON, or an error text).
-    BoardApi { status: u16, body: String },
+    BoardApi {
+        status: u16,
+        body: String,
+    },
     /// The hash `BlobPut` stored under.
     BlobHash([u8; 32]),
     Caps(Vec<AccountCap>),
@@ -221,7 +308,9 @@ pub enum Resp {
         deployed: Option<String>,
     },
     /// The answer to `Commands`: names without the leading `/`.
-    Commands { names: Vec<String> },
+    Commands {
+        names: Vec<String>,
+    },
     Prs(Vec<Pr>),
 }
 
@@ -272,7 +361,11 @@ pub enum S2C {
         text: String,
     },
     /// The backlog was too big to inline: a `bulk` stream carries it in 256-row chunks.
-    SnapshotOnBulk { scope: Scope, rev: u64, stream: u64 },
+    SnapshotOnBulk {
+        scope: Scope,
+        rev: u64,
+        stream: u64,
+    },
 }
 
 /// What a transport stream carries. The side that opens a QUIC or SSH-mux stream sends this as the

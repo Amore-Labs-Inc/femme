@@ -345,6 +345,11 @@ pub trait Core: Send + Sync + 'static {
     /// `Busy` when the agent is not up.
     async fn interrupt(&self, sid: Sid) -> Result<(), CoreError>;
 
+    /// Moves the tool call `tool_use_id`'s task (`None`: every foreground task) to the background
+    /// (headless: the driver's `background`; PTY: Ctrl+B). `Busy` when nothing runs in the
+    /// foreground or the agent is not up.
+    async fn background(&self, sid: Sid, tool_use_id: Option<&str>) -> Result<(), CoreError>;
+
     /// Answers a pending question of a headless session (`request_id` is the question item's).
     /// The first answer wins: a second one is `Conflict`.
     async fn answer(&self, sid: Sid, request_id: &str, answer: Answer) -> Result<(), CoreError>;

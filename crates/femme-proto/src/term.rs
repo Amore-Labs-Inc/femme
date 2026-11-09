@@ -212,18 +212,38 @@ pub enum TermUp {
         /// Identifies this desktop process across reconnects, so its last-known input seq carries over.
         client_instance: u128,
     },
-    Key { seq: u32, key: Key },
-    Paste { seq: u32, text: String },
+    Key {
+        seq: u32,
+        key: Key,
+    },
+    Paste {
+        seq: u32,
+        text: String,
+    },
     /// Raw bytes (used by the compat layer's `/input`; desktop clients prefer `Key`).
-    Bytes { seq: u32, data: Vec<u8> },
-    Mouse { seq: u32, ev: MouseEv },
-    Resize { cols: u16, rows: u16 },
+    Bytes {
+        seq: u32,
+        data: Vec<u8>,
+    },
+    Mouse {
+        seq: u32,
+        ev: MouseEv,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     Focus(bool),
     /// Flow control: the client applied everything up to `rev`. The holder keeps ≤ 8 frames /
     /// 128 KiB unacked per view and merges while blocked.
-    Ack { rev: u64 },
+    Ack {
+        rev: u64,
+    },
     /// Lazy scrollback fetch, `[from_abs, to_abs)`.
-    GetRows { from_abs: u64, to_abs: u64 },
+    GetRows {
+        from_abs: u64,
+        to_abs: u64,
+    },
 }
 
 /// Holder → client on the same stream.
@@ -232,6 +252,8 @@ pub enum TermDown {
     Frame(Frame),
     /// Answer to `GetRows`.
     Rows(Vec<RowPatch>),
-    Exited { status: i32 },
+    Exited {
+        status: i32,
+    },
     Bell,
 }

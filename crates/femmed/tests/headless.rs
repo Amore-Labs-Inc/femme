@@ -269,6 +269,83 @@ async fn a_question_blocks_the_session_until_an_answer_and_the_first_answer_wins
     d.close_session(sid).await.unwrap();
 }
 
+/// Claude 2.1.319: a Bash command the turn waits for can be moved to the background (`Ctrl+B`):
+/// the call's result says so, the turn ends at once, and the task's end comes as its own event
+/// and turn later. With nothing in the foreground the request is `Busy`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreground_task_moves_to_the_background_and_the_turn_goes_on() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(d.background(sid, None).await, Err(CoreError::Busy));
+
+    let body = |i: &Item| -> Value {
+        i.body
+            .as_deref()
+            .map(|b| serde_json::from_str(b).unwrap())
+            .unwrap_or(Value::Null)
+    };
+    d.prompt(&pane, "bgtask").await.unwrap();
+    let v = wait_items(&d, sid, "a foreground task", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::ToolCall && body(i)["task"] == "foreground")
+    })
+    .await;
+    let call = v
+        .iter()
+        .find(|i| i.kind == ItemKind::ToolCall)
+        .unwrap()
+        .item_id
+        .clone();
+    assert_eq!(
+        d.background(sid, Some("toolu_nope")).await,
+        Err(CoreError::Busy),
+        "not that call"
+    );
+    let t0 = Instant::now();
+    d.background(sid, Some(&call)).await.unwrap();
+    wait_for(&d, sid, "idle while the task runs", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert!(
+        t0.elapsed() < Duration::from_secs(4),
+        "the turn did not wait for the task: {:?}",
+        t0.elapsed()
+    );
+    let v = items(&d, sid);
+    let result = v.iter().find(|i| i.kind == ItemKind::ToolResult).unwrap();
+    assert!(
+        body(result)["output"]
+            .as_str()
+            .unwrap()
+            .contains("manually backgrounded"),
+        "{:#?}",
+        shape(&v)
+    );
+    let c = v.iter().find(|i| i.item_id == call).unwrap();
+    assert_eq!(c.status, ItemStatus::Completed);
+    assert_eq!(body(c)["task"], "background", "{:#?}", shape(&v));
+    assert_eq!(d.background(sid, None).await, Err(CoreError::Busy));
+
+    // the task's end: an event naming the call, then the turn that reads its output
+    let v = wait_items(&d, sid, "the task's end", |v| {
+        has_text(v, ItemKind::AssistantMessage, "the task printed 42")
+    })
+    .await;
+    let end = v
+        .iter()
+        .find(|i| i.kind == ItemKind::Event && body(i)["task"]["call"] == call)
+        .unwrap();
+    assert_eq!(body(end)["task"]["status"], "completed", "{:#?}", shape(&v));
+    d.close_session(sid).await.unwrap();
+}
+
 /// M3 exit criterion: a daemon restart in the middle of a streamed turn gives the same transcript
 /// as an uninterrupted run, and restarts no agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

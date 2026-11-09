@@ -282,6 +282,10 @@ impl Core for Daemon {
         self.interrupt_session(sid).await
     }
 
+    async fn background(&self, sid: Sid, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.background_task(sid, tool_use_id).await
+    }
+
     async fn answer(&self, sid: Sid, request_id: &str, answer: Answer) -> Result<(), CoreError> {
         self.answer_question(sid, request_id, answer).await
     }
