@@ -168,7 +168,7 @@ for f in "${features[@]}"; do
   video=$state/pr-videos/${branch//\//-}.mp4
   prompt=$(render "$lib/implement.md" FROM="$from" TO="$to" WORKTREE="$wt" BRANCH="$branch" SLUG="$slug" \
     HANDOFF="$f" HANDOFF_JSON="$(jq . "$f")" PLAN="$run/$slug.plan.md" PR_FILE="$prfile" \
-    RECORD="$lib/record.sh" VIDEO="$video" VIDEO_NAME="${video##*/}")
+    RECORD="$lib/record.sh" RECORD_DESKTOP="$lib/record-desktop.sh" VIDEO="$video" VIDEO_NAME="${video##*/}")
   # sccache shares compiled dependencies between the features' fresh target/ dirs; no debug info
   # and no incremental cache keep each target/ a few GB.
   RUSTC_WRAPPER=$(mise which sccache 2>/dev/null) CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \

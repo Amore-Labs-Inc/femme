@@ -26,16 +26,31 @@ inside it. The feature, as the scout handed it off (@HANDOFF@):
 4. **Commit as you go**, small commits (each one logical unit, under ~1000 changed lines), messages
    saying what changed and why, each ending with the line
    `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Never commit build output.
-5. **Demo video**, required. Show how the user would use the feature: write a vhs tape (`Type`,
-   `Enter`, `Sleep`, `Ctrl+C`...; `Set Width 1200`, `Set Height 700`, `Set FontSize 18`), or an
-   executable script, that runs Claude Code and/or FEMME's CLI using the feature (build the binary
-   you changed and call it by path). The desktop app can't open a window here: for a desktop-only
-   change, demo the daemon/CLI side or a test binary that prints what the app would show. Keep it
-   under 60 s. Render it with
-   `@RECORD@ <tape-or-script> @BRANCH@`
-   It writes @VIDEO@ and prints its ffprobe line. Watch a frame of it
-   (`ffmpeg -v error -sseof -1 -i @VIDEO@ -frames:v 1 /tmp/@SLUG@.png`, then read the png) and redo
-   it if it does not show the feature. Do not commit the video or the tape.
+5. **Demo video**, required: a video of the FEMME desktop app with the feature in use and its
+   visible effect, following the hand-off's `demo` scene. First build both, debug:
+   `cargo build -p femmed` at the root and `cargo build` in desktop/. Then, from @WORKTREE@:
+   `@RECORD_DESKTOP@ <scene.sh> @VIDEO@`
+   It builds nothing: it takes `target/debug/femmed` and `desktop/target/debug/femme-desktop` from
+   the current dir, starts a throwaway femmed (its own state dir and socket), starts the desktop in
+   an Xvfb display of 1600x1000, records the screen with ffmpeg, and sources `<scene.sh>`, which
+   uses these helpers (coordinates are pixels of the 1600x1000 screen):
+   - `env_desktop VAR=VALUE...`: environment for the desktop (fixtures such as
+     `FEMME_ACCOUNTS_FIXTURE=<file>`); call it before `start`.
+   - `start`: launches the desktop.
+   - `click X Y`, `key KEYS` (xdotool key names: `ctrl+k`, `Escape`, `Return`), `type TEXT`,
+     `pause SECONDS`.
+   - `shot NAME`: a PNG of the screen into the run dir, for checking.
+   Draft the scene with `shot`s and Read the PNGs to find where to click; then record the final
+   take. Keep it under 60 s; the output stays at most 8 MiB (the script compresses).
+   - The video shows FEMME with the feature in use and its effect. Terminal footage
+     (`@RECORD@ <tape-or-script> @BRANCH@`, which overwrites @VIDEO@) may only be a short add-on,
+     joined after the FEMME part, never the whole video.
+   - Before opening the PR, extract frames from your own video at several points
+     (`ffmpeg -v error -ss <T> -i @VIDEO@ -frames:v 1 /tmp/@SLUG@-<T>.png`) and Read them: the
+     feature and its effect must be visible. If not, fix the scene and record again.
+   - If no working FEMME video is possible, ship no terminal-only clip: the PR body's first line is
+     `⚠ No FEMME demo: <reason>`.
+   Do not commit the video or the scene.
 6. **Push and open the pull request**: `git push -u origin @BRANCH@`, then
    `gh pr create --base main --head @BRANCH@ --title "<short title>" --body-file <file>`. The body is
    compressed text, short:
@@ -43,7 +58,8 @@ inside it. The feature, as the scout handed it off (@HANDOFF@):
    - **Plan**: the plan from step 1, condensed;
    - **Change**: what the diff does, by file or crate;
    - **Tested**: the commands you ran;
-   - `Demo video: @VIDEO_NAME@ (shown in FEMME beside this PR)`;
+   - `Demo video: @VIDEO_NAME@ (shown in FEMME beside this PR)` (or the `⚠ No FEMME demo` line on
+     top, see step 5);
    - last line: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 7. Write the PR's URL, alone, to @PR_FILE@, and print `PR: <url>` as your last line.
 
@@ -51,7 +67,8 @@ inside it. The feature, as the scout handed it off (@HANDOFF@):
 
 - Never merge, never push to main or any branch but @BRANCH@, never force-push, never close or
   edit other pull requests.
-- Never touch files outside @WORKTREE@ except @PLAN@, @PR_FILE@, the video and /tmp.
+- Never touch files outside @WORKTREE@ except @PLAN@, @PR_FILE@, the video, the recorder's run dir
+  and /tmp.
 - No secrets or personal data in the diff (CONTRIBUTING.md).
 
 If the feature turns out impossible or wrong: with commits worth keeping, open the PR as a draft
