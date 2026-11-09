@@ -67,8 +67,8 @@ use crate::common::{
     drop_held, held, hold, parse, preview, raw_text, set_status, uuid_v4, Offsets,
 };
 use crate::items::{
-    body, AssistantMessage, Event, Plan, QuestionItem, TaskEnd, Thinking, ToolCall, ToolResult,
-    UserMessage,
+    body, AssistantMessage, Event, PeerMessage, Plan, QuestionItem, TaskEnd, Thinking, ToolCall,
+    ToolResult, UserMessage,
 };
 use crate::{
     AgentEvent, AgentStatus, Attach, Driver, DropReason, Error, HeldPrompt, Launch, Out, Spawn,
@@ -830,6 +830,15 @@ impl ClaudeDriver {
                 }
             }
             ev.push(event_item(id, out));
+        } else if v["origin"]["kind"] == "peer" {
+            // another Claude session's SendMessage, delivered as a user line the user did not type
+            self.activity(offset, ev);
+            ev.push(done(
+                id,
+                ItemKind::PeerMessage,
+                ItemStatus::Completed,
+                body(&peer_message(&v["origin"], &text)),
+            ));
         } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
             // a subagent's text is the prompt it was given
             self.activity(offset, ev);
@@ -1640,6 +1649,25 @@ fn command_line(text: &str) -> Option<String> {
         Some(args) => format!("{name} {args}"),
         None => name.to_owned(),
     })
+}
+
+/// A peer's message from the line's `origin` (`name`, `body`), else from the
+/// `<cross-session-message from-name="…">…</cross-session-message>` framing in `text`.
+fn peer_message(origin: &Value, text: &str) -> PeerMessage {
+    let from = origin["name"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("from-name=\"")?;
+        rest.split_once('"').map(|(n, _)| n.to_owned())
+    });
+    let body = origin["body"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("<cross-session-message")?;
+        let (_, rest) = rest.split_once('>')?;
+        rest.split_once("</cross-session-message>")
+            .map(|(b, _)| b.trim().to_owned())
+    });
+    PeerMessage {
+        from: from.unwrap_or_default(),
+        text: body.unwrap_or_else(|| text.to_owned()),
+    }
 }
 
 /// What the first `<t>...</t>` in `text` holds, trimmed.

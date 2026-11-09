@@ -78,6 +78,17 @@ fn message_start(mid: &str) -> Value {
     json!({"type":"stream_event","event":{"type":"message_start","message":{"id":mid}}})
 }
 
+fn peer_line(name: &str, body: &str, origin: bool) -> Value {
+    let text = format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/x.sock\" from-name=\"{name}\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session");
+    let mut v = json!({"type":"user","uuid":"p1","isReplay":true,"isSynthetic":true,"message":{"role":"user","content":text}});
+    if origin {
+        v["origin"] = json!({"kind":"peer","name":name,"body":body});
+    } else {
+        v["origin"] = json!({"kind":"peer"});
+    }
+    v
+}
+
 // ---- a driver and the spool it was fed ---------------------------------------------------------
 
 /// A driver plus every line it has been fed, at its real offset, so a test can restart from
@@ -1175,4 +1186,42 @@ mod new_api {
         let back: HeldPrompt = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
         assert_eq!(back, h);
     }
+}
+
+// ---- cross-session messages (2.1.224+) ---------------------------------------------------------
+
+/// A user line whose `origin.kind` is `peer` is a `PeerMessage` from the named session with the
+/// `origin.body` as its text, and never a `UserMessage`; it opens a turn like a prompt does.
+#[test]
+fn a_peer_message_is_its_own_item_not_the_users() {
+    let mut s = S::ready();
+    let ev = s.feed(peer_line("platform-12", "hello", true));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::TurnStarted)));
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::PeerMessage, body, .. }
+            if body["from"] == "platform-12" && body["text"] == "hello")));
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, .. })));
+}
+
+/// Without `origin.name`/`body` (a transcript's `queued_command`), the sender and text come from
+/// the `<cross-session-message>` framing.
+#[test]
+fn a_peer_message_falls_back_to_its_tags() {
+    let mut s = S::ready();
+    let ev = s.feed(peer_line("femme-65", "two\nlines", false));
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::PeerMessage, body, .. }
+            if body["from"] == "femme-65" && body["text"] == "two\nlines")));
+}
+
+/// The host's own prompt echo (`isReplay`, no `origin`) is still the `UserMessage`.
+#[test]
+fn a_prompt_echo_without_origin_stays_a_user_message() {
+    let mut s = S::ready();
+    let u = s.send("hi", PromptHow::Queue).unwrap();
+    let ev = s.feed(json!({"type":"user","uuid":u,"isReplay":true,"message":{"role":"user","content":"hi"}}));
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "hi")));
 }

@@ -104,6 +104,16 @@ pub struct UserMessage {
     pub text: String,
 }
 
+/// `ItemKind::PeerMessage`: what another Claude Code session on this machine sent this one
+/// (cross-session messaging), the `text` as the sender wrote it, without the CLI's framing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PeerMessage {
+    /// The sender's session name, as `ListAgents` shows it.
+    pub from: String,
+    /// The text.
+    pub text: String,
+}
+
 /// `ItemKind::TurnEnd`: built by the daemon from `AgentEvent::TurnEnded`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnEnd {
