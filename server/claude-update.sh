@@ -10,6 +10,9 @@
 #   DRY=1 claude-update.sh ...           everything but claude: prints its commands and prompts
 # Progress: <state>/reports/claude-updates/<version>.log; claude's own output beside it in <version>/.
 set -uo pipefail
+# Braces: bash reads the whole block before running it, so deploy.sh resetting ~/femme during the
+# hours this runs can't rewrite it under our feet.
+{
 here=$(cd "$(dirname "$0")" && pwd)
 lib=$here/claude-update
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
@@ -157,3 +160,5 @@ for f in "${features[@]}"; do
   rm -rf "$wt/target" "$wt/desktop/target"  # the branch is pushed; its build output is not needed
 done
 say "done: $n features, $opened PRs opened"
+exit
+}
