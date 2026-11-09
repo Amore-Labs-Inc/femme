@@ -22,12 +22,13 @@ Optional (`CLAUDE_UPDATES=1` in `.env`, then `bootstrap.sh`): every night at 03:
 
 The video lands in `<state>/pr-videos/<branch, '/' as '-'>.mp4` (8 MiB at most), where the
 desktop app finds it beside the PR. `record-desktop.sh <scene.sh> <video.mp4>`, run in the
-worktree after `cargo build -p femmed` and a desktop `cargo build`, plays the scene against a
-throwaway femmed and the desktop in Xvfb (1600x1000) and records it; the scene uses `env_desktop`,
-`start`, `click X Y`, `key`, `type`, `pause`, `shot`. The implementer checks frames of the video
-before the PR; with no working FEMME video the PR body opens with `⚠ No FEMME demo: <reason>`.
-`record.sh` (a vhs tape, an asciinema cast, a script, or a video) is only for a short terminal
-add-on; `tools.sh` installs vhs, ttyd, asciinema and agg into `~/.local/bin`.
+worktree after `cargo build -p femmed -p femme-holder` and a desktop `cargo build`, plays the
+scene against a throwaway femmed and the desktop in Xvfb (1600x1000) and records it; the scene
+uses `env_desktop`, `start`, `click X Y`, `dclick`, `key`, `type`, `pause`, `shot`. The
+implementer checks frames of the video before the PR; with no working FEMME video the PR body
+opens with `⚠ No FEMME demo: <reason>`. `record.sh` (a vhs tape, an asciinema cast, a script, or
+a video) is only for a short terminal add-on; `tools.sh` installs vhs, ttyd, asciinema and agg
+into `~/.local/bin`.
 
 ## Watching and rerunning
 
