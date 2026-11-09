@@ -324,9 +324,14 @@ struct Tail {
     compacted: u32,
     pending: Vec<Put>,
     /// The subagent transcripts beside it, by path.
-    // ponytail: their offsets live only here, so a daemon restart reads them again from the start;
-    // that writes nothing (the items are the same), persist them if the reading ever shows
+    // ponytail: their offsets live only here. Reading them all again at every start was 1.5 GB
+    // and got the daemon watchdog-killed in a loop, so a session the store already holds reads
+    // the ones there at start from their end: what a subagent wrote while the daemon was down is
+    // not shown. Persist the offsets if that gap ever matters.
     subs: HashMap<PathBuf, SubTail>,
+    /// Whether the subagent transcripts there at start are read from their end (the store holds
+    /// the session already) on the next look; false after the first.
+    subs_from_end: bool,
     /// Lines of kinds this reader does not know, by kind: each kind is one note, its count kept.
     // ponytail: counted from where this run started reading, so a restart counts again from there
     unknown: HashMap<String, u32>,
@@ -364,6 +369,7 @@ impl Tail {
             compacted: 0,
             pending: Vec::new(),
             subs: HashMap::new(),
+            subs_from_end: committed > 0,
             unknown: HashMap::new(),
         }
     }
@@ -418,7 +424,8 @@ impl Tail {
         };
         let known: Vec<(PathBuf, u64)> =
             self.subs.iter().map(|(p, t)| (p.clone(), t.read)).collect();
-        let subs = tokio::task::spawn_blocking(move || read_subs(&dir, &known))
+        let from_end = std::mem::take(&mut self.subs_from_end);
+        let subs = tokio::task::spawn_blocking(move || read_subs(&dir, &known, from_end))
             .await
             .unwrap_or_default();
         let sub_data = subs
@@ -529,8 +536,8 @@ impl Tail {
             (std::collections::hash_map::Entry::Occupied(e), _) => e.into_mut(),
             (std::collections::hash_map::Entry::Vacant(e), Some(parent)) => e.insert(SubTail {
                 parent,
-                lines: SpoolLines::new(0),
-                read: 0,
+                lines: SpoolLines::new(at),
+                read: at,
             }),
             (std::collections::hash_map::Entry::Vacant(_), None) => return,
         };
@@ -689,8 +696,9 @@ fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
 }
 
 /// Reads on in every subagent transcript of `dir`: the `known` ones from where they were read,
-/// a new one from the start once its `.meta.json` names the tool call that spawned it.
-fn read_subs(dir: &Path, known: &[(PathBuf, u64)]) -> Vec<SubRead> {
+/// a new one from the start once its `.meta.json` names the tool call that spawned it, or from
+/// its end with `from_end` (the ones there when the daemon starts on a session it holds).
+fn read_subs(dir: &Path, known: &[(PathBuf, u64)], from_end: bool) -> Vec<SubRead> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -714,7 +722,12 @@ fn read_subs(dir: &Path, known: &[(PathBuf, u64)]) -> Vec<SubRead> {
                 let Some(id) = meta.as_ref().and_then(|m| m["toolUseId"].as_str()) else {
                     continue; // not said yet: next tick
                 };
-                (Some(id.to_owned()), 0)
+                let at = if from_end {
+                    std::fs::metadata(&path).map_or(0, |m| m.len())
+                } else {
+                    0
+                };
+                (Some(id.to_owned()), at)
             }
         };
         if let Ok(data) = read_from(&path, at) {
@@ -1653,6 +1666,27 @@ mod tests {
 {"type":"api-request","agentId":"x"}
 {"type":"assistant","isSidechain":true,"message":{"id":"sm1","content":[{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}]}}
 "#;
+
+    #[test]
+    fn subagent_transcripts_there_at_a_restart_are_read_from_their_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("agent-x1.jsonl");
+        std::fs::write(&sub, SUB).unwrap();
+        std::fs::write(
+            dir.path().join("agent-x1.meta.json"),
+            r#"{"toolUseId":"toolu_A"}"#,
+        )
+        .unwrap();
+        let fresh = read_subs(dir.path(), &[], false);
+        assert_eq!(fresh[0].2, 0, "a session new to the store: from the start");
+        assert_eq!(fresh[0].3.as_ref().unwrap().len(), SUB.len());
+        let restart = read_subs(dir.path(), &[], true);
+        assert_eq!(restart[0].2, SUB.len() as u64, "held already: from the end");
+        assert!(
+            restart[0].3.as_ref().unwrap().is_empty(),
+            "nothing read again"
+        );
+    }
 
     #[tokio::test]
     async fn a_subagents_transcript_is_tailed_under_its_agent_call() {
