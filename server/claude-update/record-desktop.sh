@@ -13,8 +13,24 @@
 #   shot NAME                  $SHOTS/NAME.png (default /tmp/femme-shots/<video name>/), to find coordinates and check the effect
 # The daemon and the desktop get their own empty HOME: the box's mirrored chats (herdr panes,
 # ~/.claude/sessions) and the user's files never reach the video. Claude sessions there run the real
-# `claude` with the box's sign-in (CLAUDE_CONFIG_DIR); FAKE_CLAUDE=1 runs the test fake instead. The video is H.264, at most 8 MiB (re-encoded smaller when over).
+# `claude` with the box's sign-in and nothing else of ~/.claude; FAKE_CLAUDE=1 runs the test fake instead. The video is H.264, at most 8 MiB (re-encoded smaller when over).
 set -euo pipefail
+# Everything started for one recording carries FEMME_REC=<its tmp dir> (the daemon's holders and chats
+# also HOME=<tmp>/home): reap kills them all, by that tag rather than by pid, so grandchildren go too.
+reap() {
+  local e
+  for e in /proc/[0-9]*/environ; do
+    { tr '\0' '\n' <"$e"; } 2>/dev/null | grep -qxF -e "FEMME_REC=$1" -e "HOME=$1/home" && kill "${e//[!0-9]/}" 2>/dev/null
+  done
+  return 0
+}
+# --reap <pid> <tmp>: the watchdog below. When the recording dies without running its trap (SIGKILL,
+# say a tool's timeout), nothing it started may outlive it: a leaked desktop and Xvfb once ran 76 min.
+if [ "${1:-}" = --reap ]; then
+  while kill -0 "$2" 2>/dev/null && [ -d "$3" ]; do sleep 2; done
+  reap "$3"; sleep 1; reap "$3"; rm -rf "$3"
+  exit 0
+fi
 [ $# -eq 2 ] || { echo "usage: record-desktop.sh <scene.sh> <video.mp4>" >&2; exit 2; }
 scene=$(realpath "$1") out=$(realpath -m "$2")
 root=$PWD
@@ -30,10 +46,19 @@ chmod 700 "$tmp/run"
 pids=()
 cleanup() {
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  # The daemon's holders and chats outlive it: everything tagged with this recording goes too.
+  reap "$tmp"
+  sleep 1  # let them exit before their files go
   wait 2>/dev/null || true
   rm -rf "$tmp"
 }
+# A signal (timeout's TERM, ^C, a closed terminal) exits through the EXIT trap as well.
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+# In a session of its own, so a kill of this one's process group or tree misses it.
+setsid -f bash "$0" --reap "$$" "$tmp" </dev/null >/dev/null 2>&1
+export FEMME_REC=$tmp
 
 # A free display and two free ports.
 d=150; while [ -e "/tmp/.X$d-lock" ] || [ -e "/tmp/.X11-unix/X$d" ]; do d=$((d + 1)); done
@@ -52,7 +77,12 @@ daemon_env=(HOME="$tmp/home" FEMME_STATE="$tmp/state" XDG_RUNTIME_DIR="$tmp/run"
 if [ "${FAKE_CLAUDE:-0}" = 1 ]; then
   ln -s "$root/crates/femme-agents/fixtures/claude/fake-claude.py" "$tmp/bin/claude"
 else
-  ln -s "$(mise which claude)" "$tmp/bin/claude"; daemon_env+=(CLAUDE_CONFIG_DIR="$HOME/.claude")
+  # Chats use the empty HOME's ~/.claude with only the box's sign-in linked in (the daemon passes
+  # no CLAUDE_CONFIG_DIR on): the box's live sessions can't see them (ListAgents, SendMessage) and
+  # the user's CLAUDE.md, hooks and plugins stay out.
+  mkdir -m 700 "$tmp/home/.claude"
+  ln -s "$HOME/.claude/.credentials.json" "$tmp/home/.claude/.credentials.json"
+  ln -s "$(mise which claude)" "$tmp/bin/claude"
 fi
 env "${daemon_env[@]}" PATH="$tmp/bin:$PATH" "$femmed" serve >"$tmp/femmed.log" 2>&1 &
 pids+=($!)
@@ -86,7 +116,7 @@ click() { xdotool mousemove --sync "$1" "$2"; sleep 0.25; xdotool click 1; sleep
 dclick() { xdotool mousemove --sync "$1" "$2"; sleep 0.25; xdotool click --repeat 2 --delay 80 1; sleep 0.4; }
 key() { xdotool key --delay 120 "$@"; sleep 0.4; }
 type() { xdotool type --delay 55 -- "$*"; sleep 0.3; }
-pause() { sleep "$1"; }
+pause() { sleep "$1" & wait $!; }  # in the background: a signal runs the trap now, not after the sleep
 shot() { ffmpeg -loglevel error -f x11grab -video_size "${W}x${H}" -i "$DISPLAY" -frames:v 1 -y "$shots/$1.png" </dev/null; }
 
 # shellcheck source=/dev/null

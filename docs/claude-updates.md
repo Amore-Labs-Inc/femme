@@ -1,6 +1,12 @@
 # Nightly Claude Code updates
 
-Optional (`CLAUDE_UPDATES=1` in `.env`, then `bootstrap.sh`): every night at 03:00
+Optional (`CLAUDE_UPDATES=1` in `.env`, then `bootstrap.sh`): every night at 00:45, done by 09:00
+
+The run fits in `BUDGET_MIN` minutes (495: 00:45 to 09:00). Stages get what is left (the scout and
+each implementer at most 3 h); a feature with under 45 min of its own is left for a rerun. The last
+45 min are a fix pass: main moves at night (other sessions push), so every pull request the night
+opened that conflicts with main gets it merged in by a Fable chat (`claude-update/fix.md`), tested
+and pushed. In the morning each one is mergeable as it stands.
 `femme-claude-update.timer` runs `server/claude-update.sh`:
 
 1. `mise outdated claude`: with no newer Claude Code it logs one line to `upgrade.log` and stops
@@ -39,7 +45,7 @@ report), `<version>/ledger.md`, `<version>/scout.jsonl` and `<version>/<slug>.js
 run's stream), `<version>/<slug>.plan.md`.
 
 ```sh
-systemctl --user start femme-claude-update     # the 03:00 run, now
+systemctl --user start femme-claude-update     # the 00:45 run, now
 server/claude-update.sh --from 2.1.300 --to 2.1.302   # a range, no upgrade; open PRs are skipped
 server/claude-update.sh --force                # run even with no pending update (testing)
 DRY=1 server/claude-update.sh --from X --to Y  # everything but claude: prints commands and prompts

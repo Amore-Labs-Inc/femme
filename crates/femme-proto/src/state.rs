@@ -131,7 +131,15 @@ pub struct Pane {
 /// Transcript item kinds. Bodies are JSON (see [`Item::body`]), shaped per kind by `femme-agents`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ItemKind {
+    /// What the user said. A prompt sent from a client is stored before the agent gets it, with
+    /// `op` (the `Req::Prompt`'s op id) in its body: `Pending` while the agent has not echoed it,
+    /// `Completed` with `read_at` (unix ms) once it has, `Failed` when the agent did not get it
+    /// (`Req::Resend` gives it again). The echo itself is then an `Event` at the point the agent
+    /// read it, its body's `read` naming this item. A message typed in the agent's own terminal
+    /// is its echo, `Completed`, without `op` or `read_at`.
     UserMessage,
+    /// A message another Claude Code session on this machine sent (SendMessage), not the user's.
+    PeerMessage,
     AssistantMessage,
     Thinking,
     ToolCall,
@@ -240,7 +248,11 @@ pub enum Row {
     Item(Item),
     Issue(Issue),
     /// `id` is the entity's id as text (session ULID, `sid:no`, `sid/item_id`, issue number).
-    Tombstone { entity: Entity, id: String, rev: u64 },
+    Tombstone {
+        entity: Entity,
+        id: String,
+        rev: u64,
+    },
 }
 
 impl Row {

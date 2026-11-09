@@ -45,14 +45,18 @@ struct Link {
 impl Link {
     fn new(wr: OwnedWriteHalf, cap: usize) -> Link {
         let (out, rx) = mpsc::channel(cap);
-        Link { out, writer: tokio::task::spawn_local(write_loop(wr, rx)) }
+        Link {
+            out,
+            writer: tokio::task::spawn_local(write_loop(wr, rx)),
+        }
     }
 
     /// Queue a reply; `false` when the connection is gone. A reply that does not fit in a message
     /// (a `Screen` over 16 MiB) becomes an `Err` saying so: replies are strictly one per request,
     /// and closing the connection instead would leave the asker without one.
     async fn send(&self, resp: &HolderResp) -> bool {
-        let bytes = wire::encode(resp).or_else(|e| wire::encode(&HolderResp::Err(format!("reply not sent: {e}"))));
+        let bytes = wire::encode(resp)
+            .or_else(|e| wire::encode(&HolderResp::Err(format!("reply not sent: {e}"))));
         match bytes {
             Ok(bytes) => self.out.send(bytes).await.is_ok(),
             Err(_) => false,
@@ -72,7 +76,11 @@ impl Link {
 /// drop its queue's receiver, and a pane that has not yet looked at a just-sent `Attach` would
 /// take that for a dead view and lose the input queued behind it.
 async fn stop_writer(writer: &mut JoinHandle<()>) {
-    if !writer.is_finished() && tokio::time::timeout(Duration::from_secs(1), &mut *writer).await.is_err() {
+    if !writer.is_finished()
+        && tokio::time::timeout(Duration::from_secs(1), &mut *writer)
+            .await
+            .is_err()
+    {
         writer.abort();
     }
 }
@@ -100,26 +108,50 @@ pub async fn serve(sh: Arc<Shared>, stream: UnixStream) {
 async fn serve_inner(sh: &Arc<Shared>, stream: UnixStream) -> io::Result<()> {
     let cred = rustix::net::sockopt::socket_peercred(&stream)?;
     if cred.uid != rustix::process::getuid() {
-        tracing::warn!(uid = cred.uid.as_raw(), pid = cred.pid.as_raw_pid(), "refusing a connection from another user");
+        tracing::warn!(
+            uid = cred.uid.as_raw(),
+            pid = cred.pid.as_raw_pid(),
+            "refusing a connection from another user"
+        );
         return Ok(());
     }
     let (mut rd, wr) = stream.into_split();
     let mut buf = Vec::new();
-    let first = match tokio::time::timeout(FIRST_MSG_TIMEOUT, wire::read::<HolderReq, _>(&mut rd, &mut buf)).await {
+    let first = match tokio::time::timeout(
+        FIRST_MSG_TIMEOUT,
+        wire::read::<HolderReq, _>(&mut rd, &mut buf),
+    )
+    .await
+    {
         Ok(r) => r?,
         Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "no first message")),
     };
     match first {
         None => Ok(()),
         Some(HolderReq::Hello { v }) => control(sh, rd, buf, Link::new(wr, CONTROL_QUEUE), v).await,
-        Some(HolderReq::Attach { pane, epoch, have_rev, client_instance }) => {
-            let at = AttachReq { pane, epoch, have_rev, client: client_instance };
+        Some(HolderReq::Attach {
+            pane,
+            epoch,
+            have_rev,
+            client_instance,
+        }) => {
+            let at = AttachReq {
+                pane,
+                epoch,
+                have_rev,
+                client: client_instance,
+            };
             view(sh, rd, buf, Link::new(wr, VIEW_QUEUE), at).await
         }
-        Some(HolderReq::SpoolRead { from }) => spool(sh, rd, Link::new(wr, SPOOL_QUEUE), from).await,
+        Some(HolderReq::SpoolRead { from }) => {
+            spool(sh, rd, Link::new(wr, SPOOL_QUEUE), from).await
+        }
         Some(_) => {
             let link = Link::new(wr, 1);
-            link.send(&HolderResp::Err("first message must be Hello, Attach or SpoolRead".into())).await;
+            link.send(&HolderResp::Err(
+                "first message must be Hello, Attach or SpoolRead".into(),
+            ))
+            .await;
             link.finish().await;
             Ok(())
         }
@@ -128,18 +160,34 @@ async fn serve_inner(sh: &Arc<Shared>, stream: UnixStream) -> io::Result<()> {
 
 // ---- control -------------------------------------------------------------------------------
 
-async fn control(sh: &Arc<Shared>, mut rd: OwnedReadHalf, mut buf: Vec<u8>, link: Link, v: u16) -> io::Result<()> {
+async fn control(
+    sh: &Arc<Shared>,
+    mut rd: OwnedReadHalf,
+    mut buf: Vec<u8>,
+    link: Link,
+    v: u16,
+) -> io::Result<()> {
     if v != HOLDER_VERSION && v.checked_add(1) != Some(HOLDER_VERSION) {
-        let msg = format!("unsupported holder protocol v{v}; this holder speaks v{HOLDER_VERSION} and v{}", HOLDER_VERSION.saturating_sub(1));
+        let msg = format!(
+            "unsupported holder protocol v{v}; this holder speaks v{HOLDER_VERSION} and v{}",
+            HOLDER_VERSION.saturating_sub(1)
+        );
         link.send(&HolderResp::Err(msg)).await;
         link.finish().await;
         return Ok(());
     }
     // Register and build `Info` without an await in between: no event can fall in the gap.
     let id = sh.alloc_id();
-    lock(&sh.controls).push(Ctl { id, out: link.out.clone() });
+    lock(&sh.controls).push(Ctl {
+        id,
+        out: link.out.clone(),
+    });
     let info = HolderResp::Info(sh.info());
-    let shutdown = if link.send(&info).await { control_loop(sh, &mut rd, &mut buf, &link).await } else { false };
+    let shutdown = if link.send(&info).await {
+        control_loop(sh, &mut rd, &mut buf, &link).await
+    } else {
+        false
+    };
     lock(&sh.controls).retain(|c| c.id != id);
     link.finish().await;
     if shutdown {
@@ -152,7 +200,12 @@ async fn control(sh: &Arc<Shared>, mut rd: OwnedReadHalf, mut buf: Vec<u8>, link
 
 /// Requests and replies, strictly in order (the protocol has no request ids). Returns whether
 /// the connection asked for `Shutdown`.
-async fn control_loop(sh: &Arc<Shared>, rd: &mut OwnedReadHalf, buf: &mut Vec<u8>, link: &Link) -> bool {
+async fn control_loop(
+    sh: &Arc<Shared>,
+    rd: &mut OwnedReadHalf,
+    buf: &mut Vec<u8>,
+    link: &Link,
+) -> bool {
     loop {
         let req = match wire::read::<HolderReq, _>(rd, buf).await {
             Ok(Some(req)) => req,
@@ -173,7 +226,14 @@ async fn control_loop(sh: &Arc<Shared>, rd: &mut OwnedReadHalf, buf: &mut Vec<u8
 async fn handle(sh: &Arc<Shared>, req: HolderReq) -> HolderResp {
     let r: Result<(), String> = match req {
         HolderReq::Hello { .. } => return HolderResp::Info(sh.info()),
-        HolderReq::SpawnPty { no, cmd, cwd, env, cols, rows } => pane::spawn(sh, no, cmd, cwd, env, cols, rows),
+        HolderReq::SpawnPty {
+            no,
+            cmd,
+            cwd,
+            env,
+            cols,
+            rows,
+        } => pane::spawn(sh, no, cmd, cwd, env, cols, rows),
         HolderReq::ClosePane { no } => {
             let removed = lock(&sh.panes).remove(&no);
             match removed {
@@ -196,7 +256,9 @@ async fn handle(sh: &Arc<Shared>, req: HolderReq) -> HolderResp {
         }
         HolderReq::Signal { target, sig } => sh.signal(target, sig),
         HolderReq::Screen { pane, fmt } => {
-            let Some(p) = pane_handle(sh, pane) else { return HolderResp::Err(format!("no pane {pane}")) };
+            let Some(p) = pane_handle(sh, pane) else {
+                return HolderResp::Err(format!("no pane {pane}"));
+            };
             let (reply, rx) = oneshot::channel();
             if p.tx.send(PaneCmd::Screen { fmt, reply }).await.is_err() {
                 return HolderResp::Err(format!("pane {pane} is gone"));
@@ -207,9 +269,10 @@ async fn handle(sh: &Arc<Shared>, req: HolderReq) -> HolderResp {
             };
         }
         HolderReq::Shutdown => Ok(()),
-        HolderReq::Attach { .. } | HolderReq::Term(_) | HolderReq::SpoolRead { .. } => {
-            Err("that message belongs on its own connection: send it as the first message of a new one".into())
-        }
+        HolderReq::Attach { .. } | HolderReq::Term(_) | HolderReq::SpoolRead { .. } => Err(
+            "that message belongs on its own connection: send it as the first message of a new one"
+                .into(),
+        ),
     };
     match r {
         Ok(()) => HolderResp::Ok,
@@ -230,16 +293,30 @@ struct AttachReq {
     client: u128,
 }
 
-async fn view(sh: &Arc<Shared>, mut rd: OwnedReadHalf, mut buf: Vec<u8>, link: Link, at: AttachReq) -> io::Result<()> {
+async fn view(
+    sh: &Arc<Shared>,
+    mut rd: OwnedReadHalf,
+    mut buf: Vec<u8>,
+    link: Link,
+    at: AttachReq,
+) -> io::Result<()> {
     let Some(pane) = pane_handle(sh, at.pane) else {
-        link.send(&HolderResp::Err(format!("no pane {}", at.pane))).await;
+        link.send(&HolderResp::Err(format!("no pane {}", at.pane)))
+            .await;
         link.finish().await;
         return Ok(());
     };
     let Link { out, mut writer } = link;
     let id = sh.alloc_id();
     let kill = Arc::new(Notify::new());
-    let attach = Attach { id, out, kill: kill.clone(), epoch: at.epoch, have_rev: at.have_rev, client: at.client };
+    let attach = Attach {
+        id,
+        out,
+        kill: kill.clone(),
+        epoch: at.epoch,
+        have_rev: at.have_rev,
+        client: at.client,
+    };
     if pane.tx.send(PaneCmd::Attach(attach)).await.is_err() {
         return Ok(());
     }
@@ -286,7 +363,10 @@ async fn spool(sh: &Arc<Shared>, rd: OwnedReadHalf, link: Link, from: u64) -> io
     let hi_rx = sh.spool_hi.subscribe();
     let (lo, end) = (sh.spool_lo.load(Relaxed), *hi_rx.borrow());
     if from > end || from < lo {
-        link.send(&HolderResp::Err(format!("spool read from {from} is outside its kept part {lo}..{end}"))).await;
+        link.send(&HolderResp::Err(format!(
+            "spool read from {from} is outside its kept part {lo}..{end}"
+        )))
+        .await;
         link.finish().await;
         return Ok(());
     }
@@ -322,9 +402,15 @@ async fn spool_loop(
             let want = SPOOL_CHUNK.min((hi - pos) as usize);
             let n = f.read(&mut chunk[..want]).await?;
             if n == 0 {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "spool file is shorter than its recorded end"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "spool file is shorter than its recorded end",
+                ));
             }
-            let msg = wire::encode(&HolderResp::Spool { offset: pos, data: chunk[..n].to_vec() })?;
+            let msg = wire::encode(&HolderResp::Spool {
+                offset: pos,
+                data: chunk[..n].to_vec(),
+            })?;
             if out.send(msg).await.is_err() {
                 return Ok(());
             }

@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use async_trait::async_trait;
-use femme_proto::rpc::{Answer, IssueField, Scope};
+use femme_proto::rpc::{Answer, IssueField, PromptHow, Scope};
 use femme_proto::state::{Agent, Issue, Item, Mode, Pane, Row, Session};
 use femme_proto::Sid;
 use femme_store::{auth, issues, sessions, Store};
@@ -51,7 +51,9 @@ impl Daemon {
     /// configs. Holders are reattached by [`Daemon::reconcile`].
     pub fn open(cfg: Config) -> anyhow::Result<Arc<Daemon>> {
         std::fs::create_dir_all(&cfg.state_dir)?;
-        let store = Arc::new(Store::open(&cfg.state_dir.join("femme.db"))?);
+        let mut store = Store::open(&cfg.state_dir.join("femme.db"))?;
+        recover_messages(&mut store, &cfg);
+        let store = Arc::new(store);
         let hub = Hub::new(Arc::new({
             let store = store.clone();
             move |scope, after| backlog(&store, scope, after).map_err(|e| e.to_string())
@@ -271,7 +273,7 @@ impl Core for Daemon {
     }
 
     async fn prompt(&self, pane: &PaneRef, text: &str) -> Result<(), CoreError> {
-        self.pane_prompt(pane, text).await
+        self.pane_prompt(pane, text, PromptHow::Queue, None).await
     }
 
     async fn input(&self, pane: &PaneRef, bytes: &[u8]) -> Result<(), CoreError> {
@@ -280,6 +282,10 @@ impl Core for Daemon {
 
     async fn interrupt(&self, sid: Sid) -> Result<(), CoreError> {
         self.interrupt_session(sid).await
+    }
+
+    async fn background(&self, sid: Sid, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.background_task(sid, tool_use_id).await
     }
 
     async fn answer(&self, sid: Sid, request_id: &str, answer: Answer) -> Result<(), CoreError> {
@@ -403,5 +409,28 @@ impl Core for Daemon {
 
     fn config(&self) -> &Config {
         &self.cfg
+    }
+}
+
+/// Once: the messages sent mid-turn that the herdr reader dropped before it knew them, put back
+/// in their sessions ([`crate::headless::herdr::recover`]). A failure is logged, not fatal: the
+/// daemon starts anyway and tries again next start.
+fn recover_messages(store: &mut Store, cfg: &Config) {
+    let done = cfg.state_path("recovered-queued-messages");
+    if done.exists() {
+        return;
+    }
+    let r = crate::headless::herdr::recover(store, &cfg.home, &cfg.state_path("uploads"));
+    match r {
+        Ok(n) => {
+            if n > 0 {
+                if let Err(e) = store.rotate_epoch() {
+                    tracing::warn!(%e, "epoch not rotated after putting messages back");
+                }
+            }
+            tracing::info!(n, "messages sent mid-turn: put back");
+            let _ = std::fs::write(&done, n.to_string());
+        }
+        Err(e) => tracing::warn!(%e, "messages sent mid-turn: not put back"),
     }
 }

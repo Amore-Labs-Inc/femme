@@ -56,6 +56,7 @@ text_enum!(pane_kind_str, pane_kind_parse, PANE_KINDS, PaneKind {
 
 text_enum!(item_kind_str, item_kind_parse, ITEM_KINDS, ItemKind {
     ItemKind::UserMessage => "user_message",
+    ItemKind::PeerMessage => "peer_message",
     ItemKind::AssistantMessage => "assistant_message",
     ItemKind::Thinking => "thinking",
     ItemKind::ToolCall => "tool_call",
@@ -145,7 +146,7 @@ mod tests {
         assert_eq!(SESSION_STATUSES.len(), 9);
         assert_eq!(ATTENTIONS.len(), 3);
         assert_eq!(PANE_KINDS.len(), 2);
-        assert_eq!(ITEM_KINDS.len(), 10);
+        assert_eq!(ITEM_KINDS.len(), 11);
         assert_eq!(ITEM_STATUSES.len(), 5);
         assert_eq!(ISSUE_STATUSES.len(), 7);
         assert_eq!(ENTITIES.len(), 4);

@@ -24,6 +24,7 @@ pub mod holder_client;
 pub mod hub;
 pub mod notify;
 pub mod scheduler;
+mod sent;
 pub mod session;
 pub mod takeover;
 #[cfg(test)]

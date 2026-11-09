@@ -409,10 +409,8 @@ async fn open(cwd: Option<String>) -> anyhow::Result<String> {
 /// the file as a blob and asks the daemon to show it, over the socket like `open`. The daemon
 /// keeps a copy beside the session's uploads, so the file may go afterwards.
 async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
-    let sid: femme_proto::Sid = std::env::var("FEMME_SID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| anyhow::anyhow!("not inside a FEMME session (no FEMME_SID)"))?;
+    let env_sid: Option<femme_proto::Sid> =
+        std::env::var("FEMME_SID").ok().and_then(|s| s.parse().ok());
     // a video goes as it is, for the desktop's player; one too big for a blob goes as an
     // animated GIF instead (gpui animates a GIF from memory, not a WebP)
     let too_big =
@@ -447,6 +445,36 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
         femme_client::Config::new(DeviceIdentity::generate("femmed show"), Ulid::generate());
     cfg.ssh_command = Some(proxy);
     let client = femme_client::Client::start(cfg);
+    // The chat is the one whose Claude this process runs under; a `FEMME_SID` is only for a
+    // process with no Claude above it (2026-11-09: an agent that guessed the id from the newest
+    // uploads folder showed its pictures in another chat).
+    let own = own_conversation(&home_dir()?);
+    let sid = match &own {
+        Some(conv) => match client
+            .request_timeout(
+                Req::SessionOf {
+                    agent_sid: conv.clone(),
+                },
+                ANSWER_WAIT,
+            )
+            .await
+        {
+            Ok(Resp::Session(sid)) => Some(sid),
+            _ => None,
+        },
+        None => None,
+    };
+    let sid = match (sid, env_sid) {
+        (Some(sid), Some(env)) if sid != env => {
+            eprintln!("femmed show: FEMME_SID={env} ignored, this process runs in chat {sid}");
+            sid
+        }
+        (Some(sid), _) => sid,
+        (None, Some(env)) => env,
+        (None, None) => anyhow::bail!(
+            "not inside a FEMME session (no Claude above this process in a FEMME chat, no FEMME_SID)"
+        ),
+    };
     let put = Req::BlobPut {
         name: name.clone(),
         data,
@@ -465,6 +493,44 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
         Resp::Ok => Ok(format!("shown {name}")),
         other => anyhow::bail!("unexpected answer {other:?}"),
     }
+}
+
+fn home_dir() -> anyhow::Result<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(Into::into)
+        .ok_or_else(|| anyhow::anyhow!("no HOME"))
+}
+
+/// This process and its ancestors, nearest first, from `/proc/<pid>/stat`.
+fn ancestors() -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut pid = std::process::id();
+    while pid > 1 && out.len() < 64 {
+        out.push(pid);
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        // "pid (comm) state ppid ...": the comm may hold spaces, so cut after its ')'
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            break;
+        };
+        let Some(ppid) = rest.split_whitespace().nth(1).and_then(|p| p.parse().ok()) else {
+            break;
+        };
+        pid = ppid;
+    }
+    out
+}
+
+/// The conversation of the nearest Claude Code above this process: Claude writes
+/// `~/.claude/sessions/<pid>.json` with its `sessionId` (the mirror reads the same files).
+fn own_conversation(home: &Path) -> Option<String> {
+    let dir = home.join(".claude/sessions");
+    ancestors().into_iter().find_map(|pid| {
+        let bytes = std::fs::read(dir.join(format!("{pid}.json"))).ok()?;
+        let v: Value = serde_json::from_slice(&bytes).ok()?;
+        v["sessionId"].as_str().map(str::to_owned)
+    })
 }
 
 /// A video `femmed show` turns into an animated GIF, by its extension.
@@ -1058,5 +1124,23 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused, "{err}");
+    }
+
+    #[test]
+    fn the_ancestors_start_here_and_climb_to_the_parent() {
+        let a = ancestors();
+        assert_eq!(a[0], std::process::id());
+        assert_eq!(a[1], std::os::unix::process::parent_id());
+    }
+
+    #[test]
+    fn the_conversation_is_the_nearest_claude_above() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude/sessions")).unwrap();
+        assert_eq!(own_conversation(dir.path()), None);
+        let me = std::process::id();
+        let f = dir.path().join(format!(".claude/sessions/{me}.json"));
+        std::fs::write(&f, r#"{"pid":1,"sessionId":"conv-1","kind":"interactive"}"#).unwrap();
+        assert_eq!(own_conversation(dir.path()).as_deref(), Some("conv-1"));
     }
 }

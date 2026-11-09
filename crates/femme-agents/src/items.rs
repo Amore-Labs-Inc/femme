@@ -39,6 +39,21 @@ pub struct ToolCall {
     pub input: Value,
     /// The agent's id for this call (Claude `tool_use.id`, Codex item id, Pi toolCallId).
     pub call_id: String,
+    /// Set once the agent runs the call as a task (Claude's `task_started`: a Bash command or a
+    /// subagent): `Foreground` while the turn waits for it (and [`crate::Driver::background`] can
+    /// move it), `Background` once it runs on its own. Stays on the completed call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskState>,
+}
+
+/// Where a tool call's task runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    /// The turn waits for it.
+    Foreground,
+    /// It runs on its own; the turn went on and a `task_notification` event ends it.
+    Background,
 }
 
 /// `ItemKind::ToolResult`: what a tool returned. Id of the item is `<call_id>:result`.
@@ -50,6 +65,24 @@ pub struct ToolResult {
     pub output: String,
     /// The tool reported failure.
     pub is_error: bool,
+    /// The page an `Artifact` call published or read, when the result names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ArtifactLink>,
+}
+
+/// A claude.ai artifact page an `Artifact` tool result points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ArtifactLink {
+    /// `https://claude.ai/artifact/<id>`.
+    pub url: String,
+    /// The page's title; the file's name or the call's action when the result does not say.
+    pub title: String,
+    /// The version number of a publish (its `seq`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    /// The publish changed an existing page rather than making a new one.
+    #[serde(default)]
+    pub updated: bool,
 }
 
 /// `ItemKind::Question`: a question for the user, plus its answer once given.
@@ -100,6 +133,16 @@ pub struct TaskEnd {
 /// `ItemKind::UserMessage`: something the user (or the daemon on their behalf) sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UserMessage {
+    /// The text.
+    pub text: String,
+}
+
+/// `ItemKind::PeerMessage`: what another Claude Code session on this machine sent this one
+/// (cross-session messaging), the `text` as the sender wrote it, without the CLI's framing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PeerMessage {
+    /// The sender's session name, as `ListAgents` shows it.
+    pub from: String,
     /// The text.
     pub text: String,
 }
@@ -174,11 +217,13 @@ mod tests {
             name: "Bash".into(),
             input: json!({"command":"echo hi"}),
             call_id: "t1".into(),
+            task: None,
         });
         let r = body(&ToolResult {
             call_id: "t1".into(),
             output: "hi\n".into(),
             is_error: false,
+            link: None,
         });
         assert_eq!(c["call_id"], r["call_id"]);
     }

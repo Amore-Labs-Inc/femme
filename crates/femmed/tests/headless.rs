@@ -7,7 +7,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
-use femme_proto::rpc::{Answer, Attachment};
+use femme_proto::rpc::{Answer, Attachment, PromptHow};
 use femme_proto::state::{Attention, Context, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
 use femmed::core::{Core, CoreError, PaneRef};
@@ -38,11 +38,19 @@ fn shape(items: &[Item]) -> Vec<(ItemKind, ItemStatus, Value)> {
     items
         .iter()
         .map(|i| {
-            let body = i
+            let mut body: Value = i
                 .body
                 .as_deref()
                 .map(|b| serde_json::from_str(b).unwrap())
                 .unwrap_or(Value::Null);
+            // a saved message's ids and times are its own each run
+            if let Some(o) = body.as_object_mut() {
+                for k in ["echo", "read_at", "read", "op"] {
+                    if o.remove(k).is_some() {
+                        o.insert(k.into(), Value::Bool(true));
+                    }
+                }
+            }
             (i.kind, i.status, body)
         })
         .collect()
@@ -266,6 +274,83 @@ async fn a_question_blocks_the_session_until_an_answer_and_the_first_answer_wins
         "the stream stopped early: {:#?}",
         shape(&v)
     );
+    d.close_session(sid).await.unwrap();
+}
+
+/// Claude 2.1.319: a Bash command the turn waits for can be moved to the background (`Ctrl+B`):
+/// the call's result says so, the turn ends at once, and the task's end comes as its own event
+/// and turn later. With nothing in the foreground the request is `Busy`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreground_task_moves_to_the_background_and_the_turn_goes_on() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(d.background(sid, None).await, Err(CoreError::Busy));
+
+    let body = |i: &Item| -> Value {
+        i.body
+            .as_deref()
+            .map(|b| serde_json::from_str(b).unwrap())
+            .unwrap_or(Value::Null)
+    };
+    d.prompt(&pane, "bgtask").await.unwrap();
+    let v = wait_items(&d, sid, "a foreground task", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::ToolCall && body(i)["task"] == "foreground")
+    })
+    .await;
+    let call = v
+        .iter()
+        .find(|i| i.kind == ItemKind::ToolCall)
+        .unwrap()
+        .item_id
+        .clone();
+    assert_eq!(
+        d.background(sid, Some("toolu_nope")).await,
+        Err(CoreError::Busy),
+        "not that call"
+    );
+    let t0 = Instant::now();
+    d.background(sid, Some(&call)).await.unwrap();
+    wait_for(&d, sid, "idle while the task runs", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert!(
+        t0.elapsed() < Duration::from_secs(4),
+        "the turn did not wait for the task: {:?}",
+        t0.elapsed()
+    );
+    let v = items(&d, sid);
+    let result = v.iter().find(|i| i.kind == ItemKind::ToolResult).unwrap();
+    assert!(
+        body(result)["output"]
+            .as_str()
+            .unwrap()
+            .contains("manually backgrounded"),
+        "{:#?}",
+        shape(&v)
+    );
+    let c = v.iter().find(|i| i.item_id == call).unwrap();
+    assert_eq!(c.status, ItemStatus::Completed);
+    assert_eq!(body(c)["task"], "background", "{:#?}", shape(&v));
+    assert_eq!(d.background(sid, None).await, Err(CoreError::Busy));
+
+    // the task's end: an event naming the call, then the turn that reads its output
+    let v = wait_items(&d, sid, "the task's end", |v| {
+        has_text(v, ItemKind::AssistantMessage, "the task printed 42")
+    })
+    .await;
+    let end = v
+        .iter()
+        .find(|i| i.kind == ItemKind::Event && body(i)["task"]["call"] == call)
+        .unwrap();
+    assert_eq!(body(end)["task"]["status"], "completed", "{:#?}", shape(&v));
     d.close_session(sid).await.unwrap();
 }
 
@@ -937,12 +1022,15 @@ async fn a_prompt_the_agent_dropped_when_it_died_does_not_run_after_a_takeover_a
     let _stop = stop;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let v = items(&d, sid);
+    // the saved message stays, and says the agent did not get it
     assert!(
-        !v.iter()
-            .any(|i| i.kind == ItemKind::UserMessage && text_of(i) == "second"),
+        v.iter().any(|i| i.kind == ItemKind::UserMessage
+            && text_of(i) == "second"
+            && i.status == ItemStatus::Failed),
         "a turn nobody asked for: {:#?}",
         shape(&v)
     );
+
     assert_eq!(held(&d), 0);
     d.close_session(sid).await.unwrap();
 }
@@ -970,7 +1058,9 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         attach("../shot.png", b"\x89PNG two"),
         attach("my notes.bin", b"\xff\xfe\x00"),
     ];
-    d.prompt_attached(&pane, "look", &list).await.unwrap();
+    d.prompt_attached(&pane, "look", &list, PromptHow::Queue, None)
+        .await
+        .unwrap();
 
     let dir = b.dir.path().join("state/uploads").join(sid.to_string());
     let paths = ["shot.png", "shot-2.png", "my notes.bin"].map(|n| dir.join(n));
@@ -1008,7 +1098,13 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         blob: [9; 32],
     };
     let err = d
-        .prompt_attached(&pane, "never", &[list[0].clone(), gone])
+        .prompt_attached(
+            &pane,
+            "never",
+            &[list[0].clone(), gone],
+            PromptHow::Queue,
+            None,
+        )
         .await;
     assert!(
         matches!(&err, Err(CoreError::Bad(m)) if m.contains("gone.png")),
@@ -1016,5 +1112,117 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
     );
     assert!(!dir.join("shot-3.png").exists());
     assert!(!has_text(&items(&d, sid), ItemKind::UserMessage, "never"));
+    d.close_session(sid).await.unwrap();
+}
+
+/// The texts of `kind`, in transcript order.
+fn texts_of(v: &[Item], kind: ItemKind) -> Vec<String> {
+    v.iter().filter(|i| i.kind == kind).map(text_of).collect()
+}
+
+/// A `slow` turn is running, a few ticks in.
+async fn slow_turn(d: &Daemon, b: &Box_) -> (Sid, PaneRef) {
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    // the store holds the streamed text only when the item is done: wait by the clock instead
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    (sid, pane)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_steer_mid_turn_joins_the_running_turn() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    // the composer's Enter while working: written to the agent at once, folded into this turn
+    d.prompt_attached(&pane, "steer", &[], PromptHow::Steer, None)
+        .await
+        .unwrap();
+    let v = wait_items(&d, sid, "the steer's echo", |v| {
+        has_text(v, ItemKind::UserMessage, "steer")
+    })
+    .await;
+    assert!(
+        !v.iter()
+            .any(|i| i.kind == ItemKind::AssistantMessage && text_of(i).contains("tick 50")),
+        "the echo came while the turn still ran: {:#?}",
+        shape(&v)
+    );
+    let v = wait_items(&d, sid, "the turn's end", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::AssistantMessage && text_of(i).contains("echo: steer"))
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "steer"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 1, "one turn answered both: {:#?}", shape(&v));
+    assert!(
+        answers[0].contains("tick 50"),
+        "never interrupted: {}",
+        answers[0]
+    );
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_then_send_mid_turn_stops_the_turn_and_runs_the_prompt() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    d.prompt_attached(&pane, "instead", &[], PromptHow::InterruptThenSend, None)
+        .await
+        .unwrap();
+    let v = wait_items(&d, sid, "the new turn's answer", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: instead")
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "instead"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 2, "{:#?}", shape(&v));
+    assert!(
+        !answers[0].contains("tick 50"),
+        "the slow turn was cut short: {}",
+        answers[0]
+    );
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_core_prompt_path_still_waits_for_the_turn_to_end() {
+    // board, API, worker: `Core::prompt` is a Queue, held until the running turn is over
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    d.prompt(&pane, "second").await.unwrap();
+    let v = wait_items(&d, sid, "the second turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: second")
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "second"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 2, "its own turn: {:#?}", shape(&v));
+    assert!(answers[0].contains("tick 50"), "after the whole first turn");
+    assert!(!answers[0].contains("echo: second"), "not folded in");
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
     d.close_session(sid).await.unwrap();
 }

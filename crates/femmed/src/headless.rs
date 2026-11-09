@@ -43,6 +43,7 @@ use crate::core::CoreError;
 use crate::daemon::{core_err, now_ms, Daemon};
 use crate::holder_client::{Holder, SpoolLines};
 use crate::scheduler::UsageSnapshot;
+use crate::sent;
 use crate::session::{
     agent_label, find_on_path, gateway_env, gone, holder_err, label, COLS, MAIN, ROWS,
 };
@@ -94,9 +95,17 @@ type Reply = oneshot::Sender<Result<(), CoreError>>;
 enum Cmd {
     Prompt {
         text: String,
+        how: PromptHow,
+        /// The id the agent is to echo it under ([`crate::sent`]).
+        id: Option<String>,
         reply: Reply,
     },
     Interrupt {
+        reply: Reply,
+    },
+    /// Ctrl+B: the foreground task of the call (or every one) goes to the background.
+    Background {
+        tool_use_id: Option<String>,
         reply: Reply,
     },
     Answer {
@@ -142,9 +151,22 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
-    pub(crate) async fn prompt(&self, text: &str) -> Result<(), CoreError> {
+    #[cfg(test)]
+    pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
+        self.prompt_as(text, how, None).await
+    }
+
+    /// [`Head::prompt`], echoed by the agent under `id` when it takes one.
+    pub(crate) async fn prompt_as(
+        &self,
+        text: &str,
+        how: PromptHow,
+        id: Option<String>,
+    ) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Prompt {
             text: text.into(),
+            how,
+            id,
             reply,
         })
         .await
@@ -152,6 +174,14 @@ impl Head {
 
     pub(crate) async fn interrupt(&self) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Interrupt { reply }).await
+    }
+
+    pub(crate) async fn background(&self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Background {
+            tool_use_id: tool_use_id.map(str::to_owned),
+            reply,
+        })
+        .await
     }
 
     pub(crate) async fn answer(&self, request_id: &str, answer: Answer) -> Result<(), CoreError> {
@@ -338,6 +368,8 @@ struct Actor {
     // ponytail: unbounded while the store keeps failing, each batch is only a few KiB; cap it (and
     // fail the session) if a store that stays broken is ever seen.
     pending_puts: Vec<Put>,
+    /// What the agent said about the saved messages, for the next commit ([`sent::settle`]).
+    missed: Vec<sent::Gone>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
     resend: Vec<HeldPrompt>,
     restart_at: Option<Instant>,
@@ -402,6 +434,7 @@ impl Actor {
             boot_acts: Vec::new(),
             fold: FoldState::default(),
             pending_puts: Vec::new(),
+            missed: Vec::new(),
             resend: Vec::new(),
             restart_at: None,
             restarted_at: None,
@@ -485,12 +518,21 @@ impl Actor {
 
     async fn on_cmd(&mut self, d: &Daemon, cmd: Cmd) {
         match cmd {
-            Cmd::Prompt { text, reply } => {
-                let r = self.prompt(d, &text).await;
+            Cmd::Prompt {
+                text,
+                how,
+                id,
+                reply,
+            } => {
+                let r = self.prompt(d, &text, how, id.as_deref()).await;
                 let _ = reply.send(r);
             }
             Cmd::Interrupt { reply } => {
                 let r = self.interrupt().await;
+                let _ = reply.send(r);
+            }
+            Cmd::Background { tool_use_id, reply } => {
+                let r = self.background(tool_use_id.as_deref()).await;
                 let _ = reply.send(r);
             }
             Cmd::Answer {
@@ -537,7 +579,15 @@ impl Actor {
         Ok(())
     }
 
-    async fn prompt(&mut self, d: &Daemon, text: &str) -> Result<(), CoreError> {
+    /// `how` goes to the driver as is: a Steer joins the running turn at its next tool boundary,
+    /// InterruptThenSend stops it first, Queue waits for it to end.
+    async fn prompt(
+        &mut self,
+        d: &Daemon,
+        text: &str,
+        how: PromptHow,
+        id: Option<&str>,
+    ) -> Result<(), CoreError> {
         self.ready()?;
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
@@ -556,9 +606,11 @@ impl Actor {
         if !takes || row.attention == Attention::Blocked {
             return Err(CoreError::Busy);
         }
-        self.driver
-            .prompt(text, PromptHow::Queue, &mut self.out)
-            .map_err(driver_err)?;
+        match id {
+            Some(id) => self.driver.prompt_with_id(id, text, how, &mut self.out),
+            None => self.driver.prompt(text, how, &mut self.out),
+        }
+        .map_err(driver_err)?;
         self.flush().await;
         let effort = effort_switch(text);
         let goal = goal_switch(text);
@@ -643,6 +695,15 @@ impl Actor {
     async fn interrupt(&mut self) -> Result<(), CoreError> {
         self.ready()?;
         self.driver.interrupt(&mut self.out).map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
+    async fn background(&mut self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver
+            .background(tool_use_id, &mut self.out)
+            .map_err(driver_err)?;
         self.flush().await;
         Ok(())
     }
@@ -913,7 +974,13 @@ impl Actor {
             return;
         }
         for h in std::mem::take(&mut self.resend) {
-            if let Err(e) = self.driver.prompt(&h.text, h.how, &mut self.out) {
+            let r = match &h.id {
+                Some(id) => self
+                    .driver
+                    .prompt_with_id(id, &h.text, h.how, &mut self.out),
+                None => self.driver.prompt(&h.text, h.how, &mut self.out),
+            };
+            if let Err(e) = r {
                 tracing::warn!(sid = %self.sid, %e, "a held prompt was not sent again");
             }
         }
@@ -956,6 +1023,18 @@ impl Actor {
         }
         if !replay {
             self.resend.extend(f.dropped);
+            if !f.missed.is_empty() {
+                self.missed.push(sent::Gone::Prompts(f.missed));
+            }
+            // idle with a saved message still waiting and nothing holding it: not got
+            if live_line && matches!(f.state, Some((SessionStatus::Idle, _))) {
+                let held = self
+                    .driver
+                    .held_prompts()
+                    .into_iter()
+                    .chain(self.resend.iter().cloned());
+                self.missed.push(sent::Gone::Idle(held_of(held.collect())));
+            }
         }
         if f.turn_started {
             let _ = self.machine.step(Ev::TurnStarted);
@@ -1074,13 +1153,17 @@ impl Actor {
         // not while replaying: the driver has not seen the questions it holds answers for yet
         let state = (self.replay_until.is_none() && saved != self.saved).then(|| saved.json());
         let before = self.committed;
-        if puts.is_empty() && committed == before && state.is_none() {
+        let missed = std::mem::take(&mut self.missed);
+        if puts.is_empty() && committed == before && state.is_none() && missed.is_empty() {
             return;
         }
         let (sid, epoch) = (self.sid, self.epoch);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
+            }
+            for g in &missed {
+                sent::settle(tx, sid, g, published)?;
             }
             if committed != before {
                 tx.set_spool_committed(sid, committed)?;
@@ -1105,6 +1188,7 @@ impl Actor {
             Err(e) => {
                 tracing::warn!(sid = %self.sid, %e, "transcript not stored, kept for later");
                 self.pending_puts = puts;
+                self.missed = missed;
             }
         }
     }
@@ -1127,6 +1211,7 @@ impl Actor {
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
         // ponytail: the desktop's chats think at medium; /effort changes it until the next start
         let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
             .then(|| "medium".to_owned());
@@ -1279,6 +1364,10 @@ impl Actor {
     async fn fail(&mut self, d: &Daemon, text: &str) {
         self.failed = true;
         self.restart_at = None;
+        // nothing runs now: every saved message still waiting was not got
+        self.resend.clear();
+        self.missed.push(sent::Gone::All);
+        self.commit(d, Vec::new()).await;
         self.event(d, text);
         self.update(d, None, |s| {
             s.status = SessionStatus::Failed;
@@ -1330,7 +1419,8 @@ impl Actor {
                     // The prompts that waited for a headless process each have an Event item that
                     // says they did not run, and the conversation moves to the terminal: none may
                     // come back as a turn nobody asked for after the next restart.
-                    self.resend.clear();
+                    let held = std::mem::take(&mut self.resend);
+                    self.missed.push(sent::Gone::Prompts(held_of(held)));
                     self.commit(d, Vec::new()).await;
                     self.spawn_tui(d).await
                 }
@@ -1445,6 +1535,19 @@ fn cut(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Claude Code's Artifact tool (a page on claude.ai) is off in `claude -p` unless the environment
+/// asks for it. A Claude chat gets it; the DeepSeek gateway route cannot use claude.ai, Codex and
+/// Pi have no such tool. The box has no display, so the CLI never opens a browser itself.
+pub(crate) fn artifact_env(agent: Agent, model: Option<&str>) -> Vec<(String, String)> {
+    if agent != Agent::Claude || is_gateway(model) {
+        return Vec::new();
+    }
+    vec![
+        ("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned()),
+        ("CLAUDE_CODE_ARTIFACT_AUTO_OPEN".to_owned(), "0".to_owned()),
+    ]
 }
 
 /// A model of OpenGateway's (`deepseek/...`): another provider than Anthropic's.
@@ -1625,6 +1728,8 @@ struct Folded {
     compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
+    /// Prompts the agent refused: they will not run ([`crate::sent::settle`]).
+    missed: Vec<sent::Held>,
     turn_started: bool,
     turn_ended: bool,
     /// Claude's `/goal` as the batch last said it.
@@ -1784,7 +1889,12 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
             }
             // the question's item is completed by its own event, the status follows from `Status`
             AgentEvent::QuestionResolved { .. } => {}
-            AgentEvent::PromptDropped { text, how, reason } => {
+            AgentEvent::PromptDropped {
+                text,
+                how,
+                reason,
+                id,
+            } => {
                 let why = match &reason {
                     DropReason::Exited => "the agent exited first".to_string(),
                     DropReason::Refused(r) => r.clone(),
@@ -1792,11 +1902,14 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 let line = format!("A message was not run ({why}): {}", cut(&text, 300));
                 f.puts
                     .push(Put::Done(event_item(sid, next_id(), &line, now)));
-                if reason == DropReason::Exited {
+                if reason != DropReason::Exited {
+                    f.missed.push((id, text));
+                } else {
                     f.dropped.push(HeldPrompt {
                         text,
                         how,
                         queued_at_ms: u64::try_from(now).unwrap_or(0),
+                        id,
                     });
                 }
             }
@@ -1847,6 +1960,11 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
     f
 }
 
+/// Held prompts as [`sent`] compares them with saved messages.
+fn held_of(held: Vec<HeldPrompt>) -> Vec<sent::Held> {
+    held.into_iter().map(|h| (h.id, h.text)).collect()
+}
+
 fn is_final(s: ItemStatus) -> bool {
     matches!(
         s,
@@ -1878,11 +1996,20 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
         }
         Put::Done(item) => {
             let mut item = item.clone();
-            if let Some(old) = store_items::get_item(tx, sid, &item.item_id)? {
-                if same(&old, &item) {
-                    return Ok(());
+            match store_items::get_item(tx, sid, &item.item_id)? {
+                // the echo of a saved message, paired when it first came
+                Some(old) if sent::is_read_mark(&old) => return Ok(()),
+                Some(old) => {
+                    if same(&old, &item) {
+                        return Ok(());
+                    }
+                    item.ts = old.ts;
                 }
-                item.ts = old.ts;
+                None => {
+                    if sent::reconcile(tx, sid, &item, published)? {
+                        return Ok(());
+                    }
+                }
             }
             published.push(tx.put_item(&item)?);
         }
@@ -1911,6 +2038,7 @@ fn preview_of(kind: ItemKind, b: &Value) -> String {
     let first = |t: &str| t.lines().next().unwrap_or("").to_string();
     match kind {
         ItemKind::UserMessage
+        | ItemKind::PeerMessage
         | ItemKind::AssistantMessage
         | ItemKind::Thinking
         | ItemKind::Plan
@@ -1952,7 +2080,12 @@ fn render(items: &[(Item, Value)], streams: &HashMap<String, String>) -> String 
                 .to_string(),
         };
         let line = match item.kind {
-            ItemKind::UserMessage => format!("> {}", text("text")),
+            ItemKind::UserMessage => match item.status {
+                ItemStatus::Pending => format!("> {} (queued)", text("text")),
+                ItemStatus::Failed => format!("> {} (not received)", text("text")),
+                _ => format!("> {}", text("text")),
+            },
+            ItemKind::PeerMessage => format!("@{}: {}", text("from"), text("text")),
             ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
             ItemKind::ToolCall => format!("* {}", item.preview),
             ItemKind::ToolResult => format!("  {}", item.preview),
@@ -2136,6 +2269,25 @@ impl Daemon {
             .await
     }
 
+    pub(crate) async fn background_task(
+        &self,
+        sid: Sid,
+        tool_use_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.agent == Agent::Shell {
+            return Err(CoreError::Busy);
+        }
+        if s.mode == Mode::Tui {
+            return self.send_bytes(sid, b"\x02").await; // Ctrl+B
+        }
+        self.sessions
+            .head(sid)
+            .ok_or(CoreError::Busy)?
+            .background(tool_use_id)
+            .await
+    }
+
     pub(crate) async fn answer_question(
         &self,
         sid: Sid,
@@ -2304,6 +2456,39 @@ mod tests {
         published
     }
 
+    /// The echo of a saved message reads it, once: a replay of the same line changes nothing.
+    #[test]
+    fn a_saved_message_is_read_by_its_echo_and_a_replay_leaves_it_read() {
+        let (store, sid) = store_with_session();
+        let mut saved = item(ItemKind::UserMessage, ItemStatus::Pending, "fix it");
+        saved.sid = sid;
+        saved.item_id = "01JC0SAVED".into();
+        saved.body =
+            Some(r#"{"text":"fix it","echo":"c8eed47b-e7a7-4739-8260-f78e891051e8"}"#.into());
+        saved.ts = 1_000;
+        saved.seq = 0;
+        apply_puts(&store, sid, vec![Put::Done(saved)]);
+        let mut echo = item(ItemKind::UserMessage, ItemStatus::Completed, "fix it");
+        echo.sid = sid;
+        echo.item_id = "c8eed47b-e7a7-4739-8260-f78e891051e8".into();
+        echo.body = Some(r#"{"text":"fix it"}"#.into());
+        echo.ts = 4_000;
+        echo.seq = 0;
+        let first = apply_puts(&store, sid, vec![Put::Done(echo.clone())]);
+        assert_eq!(
+            first.iter().map(|i| (i.kind, i.status)).collect::<Vec<_>>(),
+            [
+                (ItemKind::UserMessage, ItemStatus::Completed),
+                (ItemKind::Event, ItemStatus::Completed)
+            ]
+        );
+        assert!(apply_puts(&store, sid, vec![Put::Done(echo)]).is_empty());
+        let all = store
+            .read(|c| store_items::page_items(c, sid, None, 10))
+            .unwrap();
+        assert_eq!(all.len(), 2, "the message and where it was read: {all:?}");
+    }
+
     #[test]
     fn a_finished_turn_ends_done_and_an_interrupted_one_ends_quiet() {
         let mut st = FoldState::default();
@@ -2340,6 +2525,7 @@ mod tests {
             text: text.into(),
             how: PromptHow::Queue,
             reason,
+            id: None,
         };
         let evs = vec![
             drop("a", DropReason::Exited),
@@ -2725,6 +2911,16 @@ mod tests {
         assert_eq!(effort_switch("/effort a b"), None);
         assert_eq!(model_switch("use the opus model"), None);
         assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
+    }
+
+    #[test]
+    fn a_claude_chat_gets_the_artifact_tool_the_others_do_not() {
+        let on = |m| artifact_env(Agent::Claude, m);
+        assert!(on(None).contains(&("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned())));
+        assert!(!on(Some("claude-opus-5-5")).is_empty());
+        assert!(on(Some(DEEPSEEK)).is_empty());
+        assert!(artifact_env(Agent::Codex, None).is_empty());
+        assert!(artifact_env(Agent::Pi, None).is_empty());
         let mut at = None;
         let mut seen = Vec::new();
         for _ in 0..5 {
@@ -2999,7 +3195,10 @@ mod tests {
         rig.row();
         rig.a.spawn_process(&rig.d, None).await.unwrap();
         // the agent has not answered `initialize`: the driver holds the prompt back
-        rig.a.prompt(&rig.d, "second").await.unwrap();
+        rig.a
+            .prompt(&rig.d, "second", PromptHow::Queue, None)
+            .await
+            .unwrap();
         assert_eq!(rig.a.driver.held_prompts().len(), 1);
         // it dies: the prompt is dropped and kept for the restart, two seconds away
         rig.a.agent_exited(&rig.d, -9).await;

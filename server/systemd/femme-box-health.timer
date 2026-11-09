@@ -1,0 +1,9 @@
+[Unit]
+Description=Check the box's disk, load, swap and leaked processes every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

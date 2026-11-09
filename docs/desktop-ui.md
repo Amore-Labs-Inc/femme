@@ -38,12 +38,24 @@ Keep it current: when your module's public API changes, edit your section in the
   `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
   hand over it): the words of a link are the target, not the dim address after them, and only web
   and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
+  An `Artifact` call (Claude Code's page on claude.ai; FEMME's Claude chats run with
+  `CLAUDE_CODE_ARTIFACT=1`) is one line, `artifact · <title> ↗`, whose title opens the page; a
+  publish that changed an existing page adds `updated · v<N>`. Its folded body is the plain call.
 - **Compaction hand-off**: after `Conversation compacted`, Claude Code restarts the model with one
   synthetic *user* message ("This session is being continued from a previous conversation…
   Summary: …"). It arrives as `UserMessage` and is stored as one, but the transcript does not
   draw it as the user's: the compact note and that message fold into one muted row
   (`▸ · conversation compacted · summary`), a click shows the summary. Detection is the template's
   prefix, display only.
+- **A message from another Claude session**: Claude Code sessions on one machine message each
+  other (`SendMessage` to a name `ListAgents` shows, 2.1.224+). The CLI delivers it as a *user*
+  line with `origin.kind: "peer"`; the daemon stores it as `PeerMessage {from, text}` (the
+  sender's name and the text without the `<cross-session-message>` framing), never as a
+  `UserMessage`, so the outbox does not take a pending prompt off for it and it is not the
+  user's words anywhere. The transcript draws it as a card on the *left*, headed `✉ from @name`
+  in the accent colour, the text as markdown; a reply follows under it like any turn. It arrives
+  mid-turn when the session was busy (a `queued_command` in a TUI transcript) and sits where it
+  came. (`transcript/rows.rs` `peer_row`.)
 - **The agent shows a picture**: `femmed show <file> [caption]`, run inside a session (the holder
   sets `FEMME_SID`), uploads the file (`BlobPut`) and sends `Show`; the daemon keeps a copy in
   `<state>/uploads/<sid>/` and appends an assistant item whose text is the caption plus an
@@ -82,6 +94,13 @@ Keep it current: when your module's public API changes, edit your section in the
   writes them: a headless chat's actor follows that file while a goal is set, a session mirrored
   from a herdr pane reads it anyway. `Session::goal` (femme-proto) carries condition, state and
   reason; the strip's colours are the `goal` and `goal_met` theme tokens.
+- **Background tasks** (Claude Code 2.1.319): a Bash command or an Agent the turn waits for is a
+  task (`task_started`), and its tool row shows `⇣ background` at its right while it runs. A click
+  moves that task to the background (`Req::Background{sid, tool_use_id}`, Claude's `background_tasks`
+  control request): the call's result says it was backgrounded, the turn goes on, and the row says
+  `in background` until the task's end comes as an event (`task_notification`), which starts a turn
+  of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
+  of the chat on show, as `Ctrl+B` does in Claude's own TUI (a mirrored pane gets that key).
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text
@@ -132,6 +151,27 @@ Keep it current: when your module's public API changes, edit your section in the
   box still runs the old commit. Errors show in the red strip; a daemon without the requests is
   "daemon too old for pull requests". `refresh` in the title bar and every open read the list again.
   `Esc` or `‹` closes it; the deploy watch goes on while it is closed.
+  **Conflicts**: a row whose `Pr::mergeable` is `Some(false)` carries a red `conflicts` pill (`None`:
+  a faint `checking`; `Some(true)`: nothing). `Merge & deploy` stays the main button on it too, with
+  a line under the buttons: `conflicts with main: Claude resolves them, then it merges and deploys
+  by itself`. The daemon answers that `PrMerge` with `Ok` as for a clean merge, but queues it
+  behind a conflict fix (`Pr::merging`); the card reads the list after every `Ok`: the pull request
+  gone means merged (the deploy watch above), still there with `merging` means queued. A queued one
+  shows an accent `merging…` pill, the detail says `Claude is resolving the conflicts; it merges and
+  deploys by itself` and has no merge or fix button (`Watch demo`, `Close PR` and an `Open fix
+  chat` stay). The card reads the list every 10 s until it leaves the list (open or closed, past the
+  60-read cap), then watches its deploy; listed again without `merging`, it says the fix stopped.
+  `Fix with Claude` sits beside `Merge & deploy` on a conflicting row for steering: `Req::PrFix` →
+  `Resp::Session(sid)`, a real Claude chat labelled `fix #n` that merges main into the branch,
+  resolves, tests and pushes; the card closes and the centre switches to that chat
+  (`Net::set_current`, as a sidebar click). While `Pr::fixing` is set the row shows a `fixing…` pill
+  and the detail `Open fix chat` in its place. While anything is merging, fixing or `checking`, the
+  open card reads the list every 10 s, at most 60 times per opening. An older daemon that refuses a
+  conflicting merge reads `#n conflicts with main — Fix with Claude` (other errors as the daemon
+  says them). The footer's `Auto-fix conflicts after a merge` toggle is `Req::PrAutoFix`
+  (`on: None` reads it at open, a click sends `Some(!cur)`; off by default; hidden when the daemon
+  does not know it): with it on, each merge starts a fix chat for every `claude-update/*` pull
+  request it leaves conflicting (uses Claude usage).
 - **At start** (once connected): the newest live Claude session is shown (one that crashed, failed
   or lost its holder does not count); none → a new headless Claude session in the home directory is
   created and shown; `claude` missing on the box (the create fails) → a shell session. The user
@@ -169,7 +209,7 @@ the first window opens (no file is light) and written on every flip.
 | sidebar | `ui/sidebar` | `desktop/src/sidebar.rs` | `Sidebar::new(net, cx)`, `set_selected(sid, cx)`, emits `OpenSession(Sid)`; lists `Net.model.sessions` that are live, newest first, status dot, title as `net::title` |
 | sessions | `ui/sessions` | `desktop/src/net.rs`, `desktop/src/session.rs` | `Net::current()/set_current()`, `session::open_at_start(net, cx)`; status/attention handling; `Model` fields other agents read stay (`sessions`, `panes`, `link`, `rtt_ms`, `current`) |
 | transcript | `ui/transcript` | `desktop/src/transcript/*` (rewrites `live.rs`, deletes `model.rs`, `pacer.rs`, `view.rs`, `rng.rs`; `bench.rs` loses its transcript bench) | `Transcript::new(net, cx)`, `set_session(sid, cx)`; subscribes `Scope::Session(sid)`, renders `Item` rows + `Delta`, markdown via `pulldown-cmark` (`Inline::links` keeps each link's target; `md_view` makes a text with links an `InteractiveText` whose click is `cx.open_url`), folded tool calls, question rows answer with `Req::AnswerQuestion`, user rows show attachments through `viewer::FileView` (`Req::BlobGet`) |
-| composer | `ui/composer` | `desktop/src/composer.rs` | `Composer::new(net, cx)`, `set_session(sid, cx)`, `Focusable`; a multi-line input (gpui-component `input`), Enter sends, Shift-Enter newline, Esc = `Req::Interrupt`; paste image / drop file → `Req::BlobPut` → thumbnail chip (hover: `viewer::FileView` popover; ×) → `Req::Prompt{attachments, how: Queue}` (`Steer` with ctrl-Enter); the text typed for a session is kept in `$XDG_STATE_HOME/femme/drafts/<sid>.txt` on every edit (`composer/disk.rs`) and is back in that chat on the next run, until it is sent; above `send`, a Claude session's context XP bar (`composer/xp.rs`, 10 px like the permission square above `+`): `Session::context` as a notched bar that fills, pink then red past 90%, its tooltip the numbers (current / window, progress, room left, level = compactions + 1); a compaction is a level up: a neon ring pulses once around the bar. A session mirrored from a herdr pane has it too, read from its transcript on disk: what each message read, its compactions, and the window from the driver's table by model (the transcript never says it) |
+| composer | `ui/composer` | `desktop/src/composer.rs` | `Composer::new(net, cx)`, `set_session(sid, cx)`, `Focusable`; a multi-line input (gpui-component `input`), Enter sends, Shift-Enter newline, Esc = `Req::Interrupt`; paste image / drop file → `Req::BlobPut` → thumbnail chip (hover: `viewer::FileView` popover; ×) → `Req::Prompt{attachments, how}`; `how` follows the terminal's keys (`composer/slash.rs` `how_for`): idle session = `Queue` on either key; working session: Enter and the `send` button = `Steer` (Claude takes the message when its current tool calls finish, inside the running turn; the outbox's faded bubble stays until the CLI's `isReplay` echo lands it between the tool rows), ctrl-Enter = `InterruptThenSend` (stop the turn, send now), a `/command` line = `Queue` (held until the turn ends, as the terminal holds commands); the text typed for a session is kept in `$XDG_STATE_HOME/femme/drafts/<sid>.txt` on every edit (`composer/disk.rs`) and is back in that chat on the next run, until it is sent; above `send`, a Claude session's context XP bar (`composer/xp.rs`, 10 px like the permission square above `+`): `Session::context` as a notched bar that fills, pink then red past 90%, its tooltip the numbers (current / window, progress, room left, level = compactions + 1); a compaction is a level up: a neon ring pulses once around the bar. A session mirrored from a herdr pane has it too, read from its transcript on disk: what each message read, its compactions, and the window from the driver's table by model (the transcript never says it); Up on the input's first row recalls the session's earlier prompts (its `UserMessage` items plus sends not echoed yet, `composer/history.rs`), Down on the last row goes forward and back to the draft, Esc or a send ends it (the `/` menu keeps Up/Down while open) |
 | terminal | `ui/terminal` | `desktop/src/terminal/panel.rs`, `terminal/panel/tabs.rs`, `terminal/pane.rs`, `terminal/bridge.rs`, `terminal/input.rs` | `TerminalPanel::new(net, cx)`, `set_session(sid, cx)`, `pane(id)`, `main_pane(sid)` (the session's first terminal: a shell's, or an agent's TUI; the centre draws it), `main_id(sid)`, `set_centre(pane, cx)`, `shown_pane(cx)`, `watch_window(window, cx)`, `Focusable` (focusing the panel hands the keyboard to the tab on show); the panel owns every attached `TerminalPane` (first 8 terminals at once, the rest when their session is current; headless agents' pane 1 is the transcript's, never attached) and draws the right panel's terminal tab: tab per pane except the one the centre draws (a pane is drawn in one place only: `set_centre` says which, the default is the first terminal of a shell or TUI session), `+` (`PaneOpen`, or `SessionCreate` shell when there is no session), `close` (`PaneClose`; `SessionClose` for a shell session's first pane; never an agent's own pane), ctrl-tab / ctrl-shift-tab |
 | files | `ui/files` | `desktop/src/files.rs` | `FilesPanel::new(net, cx)`, `set_session(sid, cwd, cx)`; tree from `Req::FsList{sid, path}` (lazy per directory), click → `Req::FsRead` → `viewer::FileView` in the panel, back button, size guard (ask before > 8 MiB) |
 | viewer | `ui/viewer` | `desktop/src/viewer.rs`, `desktop/Cargo.toml` (deps it adds) | `FileView::new(name, data, cx)`: png/jpg/gif/webp/bmp via gpui `img`, SVG, PDF pages (pure-Rust renderer, no system libs), text/code with syntect, markdown; unknown → hex/size notice |
@@ -187,6 +227,7 @@ Not touched by anyone: `desktop/src/connect.rs`, `display.rs`, `terminal/element
 | `BlobPut{name, data}` | `BlobHash(h)` | `data` ≤ `MAX_BLOB_PUT` (8 MiB; this request may weigh that much, every other one 1 MiB) into the `blobs` table (hash = sha256); `name` is not kept. A `Prompt` whose `attachments` name blobs: each is written to `<state>/uploads/<sid>/<name>` (last path component, control characters become `_`, leading dots dropped, `-2` before the extension for a taken name; at most 16; a blob that is gone is `Bad`) and the prompt text gets a blank line and one `Attached: <absolute path>` line per file. **`BlobGet` serves an upload only until retention sweeps it**: a blob no transcript item refers to goes at the next daemon start or daily sweep. So `BlobPut` and `Prompt` close together, and a transcript row that shows an attachment reads the file at its `Attached:` path with `FsRead`. |
 | `Caps` / `SetCap{account, five_hour, weekly}` | `Caps(Vec<AccountCap>)` / `Ok` | Stored in `<state>/caps.json` (`{"<number>": {"five_hour": 80, "weekly": 90}}`), written atomically. `server/fable-cap.sh` reads it: an account past *its* cap (either window) is `cswap disable`d and, if active, the box `cswap switch --strategy best`; below it again → `cswap enable`. `femme-cswap.service` keeps the global `CAP`, which still moves the box off the active account, so a per-account cap above it cannot keep an account in use longer. A cap is 50 to 99 (else `Bad`) and `account` is cswap's number, from 1; both `None` clears. The scheduler's pause at `CAP` stays global (`/usage` carries no account). |
 | `ServerInfo` | `ServerInfo{version, deployed}` | `env!("CARGO_PKG_VERSION")` and `<state>/deployed` trimmed. |
+| `Background{sid, tool_use_id}` | `Ok` | Headless: the driver's `background_tasks` control request for the call (`None`: every foreground task); a TUI or herdr pane gets `Ctrl+B`. `Busy` when nothing runs in the foreground. |
 | `FsList{sid, path}` / `FsRead{sid, path}` | `FsEntries` / `FsData` | Implement: `path` relative to the session's `cwd` (absolute allowed under `$HOME`), no `..` escapes, no symlink out of home, hidden files listed, directories sorted dirs-first. `FsRead` is capped just under a frame, 16 MiB − 4 KiB (else `Bad`): a reply has to fit one 16 MiB frame. The session's own `<state>/uploads/<sid>/` is readable too, wherever the state folder is. |
 
 Usage JSON: `GET /api/accounts` → `{"cswap": <cswap list --json>, "aws": {...}}`; each account has

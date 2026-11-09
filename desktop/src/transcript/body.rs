@@ -44,6 +44,9 @@ pub struct ToolCall {
     pub name: String,
     /// The tool's input; `None` until it is complete, or when it was cut.
     pub input: Option<Value>,
+    /// Where the call's task runs, once the agent runs it as one (Claude: a Bash command or a
+    /// subagent): `foreground` while the turn waits for it, `background` once it was moved.
+    pub task: Option<String>,
 }
 
 impl ToolCall {
@@ -81,6 +84,21 @@ pub struct ToolResult {
     pub output: String,
     /// The tool reported failure.
     pub is_error: bool,
+    /// The claude.ai page an `Artifact` call points at (`femme_agents::items::ArtifactLink`).
+    pub link: Option<ArtifactLink>,
+}
+
+/// A claude.ai artifact page named by an `Artifact` tool result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactLink {
+    /// `https://claude.ai/artifact/<id>`.
+    pub url: String,
+    /// The page's title (or the file's name).
+    pub title: String,
+    /// The version number of a publish, when known.
+    pub version: Option<u64>,
+    /// The publish changed an existing page.
+    pub updated: bool,
 }
 
 /// Why a turn ended (`femme_agents::StopReason`).
@@ -115,6 +133,7 @@ pub fn parse(kind: ItemKind, json: Option<&str>) -> Parsed {
     };
     match kind {
         ItemKind::UserMessage
+        | ItemKind::PeerMessage
         | ItemKind::AssistantMessage
         | ItemKind::Thinking
         | ItemKind::Plan
@@ -125,6 +144,11 @@ pub fn parse(kind: ItemKind, json: Option<&str>) -> Parsed {
         ItemKind::TurnEnd => Parsed::TurnEnd(turn_end(json)),
         ItemKind::TurnStart => Parsed::Empty,
     }
+}
+
+/// The sender's session name in a `PeerMessage` body.
+pub fn peer_from(json: &str) -> String {
+    string_field(json, "from").unwrap_or_default()
 }
 
 /// The `text` of a message-like body (a bare JSON string counts as its own text).
@@ -141,12 +165,14 @@ fn tool_call(json: &str) -> ToolCall {
         Ok(v) => ToolCall {
             name: v["name"].as_str().unwrap_or("tool").to_owned(),
             input: v.get("input").cloned(),
+            task: v["task"].as_str().map(str::to_owned),
         },
         // Cut inside the input (keys are sorted, so `input` comes before `name`): the name is gone
         // with the tail; the caller falls back to the item's preview.
         Err(_) => ToolCall {
             name: string_field(json, "name").unwrap_or_default(),
             input: None,
+            task: None,
         },
     }
 }
@@ -156,12 +182,29 @@ fn tool_result(json: &str) -> ToolResult {
         Ok(v) => ToolResult {
             output: v["output"].as_str().unwrap_or("").to_owned(),
             is_error: v["is_error"].as_bool().unwrap_or(false),
+            link: artifact_link(&v["link"]),
         },
         Err(_) => ToolResult {
             output: string_field(json, "output").unwrap_or_default(),
             is_error: json.contains("\"is_error\":true"),
+            // keys are sorted, so a cut body (in `output`) still holds the whole `link`, a
+            // flat object
+            link: json
+                .split_once("\"link\":")
+                .and_then(|(_, r)| Some(&r[..=r.find('}')?]))
+                .and_then(|o| serde_json::from_str::<Value>(o).ok())
+                .and_then(|v| artifact_link(&v)),
         },
     }
+}
+
+fn artifact_link(v: &Value) -> Option<ArtifactLink> {
+    Some(ArtifactLink {
+        url: v["url"].as_str()?.to_owned(),
+        title: v["title"].as_str().unwrap_or("page").to_owned(),
+        version: v["version"].as_u64(),
+        updated: v["updated"].as_bool() == Some(true),
+    })
 }
 
 fn turn_end(json: &str) -> TurnEnd {
@@ -330,9 +373,26 @@ mod tests {
             parse(ItemKind::ToolResult, Some(&b)),
             Parsed::ToolResult(ToolResult {
                 output: "hi\n".into(),
-                is_error: true
+                is_error: true,
+                link: None,
             })
         );
+        // an Artifact result's link survives a cut output (keys sorted: link before output)
+        let b = json!({"call_id":"t1","is_error":false,
+            "link":{"url":"https://claude.ai/artifact/AbC","title":"T","version":2,"updated":true},
+            "output":"Published …"})
+        .to_string();
+        let cut = &b[..b.find("Published").unwrap() + 4];
+        for j in [b.as_str(), cut] {
+            let Parsed::ToolResult(r) = parse(ItemKind::ToolResult, Some(j)) else {
+                panic!()
+            };
+            let l = r.link.unwrap();
+            assert_eq!(
+                (l.url.as_str(), l.title.as_str(), l.version, l.updated),
+                ("https://claude.ai/artifact/AbC", "T", Some(2), true)
+            );
+        }
         // Keys are sorted: call_id, is_error, output. A cut lands in the output.
         let cut = r#"{"call_id":"t1","is_error":true,"output":"line 1\nline 2\nli…[truncated]"#;
         let Parsed::ToolResult(r) = parse(ItemKind::ToolResult, Some(cut)) else {

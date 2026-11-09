@@ -47,7 +47,11 @@ fn init_logging() {
     // A log line that cannot be written (stderr is a file on a full disk) must not panic the task
     // that logged it: by default tracing reports the failure with `eprintln!`, which panics, and
     // that would end the spool pump in exactly the situation it is built to ride out.
-    let b = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).with_ansi(false).log_internal_errors(false);
+    let b = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .log_internal_errors(false);
     // journald stamps its own times.
     if std::env::var_os("JOURNAL_STREAM").is_some() {
         b.without_time().init();

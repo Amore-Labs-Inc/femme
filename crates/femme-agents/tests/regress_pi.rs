@@ -373,9 +373,9 @@ mod new_api {
     fn dropped(ev: &[AgentEvent]) -> Vec<(String, PromptHow, DropReason)> {
         ev.iter()
             .filter_map(|e| match e {
-                AgentEvent::PromptDropped { text, how, reason } => {
-                    Some((text.clone(), *how, reason.clone()))
-                }
+                AgentEvent::PromptDropped {
+                    text, how, reason, ..
+                } => Some((text.clone(), *how, reason.clone())),
                 _ => None,
             })
             .collect()

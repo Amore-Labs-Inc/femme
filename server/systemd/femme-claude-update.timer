@@ -1,9 +1,9 @@
 [Unit]
-Description=Upgrade Claude Code and scout its new features every night at 03:00
+Description=Upgrade Claude Code and scout its new features every night at 00:45, done by 09:00
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
-# A box that was off at 03:00 runs it when it comes back.
+OnCalendar=*-*-* 00:45:00
+# A box that was off at 00:45 runs it when it comes back.
 Persistent=true
 
 [Install]

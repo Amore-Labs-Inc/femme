@@ -53,6 +53,10 @@ impl Offsets {
     pub fn item_open(&mut self, id: &str, offset: u64) {
         self.open.entry(id.to_owned()).or_insert(offset);
     }
+    /// Where the open item `id` began, else the offset past the last line.
+    pub fn open_at(&self, id: &str) -> u64 {
+        self.open.get(id).copied().unwrap_or(self.next)
+    }
     /// Item `id` is final.
     pub fn item_close(&mut self, id: &str) {
         self.open.remove(id);
@@ -118,6 +122,7 @@ pub(crate) fn held(text: &str, how: femme_proto::rpc::PromptHow) -> crate::HeldP
         text: text.to_owned(),
         how,
         queued_at_ms: now_ms(),
+        id: None,
     }
 }
 
@@ -150,13 +155,14 @@ pub(crate) fn drop_held(
             text: h.text,
             how: h.how,
             reason: reason.clone(),
+            id: h.id,
         });
     }
 }
 
 /// A random-looking, valid version-4 UUID string built from a ULID (time prefix + 80 random
 /// bits), for agents that take a caller-chosen session id (`claude --session-id`).
-pub(crate) fn uuid_v4() -> String {
+pub fn uuid_v4() -> String {
     let mut n = femme_proto::Id::new().0;
     n = (n & !(0xf_u128 << 76)) | (4_u128 << 76); // version 4
     n = (n & !(0x3_u128 << 62)) | (2_u128 << 62); // variant 10xx
@@ -297,7 +303,7 @@ mod tests {
         assert!(q.is_empty());
         assert_eq!(ev.len(), 5);
         assert!(
-            matches!(&ev[0], AgentEvent::PromptDropped { text, how: I, reason: crate::DropReason::Exited } if text == "i1")
+            matches!(&ev[0], AgentEvent::PromptDropped { text, how: I, reason: crate::DropReason::Exited, .. } if text == "i1")
         );
     }
 

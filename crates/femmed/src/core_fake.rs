@@ -301,6 +301,11 @@ impl Core for FakeCore {
         self.sid_known(sid)
     }
 
+    async fn background(&self, sid: Sid, _tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.check("background")?;
+        self.sid_known(sid)
+    }
+
     async fn answer(&self, sid: Sid, _request_id: &str, _answer: Answer) -> Result<(), CoreError> {
         self.check("answer")?;
         self.sid_known(sid)

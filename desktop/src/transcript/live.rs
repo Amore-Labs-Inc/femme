@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
-use femme_proto::state::{Goal, GoalState, ItemStatus, SessionStatus};
+use femme_proto::state::{Goal, GoalState, ItemKind, ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -194,8 +194,8 @@ impl Transcript {
             ticker: None,
             working: None,
             sent: Vec::new(),
-            sent_ver: 0,
             sent_timer: None,
+            sent_ver: 0,
             _events: events,
             _status: status,
         }
@@ -417,6 +417,35 @@ impl Transcript {
         doc
     }
 
+    /// Moves the task of the call `call` (a Bash command or a subagent the turn waits for), or
+    /// with `None` every foreground task of the chat, to the background: the turn goes on. With
+    /// `None` and nothing in the foreground it does nothing (the key is harmless).
+    pub fn background(&mut self, call: Option<String>, cx: &mut Context<Self>) {
+        let Some(sid) = self.items.sid() else {
+            return;
+        };
+        if call.is_none()
+            && !self.items.iter().any(|e| {
+                e.item.kind == ItemKind::ToolCall && turns::tool_line(&self.items, e).backgroundable
+            })
+        {
+            return;
+        }
+        self.request(
+            Req::Background {
+                sid,
+                tool_use_id: call,
+            },
+            cx,
+            |this, res, cx| {
+                if let Err(e) = res {
+                    this.note = Some(format!("not moved to the background: {e}"));
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     /// Runs `req` on the daemon and calls `done` with the answer, unless another session has been
     /// shown meanwhile.
     pub(super) fn request(
@@ -466,12 +495,19 @@ impl Transcript {
             before_seq,
             limit: PAGE,
         };
-        self.request(req, cx, |this, answer, cx| {
+        self.request(req, cx, move |this, answer, cx| {
             this.paging = false;
             match answer {
                 Ok(Resp::Page { items, next_before }) => {
                     // The older items go above what the user was reading, which stays where it is.
                     let place = this.place();
+                    if let Some(net) = this.net.clone() {
+                        net.update(cx, |net, cx| {
+                            if net.model.outbox.seen(sid, &items) {
+                                cx.notify();
+                            }
+                        });
+                    }
                     this.items.apply_page(items, next_before);
                     this.refresh(cx);
                     this.restore(place);
@@ -942,7 +978,7 @@ impl Transcript {
         let sent: Vec<Sent> = outbox.shown(sid, now).cloned().collect();
         let expiry = outbox.next_expiry(sid, now);
         if sent != self.sent {
-            if sent.iter().any(|s| !self.sent.iter().any(|o| o.id == s.id)) {
+            if sent.iter().any(|s| !self.sent.iter().any(|o| o.op == s.op)) {
                 self.follow(cx);
             }
             self.sent_timer = expiry.map(|at| {

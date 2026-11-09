@@ -67,8 +67,8 @@ use crate::common::{
     drop_held, held, hold, parse, preview, raw_text, set_status, uuid_v4, Offsets,
 };
 use crate::items::{
-    body, AssistantMessage, Event, Plan, QuestionItem, TaskEnd, Thinking, ToolCall, ToolResult,
-    UserMessage,
+    body, ArtifactLink, AssistantMessage, Event, PeerMessage, Plan, QuestionItem, TaskEnd,
+    TaskState, Thinking, ToolCall, ToolResult, UserMessage,
 };
 use crate::{
     AgentEvent, AgentStatus, Attach, Driver, DropReason, Error, HeldPrompt, Launch, Out, Spawn,
@@ -190,6 +190,10 @@ pub struct ClaudeDriver {
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
+    /// Reads a TUI's transcript file (a herdr pane), not a stream-json process: nobody sends
+    /// `control_request`s, so `AskUserQuestion` and `ExitPlanMode` tool calls on the main thread
+    /// are the questions, and the file's `tool_use_result` says how the user answered in the TUI.
+    mirror: bool,
     seq: u64,
     off: Offsets,
     status: AgentStatus,
@@ -215,6 +219,16 @@ pub struct ClaudeDriver {
     parent: Option<String>,
     /// Stream state of the other subagents, by `Agent` tool call id.
     subs: BTreeMap<String, Thread>,
+    /// Tasks the CLI reported (`task_started`) and has not ended, by task id.
+    tasks: BTreeMap<String, Task>,
+}
+
+/// A running task (a Bash command or a subagent) of a tool call.
+#[derive(Debug)]
+struct Task {
+    /// The tool call's id.
+    call: String,
+    background: bool,
 }
 
 impl Default for ClaudeDriver {
@@ -235,6 +249,7 @@ impl ClaudeDriver {
             ctx_used: None,
             awaiting_init: false,
             exited: false,
+            mirror: false,
             seq: 0,
             off: Offsets::default(),
             status: AgentStatus::Idle,
@@ -252,6 +267,73 @@ impl ClaudeDriver {
             rl: BTreeMap::new(),
             parent: None,
             subs: BTreeMap::new(),
+            tasks: BTreeMap::new(),
+        }
+    }
+
+    /// Where the call's task runs, if it has one.
+    fn task_of(&self, call: &str) -> Option<TaskState> {
+        self.tasks.values().find(|t| t.call == call).map(|t| {
+            if t.background {
+                TaskState::Background
+            } else {
+                TaskState::Foreground
+            }
+        })
+    }
+
+    /// The call `id` with its current `task`, from whichever thread holds it, for an `ItemUpdated`.
+    fn task_body(&self, id: &str) -> Option<Value> {
+        let c = self
+            .calls
+            .get(id)
+            .or_else(|| self.subs.values().find_map(|t| t.calls.get(id)))?;
+        Some(body(&ToolCall {
+            name: c.name.clone(),
+            input: c.input.clone(),
+            call_id: id.to_owned(),
+            task: self.task_of(id),
+        }))
+    }
+
+    /// A task began, or moved to the background: the call's row learns it.
+    fn task_set(
+        &mut self,
+        task_id: &str,
+        call: Option<&str>,
+        background: bool,
+        ev: &mut Vec<AgentEvent>,
+    ) {
+        let call = match (self.tasks.get_mut(task_id), call) {
+            (Some(t), _) => {
+                if t.background == background {
+                    return;
+                }
+                t.background = background;
+                t.call.clone()
+            }
+            (None, Some(call)) => {
+                self.tasks.insert(
+                    task_id.to_owned(),
+                    Task {
+                        call: call.to_owned(),
+                        background,
+                    },
+                );
+                call.to_owned()
+            }
+            (None, None) => return, // a task we never saw start
+        };
+        if let Some(body) = self.task_body(&call) {
+            ev.push(AgentEvent::ItemUpdated { id: call, body });
+        }
+    }
+
+    /// A driver for a TUI's transcript file (see `mirror`).
+    pub fn mirror() -> Self {
+        Self {
+            mirror: true,
+            ..Self::new()
         }
     }
 
@@ -327,12 +409,41 @@ impl ClaudeDriver {
         c
     }
 
-    /// The user message for `h`; it becomes a command of ours until the CLI starts it.
+    /// The user message for `h`, under its own id when it has one; it becomes a command of ours
+    /// until the CLI starts it.
     fn user_line(&mut self, h: HeldPrompt) -> Value {
-        let uuid = uuid_v4();
+        let uuid = h.id.clone().unwrap_or_else(uuid_v4);
         let line = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":h.text}]},"uuid":uuid});
         self.cmd(&uuid).ours = Some(h);
         line
+    }
+
+    /// [`Driver::prompt`] of a prompt already stamped.
+    fn send(&mut self, h: HeldPrompt, out: &mut Out) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+
+        match h.how {
+            // Written mid-turn the CLI folds a message into the running turn at the next tool
+            // boundary (and runs it as its own turn only when there is none), so a real "after
+            // this turn" needs the driver to hold it back.
+            PromptHow::Queue if self.busy() || !self.queue.is_empty() => hold(&mut self.queue, h),
+            PromptHow::Steer if self.awaiting_init => hold(&mut self.queue, h),
+            PromptHow::InterruptThenSend if self.busy() => {
+                // ponytail: with a message accepted but its turn not started yet the interrupt
+                // would hit nothing, so it is only sent once a turn runs; the caller can repeat it
+                if self.turn {
+                    self.control("int", json!({"subtype":"interrupt"}), out);
+                }
+                hold(&mut self.queue, h);
+            }
+            _ => {
+                let l = self.user_line(h);
+                out.line(&l);
+            }
+        }
+        Ok(())
     }
 
     /// The command `u` is over. `lost` is why when it never ran, which is announced for a prompt
@@ -344,6 +455,7 @@ impl ClaudeDriver {
                 text: h.text,
                 how: h.how,
                 reason,
+                id: h.id,
             });
         }
     }
@@ -418,7 +530,37 @@ impl ClaudeDriver {
                 }
                 self.permission_mode(v, ev);
             }
-            "task_notification" => ev.push(task_end(item_id(v, offset), v)),
+            "task_started" => self.task_set(
+                v["task_id"].as_str().unwrap_or(""),
+                v["tool_use_id"].as_str(),
+                v["is_backgrounded"].as_bool().unwrap_or(false),
+                ev,
+            ),
+            "task_updated" => {
+                if let Some(bg) = v["patch"]["is_backgrounded"].as_bool() {
+                    self.task_set(v["task_id"].as_str().unwrap_or(""), None, bg, ev);
+                }
+            }
+            // the list of tasks running in the background
+            "background_tasks_changed" => {
+                let ids: Vec<String> = v["tasks"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t["task_id"].as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for id in ids {
+                    self.task_set(&id, None, true, ev);
+                }
+            }
+            "task_notification" => {
+                if let Some(id) = v["task_id"].as_str() {
+                    self.tasks.remove(id);
+                }
+                ev.push(task_end(item_id(v, offset), v));
+            }
             "compact_boundary" => {
                 ev.push(event_item(item_id(v, offset), "Conversation compacted"));
                 // the stream says `compact_metadata`, the transcript on disk `compactMetadata`
@@ -681,14 +823,24 @@ impl ClaudeDriver {
                     ItemStatus::Completed,
                     body(&Plan { text }),
                 ));
+                if self.mirror {
+                    let at = self.off.open_at(&id);
+                    self.ask(at, &id, &id, PLAN, &input, None, ev);
+                }
             }
-            ASK => {}
+            ASK => {
+                if self.mirror {
+                    let at = self.off.open_at(&id);
+                    self.ask(at, &id, &id, ASK, &input, None, ev);
+                }
+            }
             _ => ev.push(AgentEvent::ItemUpdated {
                 id: id.clone(),
                 body: body(&ToolCall {
                     name: name.clone(),
                     input: input.clone(),
                     call_id: id.clone(),
+                    task: self.task_of(&id),
                 }),
             }),
         }
@@ -720,6 +872,7 @@ impl ClaudeDriver {
                     name: b.name,
                     input: Value::Null,
                     call_id: b.id.clone(),
+                    task: None,
                 }),
             ),
         };
@@ -839,6 +992,15 @@ impl ClaudeDriver {
             // the goal's Stop hook said not yet: the verdict, and a row with the reason whole
             ev.push(AgentEvent::Goal(goal(c, GoalState::NotMet, Some(r))));
             ev.push(event_item(id, &format!("◎ goal not met yet · {r}")));
+        } else if v["origin"]["kind"] == "peer" {
+            // another Claude session's SendMessage, delivered as a user line the user did not type
+            self.activity(offset, ev);
+            ev.push(done(
+                id,
+                ItemKind::PeerMessage,
+                ItemStatus::Completed,
+                body(&peer_message(&v["origin"], &text)),
+            ));
         } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
             // a subagent's text is the prompt it was given
             self.activity(offset, ev);
@@ -871,6 +1033,10 @@ impl ClaudeDriver {
         } else {
             ItemStatus::Completed
         };
+        let link = call
+            .as_ref()
+            .filter(|c| c.name == "Artifact")
+            .and_then(|c| artifact_link(&c.input, &output, &line["tool_use_result"]));
         let result = done(
             format!("{id}:result"),
             ItemKind::ToolResult,
@@ -879,6 +1045,7 @@ impl ClaudeDriver {
                 call_id: id.to_owned(),
                 output,
                 is_error,
+                link,
             }),
         );
         let Some(call) = call else {
@@ -897,6 +1064,7 @@ impl ClaudeDriver {
                 name: call.name,
                 input: call.input,
                 call_id: id.to_owned(),
+                task: self.task_of(id),
             }),
         ));
         ev.push(result);
@@ -1043,6 +1211,7 @@ impl ClaudeDriver {
                     body(&ToolCall {
                         name: c.name,
                         input: c.input,
+                        task: self.task_of(&id),
                         call_id: id,
                     }),
                 ));
@@ -1139,7 +1308,28 @@ impl ClaudeDriver {
         self.activity(offset, ev);
         let tool = req["tool_name"].as_str().unwrap_or("");
         let tid = req["tool_use_id"].as_str().unwrap_or(rid).to_owned();
-        let input = req["input"].clone();
+        let title = req["title"]
+            .as_str()
+            .or(req["description"].as_str())
+            .or(req["display_name"].as_str());
+        self.ask(offset, rid, &tid, tool, &req["input"], title, ev);
+    }
+
+    /// The agent waits on the user: the `AskUserQuestion` call `tid` asks its questions, an
+    /// `ExitPlanMode` or any other tool `tool` asks for an approval. Opens the `Question` items
+    /// and remembers the request `rid` (the tool call's own id for a mirror) until its result.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(
+        &mut self,
+        offset: u64,
+        rid: &str,
+        tid: &str,
+        tool: &str,
+        input: &Value,
+        title: Option<&str>,
+        ev: &mut Vec<AgentEvent>,
+    ) {
+        let input = input.clone();
         match self.pending.get(rid) {
             // the request we already show (or have answered), repeated: keep what we know about it
             Some(old) if old.tool_use_id == tid => return,
@@ -1150,7 +1340,7 @@ impl ClaudeDriver {
             None => {}
         }
         let mut parts = if tool == ASK {
-            ask_parts(rid, &tid, &input)
+            ask_parts(rid, tid, &input)
         } else {
             Vec::new()
         };
@@ -1166,11 +1356,7 @@ impl ClaudeDriver {
                     ["Approve", "Keep planning"],
                 )
             } else {
-                let what = req["title"]
-                    .as_str()
-                    .or(req["description"].as_str())
-                    .or(req["display_name"].as_str())
-                    .unwrap_or(tool);
+                let what = title.unwrap_or(tool);
                 (format!("Allow {what}?"), ["Allow", "Deny"])
             };
             let labels: Vec<String> = options.iter().map(|s| (*s).to_owned()).collect();
@@ -1210,7 +1396,7 @@ impl ClaudeDriver {
             rid.to_owned(),
             Pending {
                 kind,
-                tool_use_id: tid,
+                tool_use_id: tid.to_owned(),
                 input,
                 parts,
                 sent,
@@ -1428,30 +1614,21 @@ impl Driver for ClaudeDriver {
     }
 
     fn prompt(&mut self, text: &str, how: PromptHow, out: &mut Out) -> Result<(), Error> {
-        if self.exited {
-            return Err(Error::State("claude has exited"));
-        }
-        let h = held(text, how);
-        match how {
-            // Written mid-turn the CLI folds a message into the running turn at the next tool
-            // boundary (and runs it as its own turn only when there is none), so a real "after
-            // this turn" needs the driver to hold it back.
-            PromptHow::Queue if self.busy() || !self.queue.is_empty() => hold(&mut self.queue, h),
-            PromptHow::Steer if self.awaiting_init => hold(&mut self.queue, h),
-            PromptHow::InterruptThenSend if self.busy() => {
-                // ponytail: with a message accepted but its turn not started yet the interrupt
-                // would hit nothing, so it is only sent once a turn runs; the caller can repeat it
-                if self.turn {
-                    self.control("int", json!({"subtype":"interrupt"}), out);
-                }
-                hold(&mut self.queue, h);
-            }
-            _ => {
-                let l = self.user_line(h);
-                out.line(&l);
-            }
-        }
-        Ok(())
+        self.send(held(text, how), out)
+    }
+
+    /// The CLI echoes a user message with the `uuid` it was written with (checked on 2.1.319, a
+    /// message steered into a running turn too), so `id` is that uuid.
+    fn prompt_with_id(
+        &mut self,
+        id: &str,
+        text: &str,
+        how: PromptHow,
+        out: &mut Out,
+    ) -> Result<(), Error> {
+        let mut h = held(text, how);
+        h.id = Some(id.to_owned());
+        self.send(h, out)
     }
 
     fn interrupt(&mut self, out: &mut Out) -> Result<(), Error> {
@@ -1466,6 +1643,25 @@ impl Driver for ClaudeDriver {
         if self.turn {
             self.control("int", json!({"subtype":"interrupt"}), out);
         }
+        Ok(())
+    }
+
+    fn background(&mut self, tool_use_id: Option<&str>, out: &mut Out) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+        if self.awaiting_init {
+            return Err(Error::State("claude has not finished starting"));
+        }
+        let foreground = |t: &Task| !t.background && tool_use_id.is_none_or(|id| t.call == id);
+        if !self.tasks.values().any(foreground) {
+            return Err(Error::State("nothing runs in the foreground"));
+        }
+        let mut req = json!({"subtype":"background_tasks"});
+        if let Some(id) = tool_use_id {
+            req["tool_use_id"] = Value::String(id.to_owned());
+        }
+        self.control("bg", req, out);
         Ok(())
     }
 
@@ -1591,6 +1787,46 @@ fn scope(pid: &str, id: &mut String) {
 }
 
 /// Tools whose call is shown as Question/Plan items instead of a ToolCall.
+/// The page an `Artifact` call points at: the structured result of a publish (`url`, `title`,
+/// `seq`, `updated`), else the first claude.ai/artifact address in the text, else the `url` the
+/// call read. The title falls back to the file's name, then to the call's action.
+fn artifact_link(input: &Value, output: &str, data: &Value) -> Option<ArtifactLink> {
+    const PAGE: &str = "https://claude.ai/artifact/";
+    let in_text = output.find(PAGE).map(|i| {
+        let rest = &output[i..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ')' || c == ',')
+            .unwrap_or(rest.len());
+        rest[..end].to_owned()
+    });
+    let url = data["url"]
+        .as_str()
+        .map(str::to_owned)
+        .or(in_text)
+        .or_else(|| {
+            input["url"]
+                .as_str()
+                .filter(|u| u.starts_with(PAGE))
+                .map(str::to_owned)
+        })?;
+    let title = data["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let path = input["file_path"].as_str()?;
+            Some(path.rsplit('/').next().unwrap_or(path).to_owned())
+        })
+        .or_else(|| input["action"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "page".to_owned());
+    Some(ArtifactLink {
+        url,
+        title,
+        version: data["seq"].as_u64(),
+        updated: data["updated"].as_bool() == Some(true),
+    })
+}
+
 fn hidden(name: &str) -> bool {
     name == ASK || name == PLAN
 }
@@ -1687,6 +1923,25 @@ fn command_line(text: &str) -> Option<String> {
         Some(args) => format!("{name} {args}"),
         None => name.to_owned(),
     })
+}
+
+/// A peer's message from the line's `origin` (`name`, `body`), else from the
+/// `<cross-session-message from-name="…">…</cross-session-message>` framing in `text`.
+fn peer_message(origin: &Value, text: &str) -> PeerMessage {
+    let from = origin["name"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("from-name=\"")?;
+        rest.split_once('"').map(|(n, _)| n.to_owned())
+    });
+    let body = origin["body"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("<cross-session-message")?;
+        let (_, rest) = rest.split_once('>')?;
+        rest.split_once("</cross-session-message>")
+            .map(|(b, _)| b.trim().to_owned())
+    });
+    PeerMessage {
+        from: from.unwrap_or_default(),
+        text: body.unwrap_or_else(|| text.to_owned()),
+    }
 }
 
 /// What the first `<t>...</t>` in `text` holds, trimmed.
@@ -2098,6 +2353,69 @@ mod tests {
         assert!(String::from_utf8_lossy(&out.stdin).contains(r#""subtype":"set_permission_mode""#));
     }
 
+    // ---- the Artifact tool (shapes of claude 2.1.319) ----------------------------------------
+
+    #[test]
+    fn an_artifact_publish_links_its_page() {
+        let input = json!({"file_path":"/tmp/x/page.html"});
+        let text = "Published /tmp/x/page.html at https://claude.ai/artifact/AbC123 (Version 2, version id 1-2)";
+        let data = json!({"url":"https://claude.ai/artifact/AbC123","title":"Lesson tree","seq":2,"updated":true});
+        assert_eq!(
+            artifact_link(&input, text, &data),
+            Some(ArtifactLink {
+                url: "https://claude.ai/artifact/AbC123".into(),
+                title: "Lesson tree".into(),
+                version: Some(2),
+                updated: true,
+            })
+        );
+        // no structured data: the address is in the text, the title is the file's name
+        assert_eq!(
+            artifact_link(&input, text, &Value::Null),
+            Some(ArtifactLink {
+                url: "https://claude.ai/artifact/AbC123".into(),
+                title: "page.html".into(),
+                version: None,
+                updated: false,
+            })
+        );
+        // a read: the input's url, the action as title
+        let read = json!({"action":"read","url":"https://claude.ai/artifact/Zz9"});
+        let l = artifact_link(&read, "<html>…", &Value::Null).unwrap();
+        assert_eq!(
+            (l.url.as_str(), l.title.as_str()),
+            ("https://claude.ai/artifact/Zz9", "read")
+        );
+        assert_eq!(
+            artifact_link(&json!({"action":"list"}), "none", &Value::Null),
+            None
+        );
+    }
+
+    #[test]
+    fn an_artifact_result_item_carries_the_link() {
+        let mut f = Feed::new();
+        f.line(json!({"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":"Artifact","input":{"file_path":"/tmp/x/page.html"}}]},
+            "session_id":"s","parent_tool_use_id":null,"uuid":"u1"}));
+        let ev = f.line(json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result",
+            "tool_use_id":"t1","content":"Published /tmp/x/page.html at https://claude.ai/artifact/AbC123 (Version 1, version id 1-1)"}]},
+            "session_id":"s","parent_tool_use_id":null,"uuid":"u2",
+            "tool_use_result":{"url":"https://claude.ai/artifact/AbC123","title":"FEMME artifact test","seq":1,"updated":false}}));
+        let link = ev
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ItemCompleted { id, body, .. } if id == "t1:result" => {
+                    Some(body["link"].clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(link["url"], "https://claude.ai/artifact/AbC123");
+        assert_eq!(link["title"], "FEMME artifact test");
+        assert_eq!(link["version"], 1);
+    }
+
     // ---- the context window (shapes of claude 2.1.302, made-up numbers) ----------------------
 
     /// A driver fed whole lines at their offsets, as the daemon does.
@@ -2423,5 +2741,122 @@ mod tests {
                 pre_tokens: Some(310_172)
             })
         );
+    }
+
+    fn last_line(out: &Out) -> &[u8] {
+        out.stdin
+            .split(|b| *b == b'\n')
+            .rfind(|l| !l.is_empty())
+            .unwrap()
+    }
+
+    /// Claude 2.1.319: `task_started` says which call waits in the foreground, `task_updated`
+    /// (after a `background_tasks` request) that it moved; the call's row sees both, and the
+    /// request itself is the control line, with or without a call id.
+    #[test]
+    fn a_foreground_task_can_be_backgrounded() {
+        let mut f = Feed::new();
+        f.d.on_start(&Launch::default(), &mut Out::default());
+        f.line(json!({"type":"control_response","response":{"subtype":"success","request_id":INIT_ID,"response":{}}}));
+        f.line(
+            json!({"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 45"}}]},
+            "parent_tool_use_id":null,"uuid":"u1"}),
+        );
+        let mut out = Out::default();
+        assert!(
+            matches!(f.d.background(None, &mut out), Err(Error::State(_))),
+            "no task yet"
+        );
+        let ev = f.line(
+            json!({"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"toolu_1",
+            "description":"Sleep","is_backgrounded":false,"task_type":"local_bash","uuid":"u2"}),
+        );
+        match &ev[..] {
+            [AgentEvent::ItemUpdated { id, body }] => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(body["task"], "foreground", "{body}");
+                assert_eq!(body["name"], "Bash");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            f.d.background(Some("toolu_9"), &mut out),
+            Err(Error::State(_))
+        ));
+        f.d.background(Some("toolu_1"), &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(line["type"], "control_request");
+        assert!(line["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("femme-bg-"));
+        assert_eq!(
+            line["request"],
+            json!({"subtype":"background_tasks","tool_use_id":"toolu_1"})
+        );
+        f.d.background(None, &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(line["request"], json!({"subtype":"background_tasks"}));
+
+        let ev = f.line(json!({"type":"system","subtype":"task_updated","task_id":"t1","patch":{"is_backgrounded":true},"uuid":"u3"}));
+        match &ev[..] {
+            [AgentEvent::ItemUpdated { id, body }] => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(body["task"], "background", "{body}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // said again by the task list: nothing new
+        assert!(f
+            .line(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1"}],"uuid":"u4"}))
+            .is_empty());
+        assert!(
+            matches!(f.d.background(None, &mut out), Err(Error::State(_))),
+            "nothing left in the foreground"
+        );
+        // the result keeps the state on the completed call
+        let ev = f.line(json!({"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result",
+            "content":"Command was manually backgrounded by user with ID: t1.","is_error":false}]},"parent_tool_use_id":null,"uuid":"u5"}));
+        let call = ev
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ItemCompleted { id, body, .. } if id == "toolu_1" => Some(body.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(call["task"], "background", "{call}");
+        let ev = f.line(json!({"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"toolu_1",
+            "status":"completed","summary":"Sleep","uuid":"u6"}));
+        assert!(
+            matches!(
+                &ev[..],
+                [AgentEvent::ItemCompleted {
+                    kind: ItemKind::Event,
+                    ..
+                }]
+            ),
+            "{ev:?}"
+        );
+        assert!(f.d.tasks.is_empty());
+    }
+
+    /// A pane's transcript never carries a `control_request`: the mirror asks on the tool call.
+    #[test]
+    fn a_mirror_asks_on_the_ask_user_question_call_itself() {
+        let text = std::fs::read_to_string("fixtures/claude/question.jsonl").unwrap();
+        let asked = |mut d: ClaudeDriver| {
+            let mut n = 0;
+            for (i, l) in text.lines().enumerate().take(42) {
+                let ev = d.on_line(i as u64, l.as_bytes(), &mut Out::default());
+                n += ev
+                    .iter()
+                    .filter(|e| matches!(e, AgentEvent::QuestionAsked { .. }))
+                    .count();
+            }
+            n
+        };
+        assert_eq!(asked(ClaudeDriver::new()), 0);
+        assert_eq!(asked(ClaudeDriver::mirror()), 1);
     }
 }

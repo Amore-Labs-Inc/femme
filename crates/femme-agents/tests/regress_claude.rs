@@ -78,6 +78,17 @@ fn message_start(mid: &str) -> Value {
     json!({"type":"stream_event","event":{"type":"message_start","message":{"id":mid}}})
 }
 
+fn peer_line(name: &str, body: &str, origin: bool) -> Value {
+    let text = format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/x.sock\" from-name=\"{name}\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session");
+    let mut v = json!({"type":"user","uuid":"p1","isReplay":true,"isSynthetic":true,"message":{"role":"user","content":text}});
+    if origin {
+        v["origin"] = json!({"kind":"peer","name":name,"body":body});
+    } else {
+        v["origin"] = json!({"kind":"peer"});
+    }
+    v
+}
+
 // ---- a driver and the spool it was fed ---------------------------------------------------------
 
 /// A driver plus every line it has been fed, at its real offset, so a test can restart from
@@ -854,7 +865,10 @@ mod new_api {
     fn dropped(ev: &[AgentEvent]) -> Vec<(String, PromptHow, DropReason)> {
         ev.iter()
             .filter_map(|e| {
-                if let AgentEvent::PromptDropped { text, how, reason } = e {
+                if let AgentEvent::PromptDropped {
+                    text, how, reason, ..
+                } = e
+                {
                     Some((text.clone(), *how, reason.clone()))
                 } else {
                     None
@@ -1171,8 +1185,127 @@ mod new_api {
             text: "again".into(),
             how: PromptHow::Queue,
             queued_at_ms: 12,
+            id: None,
         };
         let back: HeldPrompt = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
         assert_eq!(back, h);
+        // what a daemon saved before prompts had ids still reads
+        let old: HeldPrompt =
+            serde_json::from_str(r#"{"text":"again","how":"Queue","queued_at_ms":12}"#).unwrap();
+        assert_eq!(old, h);
     }
+}
+
+// ---- cross-session messages (2.1.224+) ---------------------------------------------------------
+
+/// A user line whose `origin.kind` is `peer` is a `PeerMessage` from the named session with the
+/// `origin.body` as its text, and never a `UserMessage`; it opens a turn like a prompt does.
+#[test]
+fn a_peer_message_is_its_own_item_not_the_users() {
+    let mut s = S::ready();
+    let ev = s.feed(peer_line("platform-12", "hello", true));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::TurnStarted)));
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::PeerMessage, body, .. }
+            if body["from"] == "platform-12" && body["text"] == "hello")));
+    assert!(!ev.iter().any(|e| matches!(
+        e,
+        AgentEvent::ItemCompleted {
+            kind: ItemKind::UserMessage,
+            ..
+        }
+    )));
+}
+
+/// Without `origin.name`/`body` (a transcript's `queued_command`), the sender and text come from
+/// the `<cross-session-message>` framing.
+#[test]
+fn a_peer_message_falls_back_to_its_tags() {
+    let mut s = S::ready();
+    let ev = s.feed(peer_line("femme-65", "two\nlines", false));
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::PeerMessage, body, .. }
+            if body["from"] == "femme-65" && body["text"] == "two\nlines")));
+}
+
+/// The host's own prompt echo (`isReplay`, no `origin`) is still the `UserMessage`.
+#[test]
+fn a_prompt_echo_without_origin_stays_a_user_message() {
+    let mut s = S::ready();
+    let u = s.send("hi", PromptHow::Queue).unwrap();
+    let ev = s.feed(
+        json!({"type":"user","uuid":u,"isReplay":true,"message":{"role":"user","content":"hi"}}),
+    );
+    assert!(ev.iter().any(|e| matches!(e,
+        AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "hi")));
+}
+
+// ---- mid-turn steer: written at once, ended by the turn's one result ----------------------------
+
+/// A Steer mid-turn is written at once (the CLI folds it into the running turn at its next tool
+/// boundary); the turn's one `result` lists both `user_message_uuids` and ends both commands, so
+/// nothing is left in flight and nothing is reported dropped. A Queue sent at the same moment
+/// stays held until then.
+#[test]
+fn a_mid_turn_steer_is_written_at_once_and_one_result_ends_both_messages() {
+    let mut s = S::ready();
+    let first = s.send("first", PromptHow::Queue).unwrap();
+    s.start(&first);
+    assert_eq!(s.d.status(), AgentStatus::Working);
+    let steer = s
+        .send("also say banana", PromptHow::Steer)
+        .expect("a Steer goes out while the turn runs");
+    assert_eq!(s.send("after", PromptHow::Queue), None, "a Queue waits");
+    // the CLI takes the steer into the running turn: queued, echoed, started
+    s.feed(lifecycle(&steer, "queued"));
+    let ev = s.feed(json!({"type":"user","isReplay":true,"uuid":steer,
+        "message":{"role":"user","content":[{"type":"text","text":"also say banana"}]}}));
+    assert!(
+        ev.iter().any(|e| matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "also say banana")),
+        "the echo is the user's bubble, inside the turn: {ev:?}"
+    );
+    s.feed(lifecycle(&steer, "started"));
+    assert!(s.wrote().is_empty(), "the queued one is still held");
+    let mut ev = s.feed(result_ok(&[&first, &steer]));
+    ev.extend(s.feed(lifecycle(&steer, "completed")));
+    ev.extend(s.feed(lifecycle(&first, "completed")));
+    assert_eq!(turn_events(&ev), ["TurnEnded"], "one turn: {ev:?}");
+    assert!(
+        !ev.iter()
+            .any(|e| matches!(e, AgentEvent::PromptDropped { .. })),
+        "both messages ran: {ev:?}"
+    );
+    // nothing of ours in flight any more: the held Queue goes out now
+    let w = s.wrote();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0]["message"]["content"][0]["text"], "after");
+    assert_eq!(s.d.held_prompts().len(), 0);
+}
+
+// ---- the daemon's own ids: the CLI echoes a message under the uuid it was written with -----------
+
+/// `prompt_with_id` writes the message under the daemon's id, also when it was held back first, and
+/// a message the CLI drops is announced with that id, so the daemon finds the message it saved.
+#[test]
+fn a_prompt_with_an_id_is_written_held_and_dropped_under_it() {
+    let mut s = S::ready();
+    let a = "0b6e7c1e-4f2a-4d1b-9c3e-5a7d2f8e1b40";
+    let b = "3f9a2c71-8d4e-4b6a-a1c2-7e5f9d3b2a18";
+    s.d.prompt_with_id(a, "first", PromptHow::Queue, &mut s.out)
+        .unwrap();
+    let w = s.wrote();
+    assert_eq!(w[0]["uuid"], a, "written at once under its id: {w:?}");
+    s.start(a);
+    s.d.prompt_with_id(b, "second", PromptHow::Queue, &mut s.out)
+        .unwrap();
+    assert!(s.wrote().is_empty(), "held until the turn ends");
+    assert_eq!(s.d.held_prompts()[0].id.as_deref(), Some(b));
+    let ev = s.d.on_exit(Some(1));
+    assert!(
+        ev.iter().any(
+            |e| matches!(e, AgentEvent::PromptDropped { text, id: Some(id), .. }
+            if text == "second" && id == b)
+        ),
+        "{ev:?}"
+    );
 }

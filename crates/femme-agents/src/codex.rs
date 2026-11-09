@@ -528,6 +528,7 @@ impl CodexDriver {
                             text: h.text,
                             how: h.how,
                             reason: DropReason::Refused(msg),
+                            id: h.id,
                         });
                     }
                     self.flush(out);
@@ -884,6 +885,7 @@ impl CodexDriver {
                     call_id: m.id.clone(),
                     output: t.output,
                     is_error: t.failed,
+                    link: None,
                 };
                 ev.push(AgentEvent::ItemCompleted {
                     id: m.id.clone(),
@@ -1377,6 +1379,7 @@ impl Driver for CodexDriver {
                     text: h.text,
                     how: h.how,
                     reason: DropReason::Exited,
+                    id: h.id,
                 });
             }
         }
@@ -1577,6 +1580,7 @@ fn tool(ty: &str, id: &str, item: &Value) -> Tool {
             name,
             input,
             call_id: id.to_owned(),
+            task: None,
         },
         preview,
         output,

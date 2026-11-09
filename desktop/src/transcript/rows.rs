@@ -171,6 +171,20 @@ fn sent_row(sent: &Sent, sel: &Sel) -> AnyElement {
     )
 }
 
+/// The message an `Event` says the agent read (its body's `read`), when it is such a mark.
+fn read_of(item: &femme_proto::state::Item) -> Option<String> {
+    let b: serde_json::Value = serde_json::from_str(item.body.as_deref()?).ok()?;
+    b.get("read")?.as_str().map(str::to_owned)
+}
+
+/// `ms` since the epoch as the local `HH:MM`.
+fn hhmm(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let local = secs + crate::accounts::clock::local_offset(secs);
+    let day = local.rem_euclid(86_400);
+    format!("{:02}:{:02}", day / 3600, day % 3600 / 60)
+}
+
 impl Transcript {
     /// The element of row `ix` of the list.
     pub(super) fn row(
@@ -266,6 +280,7 @@ impl Transcript {
             return div().into_any_element();
         };
         let kind = e.item.kind;
+        let read = read_of(&e.item);
         let handoff = is_handoff(&e.item.preview);
         let before_handoff = self
             .items
@@ -283,12 +298,16 @@ impl Transcript {
             // The compact note's own row: the hand-off row after it says the same, with the summary.
             ItemKind::Event if before_handoff => div().into_any_element(),
             ItemKind::UserMessage => self.user_row(seq, sel, cx),
+            ItemKind::PeerMessage => self.peer_row(seq, sel),
             ItemKind::AssistantMessage => self.assistant_row(seq, sel, cx),
             ItemKind::Plan => self.plan_row(seq, sel),
             ItemKind::Thinking => self.thinking_row(seq, sel, cx),
             ItemKind::Question => self.question_row(seq, sel, window, cx),
             ItemKind::ToolResult => self.tool_row(seq, sel, cx),
-            ItemKind::Event => self.note_row(seq, sel),
+            ItemKind::Event => match read {
+                Some(id) => self.read_row(seq, &id, sel, cx),
+                None => self.note_row(seq, sel),
+            },
             ItemKind::TurnEnd => self.end_row(seq, sel),
             ItemKind::ToolCall | ItemKind::TurnStart => div().into_any_element(),
         }
@@ -324,7 +343,161 @@ impl Transcript {
                     }),
                 ))
             });
-        column(div().flex().justify_end().child(bubble))
+        let state = self.delivery_line(seq, cx);
+        column(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(4.))
+                .child(bubble)
+                .when_some(state, |d, line| d.child(line)),
+        )
+    }
+
+    /// Under a message stored before the agent had it (a `Pending` or `Failed` one, or one with
+    /// `read_at`): `queued` while it waits, `read 13:53` once the agent read it, and when the
+    /// agent did not get it, a line that sends it again.
+    fn delivery_line(&mut self, seq: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let e = self.items.get(seq)?;
+        match e.item.status {
+            ItemStatus::Pending => Some(meta("queued").into_any_element()),
+            ItemStatus::Completed => {
+                let b: serde_json::Value = serde_json::from_str(e.item.body.as_deref()?).ok()?;
+                let at = b.get("read_at")?.as_i64()?;
+                Some(meta(format!("read {}", hhmm(at))).into_any_element())
+            }
+            ItemStatus::Failed => {
+                let (sid, id) = (e.item.sid, e.item.item_id.clone());
+                let who = self.agent_name(cx);
+                Some(
+                    div()
+                        .id(("resend", seq))
+                        .font_family(FONT_MONO)
+                        .text_size(META_SIZE)
+                        .text_color(bad())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hover()))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.resend(sid, id.clone(), cx)),
+                        )
+                        .child(format!("{who} didn't get this · resend"))
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// The agent of the session shown, by name.
+    fn agent_name(&self, cx: &Context<Self>) -> &'static str {
+        let agent = self.items.sid().and_then(|sid| {
+            let net = self.net.as_ref()?;
+            net.read(cx).model.sessions.get(&sid).map(|s| s.agent)
+        });
+        match agent {
+            Some(femme_proto::state::Agent::Codex) => "Codex",
+            Some(femme_proto::state::Agent::Pi) => "pi",
+            Some(femme_proto::state::Agent::Shell) => "The shell",
+            _ => "Claude",
+        }
+    }
+
+    /// Gives the agent again a message it did not get; it waits again where it is.
+    fn resend(&mut self, sid: femme_proto::Sid, item_id: String, cx: &mut Context<Self>) {
+        self.request(
+            femme_proto::rpc::Req::Resend { sid, item_id },
+            cx,
+            |this, res, cx| {
+                if let Err(e) = res {
+                    this.note = Some(format!("the message was not sent again: {e}"));
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Where the agent read a message stored before it had it: one thin line that scrolls to the
+    /// message. Nothing when the message is the row right above (it was read at once).
+    fn read_row(&mut self, seq: u64, read: &str, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
+        let Some(orig) = self.items.by_id(read).map(|e| e.item.seq) else {
+            return self.note_row(seq, sel);
+        };
+        let rows = &self.layout.rows;
+        let here = rows.iter().position(|r| r.key == Key::Item(seq));
+        let there = rows.iter().position(|r| r.key == Key::Item(orig));
+        if let (Some(here), Some(there)) = (here, there) {
+            if here == there + 1 {
+                return div().into_any_element();
+            }
+        }
+        let (text, _) = self.text_of(seq);
+        let line = text.lines().next().unwrap_or("").to_owned();
+        column(
+            div()
+                .id(("read", seq))
+                .font_family(FONT_MONO)
+                .text_size(px(12.))
+                .text_color(muted())
+                .cursor_pointer()
+                .hover(|s| s.bg(panel()))
+                .on_click(cx.listener(move |this, click, _, cx| {
+                    if !select::plain_click(click) {
+                        return;
+                    }
+                    if let Some(ix) = this
+                        .layout
+                        .rows
+                        .iter()
+                        .position(|r| r.key == Key::Item(orig))
+                    {
+                        this.list.scroll_to(gpui::ListOffset {
+                            item_ix: ix,
+                            offset_in_item: px(0.),
+                        });
+                        cx.notify();
+                    }
+                }))
+                .child(Selectable::new(sel.slot(), format!("↳ {line}"))),
+        )
+    }
+
+    /// Another Claude session's message (SendMessage): a card on the left, headed by the sender,
+    /// so it never reads as something the user typed.
+    fn peer_row(&mut self, seq: u64, sel: &Sel) -> AnyElement {
+        let (text, _) = self.text_of(seq);
+        let from = self
+            .items
+            .get(seq)
+            .and_then(|e| e.item.body.as_deref())
+            .map(super::body::peer_from)
+            .unwrap_or_default();
+        let doc = self.doc(seq, &text);
+        column(
+            div().flex().justify_start().child(
+                card()
+                    .max_w(relative(0.85))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .font_family(FONT_PIXEL)
+                            .text_size(px(18.))
+                            .line_height(relative(1.))
+                            .text_color(accent_text())
+                            .child(Selectable::new(sel.slot(), format!("✉ from @{from}"))),
+                    )
+                    .when(!doc.blocks.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(BODY_SIZE)
+                                .line_height(relative(1.4))
+                                .child(md_view::doc(&doc, ink(), sel)),
+                        )
+                    }),
+            ),
+        )
     }
 
     fn assistant_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
@@ -569,15 +742,12 @@ impl Transcript {
         }
         let line = &view.line;
         let name_color = if line.failed { bad() } else { ink() };
+        let call_id = self.items.get(seq).map(|e| e.item.item_id.clone());
         // An Agent call whose subagent has items: the row opens its thread.
-        let agent = self
-            .items
-            .get(seq)
-            .map(|e| e.item.item_id.clone())
-            .filter(|id| {
-                matches!(line.name.as_str(), "Agent" | "Task")
-                    && self.items.view(Some(id)).next().is_some()
-            });
+        let agent = call_id.clone().filter(|id| {
+            matches!(line.name.as_str(), "Agent" | "Task")
+                && self.items.view(Some(id)).next().is_some()
+        });
         let head = div()
             .id(("tool", seq))
             .flex()
@@ -604,8 +774,23 @@ impl Transcript {
                     .truncate()
                     .font_family(FONT_MONO)
                     .text_size(px(12.5))
-                    .text_color(muted())
-                    .child(Selectable::new(sel.slot(), line.hint.clone()).join(Join::Line)),
+                    .text_color(if line.link.is_some() {
+                        accent_text()
+                    } else {
+                        muted()
+                    })
+                    .child(
+                        Selectable::new(sel.slot(), line.hint.clone())
+                            .join(Join::Line)
+                            // the whole hint opens the page: hand pointer and click as the
+                            // transcript's other links (`cx.open_url`)
+                            .links(
+                                line.link
+                                    .iter()
+                                    .map(|url| (0..line.hint.len(), url.clone()))
+                                    .collect(),
+                            ),
+                    ),
             )
             .when_some(line.result.clone(), |d, result| {
                 d.child(
@@ -635,6 +820,27 @@ impl Transcript {
                         }))
                         .child("open ›"),
                 )
+            })
+            // a task the turn waits for: a click moves it to the background (Ctrl+B in Claude)
+            .when_some(call_id.filter(|_| line.backgroundable), |d, id| {
+                d.child(
+                    div()
+                        .id(("background", seq))
+                        .flex_none()
+                        .px(px(4.))
+                        .font_family(FONT_MONO)
+                        .text_size(px(12.))
+                        .text_color(accent_text())
+                        .hover(|s| s.text_color(neon()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.background(Some(id.clone()), cx);
+                        }))
+                        .child("⇣ background"),
+                )
+            })
+            .when(line.in_background, |d| {
+                d.child(div().flex_none().child(st("in background", pause())))
             })
             .when(line.running, |d| {
                 d.child(div().flex_none().child(st("running", pause())))
@@ -684,6 +890,7 @@ impl Transcript {
             let line = ToolLine {
                 name: "result".into(),
                 hint: String::new(),
+                link: None,
                 result: Some(
                     output
                         .as_deref()
@@ -695,6 +902,8 @@ impl Transcript {
                 ),
                 failed: failed || e.item.status == ItemStatus::Failed,
                 running: false,
+                backgroundable: false,
+                in_background: false,
             };
             return Some(ToolView {
                 line,

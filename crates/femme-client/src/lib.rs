@@ -288,6 +288,18 @@ impl Client {
         self.request_timeout(req, REQUEST_TIMEOUT).await
     }
 
+    /// [`request`](Client::request) under an op id of the caller's choosing: the daemon keeps a
+    /// prompt's op id with the message it stores, so the caller knows that message when it comes.
+    pub async fn request_as(&self, op: OpId, req: Req) -> Result<Resp, RequestError> {
+        if matches!(req, Req::Subscribe { .. } | Req::Unsubscribe { .. }) {
+            return Err(RequestError::Server {
+                code: ErrCode::Bad,
+                msg: "scopes are subscribed with Client::subscribe".into(),
+            });
+        }
+        self.call_as(op, Kind::Req(req), REQUEST_TIMEOUT).await
+    }
+
     /// [`request`](Client::request) with a deadline of the caller's choosing.
     pub async fn request_timeout(&self, req: Req, limit: Duration) -> Result<Resp, RequestError> {
         if matches!(req, Req::Subscribe { .. } | Req::Unsubscribe { .. }) {
@@ -301,8 +313,12 @@ impl Client {
 
     /// Queues `kind`, wakes the connection task and waits for its answer.
     async fn call(&self, kind: Kind, limit: Duration) -> Result<Resp, RequestError> {
+        self.call_as(OpId::new(), kind, limit).await
+    }
+
+    /// [`call`](Client::call) under `op`.
+    async fn call_as(&self, op: OpId, kind: Kind, limit: Duration) -> Result<Resp, RequestError> {
         let (done, answer) = oneshot::channel();
-        let op = OpId::new();
         self.shared.state().add(op, kind, Some(done));
         self.shared.wake.notify_one();
         let _withdraw = Withdraw {

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use femme_proto::rpc::{Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT};
 use femme_proto::state::{Agent, Mode};
-use femme_proto::Sid;
+use femme_proto::{OpId, Sid};
 use femme_store::{items, sessions};
 
 use super::{Ctx, BODY_MAX};
@@ -27,7 +27,7 @@ pub(crate) fn err(code: ErrCode, msg: impl Into<String>) -> WireErr {
     }
 }
 
-fn wire(e: CoreError) -> WireErr {
+pub(crate) fn wire(e: CoreError) -> WireErr {
     let code = match &e {
         CoreError::NotFound => ErrCode::NotFound,
         CoreError::Busy => ErrCode::Busy,
@@ -65,6 +65,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::Commands
             | Req::Prs
             | Req::PrVideo { .. }
+            | Req::PrAutoFix { on: None }
     )
 }
 
@@ -81,7 +82,8 @@ fn done(r: Result<(), CoreError>) -> Result<Resp, WireErr> {
     r.map(|()| Resp::Ok).map_err(wire)
 }
 
-pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
+/// Runs `req`; `op` is its op id, which a prompt's stored message keeps so the desktop knows it.
+pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, WireErr> {
     let d = &ctx.daemon;
     match req {
         Req::Subscribe { scope, after } => d
@@ -122,15 +124,18 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             sid,
             text,
             attachments,
-            ..
+            how,
         } => {
-            // ponytail: `how` is not looked at: every prompt is a Queue (the core's `prompt` goes
-            // after the running turn). Steer and InterruptThenSend want the headless driver's inject
-            // and an interrupt-first, which `Core` has no call for yet.
             let pane = main_pane(d, sid)?;
-            done(d.prompt_attached(&pane, &text, &attachments).await)
+            done(
+                d.prompt_attached(&pane, &text, &attachments, how, Some(op))
+                    .await,
+            )
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
+        Req::Background { sid, tool_use_id } => {
+            done(d.background(sid, tool_use_id.as_deref()).await)
+        }
         Req::AnswerQuestion {
             sid,
             request_id,
@@ -179,6 +184,14 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::ServerInfo => Ok(server_info(d).await),
         Req::CyclePermission { sid } => done(d.cycle_permission(sid).await),
         Req::SessionLabel { sid, label } => done(d.update(sid, |s| s.label = label).map(drop)),
+        Req::SessionOf { agent_sid } => d
+            .store
+            .read(|c| femme_store::sessions::list_sessions(c, true))
+            .map_err(|e| wire(core_err(e)))?
+            .into_iter()
+            .find(|s| s.agent_sid.as_deref() == Some(agent_sid.as_str()))
+            .map(|s| Resp::Session(s.id))
+            .ok_or_else(|| wire(CoreError::NotFound)),
         Req::Show {
             sid,
             name,
@@ -197,9 +210,12 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             five_hour,
             weekly,
         } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
-        Req::Prs => super::prs::list(&d.cfg).await,
+        Req::Prs => super::prs::list(d).await,
         Req::PrVideo { name } => super::prs::video(&d.cfg, &name).await,
-        Req::PrMerge { number } => super::prs::merge(&d.cfg, number).await,
+        Req::PrMerge { number } => super::prs::merge(d, number).await,
+        Req::PrFix { number } => super::prs::fix(d, owner(ctx), number).await,
+        Req::Resend { sid, item_id } => done(d.resend(sid, &item_id).await),
+        Req::PrAutoFix { on } => super::prs::set_auto_fix(&d.cfg, on).await,
         Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
     }
 }
@@ -300,6 +316,15 @@ fn main_pane(d: &Daemon, sid: Sid) -> Result<PaneRef, WireErr> {
 }
 
 #[allow(clippy::too_many_arguments)] // the request's own fields, one each
+/// Who a session a client asks for belongs to: its device, `device:ssh` over ssh.
+fn owner(ctx: &Ctx) -> String {
+    if ctx.device.is_nil() {
+        "device:ssh".to_string()
+    } else {
+        format!("device:{}", ctx.device)
+    }
+}
+
 async fn create(
     ctx: &Ctx,
     cwd: String,
@@ -342,11 +367,7 @@ async fn create(
     if !tokio::fs::metadata(&cwd).await.is_ok_and(|m| m.is_dir()) {
         return Err(err(ErrCode::Bad, format!("{cwd}: not a folder")));
     }
-    let owner = if ctx.device.is_nil() {
-        "device:ssh".to_string()
-    } else {
-        format!("device:{}", ctx.device)
-    };
+    let owner = owner(ctx);
     let info = d
         .create_session(CreateSession {
             cwd,

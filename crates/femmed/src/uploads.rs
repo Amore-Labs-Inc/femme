@@ -12,9 +12,9 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use femme_proto::rpc::Attachment;
+use femme_proto::rpc::{Attachment, PromptHow};
 use femme_proto::state::{Item, ItemKind, ItemStatus};
-use femme_proto::Sid;
+use femme_proto::{OpId, Sid};
 use femme_store::Store;
 use ulid::Ulid;
 
@@ -39,9 +39,11 @@ impl Daemon {
         pane: &PaneRef,
         text: &str,
         attachments: &[Attachment],
+        how: PromptHow,
+        op: Option<OpId>,
     ) -> Result<(), CoreError> {
         if attachments.is_empty() {
-            return self.pane_prompt(pane, text).await;
+            return self.pane_prompt(pane, text, how, op).await;
         }
         if attachments.len() > ATTACHMENTS_MAX {
             let why = format!("at most {ATTACHMENTS_MAX} attachments to a prompt");
@@ -56,7 +58,8 @@ impl Daemon {
         // ponytail: the files stay when the prompt then fails (`Busy`, say): a retry makes
         // `name-2` beside them, and the session's purge sweeps them all. Deleting them would break
         // a prompt that was half delivered.
-        self.pane_prompt(pane, &with_lines(text, &paths)).await
+        self.pane_prompt(pane, &with_lines(text, &paths), how, op)
+            .await
     }
 
     /// `Req::Show`: the agent in `sid` shows the user a file. The blob is saved in the session's

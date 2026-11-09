@@ -74,7 +74,8 @@ mod actions_def {
             CloseRight,
             FocusNext,
             FocusPrev,
-            ToggleBoard
+            ToggleBoard,
+            BackgroundAll
         ]
     );
 }
@@ -95,8 +96,9 @@ macro_rules! modkey {
     };
 }
 
-/// Binds the shell's keys: mod+b sidebar, mod+j the terminal tab, mod+k closes the right-hand
-/// panel, F6 and shift+F6 walk the focus, mod+shift+d the drawing board. (The accounts card and the
+/// Binds the shell's keys: mod+b sidebar, mod+shift+b moves the shown chat's foreground tasks to
+/// the background, mod+j the terminal tab, mod+k closes the right-hand panel, F6 and shift+F6
+/// walk the focus, mod+shift+d the drawing board. (The accounts card and the
 /// board hear escape themselves.) The board has the keyboard while it is open, so the "Femme"
 /// context, which holds all of these but the last, is off then; the board's key has no context, so it
 /// closes the board too.
@@ -105,6 +107,7 @@ pub fn bind_keys(cx: &mut App) {
     crate::terminal::panel::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
+        KeyBinding::new(modkey!("shift-b"), BackgroundAll, Some("Femme")),
         KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
         KeyBinding::new("f6", FocusNext, Some("Femme")),
@@ -967,6 +970,10 @@ impl Render for FemmeApp {
             .track_focus(&self.focus)
             .on_any_mouse_down(cx.listener(|t, _, window, cx| t.chrome_click(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
+            // Ctrl+B of Claude's TUI: every task the turn waits for goes to the background
+            .on_action(cx.listener(|t, _: &BackgroundAll, _, cx| {
+                t.transcript.update(cx, |tr, cx| tr.background(None, cx));
+            }))
             .on_action(
                 cx.listener(|t, _: &ToggleTerminal, window, cx| t.toggle_terminal(window, cx)),
             )

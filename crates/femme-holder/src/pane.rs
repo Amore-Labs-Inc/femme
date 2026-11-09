@@ -71,8 +71,15 @@ pub enum PaneCmd {
     Attach(Attach),
     Detach(u64),
     /// Input or flow control from view `id`. `recv_ns` is when the connection read it.
-    Up { id: u64, up: TermUp, recv_ns: u64 },
-    Screen { fmt: ScreenFmt, reply: oneshot::Sender<String> },
+    Up {
+        id: u64,
+        up: TermUp,
+        recv_ns: u64,
+    },
+    Screen {
+        fmt: ScreenFmt,
+        reply: oneshot::Sender<String>,
+    },
     Snap(oneshot::Sender<SnapPane>),
     /// `ClosePane`: SIGHUP, SIGKILL after 2 s, then the pane is gone.
     Close,
@@ -224,7 +231,9 @@ pub fn spawn(
     if sh.stopping.load(Relaxed) {
         return Err("holder is shutting down".into());
     }
-    let Some((prog, args)) = cmd.split_first() else { return Err("empty command".into()) };
+    let Some((prog, args)) = cmd.split_first() else {
+        return Err("empty command".into());
+    };
     if lock(&sh.panes).contains_key(&no) {
         return Err(format!("pane {no} already exists"));
     }
@@ -233,7 +242,8 @@ pub fn spawn(
     }
     let (cols, rows) = (cols.clamp(MIN_COLS, MAX_COLS), rows.clamp(1, MAX_ROWS));
     let (pty, pts) = pty_process::open().map_err(|e| format!("open pty: {e}"))?;
-    pty.resize(Size::new(rows, cols)).map_err(|e| format!("size pty: {e}"))?;
+    pty.resize(Size::new(rows, cols))
+        .map_err(|e| format!("size pty: {e}"))?;
     set_iutf8(&pty);
     let mut c = pty_process::Command::new(prog)
         .args(args)
@@ -244,12 +254,29 @@ pub fn spawn(
     }
     let child = c.spawn(pts).map_err(|e| format!("spawn {prog}: {e}"))?;
     let pid = child.id().unwrap_or(0);
-    let fd = pty.as_fd().try_clone_to_owned().map_err(|e| format!("dup pty: {e}"))?;
+    let fd = pty
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|e| format!("dup pty: {e}"))?;
     let (rd, wr) = pty.into_split();
 
-    let info = Arc::new(Mutex::new(HolderPane { no, pid, alive: true, exit: None, cols, rows, title: String::new() }));
+    let info = Arc::new(Mutex::new(HolderPane {
+        no,
+        pid,
+        alive: true,
+        exit: None,
+        cols,
+        rows,
+        title: String::new(),
+    }));
     let (tx, rx) = mpsc::channel(CMD_QUEUE);
-    lock(&sh.panes).insert(no, PaneHandle { tx, info: info.clone() });
+    lock(&sh.panes).insert(
+        no,
+        PaneHandle {
+            tx,
+            info: info.clone(),
+        },
+    );
     sh.mark_dirty();
     tracing::info!(pane = no, pid, cmd = %prog, cols, rows, "pane started");
 
@@ -403,7 +430,12 @@ impl Pane {
         let from = lo.max(bottom.saturating_sub(SNAP_ROWS));
         let rows = guard!(self, self.emu.rows(from, bottom)).unwrap_or_default();
         let screen_text = guard!(self, self.emu.screen_text()).unwrap_or_default();
-        SnapPane { no: self.no, title: self.title.clone(), screen_text, last_200_rows: rows }
+        SnapPane {
+            no: self.no,
+            title: self.title.clone(),
+            screen_text,
+            last_200_rows: rows,
+        }
     }
 
     // ---- output from the child -------------------------------------------------------------
@@ -455,7 +487,10 @@ impl Pane {
         if self.views.is_empty() || self.poisoned {
             return;
         }
-        let typing = self.views.iter().any(|v| v.last_input.is_some_and(|t| now.duration_since(t) < INPUT_WINDOW));
+        let typing = self.views.iter().any(|v| {
+            v.last_input
+                .is_some_and(|t| now.duration_since(t) < INPUT_WINDOW)
+        });
         if typing {
             self.flush_all();
             return;
@@ -468,7 +503,9 @@ impl Pane {
             return;
         }
         let wait = FRAME_QUIET.min(FRAME_MAX_WAIT - waited);
-        self.frame_timer.as_mut().reset(tokio::time::Instant::now() + wait);
+        self.frame_timer
+            .as_mut()
+            .reset(tokio::time::Instant::now() + wait);
         self.frame_timer_armed = true;
     }
 
@@ -481,7 +518,9 @@ impl Pane {
         });
         match deadline.flatten() {
             Some(at) => {
-                self.sync_timer.as_mut().reset(tokio::time::Instant::from_std(at));
+                self.sync_timer
+                    .as_mut()
+                    .reset(tokio::time::Instant::from_std(at));
                 self.sync_armed = true;
             }
             None => self.sync_armed = false,
@@ -503,7 +542,11 @@ impl Pane {
                 EmuEvent::Bell => self.bell(),
                 EmuEvent::Notify { title, body } => {
                     if self.notify_allowed() {
-                        self.sh.emit(HolderEvent::Notify { pane: self.no, title: cap(title, 2048), body: cap(body, 2048) });
+                        self.sh.emit(HolderEvent::Notify {
+                            pane: self.no,
+                            title: cap(title, 2048),
+                            body: cap(body, 2048),
+                        });
                     }
                 }
             }
@@ -514,7 +557,10 @@ impl Pane {
     // ponytail: fixed windows, so up to twice the rate across a boundary; a token bucket if that ever matters
     fn notify_allowed(&mut self) -> bool {
         let now = Instant::now();
-        if self.notify_window.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
+        if self
+            .notify_window
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+        {
             self.notify_window = Some(now);
             self.notify_n = 0;
         }
@@ -539,10 +585,16 @@ impl Pane {
             return;
         }
         let now = Instant::now();
-        match self.last_title_event.map(|t| t + TITLE_GAP).filter(|due| *due > now) {
+        match self
+            .last_title_event
+            .map(|t| t + TITLE_GAP)
+            .filter(|due| *due > now)
+        {
             None => self.flush_title(),
             Some(due) => {
-                self.title_timer.as_mut().reset(tokio::time::Instant::from_std(due));
+                self.title_timer
+                    .as_mut()
+                    .reset(tokio::time::Instant::from_std(due));
                 self.title_armed = true;
             }
         }
@@ -555,12 +607,18 @@ impl Pane {
         }
         self.title_armed = false;
         self.last_title_event = Some(Instant::now());
-        self.sh.emit(HolderEvent::Title { pane: self.no, title: self.title.clone() });
+        self.sh.emit(HolderEvent::Title {
+            pane: self.no,
+            title: self.title.clone(),
+        });
     }
 
     fn bell(&mut self) {
         let now = Instant::now();
-        if self.last_bell.is_some_and(|t| now.duration_since(t) < BELL_GAP) {
+        if self
+            .last_bell
+            .is_some_and(|t| now.duration_since(t) < BELL_GAP)
+        {
             return;
         }
         self.last_bell = Some(now);
@@ -579,7 +637,9 @@ impl Pane {
             self.announce_exit();
         } else {
             // The child's last output may still sit in the PTY: read it before announcing.
-            self.drain.as_mut().reset(tokio::time::Instant::now() + EXIT_DRAIN);
+            self.drain
+                .as_mut()
+                .reset(tokio::time::Instant::now() + EXIT_DRAIN);
             self.drain_armed = true;
         }
     }
@@ -607,7 +667,10 @@ impl Pane {
         self.drain_armed = false;
         self.flush_all();
         self.flush_title();
-        self.sh.emit(HolderEvent::ChildExited { target: Target::Pane(self.no), status });
+        self.sh.emit(HolderEvent::ChildExited {
+            target: Target::Pane(self.no),
+            status,
+        });
         for i in 0..self.views.len() {
             self.maybe_send_exited(i);
         }
@@ -615,7 +678,9 @@ impl Pane {
     }
 
     fn maybe_send_exited(&mut self, i: usize) {
-        let Some(status) = self.exit.filter(|_| self.announced) else { return };
+        let Some(status) = self.exit.filter(|_| self.announced) else {
+            return;
+        };
         let v = &self.views[i];
         if v.exit_sent || v.dead || v.blocked() {
             return;
@@ -649,7 +714,11 @@ impl Pane {
             return;
         }
         if self.wbuf.len() - self.wpos + data.len() > MAX_PENDING_INPUT {
-            tracing::warn!(pane = self.no, "child is not reading its terminal; dropping {} input bytes", data.len());
+            tracing::warn!(
+                pane = self.no,
+                "child is not reading its terminal; dropping {} input bytes",
+                data.len()
+            );
             return;
         }
         self.wbuf.extend_from_slice(data);
@@ -701,10 +770,16 @@ impl Pane {
 
     fn on_attach(&mut self, a: Attach) {
         let now = Instant::now();
-        self.seqs.retain(|_, (_, t)| now.duration_since(*t) < SEQ_MEMORY);
+        self.seqs
+            .retain(|_, (_, t)| now.duration_since(*t) < SEQ_MEMORY);
         let last = self.seqs.get(&a.client).map_or(0, |e| e.0);
         let view = self.view_for(a.epoch, a.have_rev);
-        tracing::debug!(pane = self.no, view = a.id, have_rev = a.have_rev, "view attached");
+        tracing::debug!(
+            pane = self.no,
+            view = a.id,
+            have_rev = a.have_rev,
+            "view attached"
+        );
         self.views.push(ViewState {
             id: a.id,
             out: a.out,
@@ -769,7 +844,12 @@ impl Pane {
 
     fn on_up(&mut self, i: usize, up: TermUp, recv_ns: u64) {
         match up {
-            TermUp::Open { pane, epoch, have_rev, .. } => self.on_open(i, pane, epoch, have_rev),
+            TermUp::Open {
+                pane,
+                epoch,
+                have_rev,
+                ..
+            } => self.on_open(i, pane, epoch, have_rev),
             TermUp::Key { seq, key } => {
                 if !self.stale(i, seq) {
                     let bytes = guard!(self, self.emu.encode_key(key)).unwrap_or_default();
@@ -789,7 +869,9 @@ impl Pane {
             }
             TermUp::Mouse { seq, ev } => {
                 if !self.stale(i, seq) {
-                    let bytes = guard!(self, self.emu.encode_mouse(ev)).flatten().unwrap_or_default();
+                    let bytes = guard!(self, self.emu.encode_mouse(ev))
+                        .flatten()
+                        .unwrap_or_default();
                     self.input(i, seq, &bytes, recv_ns);
                 }
             }
@@ -802,7 +884,11 @@ impl Pane {
             TermUp::Ack { rev } => self.on_ack(i, rev),
             TermUp::GetRows { from_abs, to_abs } => {
                 let to = to_abs.min(from_abs.saturating_add(MAX_ROWS_PER_REQUEST));
-                let rows = if from_abs < to { guard!(self, self.emu.rows(from_abs, to)).unwrap_or_default() } else { Vec::new() };
+                let rows = if from_abs < to {
+                    guard!(self, self.emu.rows(from_abs, to)).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 self.send_to(i, &HolderResp::Term(TermDown::Rows(rows)));
                 self.reap_views();
             }
@@ -814,7 +900,11 @@ impl Pane {
     /// compat layer's `/input`): always written, never deduped.
     fn stale(&self, i: usize, seq: u32) -> bool {
         let v = &self.views[i];
-        let known = self.seqs.get(&v.client).map_or(0, |e| e.0).max(v.queued_seq);
+        let known = self
+            .seqs
+            .get(&v.client)
+            .map_or(0, |e| e.0)
+            .max(v.queued_seq);
         seq != 0 && seq <= known
     }
 
@@ -833,7 +923,11 @@ impl Pane {
         }
         if seq != 0 && every != 0 && u64::from(seq) % every == 0 {
             let write_ns = self.sh.now_ns();
-            self.views[i].t_in = Some(InTiming { seq, recv_ns, write_ns });
+            self.views[i].t_in = Some(InTiming {
+                seq,
+                recv_ns,
+                write_ns,
+            });
             self.views[i].t_read = None;
         }
     }
@@ -844,16 +938,26 @@ impl Pane {
         let (id, now) = (self.views[i].id, Instant::now());
         if let Some((owner, at)) = self.size_owner {
             if owner != id && now.duration_since(at) < RESIZE_LOCK {
-                tracing::debug!(pane = self.no, view = id, "resize ignored: another view resized within 2 s");
+                tracing::debug!(
+                    pane = self.no,
+                    view = id,
+                    "resize ignored: another view resized within 2 s"
+                );
                 return;
             }
         }
         self.size_owner = Some((id, now));
         self.want = (cols, rows);
-        match self.resized_at.map(|t| t + RESIZE_GAP).filter(|due| *due > now) {
+        match self
+            .resized_at
+            .map(|t| t + RESIZE_GAP)
+            .filter(|due| *due > now)
+        {
             None => self.apply_resize(),
             Some(due) => {
-                self.resize_timer.as_mut().reset(tokio::time::Instant::from_std(due));
+                self.resize_timer
+                    .as_mut()
+                    .reset(tokio::time::Instant::from_std(due));
                 self.resize_armed = true;
             }
         }
@@ -918,7 +1022,10 @@ impl Pane {
         let timing = self.timing_for(i);
         let epoch = self.epoch;
         let v = &mut self.views[i];
-        let r = catch_unwind(AssertUnwindSafe(|| self.emu.frame(&mut v.view, epoch, v.applied_seq, v.echo_seq, timing)));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            self.emu
+                .frame(&mut v.view, epoch, v.applied_seq, v.echo_seq, timing)
+        }));
         match r {
             Ok(Some(frame)) => {
                 let rev = frame.rev;
@@ -962,9 +1069,19 @@ impl Pane {
         let now = self.sh.now_ns();
         let v = &self.views[i];
         if let (Some(t), Some(r)) = (&v.t_in, v.t_read) {
-            return Some(Timing { seq: t.seq, input_recv_ns: t.recv_ns, pty_write_ns: t.write_ns, pty_read_ns: r, frame_sent_ns: now });
+            return Some(Timing {
+                seq: t.seq,
+                input_recv_ns: t.recv_ns,
+                pty_write_ns: t.write_ns,
+                pty_read_ns: r,
+                frame_sent_ns: now,
+            });
         }
-        (self.frames % every == every - 1).then_some(Timing { pty_read_ns: self.last_read_ns, frame_sent_ns: now, ..Timing::default() })
+        (self.frames % every == every - 1).then_some(Timing {
+            pty_read_ns: self.last_read_ns,
+            frame_sent_ns: now,
+            ..Timing::default()
+        })
     }
 
     fn send_to(&mut self, i: usize, resp: &HolderResp) {
@@ -982,8 +1099,13 @@ impl Pane {
     /// view cannot go on with the next delta, and a snapshot would not fit either: say why and
     /// close the view. The client hears the same on every attach until the row is gone.
     fn too_big(&mut self, i: usize, e: &std::io::Error) {
-        tracing::warn!(pane = self.no, view = self.views[i].id, "a view's message does not encode: {e}");
-        if let Ok(bytes) = wire::encode(&HolderResp::Err(format!("screen too large to send: {e}"))) {
+        tracing::warn!(
+            pane = self.no,
+            view = self.views[i].id,
+            "a view's message does not encode: {e}"
+        );
+        if let Ok(bytes) = wire::encode(&HolderResp::Err(format!("screen too large to send: {e}")))
+        {
             let _ = self.views[i].out.try_send(bytes);
         }
         self.views[i].dead = true;
@@ -1004,7 +1126,10 @@ impl Pane {
     /// The emulator panicked: start a fresh one of the same size under a new epoch (clients
     /// reset), and ask the child's foreground job to redraw.
     fn reset_emulator(&mut self) {
-        tracing::error!(pane = self.no, "terminal emulator panicked; resetting this pane's screen");
+        tracing::error!(
+            pane = self.no,
+            "terminal emulator panicked; resetting this pane's screen"
+        );
         self.poisoned = false;
         self.emu = Emulator::new(self.cols, self.rows, SCROLLBACK);
         self.epoch = self.sh.alloc_epoch();

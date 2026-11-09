@@ -210,6 +210,18 @@ fn pink_text_is_legible() {
     assert!(contrast(DARK.accent_text, DARK.paper) >= 4.5);
 }
 
+/// A peer message's card: its "✉ from @name" header is pink text on paper, and its body ink on
+/// paper, legible in both palettes.
+#[test]
+fn the_peer_card_is_legible() {
+    for (theme, p) in BOTH {
+        let head = contrast(p.accent_text, p.paper);
+        let body = contrast(p.ink, p.paper);
+        assert!(head >= 3.0, "{theme}: peer header on paper {head:.2}:1");
+        assert!(body >= 7.0, "{theme}: peer body on paper {body:.2}:1");
+    }
+}
+
 /// The dark desk's dots are a dim grid: visible, and nowhere near the contrast of the work.
 #[test]
 fn the_dark_dot_grid_is_dim() {

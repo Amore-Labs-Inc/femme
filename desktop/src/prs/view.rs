@@ -1,5 +1,6 @@
 //! The card's elements: the title bar, the notice and deploy lines, the list on the left and the
-//! selected pull request on the right with its buttons, its confirm row and its description.
+//! selected pull request on the right with its buttons, its confirm row and its description, and the
+//! footer's auto-fix toggle.
 //! Everything here only reads the overlay; the buttons call back into it.
 
 use gpui::prelude::FluentBuilder as _;
@@ -11,7 +12,7 @@ use gpui::{
 
 use femme_proto::rpc::Pr;
 
-use super::{Confirm, Load, PrsOverlay};
+use super::{actions, badge, merge_waits, Badge, Confirm, FixButton, Load, PrsOverlay};
 use crate::motion::Appear;
 use crate::theme::{
     self, accent_text, bad, bar, hover, ink, muted, on_bar, paper, work, BODY_SIZE, FONT_PIXEL,
@@ -19,7 +20,7 @@ use crate::theme::{
 };
 use crate::transcript::md_view;
 use crate::transcript::select::Sel;
-use crate::ui::{button, button_dark, card, dialog, meta, row, ruled, ruled_sides};
+use crate::ui::{button, button_dark, card, dialog, meta, row, ruled, ruled_sides, st};
 
 /// The list's width.
 const LIST_W: f32 = 340.;
@@ -79,6 +80,16 @@ fn diff(pr: &Pr) -> Div {
         .gap(px(4.))
         .child(meta(format!("+{}", pr.additions)).text_color(work()))
         .child(meta(format!("−{}", pr.deletions)).text_color(bad()))
+}
+
+/// The row's mark: "merging…", "fixing…" and "conflicts" as status pills, "checking" faint.
+fn badge_el(b: Badge) -> Div {
+    match b {
+        Badge::Merging => st("merging…", theme::accent()).flex_none(),
+        Badge::Fixing => st("fixing…", theme::warn()).flex_none(),
+        Badge::Conflicts => st("conflicts", theme::danger()).flex_none(),
+        Badge::Checking => meta("checking").flex_none().text_color(theme::muted_text()),
+    }
 }
 
 impl PrsOverlay {
@@ -150,6 +161,49 @@ impl PrsOverlay {
                     .child(self.list_el(cx))
                     .child(self.detail(cx)),
             )
+            .children(self.footer(cx))
+    }
+
+    /// `[■] Auto-fix conflicts after a merge`, when the daemon knows the setting.
+    fn footer(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let on = self.auto_fix?;
+        let pending = self.auto.is_some();
+        let check = ruled(div().flex_none().size(px(12.)).when(on, |d| d.bg(ink())));
+        Some(ruled_sides(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .py(px(4.))
+                .bg(paper())
+                .child(
+                    div()
+                        .id("prs-autofix")
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(6.))
+                        .cursor_pointer()
+                        .when(pending, |d| d.opacity(0.5))
+                        .child(check)
+                        .child("Auto-fix conflicts after a merge")
+                        .on_click(cx.listener(|t, _, _, cx| t.toggle_auto_fix(cx))),
+                )
+                .child(
+                    meta(
+                        "starts a fix chat for each claude-update PR a merge leaves conflicting \
+                         (uses Claude usage)",
+                    )
+                    .flex_1()
+                    .min_w_0(),
+                ),
+            RULE,
+            px(0.),
+            px(0.),
+            px(0.),
+        ))
     }
 
     /// `‹  pull requests  ↻ refresh`.
@@ -213,8 +267,17 @@ impl PrsOverlay {
                     .child(
                         div()
                             .w_full()
-                            .truncate()
-                            .child(format!("#{n} {}", pr.title)),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(format!("#{n} {}", pr.title)),
+                            )
+                            .children(badge(pr).map(badge_el)),
                     )
                     .child(
                         div()
@@ -289,13 +352,24 @@ impl PrsOverlay {
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 )
                 .child(self.actions(&pr, cx))
+                .children(merge_waits(&pr).then(|| {
+                    meta("conflicts with main: Claude resolves them, then it merges and deploys by itself")
+                }))
+                .children(pr.merging.then(|| {
+                    div().text_color(accent_text()).child(
+                        "Claude is resolving the conflicts; it merges and deploys by itself",
+                    )
+                }))
                 .children(self.confirm_row(cx))
                 .child(card().child(doc)),
         )
     }
 
-    /// `Watch demo  Merge & deploy  Close PR`, and what a button is doing.
+    /// `Watch demo  Merge & deploy  Close PR`, with `Fix with Claude` or `Open fix chat` after the
+    /// merge when it conflicts or a fix runs (no merge or fix while a queued merge runs), and what a
+    /// button is doing.
     fn actions(&self, pr: &Pr, cx: &mut Context<Self>) -> Div {
+        let what = actions(pr);
         let n = pr.number;
         let off = self.busy.is_some();
         let demo = pr.video.clone().map(|name| {
@@ -309,11 +383,20 @@ impl PrsOverlay {
             .items_center()
             .gap(px(8.))
             .children(demo)
-            .child(
+            .children(what.merge.then(|| {
                 button_dark("pr-merge", "Merge & deploy")
                     .when(off, |b| b.opacity(0.5))
-                    .on_click(cx.listener(move |t, _, _, cx| t.ask(Confirm::Merge(n), cx))),
-            )
+                    .on_click(cx.listener(move |t, _, _, cx| t.ask(Confirm::Merge(n), cx)))
+            }))
+            .children(what.fix.map(|f| {
+                match f {
+                    FixButton::Start => button("pr-fix", "Fix with Claude")
+                        .when(off, |b| b.opacity(0.5))
+                        .on_click(cx.listener(move |t, _, _, cx| t.fix(n, cx))),
+                    FixButton::Open(sid) => button("pr-open-fix", "Open fix chat")
+                        .on_click(cx.listener(move |t, _, _, cx| t.show_chat(sid, cx))),
+                }
+            }))
             .child(
                 button("pr-close", "Close PR")
                     .when(off, |b| b.opacity(0.5))

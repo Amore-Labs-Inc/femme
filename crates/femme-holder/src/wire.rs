@@ -20,7 +20,10 @@ pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
     postcard::to_io(msg, &mut v).map_err(invalid)?;
     let n = v.len() - 4;
     if n > MAX_MSG {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("message of {n} bytes exceeds the limit")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("message of {n} bytes exceeds the limit"),
+        ));
     }
     v[..4].copy_from_slice(&(n as u32).to_le_bytes());
     Ok(v)
@@ -28,7 +31,10 @@ pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
 
 /// Read one message. `buf` is scratch space reused between calls. `Ok(None)` means the peer closed
 /// the stream. Not cancel-safe: drop the connection if this future is dropped mid-read.
-pub async fn read<T: DeserializeOwned, R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<Option<T>> {
+pub async fn read<T: DeserializeOwned, R: AsyncRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+) -> io::Result<Option<T>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len).await {
         Ok(_) => {}
@@ -37,7 +43,10 @@ pub async fn read<T: DeserializeOwned, R: AsyncRead + Unpin>(r: &mut R, buf: &mu
     }
     let n = u32::from_le_bytes(len) as usize;
     if n > MAX_MSG {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("message of {n} bytes exceeds the limit")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("message of {n} bytes exceeds the limit"),
+        ));
     }
     buf.clear();
     buf.resize(n, 0);
@@ -58,13 +67,22 @@ mod tests {
     #[tokio::test]
     async fn roundtrip_and_eof() {
         let (mut a, mut b) = tokio::io::duplex(64);
-        let msg = HolderReq::Signal { target: Target::Pane(3), sig: 15 };
+        let msg = HolderReq::Signal {
+            target: Target::Pane(3),
+            sig: 15,
+        };
         write(&mut a, &msg).await.unwrap();
         write(&mut a, &HolderReq::Hello { v: 1 }).await.unwrap();
         drop(a);
         let mut buf = Vec::new();
-        assert_eq!(read::<HolderReq, _>(&mut b, &mut buf).await.unwrap(), Some(msg));
-        assert_eq!(read::<HolderReq, _>(&mut b, &mut buf).await.unwrap(), Some(HolderReq::Hello { v: 1 }));
+        assert_eq!(
+            read::<HolderReq, _>(&mut b, &mut buf).await.unwrap(),
+            Some(msg)
+        );
+        assert_eq!(
+            read::<HolderReq, _>(&mut b, &mut buf).await.unwrap(),
+            Some(HolderReq::Hello { v: 1 })
+        );
         assert_eq!(read::<HolderReq, _>(&mut b, &mut buf).await.unwrap(), None);
     }
 
