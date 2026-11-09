@@ -207,7 +207,7 @@ impl Account {
 
     /// The sign-in line and how loud it is, counted from `now`: nothing with more than 10 days left
     /// (or no date), `sign-in ends in 7 d` (amber), `sign-in ends in 30 h` (red under two days),
-    /// `sign-in ended` (red).
+    /// `sign-in ended` (red). Whole days and hours, rounded down: never more time than there is.
     pub fn sign_in(&self, now: i64) -> Option<(String, Level)> {
         let left = self.login_ends? - now;
         if left > SIGN_IN_WARN {
@@ -217,12 +217,12 @@ impl Account {
             ("sign-in ended".into(), Level::Bad)
         } else if left < SIGN_IN_URGENT {
             (
-                format!("sign-in ends in {} h", (left + 1800) / 3600),
+                format!("sign-in ends in {} h", left / 3600),
                 Level::Bad,
             )
         } else {
             (
-                format!("sign-in ends in {} d", (left + 43_200) / 86_400),
+                format!("sign-in ends in {} d", left / 86_400),
                 Level::Warn,
             )
         })
