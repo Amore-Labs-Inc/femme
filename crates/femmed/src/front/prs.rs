@@ -118,6 +118,14 @@ pub(crate) async fn list(d: &Daemon) -> Result<Resp, WireErr> {
     let dir = videos(&d.cfg);
     let mut out = Vec::new();
     for p in open_prs(&d.cfg).await? {
+        if p.mergeable == "UNKNOWN" {
+            // GitHub works mergeability out when one pull request is asked for, not for a list:
+            // ask, and the desktop's next refresh has it.
+            let (cfg, n) = (d.cfg.clone(), p.number.to_string());
+            tokio::spawn(async move {
+                let _ = gh(&cfg, &["pr", "view", &n, "--json", "mergeable"]).await;
+            });
+        }
         out.push(Pr {
             fixing: fixing(d, p.number).await,
             mergeable: mergeable(&p.mergeable),
