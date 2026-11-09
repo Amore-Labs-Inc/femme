@@ -128,6 +128,7 @@ pub(crate) async fn list(d: &Daemon) -> Result<Resp, WireErr> {
         }
         out.push(Pr {
             fixing: fixing(d, p.number).await,
+            merging: merging(p.number).await,
             mergeable: mergeable(&p.mergeable),
             video: video_for(&dir, &p.head_ref_name),
             number: p.number,
@@ -166,11 +167,47 @@ pub(crate) async fn video(cfg: &Config, name: &str) -> Result<Resp, WireErr> {
 
 pub(crate) async fn merge(d: &Arc<Daemon>, number: u64) -> Result<Resp, WireErr> {
     let n = number.to_string();
-    gh(&d.cfg, &["pr", "merge", &n, "--squash", "--delete-branch"]).await?;
+    if let Err(e) = gh(&d.cfg, &["pr", "merge", &n, "--squash", "--delete-branch"]).await {
+        if !e.msg.contains("merge conflicts") && !e.msg.contains("not mergeable") {
+            return Err(e);
+        }
+        // It conflicts with main: `server/pr-merge.sh` has Claude resolve it, then merges it. A
+        // unit of its own, not a task of ours: a deploy restarts femmed while it works.
+        queue_merge(&d.cfg, number).await?;
+        return Ok(Resp::Ok);
+    }
     if auto_fix(&d.cfg) {
         tokio::spawn(fix_left_conflicting(d.clone()));
     }
     Ok(Resp::Ok)
+}
+
+fn merge_unit(number: u64) -> String {
+    format!("femme-pr-merge-{number}")
+}
+
+async fn queue_merge(cfg: &Config, number: u64) -> Result<(), WireErr> {
+    if merging(number).await {
+        return Ok(());
+    }
+    let script = cfg.home.join("femme/server/pr-merge.sh");
+    let unit = format!("--unit={}", merge_unit(number));
+    let path = format!(
+        "--setenv=PATH={}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (script, n) = (script.display().to_string(), number.to_string());
+    let args = ["--user", "--collect", "--quiet", &unit, &path, &script, &n];
+    run(&cfg.home, "systemd-run", &args).await.map(|_| ())
+}
+
+/// Whether a queued merge (`server/pr-merge.sh`) is still at work on pull request `number`.
+async fn merging(number: u64) -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", &merge_unit(number)])
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
 }
 
 fn autofix_file(cfg: &Config) -> PathBuf {
