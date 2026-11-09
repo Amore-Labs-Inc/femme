@@ -88,6 +88,31 @@ EOF
 chmod +x "$repo/.git/hooks/pre-push"
 say "clone $repo at $(git -C "$repo" rev-parse --short origin/main)"
 
+# The ledger: everything earlier runs proposed, so the scout never proposes it again. Every
+# claude-update/* pull request with its state (CLOSED unmerged = the user said no), then the
+# hand-offs of earlier runs (some never became a PR).
+ledger=$run/ledger.md
+{
+  echo "# Pull requests from earlier runs (claude-update/* branches)"
+  echo
+  if prs=$(cd "$repo" && gh pr list --state all --search 'head:claude-update' --limit 500 \
+      --json number,title,headRefName,state 2>>"$log"); then
+    jq -r '.[] | select(.headRefName | startswith("claude-update/"))
+      | "- #\(.number) \(.state) \(.headRefName) — \(.title)"' <<<"$prs"
+  else
+    echo "(gh pr list failed: the PR list is unknown tonight; check open PRs yourself with gh)"
+  fi
+  echo
+  echo "# Hand-offs of earlier runs (<version>/<slug>: feature)"
+  echo
+  for f in "$reports"/*/features/*.json; do
+    [ "${f%/features/*}" = "$run" ] && continue
+    v=${f%/features/*}; v=${v##*/}
+    jq -r --arg v "$v" '"- \($v)/\(.slug // "?"): \((.feature // "") | gsub("\\s+"; " ") | .[0:200])"' "$f" 2>/dev/null
+  done
+} >"$ledger"
+say "ledger: $(grep -c '^- #' "$ledger") PRs, $(grep -c '^- [0-9]' "$ledger") earlier hand-offs"
+
 # Fills a prompt's @NAME@ placeholders from NAME=value arguments.
 render() {
   local text kv
@@ -112,7 +137,7 @@ say "digest start"
 python3 -I "$lib/digest.py" >"$run/digest.md" 2>>"$log"; say "digest: exit $?, $(wc -c <"$run/digest.md") bytes"
 say "scout start ($scout_model, effort max)"
 prompt=$(render "$lib/scout.md" FROM="$from" TO="$to" REPO="$repo" DIGEST="$run/digest.md" \
-  PROJECTS="$HOME/.claude/projects" REPORT="$reports/$to.md" FEATURES="$run/features")
+  PROJECTS="$HOME/.claude/projects" REPORT="$reports/$to.md" FEATURES="$run/features" LEDGER="$ledger")
 claude_run "$repo" "$run/scout.jsonl" 3h "$prompt" --model "$scout_model" --effort max
 say "scout: exit $?"
 if [ "$dry" = 1 ] && ! ls "$run"/features/*.json >/dev/null 2>&1; then
