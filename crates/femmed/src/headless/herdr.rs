@@ -765,10 +765,14 @@ fn disk_line(line: &[u8], uploads: &Path) -> Option<Disk> {
 
 /// A message Claude took in while it worked (a `queued_command` attachment) as the `user` line
 /// the TUI writes for one sent between turns. One the user did not type (another session's, an
-/// auto-continuation) is marked so it is not their message; one for the model only is skipped.
+/// auto-continuation) is marked so it is not their message, and a peer's keeps its `origin`; one
+/// for the model only (`isMeta`, unless it is a peer's `<cross-session-message>`) is skipped.
 fn queued(v: Value) -> Option<Value> {
     let a = &v["attachment"];
-    if a["isMeta"] == true {
+    let peer = a["prompt"]
+        .as_str()
+        .is_some_and(|p| p.contains("<cross-session-message"));
+    if a["isMeta"] == true && !peer {
         return None;
     }
     let mut u = serde_json::json!({
@@ -778,6 +782,13 @@ fn queued(v: Value) -> Option<Value> {
         "message": {"role": "user", "content": a["prompt"]},
     });
     if a["origin"]["kind"].as_str().is_some_and(|k| k != "human") {
+        u["notTyped"] = Value::Bool(true);
+    }
+    // a peer's message keeps its origin, so the driver reads it as a `PeerMessage` from the sender
+    if a["origin"]["kind"] == "peer" {
+        u["origin"] = a["origin"].clone();
+    } else if a["origin"].is_null() && peer {
+        u["origin"] = serde_json::json!({"kind": "peer"});
         u["notTyped"] = Value::Bool(true);
     }
     Some(u)
@@ -881,25 +892,6 @@ fn sub_line(line: &[u8], parent: &str) -> Option<Vec<u8>> {
 
 /// [`disk_line`] on a parsed line, sidechain or not.
 fn disk_value(mut v: Value) -> Option<Value> {
-    if v["attachment"]["type"] == "queued_command"
-        && v["attachment"]["prompt"]
-            .as_str()
-            .is_some_and(|p| p.contains("<cross-session-message"))
-    {
-        // a peer's message that landed mid-turn: the stream shows it as the user line below
-        let a = &v["attachment"];
-        let origin = match &a["origin"] {
-            Value::Null => serde_json::json!({"kind": "peer"}),
-            o => o.clone(),
-        };
-        return Some(serde_json::json!({
-            "type": "user",
-            "isReplay": true,
-            "uuid": v["uuid"],
-            "origin": origin,
-            "message": {"role": "user", "content": a["prompt"]},
-        }));
-    }
     if v["isMeta"] == true && v["origin"]["kind"] != "peer" {
         return None;
     }
