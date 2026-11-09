@@ -1,0 +1,12 @@
+[Unit]
+Description=FEMME box health: hourly housekeeping (cargo sweep, /tmp, Docker, journal) and checks for disk, load, swap and leaked desktop recordings
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/femme/server/box-health.sh
+# Housekeeping, not the sessions' work: it waits behind them for CPU and disk.
+Nice=10
+CPUWeight=20
+IOWeight=20
+TimeoutStartSec=15min

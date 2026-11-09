@@ -119,6 +119,9 @@ if [ "$femmed" != 0 ] || [ -n "${BOARD_URL:-}" ]; then
   # Built here, not on the laptop, so a merge to main can deploy itself (deploy.sh).
   [ -x ~/.cargo/bin/cargo ] || curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path
 fi
+# Four cores shared by every agent: one build may take three, never all four (once three builds at
+# once ran the box to load 28 and femmed's watchdog killed it). An existing config is the user's.
+[ -e ~/.cargo/config.toml ] || { mkdir -p ~/.cargo && printf '[build]\njobs = 3\n' > ~/.cargo/config.toml; }
 if [ "$femmed" != 0 ]; then
   # femmed and the per-session holder. Copy then rename: a running binary can't be written over, and
   # holders already running keep the old binary open until their session ends (plan §5, upgrade by rename).
@@ -160,6 +163,10 @@ for u in $units; do cp "server/systemd/$u.service" ~/.config/systemd/user/; done
 # Optional (CLAUDE_UPDATES=1): at 03:00, upgrade Claude Code and open a PR per useful new feature
 # (server/claude-update.sh, docs/claude-updates.md).
 [ "${CLAUDE_UPDATES:-0}" != 1 ] || { cp server/systemd/femme-claude-update.service server/systemd/femme-claude-update.timer ~/.config/systemd/user/; units="$units femme-claude-update.timer"; }
+# Hourly: housekeeping, and a warning (journal, ~/.local/state/femme/box-health.json, a GitHub issue
+# labelled box-health) when disk, load or swap run high or a recording leaks its desktop (server/box-health.sh).
+cp server/systemd/femme-box-health.service server/systemd/femme-box-health.timer ~/.config/systemd/user/
+units="$units femme-box-health.timer"
 systemctl --user daemon-reload
 # femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
 [ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
@@ -172,6 +179,6 @@ if [ "$femmed" != 2 ]; then
     herdr plugin link "$PWD/plugin" >/dev/null || echo "WARN: could not link the femme plugin from $PWD/plugin" >&2
   fi
 fi
-systemctl --user restart $(printf '%s\n' $units | grep -vE '^(herdr-server|herdr-instinct|femme-deploy.timer|femme-claude-update.timer)$')
+systemctl --user restart $(printf '%s\n' $units | grep -vE '^(herdr-server|herdr-instinct|femme-deploy.timer|femme-claude-update.timer|femme-box-health.timer)$')
 [ "$femmed" = 2 ] || herdr server reload-config >/dev/null 2>&1 || true
 systemctl --user is-active $units
