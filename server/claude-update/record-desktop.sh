@@ -10,7 +10,7 @@
 #   key KEYS...                xdotool key names: ctrl+k, Escape, Return, Down
 #   type TEXT                  types like a person
 #   pause SECONDS
-#   shot NAME                  <video>.shots/NAME.png, to find coordinates and check the effect
+#   shot NAME                  $SHOTS/NAME.png (default /tmp/femme-shots/<video name>/), to find coordinates and check the effect
 # The daemon and the desktop get their own empty HOME: the box's mirrored chats (herdr panes,
 # ~/.claude/sessions) and the user's files never reach the video. Claude sessions there run the real
 # `claude` with the box's sign-in (CLAUDE_CONFIG_DIR); FAKE_CLAUDE=1 runs the test fake instead. The video is H.264, at most 8 MiB (re-encoded smaller when over).
@@ -24,7 +24,7 @@ for b in "$femmed" "$holder" "$desktop"; do [ -x "$b" ] || { echo "record-deskto
 W=1600 H=1000 max=$((8 << 20))
 
 tmp=$(mktemp -d /tmp/femme-rec.XXXXXX)
-shots=${out%.*}.shots
+shots=${SHOTS:-/tmp/femme-shots/$(basename "${out%.*}")}
 mkdir -p "$tmp/state" "$tmp/run" "$tmp/home" "$tmp/bin" "$shots" "$(dirname "$out")"
 chmod 700 "$tmp/run"
 pids=()
