@@ -51,6 +51,7 @@ use crate::menu::{FemmeMenu, MenuEvent};
 use crate::motion;
 use crate::net::{ClientEvent, Net, Started};
 use crate::projects::{self, Picker};
+use crate::prs::{self, PrsOverlay};
 use crate::session;
 use crate::sidebar::{AddProject, CollapsedChanged, OpenSession, Sidebar};
 use crate::terminal::panel::TerminalPanel;
@@ -319,6 +320,8 @@ pub struct FemmeApp {
     terminal: Entity<TerminalPanel>,
     files: Entity<FilesPanel>,
     accounts: Entity<AccountsOverlay>,
+    /// The pull requests card (femme ▸ Pull requests).
+    prs: Entity<PrsOverlay>,
     /// The add project palette (the sidebar's `+`).
     picker: Entity<Picker>,
     /// The drawing board: a layer over the whole window, empty while it is closed.
@@ -365,6 +368,7 @@ impl FemmeApp {
         let terminal = cx.new(|cx| TerminalPanel::new(net.clone(), cx));
         let files = cx.new(|cx| FilesPanel::new(net.clone(), cx));
         let accounts = cx.new(|cx| AccountsOverlay::new(net.clone(), cx));
+        let prs = cx.new(|cx| PrsOverlay::new(net.clone(), cx));
         let picker = cx.new(|cx| Picker::new(net.clone(), cx));
         let board = cx.new(Board::new);
         let lightbox = crate::lightbox::Lightbox::install(cx);
@@ -407,6 +411,14 @@ impl FemmeApp {
             }),
             cx.observe_in(&accounts, window, |t, _, window, cx| {
                 t.accounts_changed(window, cx)
+            }),
+            // The card gives the keyboard back itself; when nobody had it, the centre takes it.
+            cx.subscribe_in(&prs, window, |t, card, _: &prs::Closed, window, cx| {
+                let card = card.focus_handle(cx);
+                if window.focused(cx).is_none_or(|h| card.contains(&h, window)) {
+                    t.land_focus(window, cx);
+                }
+                cx.notify();
             }),
             cx.subscribe_in(&board, window, |t, _, ev: &BoardEvent, window, cx| {
                 t.on_board(ev, window, cx)
@@ -456,6 +468,7 @@ impl FemmeApp {
             terminal,
             files,
             accounts,
+            prs,
             picker,
             board,
             lightbox,
@@ -600,6 +613,10 @@ impl FemmeApp {
 
     fn on_menu(&mut self, ev: MenuEvent, _: &mut Window, cx: &mut Context<Self>) {
         match ev {
+            MenuEvent::PullRequests => {
+                self.prs.update(cx, |p, cx| p.open(cx));
+                cx.notify();
+            }
             MenuEvent::Accounts => {
                 self.accounts.update(cx, |a, cx| a.open(cx));
                 cx.notify();
@@ -934,6 +951,7 @@ impl Render for FemmeApp {
                     // Each card is its own layer (scrim, focus, escape): it only needs a positioned
                     // parent. Always mounted: closed, it draws nothing, and it fades itself out.
                     .child(self.accounts.clone())
+                    .child(self.prs.clone())
                     .child(self.picker.clone()),
             )
             .child(div().flex_none().h_full().child(self.strip(cx)));

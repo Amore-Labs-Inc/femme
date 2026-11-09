@@ -1,6 +1,7 @@
 //! The `femme` button at the top left and the dropdown it opens: version, check for updates,
-//! accounts, dark mode, reconnect, quit. The shell mounts it (see docs/desktop-ui.md) and handles
-//! [`MenuEvent::Accounts`], [`MenuEvent::Reconnect`] and [`MenuEvent::Quit`].
+//! pull requests, accounts, dark mode, reconnect, quit. The shell mounts it (see
+//! docs/desktop-ui.md) and handles [`MenuEvent::PullRequests`], [`MenuEvent::Accounts`],
+//! [`MenuEvent::Reconnect`] and [`MenuEvent::Quit`].
 //!
 //! - The wordmark is a button: ink border, hard shadow, a caret, a pink fill on hover, pushed in
 //!   while pressed or open.
@@ -71,6 +72,8 @@ const MARK_LIFT: f32 = 3.;
 /// What the menu asks the shell to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuEvent {
+    /// Open the pull requests overlay.
+    PullRequests,
     /// Open the accounts overlay.
     Accounts,
     /// A check for updates started. The menu runs it and shows the answer itself: the shell has
@@ -196,6 +199,7 @@ impl Verdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Item {
     Check,
+    PullRequests,
     Accounts,
     DarkMode,
     Reconnect,
@@ -203,8 +207,9 @@ enum Item {
 }
 
 impl Item {
-    const ALL: [Item; 5] = [
+    const ALL: [Item; 6] = [
         Item::Check,
+        Item::PullRequests,
         Item::Accounts,
         Item::DarkMode,
         Item::Reconnect,
@@ -214,6 +219,7 @@ impl Item {
     fn label(self) -> &'static str {
         match self {
             Item::Check => "Check for updates",
+            Item::PullRequests => "Pull requests",
             Item::Accounts => "Accounts",
             Item::DarkMode => "Dark mode",
             Item::Reconnect => "Reconnect",
@@ -224,6 +230,7 @@ impl Item {
     fn id(self) -> &'static str {
         match self {
             Item::Check => "menu-check",
+            Item::PullRequests => "menu-pull-requests",
             Item::Accounts => "menu-accounts",
             Item::DarkMode => "menu-dark-mode",
             Item::Reconnect => "menu-reconnect",
@@ -443,6 +450,7 @@ impl FemmeMenu {
                 theme::set_dark(!theme::is_dark(), cx);
                 return;
             }
+            Item::PullRequests => MenuEvent::PullRequests,
             Item::Accounts => MenuEvent::Accounts,
             Item::Reconnect => MenuEvent::Reconnect,
             Item::Quit => MenuEvent::Quit,
@@ -695,6 +703,7 @@ impl FemmeMenu {
         .child(self.row(Item::Check, cx))
         .children(self.result())
         .child(rule())
+        .child(self.row(Item::PullRequests, cx))
         .child(self.row(Item::Accounts, cx))
         .child(self.row(Item::DarkMode, cx))
         .child(self.row(Item::Reconnect, cx))
@@ -884,13 +893,15 @@ mod tests {
         use Item::*;
         assert_eq!(Item::step(None, true), Check);
         assert_eq!(Item::step(None, false), Quit);
-        assert_eq!(Item::step(Some(Check), true), Accounts);
+        assert_eq!(Item::step(Some(Check), true), PullRequests);
+        assert_eq!(Item::step(Some(PullRequests), true), Accounts);
         assert_eq!(Item::step(Some(Accounts), true), DarkMode);
         assert_eq!(Item::step(Some(DarkMode), true), Reconnect);
         assert_eq!(Item::step(Some(Quit), true), Check);
         assert_eq!(Item::step(Some(Check), false), Quit);
         assert_eq!(Item::step(Some(Reconnect), false), DarkMode);
         assert_eq!(Item::step(Some(DarkMode), false), Accounts);
+        assert_eq!(Item::step(Some(Accounts), false), PullRequests);
     }
 
     #[test]
