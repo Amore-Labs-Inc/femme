@@ -19,6 +19,7 @@ pub mod menu;
 pub mod motion;
 pub mod net;
 pub mod projects;
+pub mod prs;
 pub mod rng;
 pub mod session;
 pub mod sidebar;
