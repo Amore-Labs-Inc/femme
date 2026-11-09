@@ -884,6 +884,7 @@ impl CodexDriver {
                     call_id: m.id.clone(),
                     output: t.output,
                     is_error: t.failed,
+                    link: None,
                 };
                 ev.push(AgentEvent::ItemCompleted {
                     id: m.id.clone(),

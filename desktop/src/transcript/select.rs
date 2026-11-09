@@ -524,6 +524,8 @@ impl Element for Selectable {
             if up == Some(down.link) && event.click_count == 1 && !dragged(down.at, event.position)
             {
                 cx.open_url(&links[down.link].1);
+                // the click was the link's: a row behind it (a tool row's toggle) keeps still
+                cx.stop_propagation();
             }
         });
     }

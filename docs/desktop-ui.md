@@ -38,6 +38,9 @@ Keep it current: when your module's public API changes, edit your section in the
   `https://` address in its text, opens in the system's browser on a click (the pointer turns to a
   hand over it): the words of a link are the target, not the dim address after them, and only web
   and mail addresses open (a `file:`, `javascript:` or app-scheme link is shown, not followed).
+  An `Artifact` call (Claude Code's page on claude.ai; FEMME's Claude chats run with
+  `CLAUDE_CODE_ARTIFACT=1`) is one line, `artifact · <title> ↗`, whose title opens the page; a
+  publish that changed an existing page adds `updated · v<N>`. Its folded body is the plain call.
 - **Compaction hand-off**: after `Conversation compacted`, Claude Code restarts the model with one
   synthetic *user* message ("This session is being continued from a previous conversation…
   Summary: …"). It arrives as `UserMessage` and is stored as one, but the transcript does not

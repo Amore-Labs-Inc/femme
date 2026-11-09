@@ -810,6 +810,7 @@ impl PiDriver {
             call_id: id.to_owned(),
             output: flatten(content),
             is_error,
+            link: None,
         };
         ev.push(done(
             &format!("{id}:result"),
