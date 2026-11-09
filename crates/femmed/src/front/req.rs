@@ -63,6 +63,8 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::Caps
             | Req::ServerInfo
             | Req::Commands
+            | Req::Prs
+            | Req::PrVideo { .. }
     )
 }
 
@@ -195,6 +197,10 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             five_hour,
             weekly,
         } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
+        Req::Prs => super::prs::list(&d.cfg).await,
+        Req::PrVideo { name } => super::prs::video(&d.cfg, &name).await,
+        Req::PrMerge { number } => super::prs::merge(&d.cfg, number).await,
+        Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
     }
 }
 
