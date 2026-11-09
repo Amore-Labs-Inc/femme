@@ -111,7 +111,7 @@ python3 -I "$lib/digest.py" >"$run/digest.md" 2>>"$log"; say "digest: exit $?, $
 say "scout start ($scout_model, effort max)"
 prompt=$(render "$lib/scout.md" FROM="$from" TO="$to" REPO="$repo" DIGEST="$run/digest.md" \
   PROJECTS="$HOME/.claude/projects" REPORT="$reports/$to.md" FEATURES="$run/features")
-claude_run "$repo" "$run/scout.jsonl" 2h "$prompt" --model "$scout_model" --effort max
+claude_run "$repo" "$run/scout.jsonl" 3h "$prompt" --model "$scout_model" --effort max
 say "scout: exit $?"
 if [ "$dry" = 1 ] && ! ls "$run"/features/*.json >/dev/null 2>&1; then
   # A stand-in hand-off, so a dry run walks the feature loop too.
