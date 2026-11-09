@@ -16,6 +16,11 @@ WatchdogSec=60
 Restart=always
 RestartSec=1
 CPUWeight=500
+# The daemon's pages stay in RAM when the box swaps (2026-11-09: agents' builds pushed 4 GB into
+# swap, femmed went with them and missed its watchdog), and the OOM killer takes it last.
+MemoryMin=1G
+MemoryLow=2G
+OOMScoreAdjust=-900
 
 [Install]
 WantedBy=default.target
