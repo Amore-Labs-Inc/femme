@@ -3814,3 +3814,33 @@ fn items_inserted_before_others_take_their_place_in_order() {
     );
     assert!(got.iter().find(|i| i.item_id == "a").unwrap().rev <= before);
 }
+
+#[test]
+fn items_with_a_status_are_listed_oldest_first() {
+    let s = store();
+    let sid = insert_session(&s, None).id;
+    let mut put = |id: &str, kind: ItemKind, status: ItemStatus| {
+        let mut i = item(sid, id, r#"{"text":"hi"}"#);
+        i.kind = kind;
+        i.status = status;
+        s.write(|tx| tx.put_item(&i)).unwrap();
+    };
+    put("a", ItemKind::UserMessage, ItemStatus::Pending);
+    put("b", ItemKind::UserMessage, ItemStatus::Completed);
+    put("c", ItemKind::Question, ItemStatus::Pending);
+    put("d", ItemKind::UserMessage, ItemStatus::Failed);
+    put("e", ItemKind::UserMessage, ItemStatus::Pending);
+    let ids = |statuses: &[ItemStatus]| -> Vec<String> {
+        s.read(|c| items::items_with_status(c, sid, ItemKind::UserMessage, statuses))
+            .unwrap()
+            .into_iter()
+            .map(|i| i.item_id)
+            .collect()
+    };
+    assert_eq!(ids(&[ItemStatus::Pending]), ["a", "e"]);
+    assert_eq!(
+        ids(&[ItemStatus::Pending, ItemStatus::Failed]),
+        ["a", "d", "e"]
+    );
+    assert!(ids(&[ItemStatus::Answered]).is_empty());
+}

@@ -37,7 +37,7 @@
 
 use std::borrow::Cow;
 
-use femme_proto::state::{Entity, Item};
+use femme_proto::state::{Entity, Item, ItemKind, ItemStatus};
 use femme_proto::Sid;
 use rusqlite::{params, Connection, Row};
 
@@ -168,6 +168,31 @@ pub fn page_items(
         params![id_blob(sid), before, limit],
         item_from_row,
     )
+}
+
+/// The items of a session of one kind in one of `statuses`, oldest first (by `seq`). For the few
+/// rows a session has in such a state (prompts waiting for the agent's echo); it reads through the
+/// whole session, so it is not for kinds and statuses most items have.
+// ponytail: no index on (session_id, kind, status); a partial index when sessions grow past a
+// few thousand items and this shows.
+pub fn items_with_status(
+    conn: &Connection,
+    sid: Sid,
+    kind: ItemKind,
+    statuses: &[ItemStatus],
+) -> Result<Vec<Item>> {
+    let mut out = all(
+        conn,
+        concat!(
+            "SELECT ",
+            item_cols!(),
+            " FROM items WHERE session_id = ?1 AND kind = ?2 ORDER BY seq"
+        ),
+        params![id_blob(sid), item_kind_str(kind)],
+        item_from_row,
+    )?;
+    out.retain(|i| statuses.contains(&i.status));
+    Ok(out)
 }
 
 /// Items of a session with `rev > after_rev`, oldest change first, stopping before the
