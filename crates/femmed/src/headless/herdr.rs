@@ -19,8 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::time::Duration;
 
+use femme_agents::items::{body, UserMessage};
 use femme_agents::{driver_for, Driver, Out};
-use femme_proto::state::{Agent, Attention, Mode, Pane, PaneKind, Session, SessionStatus};
+use femme_proto::state::{
+    Agent, Attention, ItemKind, ItemStatus, Mode, Pane, PaneKind, Session, SessionStatus,
+};
 use femme_proto::{Id, PaneId, Sid};
 use femme_store::sessions;
 use serde_json::Value;
@@ -323,6 +326,9 @@ struct Tail {
     // ponytail: their offsets live only here, so a daemon restart reads them again from the start;
     // that writes nothing (the items are the same), persist them if the reading ever shows
     subs: HashMap<PathBuf, SubTail>,
+    /// Lines of kinds this reader does not know, by kind: each kind is one note, its count kept.
+    // ponytail: counted from where this run started reading, so a restart counts again from there
+    unknown: HashMap<String, u32>,
 }
 
 /// A subagent's transcript, read on from where it was read.
@@ -357,7 +363,29 @@ impl Tail {
             compacted: 0,
             pending: Vec::new(),
             subs: HashMap::new(),
+            unknown: HashMap::new(),
         }
+    }
+
+    /// The note for one more line of a `kind` this reader does not know: the kind only, never
+    /// what the line says (it may be context meant for the model).
+    fn unknown(&mut self, kind: String) -> Put {
+        let n = self.unknown.entry(kind.clone()).or_default();
+        *n += 1;
+        if *n == 1 {
+            tracing::warn!(sid = %self.sid, %kind, "transcript line of a kind FEMME does not read");
+        }
+        let text = if *n == 1 {
+            format!("Claude Code wrote an entry FEMME does not read yet: {kind}")
+        } else {
+            format!("Claude Code wrote {n} entries FEMME does not read yet: {kind}")
+        };
+        Put::Done(super::event_item(
+            self.sid,
+            format!("unknown:{kind}"),
+            &text,
+            now_ms(),
+        ))
     }
 
     async fn tail(&mut self, d: &Daemon) {
@@ -407,8 +435,13 @@ impl Tail {
             if std::mem::take(&mut self.skip) {
                 continue;
             }
-            let Some(line) = disk_line(&line, &uploads) else {
-                continue;
+            let (line, typed) = match disk_line(&line, &uploads) {
+                None => continue,
+                Some(Disk::Unknown(kind)) => {
+                    puts.push(self.unknown(kind));
+                    continue;
+                }
+                Some(Disk::Feed { line, typed }) => (line, typed),
             };
             let events = self.driver.on_line(at, &line, &mut out);
             out.stdin.clear(); // nobody listens: the pane's Claude reads its own terminal
@@ -419,6 +452,9 @@ impl Tail {
                 events,
                 now_ms(),
             );
+            if let Some(missed) = typed.and_then(|t| missed(self.sid, &f.puts, t)) {
+                puts.push(missed);
+            }
             puts.extend(f.puts);
             if f.model.is_some() {
                 self.model = f.model;
@@ -523,6 +559,28 @@ impl Tail {
     }
 }
 
+/// A message the user sent (`typed`: its id and text) that the driver's writes `puts` do not
+/// hold as their message: stored as one anyway, so a reader slip never loses it.
+fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
+    let held = puts.iter().any(|p| match p {
+        Put::Start(i) | Put::Done(i) => i.item_id == id && i.kind == ItemKind::UserMessage,
+        Put::Update(..) => false,
+    });
+    if held {
+        return None;
+    }
+    tracing::warn!(%sid, item = %id, "a typed message the driver did not keep: stored as it is");
+    let b = body(&UserMessage { text });
+    Some(Put::Done(super::new_item(
+        sid,
+        id,
+        ItemKind::UserMessage,
+        ItemStatus::Completed,
+        Some(&b),
+        now_ms(),
+    )))
+}
+
 /// Reads on in every subagent transcript of `dir`: the `known` ones from where they were read,
 /// a new one from the start once its `.meta.json` names the tool call that spawned it.
 fn read_subs(dir: &Path, known: &[(PathBuf, u64)]) -> Vec<SubRead> {
@@ -583,19 +641,146 @@ fn read_from(path: &Path, at: u64) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(data))
 }
 
+/// What a line of Claude's transcript file is to the reader.
+enum Disk {
+    /// A line for the driver, in the stream's shape. `typed` is the id and text of a message the
+    /// user sent, which has to come out of the driver as their message.
+    Feed {
+        line: Vec<u8>,
+        typed: Option<(String, String)>,
+    },
+    /// A kind of line this reader does not know yet: said, never silently dropped.
+    Unknown(String),
+}
+
+/// The file's own bookkeeping: nothing in it is the conversation.
+const BOOKKEEPING: &[&str] = &[
+    "agent-name",
+    "ai-title",
+    "api-request",
+    "api-request-blob",
+    "api-request-shape",
+    "artifact-autoreact-ledger",
+    "artifact-comment-monitor",
+    "atis-latch",
+    "cost-state",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "frame-link",
+    "last-prompt",
+    "mode",
+    "pr-link",
+    "progress",
+    // the queue's own log: a message taken in mid-turn is its `queued_command` attachment, one
+    // run between turns its `user` line
+    "queue-operation",
+    "session-owner",
+    "summary",
+    "tools-used",
+];
+
+/// What Claude Code attaches to the model's context (reminders, listings, hook output): not the
+/// conversation. A `queued_command` is, and is read.
+const CONTEXT: &[&str] = &[
+    "agent_listing_delta",
+    "auto_mode",
+    "auto_mode_exit",
+    "bash_output_audience_note",
+    "batching_reminder_sent",
+    "command_permissions",
+    "compact_file_reference",
+    "credential_org",
+    "date",
+    "deferred_tools_delta",
+    "deferred_tools_record",
+    "edited_text_file",
+    "environment",
+    "file",
+    "goal_status",
+    "hook_cancelled",
+    "hook_non_blocking_error",
+    "hook_success",
+    "instructions",
+    "invoked_skills",
+    "mcp_instructions_delta",
+    "model",
+    "plan_file_reference",
+    "plan_mode",
+    "plan_mode_exit",
+    "plan_mode_reentry",
+    "prompt_snapshot",
+    "read_truncation_notice",
+    "remote_session_change",
+    "session_context",
+    "silent_turn_reminder",
+    "skill_listing",
+    "task_status",
+    "thinking_drop",
+    "thinking_stripped",
+    "total_tokens_reminder",
+];
+
 /// A line of Claude's transcript file as the driver reads it from `--output-format stream-json`,
 /// or `None` for the file's own bookkeeping. A typed prompt becomes the replay the stream would
 /// echo (`isReplay`), and a turn's `turn_duration` the `result` that ends it. A pasted picture is
 /// saved in `uploads` and named by an `Attached:` line, as a desktop attachment is.
-fn disk_line(line: &[u8], uploads: &Path) -> Option<Vec<u8>> {
+fn disk_line(line: &[u8], uploads: &Path) -> Option<Disk> {
     let mut v: Value = serde_json::from_slice(line).ok()?;
     if v["isSidechain"] == true {
         return None;
     }
+    let ty = v["type"].as_str().unwrap_or_default().to_owned();
+    if ty == "attachment" {
+        let sub = v["attachment"]["type"].as_str().unwrap_or_default();
+        if sub != "queued_command" {
+            return (!CONTEXT.contains(&sub)).then(|| Disk::Unknown(format!("attachment {sub}")));
+        }
+        v = queued(v)?;
+    } else if !matches!(
+        ty.as_str(),
+        "user" | "assistant" | "system" | "permission-mode"
+    ) {
+        return (!BOOKKEEPING.contains(&ty.as_str())).then_some(Disk::Unknown(ty));
+    }
     if v["type"] == "user" {
         attach_images(&mut v, uploads);
     }
-    serde_json::to_vec(&disk_value(v)?).ok()
+    let v = disk_value(v)?;
+    let typed = (v["isReplay"] == true)
+        .then(|| {
+            let id = v["uuid"].as_str()?.to_owned();
+            let text = match &v["message"]["content"] {
+                Value::String(s) => s.clone(),
+                c => c.to_string(),
+            };
+            Some((id, text))
+        })
+        .flatten();
+    Some(Disk::Feed {
+        line: serde_json::to_vec(&v).ok()?,
+        typed,
+    })
+}
+
+/// A message Claude took in while it worked (a `queued_command` attachment) as the `user` line
+/// the TUI writes for one sent between turns. One the user did not type (another session's, an
+/// auto-continuation) is marked so it is not their message; one for the model only is skipped.
+fn queued(v: Value) -> Option<Value> {
+    let a = &v["attachment"];
+    if a["isMeta"] == true {
+        return None;
+    }
+    let mut u = serde_json::json!({
+        "type": "user",
+        "uuid": v["uuid"],
+        "timestamp": v["timestamp"],
+        "message": {"role": "user", "content": a["prompt"]},
+    });
+    if a["origin"]["kind"].as_str().is_some_and(|k| k != "human") {
+        u["notTyped"] = Value::Bool(true);
+    }
+    Some(u)
 }
 
 /// A typed message's pictures (base64 `image` blocks) as files in `dir`, and its content as text
@@ -727,7 +912,8 @@ fn disk_value(mut v: Value) -> Option<Value> {
                     "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
                     "uuid": v["uuid"],
                 });
-            } else if !result && !text.starts_with("[Request interrupted") {
+            } else if !result && !text.starts_with("[Request interrupted") && v["notTyped"] != true
+            {
                 v["isReplay"] = Value::Bool(true);
             }
         }
@@ -839,8 +1025,8 @@ async fn herdr(bin: &str, hs: Option<&str>, args: &[&str]) -> Result<String, Cor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use femme_proto::state::{ItemKind, ItemStatus};
     use femme_proto::rpc::PromptHow;
+    use femme_proto::state::{ItemKind, ItemStatus};
     use femme_store::items as store_items;
 
     use crate::config::Config;
@@ -883,8 +1069,108 @@ mod tests {
     }
 
     fn line(v: Value) -> Option<Value> {
-        disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))
-            .map(|b| serde_json::from_slice(&b).unwrap())
+        match disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))? {
+            Disk::Feed { line, .. } => Some(serde_json::from_slice(&line).unwrap()),
+            Disk::Unknown(k) => panic!("unknown: {k}"),
+        }
+    }
+
+    fn typed(v: Value) -> Option<(String, String)> {
+        match disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))? {
+            Disk::Feed { typed, .. } => typed,
+            Disk::Unknown(_) => None,
+        }
+    }
+
+    /// A message sent while Claude worked, as Claude Code 2.1 writes it (from a real transcript).
+    fn queued_line(kind: &str, prompt: Value) -> Value {
+        serde_json::json!({"type":"attachment","uuid":"ca3e","timestamp":"2026-11-09T13:55:06.152Z",
+            "isSidechain":false,"attachment":{"type":"queued_command","commandMode":"prompt",
+            "delivery_id":"d9d9","source_uuid":"s1","humanTurn":true,"origin":{"kind":kind},
+            "prompt":prompt,"timestamp":"2026-11-09T13:53:24.095Z"}})
+    }
+
+    #[test]
+    fn a_message_sent_while_claude_worked_is_the_users() {
+        let v = line(queued_line("human", "stasge commit push these btw".into())).unwrap();
+        assert_eq!(
+            (
+                &v["type"],
+                &v["isReplay"],
+                &v["uuid"],
+                &v["message"]["content"]
+            ),
+            (
+                &Value::from("user"),
+                &Value::Bool(true),
+                &Value::from("ca3e"),
+                &Value::from("stasge commit push these btw")
+            )
+        );
+        assert_eq!(
+            typed(queued_line("human", "hi".into())),
+            Some(("ca3e".into(), "hi".into()))
+        );
+        let peer = line(queued_line("peer", "<cross-session-message>x".into())).unwrap();
+        assert_eq!(
+            peer["isReplay"],
+            Value::Null,
+            "another session's: not typed"
+        );
+        assert_eq!(typed(queued_line("peer", "x".into())), None);
+        let mut meta = queued_line("peer", "x".into());
+        meta["attachment"]["isMeta"] = Value::Bool(true);
+        assert_eq!(line(meta), None, "for the model only");
+        let note = line(queued_line(
+            "task",
+            "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n</task-notification>".into(),
+        ))
+        .unwrap();
+        assert_eq!(note["subtype"], "task_notification");
+        let blocks = serde_json::json!([{"type":"text","text":"look"}]);
+        assert_eq!(
+            line(queued_line("human", blocks)).unwrap()["isReplay"],
+            true
+        );
+    }
+
+    #[test]
+    fn a_kind_of_line_not_known_is_said_not_dropped() {
+        let read = |v: Value| disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"));
+        assert!(matches!(
+            read(serde_json::json!({"type":"brand-new"})),
+            Some(Disk::Unknown(k)) if k == "brand-new"
+        ));
+        assert!(matches!(
+            read(serde_json::json!({"type":"attachment","attachment":{"type":"brand_new"}})),
+            Some(Disk::Unknown(k)) if k == "attachment brand_new"
+        ));
+        for known in [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue"}),
+            serde_json::json!({"type":"attachment","attachment":{"type":"hook_success"}}),
+            serde_json::json!({"type":"last-prompt"}),
+        ] {
+            assert!(read(known).is_none());
+        }
+    }
+
+    #[test]
+    fn a_typed_message_the_driver_drops_is_stored_anyway() {
+        let sid = Id(1);
+        let kept = Put::Done(super::super::new_item(
+            sid,
+            "u1".into(),
+            ItemKind::UserMessage,
+            ItemStatus::Completed,
+            None,
+            0,
+        ));
+        assert!(missed(sid, &[kept], ("u1".into(), "hi".into())).is_none());
+        let Some(Put::Done(i)) = missed(sid, &[], ("u1".into(), "hi".into())) else {
+            panic!("not stored");
+        };
+        assert_eq!((i.item_id.as_str(), i.kind), ("u1", ItemKind::UserMessage));
+        assert!(i.preview.contains("hi"));
     }
 
     #[test]
@@ -929,7 +1215,6 @@ mod tests {
         for skipped in [
             serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"x"}}),
             serde_json::json!({"type":"user","isMeta":true,"message":{"content":"x"}}),
-            serde_json::json!({"type":"attachment"}),
             serde_json::json!({"type":"file-history-snapshot"}),
         ] {
             assert_eq!(line(skipped), None);
@@ -950,7 +1235,10 @@ mod tests {
         ]}})
         .to_string();
         let read = |l: &str| -> Value {
-            serde_json::from_slice(&disk_line(l.as_bytes(), dir.path()).unwrap()).unwrap()
+            let Some(Disk::Feed { line, .. }) = disk_line(l.as_bytes(), dir.path()) else {
+                panic!("not fed");
+            };
+            serde_json::from_slice(&line).unwrap()
         };
         let text = read(&line)["message"]["content"]
             .as_str()
@@ -1040,7 +1328,8 @@ mod tests {
     const TURN: &str = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"list it"}}
 {"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"x.rs"}]}}
-{"type":"attachment","attachment":{}}
+{"type":"attachment","attachment":{"type":"hook_success"}}
+{"type":"attachment","uuid":"q1","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"and the tests"}}
 {"type":"system","subtype":"compact_boundary","uuid":"c1","compactMetadata":{"trigger":"auto","preTokens":310172}}
 {"type":"assistant","message":{"id":"a2","model":"claude-fable-5-1","content":[{"type":"text","text":"one file"}],"usage":{"input_tokens":2,"cache_read_input_tokens":40000,"cache_creation_input_tokens":500,"output_tokens":6}}}
 {"type":"system","subtype":"turn_duration","durationMs":12}
@@ -1078,6 +1367,7 @@ mod tests {
                 (ItemKind::UserMessage, ItemStatus::Completed),
                 (ItemKind::ToolCall, ItemStatus::Completed),
                 (ItemKind::ToolResult, ItemStatus::Completed),
+                (ItemKind::UserMessage, ItemStatus::Completed),
                 (ItemKind::Event, ItemStatus::Completed),
                 (ItemKind::AssistantMessage, ItemStatus::Completed),
                 (ItemKind::TurnEnd, ItemStatus::Completed),
@@ -1104,7 +1394,12 @@ mod tests {
         assert_eq!(again.len(), items.len());
 
         // a prompt through the head runs herdr, and its failure is said
-        let r = d.sessions.head(sid).unwrap().prompt("go", PromptHow::Queue).await;
+        let r = d
+            .sessions
+            .head(sid)
+            .unwrap()
+            .prompt("go", PromptHow::Queue)
+            .await;
         assert!(matches!(r, Err(CoreError::Internal(_))), "{r:?}");
 
         // closed in FEMME: not brought back
