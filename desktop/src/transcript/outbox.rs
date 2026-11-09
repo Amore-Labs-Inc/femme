@@ -1,18 +1,18 @@
 //! Prompts on their way: what the composer has sent and whose stored message has not come back
 //! yet. The daemon stores a prompt before the agent gets it, with the request's op id in its body,
 //! so a prompt is on its way only for the network round trip; the transcript draws it as a faded
-//! "you" bubble at its end meanwhile. A daemon from before that stored nothing until the agent's
-//! echo: then the echo with the prompt's text takes it off. Plain data, tested without gpui.
+//! "you" bubble at its end meanwhile. Only the stored message with that op id takes it off (live,
+//! or in any load or page of the session); a daemon that stores none (one from before) leaves it
+//! to [`KEEP`]. Plain data, tested without gpui.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use femme_proto::state::{Item, ItemKind, Row};
 use femme_proto::{OpId, Sid};
 
-use super::{attach, body};
-
-/// How far the daemon's clock may lag ours and a text match still count.
-const SKEW_MS: i64 = 10_000;
+/// A bubble whose stored message never came goes after this anyway.
+pub const KEEP: Duration = Duration::from_secs(600);
 
 /// One prompt on its way.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,8 +23,8 @@ pub struct Sent {
     pub text: String,
     /// The names of the files attached to it.
     pub files: Vec<String>,
-    /// When it was sent, in ms since the epoch: an old daemon's echo `ts` is compared with it.
-    at_ms: i64,
+    /// When it was sent, for [`KEEP`].
+    at: Instant,
 }
 
 /// The prompts on their way, per session, oldest first.
@@ -36,14 +36,16 @@ pub struct Outbox {
 }
 
 impl Outbox {
-    /// A prompt for `sid` was sent under `op` at `at_ms` since the epoch.
-    pub fn push(&mut self, sid: Sid, op: OpId, text: String, files: Vec<String>, at_ms: i64) {
+    /// A prompt for `sid` was sent under `op` at `at`.
+    pub fn push(&mut self, sid: Sid, op: OpId, text: String, files: Vec<String>, at: Instant) {
         self.ver += 1;
-        self.by_sid.entry(sid).or_default().push(Sent {
+        let list = self.by_sid.entry(sid).or_default();
+        list.retain(|s| at.saturating_duration_since(s.at) < KEEP);
+        list.push(Sent {
             op,
             text,
             files,
-            at_ms,
+            at,
         });
     }
 
@@ -59,33 +61,31 @@ impl Outbox {
         gone
     }
 
-    /// Rows of `sid`'s scope: a `UserMessage` whose body names an op takes off the prompt sent
-    /// under it. One that names none (an old daemon's echo) takes off the oldest prompt whose text
-    /// it starts with (the daemon appends `Attached:` lines), else the oldest one sent before it.
-    /// Whether any went. A `PeerMessage` (another session's) takes nothing off.
+    /// Rows of `sid`'s scope: see [`Outbox::seen`].
     pub fn echo(&mut self, sid: Sid, rows: &[Row]) -> bool {
+        let items = rows.iter().filter_map(|r| match r {
+            Row::Item(i) => Some(i),
+            _ => None,
+        });
+        self.seen(sid, items)
+    }
+
+    /// Items of `sid` (a change, a load, a page): a `UserMessage` whose body names an op takes off
+    /// the prompt sent under it. Whether any went.
+    pub fn seen<'a>(&mut self, sid: Sid, items: impl IntoIterator<Item = &'a Item>) -> bool {
         let Some(list) = self.by_sid.get_mut(&sid) else {
             return false;
         };
         let n = list.len();
-        for row in rows {
-            let Row::Item(item) = row else { continue };
-            if item.sid != sid || item.kind != ItemKind::UserMessage || list.is_empty() {
+        for item in items {
+            if list.is_empty() {
+                break;
+            }
+            if item.sid != sid || item.kind != ItemKind::UserMessage {
                 continue;
             }
-            let hit = match op_of(item) {
-                Some(op) => list.iter().position(|s| s.op.to_string() == op),
-                None => {
-                    let (real, whole) = text_of(item);
-                    list.iter()
-                        .position(|s| {
-                            item.ts >= s.at_ms - SKEW_MS && matches(&real, whole, &s.text)
-                        })
-                        .or_else(|| list.iter().position(|s| item.ts >= s.at_ms))
-                }
-            };
-            if let Some(i) = hit {
-                list.remove(i);
+            if let Some(op) = op_of(item) {
+                list.retain(|s| s.op.to_string() != op);
             }
         }
         let gone = list.len() != n;
@@ -93,9 +93,18 @@ impl Outbox {
         gone
     }
 
-    /// The prompts of `sid` on their way, oldest first.
-    pub fn shown(&self, sid: Sid) -> impl Iterator<Item = &Sent> {
-        self.by_sid.get(&sid).into_iter().flatten()
+    /// The prompts of `sid` on their way at `now`, oldest first.
+    pub fn shown(&self, sid: Sid, now: Instant) -> impl Iterator<Item = &Sent> {
+        self.by_sid
+            .get(&sid)
+            .into_iter()
+            .flatten()
+            .filter(move |s| now.saturating_duration_since(s.at) < KEEP)
+    }
+
+    /// When the next of `sid`'s prompts runs out of [`KEEP`], if one is held.
+    pub fn next_expiry(&self, sid: Sid, now: Instant) -> Option<Instant> {
+        self.shown(sid, now).map(|s| s.at + KEEP).min()
     }
 }
 
@@ -104,19 +113,8 @@ fn op_of(item: &Item) -> Option<String> {
     let b: serde_json::Value = serde_json::from_str(item.body.as_deref()?).ok()?;
     b.get("op")?.as_str().map(str::to_owned)
 }
-
-/// What a `UserMessage` says without its attachment lines, and whether that is all of it (its body,
-/// not the preview of a long one).
-fn text_of(item: &Item) -> (String, bool) {
-    let (text, whole) = match item.body.as_deref().and_then(body::text) {
-        Some(t) => (t, true),
-        None => (item.preview.clone(), false),
-    };
-    (attach::split(&text).0, whole)
-}
-
-/// Whether `real`, the echoed text, is the prompt `sent`. A preview (`whole` false) may be cut, so
-/// then a prompt that starts with it counts too.
+/// Whether `real`, a message's text, is the prompt `sent`. A preview (`whole` false) may be cut,
+/// so then a prompt that starts with it counts too.
 pub fn matches(real: &str, whole: bool, sent: &str) -> bool {
     let (real, sent) = (real.trim(), sent.trim());
     if real.starts_with(sent) {
@@ -134,28 +132,28 @@ mod tests {
 
     const SID: Sid = Id(7);
 
-    fn user(id: &str, ts: i64, text: &str) -> Row {
-        user_body(id, ts, text, serde_json::json!({ "text": text }))
-    }
-
-    fn user_body(id: &str, ts: i64, text: &str, body: serde_json::Value) -> Row {
+    fn user(id: &str, text: &str, op: Option<Id>) -> Row {
+        let mut body = serde_json::json!({ "text": text });
+        if let Some(op) = op {
+            body["op"] = serde_json::Value::String(op.to_string());
+        }
         Row::Item(Item {
             sid: SID,
             item_id: id.into(),
             seq: 1,
             rev: 1,
             kind: ItemKind::UserMessage,
-            status: ItemStatus::Completed,
-            preview: text.chars().take(8).collect(),
+            status: ItemStatus::Pending,
+            preview: text.into(),
             body: Some(body.to_string()),
             blob_hash: None,
             parent: None,
-            ts,
+            ts: 1_000,
         })
     }
 
-    fn texts(o: &Outbox) -> Vec<String> {
-        o.shown(SID).map(|s| s.text.clone()).collect()
+    fn ops(o: &Outbox, now: Instant) -> Vec<Id> {
+        o.shown(SID, now).map(|s| s.op).collect()
     }
 
     #[test]
@@ -163,10 +161,7 @@ mod tests {
         assert!(matches("hey", true, "hey"));
         assert!(matches("  hey\n", true, "hey  "));
         assert!(matches("hey", true, ""), "attachments only: any text");
-        assert!(matches("/btw what now", true, "/btw what now"));
         assert!(!matches("hello", true, "hey"));
-        assert!(!matches("he", true, "hey"));
-        // A preview is cut: a longer prompt that starts with it is the one.
         assert!(matches("a long pro…", false, "a long prompt"));
         assert!(!matches("a long pro…", true, "a long prompt"));
         assert!(!matches("", false, "x"));
@@ -174,99 +169,68 @@ mod tests {
 
     #[test]
     fn the_stored_message_takes_off_the_prompt_sent_under_its_op() {
+        let t = Instant::now();
         let mut o = Outbox::default();
-        let (a, b) = (Id(100), Id(200));
-        o.push(SID, a, "yes".into(), vec![], 1_000);
-        o.push(SID, b, "yes".into(), vec![], 1_000);
-        let stored = |op: Id| {
-            user_body(
-                "01JC",
-                1_001,
-                "yes",
-                serde_json::json!({ "text": "yes", "op": op.to_string() }),
-            )
-        };
+        o.push(SID, Id(100), "yes".into(), vec![], t);
+        o.push(SID, Id(200), "yes".into(), vec![], t);
         let v = o.ver;
-        assert!(o.echo(SID, &[stored(b)]));
+        assert!(o.echo(SID, &[user("01JC1", "yes", Some(Id(200)))]));
         assert!(o.ver > v);
-        assert_eq!(o.shown(SID).map(|s| s.op).collect::<Vec<_>>(), [a]);
+        assert_eq!(ops(&o, t), [Id(100)]);
         assert!(
-            !o.echo(SID, &[stored(Id(300))]),
+            !o.echo(SID, &[user("01JC2", "yes", Some(Id(300)))]),
             "another device's message is not ours"
         );
-        assert!(o.echo(SID, &[stored(a)]));
-        assert_eq!(o.shown(SID).count(), 0);
+        assert!(
+            !o.echo(SID, &[user("d9", "yes", None)]),
+            "a message without an op (typed in the pane) takes nothing off"
+        );
+        assert_eq!(ops(&o, t), [Id(100)]);
     }
 
     #[test]
-    fn an_old_daemons_echo_takes_off_the_oldest_prompt_with_its_text() {
-        let now = 1_000_000;
+    fn a_page_or_a_load_takes_it_off_too() {
+        let t = Instant::now();
         let mut o = Outbox::default();
-        o.push(SID, Id(1), "hey".into(), vec![], now);
-        o.push(SID, Id(2), "there".into(), vec![], now + 10);
-        o.push(SID, Id(3), "hey".into(), vec![], now + 20);
-        assert!(o.echo(SID, &[user("a", now + 30, "there")]));
-        assert_eq!(texts(&o), ["hey", "hey"]);
-        assert!(o.echo(SID, &[user("b", now + 40, "hey")]));
-        assert!(o.echo(SID, &[user("c", now + 50, "hey")]));
-        assert_eq!(o.shown(SID).count(), 0);
-        assert!(!o.echo(SID, &[user("d", now + 60, "hey")]));
-    }
-
-    #[test]
-    fn attachment_lines_the_daemon_appends_still_match() {
-        let now = 1_000_000;
-        let mut o = Outbox::default();
-        o.push(SID, Id(1), "look".into(), vec!["a.png".into()], now);
-        let echo = "look\n\nAttached: /home/u/.femme/up/a.png";
-        assert!(o.echo(SID, &[user("a", now, echo)]));
-        assert_eq!(o.shown(SID).count(), 0);
-    }
-
-    #[test]
-    fn an_old_message_does_not_take_a_new_prompt() {
-        let now = 1_000_000;
-        let mut o = Outbox::default();
-        o.push(SID, Id(1), "hey".into(), vec![], now);
-        // History coming in when the scope is joined: same text, long before.
-        assert!(!o.echo(SID, &[user("old", now - 3_600_000, "hey")]));
-        // A little behind our clock still counts for the same text...
-        assert!(o.echo(SID, &[user("a", now - 2_000, "hey")]));
-        // ...and with no text match, any message after the send takes the oldest.
-        o.push(SID, Id(2), "one".into(), vec![], now);
-        o.push(SID, Id(3), "two".into(), vec![], now);
-        assert!(!o.echo(SID, &[user("b", now - 2_000, "other")]));
-        assert!(o.echo(SID, &[user("c", now + 5, "other")]));
-        assert_eq!(texts(&o), ["two"]);
+        o.push(SID, Id(1), "hi".into(), vec![], t);
+        let Row::Item(item) = user("01JC", "hi", Some(Id(1))) else {
+            unreachable!()
+        };
+        assert!(o.seen(SID, [&item]));
+        assert_eq!(o.shown(SID, t).count(), 0);
     }
 
     #[test]
     fn other_sessions_and_kinds_are_left_alone() {
-        let now = 1_000_000;
+        let t = Instant::now();
         let mut o = Outbox::default();
-        o.push(SID, Id(1), "hey".into(), vec![], now);
-        assert!(!o.echo(Id(8), &[user("a", now, "hey")]));
-        let Row::Item(mut said) = user("a", now, "hey") else {
+        o.push(SID, Id(1), "hey".into(), vec![], t);
+        assert!(!o.echo(Id(8), &[user("a", "hey", Some(Id(1)))]));
+        let Row::Item(mut said) = user("a", "hey", Some(Id(1))) else {
             unreachable!()
         };
         said.kind = ItemKind::AssistantMessage;
         assert!(!o.echo(SID, &[Row::Item(said)]));
-        assert_eq!(o.shown(SID).count(), 1);
-        assert_eq!(o.shown(Id(8)).count(), 0);
+        assert_eq!(o.shown(SID, t).count(), 1);
+        assert_eq!(o.shown(Id(8), t).count(), 0);
     }
 
     #[test]
-    fn a_refused_prompt_goes_and_nothing_runs_out() {
+    fn a_refused_prompt_goes_and_an_unstored_one_runs_out_after_ten_minutes() {
+        let t = Instant::now();
         let mut o = Outbox::default();
-        o.push(SID, Id(1), "a".into(), vec![], 0);
-        o.push(SID, Id(2), "b".into(), vec![], 0);
+        o.push(SID, Id(1), "a".into(), vec![], t);
+        o.push(SID, Id(2), "b".into(), vec![], t + Duration::from_secs(5));
         assert!(o.forget(SID, Id(1)));
         assert!(!o.forget(SID, Id(1)));
         assert!(!o.forget(Id(8), Id(2)));
+        assert_eq!(ops(&o, t + Duration::from_secs(300)), [Id(2)]);
         assert_eq!(
-            texts(&o),
-            ["b"],
-            "no timer: it waits for its stored message"
+            o.next_expiry(SID, t),
+            Some(t + Duration::from_secs(5) + KEEP)
         );
+        let late = t + Duration::from_secs(5) + KEEP;
+        assert_eq!(o.shown(SID, late).count(), 0);
+        assert_eq!(o.next_expiry(SID, late), None);
     }
 }

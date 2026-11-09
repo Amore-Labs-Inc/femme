@@ -108,6 +108,8 @@ pub struct Transcript {
     pub(super) sent: Vec<Sent>,
     /// The outbox's version when the transcript last looked.
     sent_ver: u64,
+    /// Redraws when the oldest prompt on its way runs out.
+    sent_timer: Option<Task<()>>,
     _events: Option<Subscription>,
     _status: Option<Subscription>,
 }
@@ -176,6 +178,7 @@ impl Transcript {
             ticker: None,
             working: None,
             sent: Vec::new(),
+            sent_timer: None,
             sent_ver: 0,
             _events: events,
             _status: status,
@@ -474,12 +477,19 @@ impl Transcript {
             before_seq,
             limit: PAGE,
         };
-        self.request(req, cx, |this, answer, cx| {
+        self.request(req, cx, move |this, answer, cx| {
             this.paging = false;
             match answer {
                 Ok(Resp::Page { items, next_before }) => {
                     // The older items go above what the user was reading, which stays where it is.
                     let place = this.place();
+                    if let Some(net) = this.net.clone() {
+                        net.update(cx, |net, cx| {
+                            if net.model.outbox.seen(sid, &items) {
+                                cx.notify();
+                            }
+                        });
+                    }
                     this.items.apply_page(items, next_before);
                     this.refresh(cx);
                     this.restore(place);
@@ -860,15 +870,28 @@ impl Transcript {
         )
     }
 
-    /// The prompts of the session shown that are on their way; the list follows the end again
-    /// when one is added.
+    /// The prompts of the session shown that are on their way; a redraw is set for when the next
+    /// one runs out, and the list follows the end again when one is added.
     fn sent_now(&mut self, cx: &mut Context<Self>) -> Vec<Sent> {
         let (Some(sid), Some(net)) = (self.items.sid(), self.net.clone()) else {
             return Vec::new();
         };
-        let sent: Vec<Sent> = net.read(cx).model.outbox.shown(sid).cloned().collect();
-        if sent.iter().any(|s| !self.sent.iter().any(|o| o.op == s.op)) {
-            self.follow(cx);
+        let now = Instant::now();
+        let outbox = &net.read(cx).model.outbox;
+        let sent: Vec<Sent> = outbox.shown(sid, now).cloned().collect();
+        let expiry = outbox.next_expiry(sid, now);
+        if sent != self.sent {
+            if sent.iter().any(|s| !self.sent.iter().any(|o| o.op == s.op)) {
+                self.follow(cx);
+            }
+            self.sent_timer = expiry.map(|at| {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(at.saturating_duration_since(Instant::now()))
+                        .await;
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                })
+            });
         }
         sent
     }

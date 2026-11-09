@@ -671,15 +671,12 @@ impl Composer {
         draft.notice = None;
         // The transcript shows the prompt now, faded, until the daemon's stored copy arrives.
         let files = attachments.iter().map(|a| a.name.clone()).collect();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
         let shown = OpId::new();
         net.update(cx, |net, cx| {
             cx.notify();
             net.model
                 .outbox
-                .push(sid, shown, body.clone(), files, now_ms)
+                .push(sid, shown, body.clone(), files, Instant::now())
         });
         let answer = request_as(
             &net,
