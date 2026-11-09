@@ -859,7 +859,13 @@ fn disk_line(line: &[u8], uploads: &Path) -> Option<Disk> {
             let id = v["uuid"].as_str()?.to_owned();
             let text = match &v["message"]["content"] {
                 Value::String(s) => s.clone(),
-                c => c.to_string(),
+                c => c
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             };
             Some((id, text))
         })
@@ -1245,7 +1251,13 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(note["subtype"], "task_notification");
-        let blocks = serde_json::json!([{"type":"text","text":"look"}]);
+        let blocks =
+            serde_json::json!([{"type":"text","text":"look"},{"type":"text","text":"here"}]);
+        assert_eq!(
+            typed(queued_line("human", blocks.clone())),
+            Some(("ca3e".into(), "look\nhere".into())),
+            "the text, not the blocks' JSON"
+        );
         assert_eq!(
             line(queued_line("human", blocks)).unwrap()["isReplay"],
             true
@@ -1387,7 +1399,10 @@ mod tests {
             "isMeta":true}});
         for v in [entry, queued] {
             let l = line(v).unwrap();
-            assert_eq!((&l["type"], &l["origin"]["kind"]), (&Value::from("user"), &Value::from("peer")));
+            assert_eq!(
+                (&l["type"], &l["origin"]["kind"]),
+                (&Value::from("user"), &Value::from("peer"))
+            );
             let mut d = femme_agents::claude::ClaudeDriver::new();
             let mut out = femme_agents::Out::default();
             d.on_start(&femme_agents::Launch::default(), &mut out);
@@ -1405,7 +1420,11 @@ mod tests {
                 .collect();
             assert_eq!(
                 kinds,
-                [(ItemKind::PeerMessage, Value::from("platform-12"), Value::from("hello"))]
+                [(
+                    ItemKind::PeerMessage,
+                    Value::from("platform-12"),
+                    Value::from("hello")
+                )]
             );
         }
     }
