@@ -50,7 +50,8 @@ if [ -z "$to" ]; then
   outdated=$(mise outdated claude --json 2>>"$log") || { say "mise outdated claude failed"; exit 1; }
   latest=$(jq -r '.claude.latest // empty' <<<"$outdated" 2>/dev/null)
   if [ -z "$latest" ] && [ "$force" = 0 ]; then say "claude ${before:-?}: no pending update"; exit 0; fi
-  say "claude ${before:-?}: ${latest:+$latest pending}${latest:-no pending update, --force}"
+  if [ -n "$latest" ]; then say "claude ${before:-?}: $latest pending"
+  else say "claude ${before:-?}: no pending update, --force"; fi
   if [ "$dry" = 1 ]; then say "dry: would run: mise upgrade claude"
   else
     mise upgrade claude >>"$log" 2>&1; say "mise upgrade claude: exit $?"
