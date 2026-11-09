@@ -3766,3 +3766,51 @@ fn clients_that_follow_changes_since_always_equal_the_store() {
         "no client ever presented a cursor from the future: {seen:?}"
     );
 }
+
+#[test]
+fn items_inserted_before_others_take_their_place_in_order() {
+    let s = store();
+    let sid = insert_session(&s, None).id;
+    s.write(|tx| {
+        for id in ["a", "b", "c", "d"] {
+            tx.put_item(&item(sid, id, id))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = s.rev().unwrap();
+    s.write(|tx| {
+        let mut new = vec![
+            (3, item(sid, "x2", "x2")), // before c
+            (2, item(sid, "x1", "x1")), // before b
+            (3, item(sid, "x3", "x3")), // also before c, after x2
+        ];
+        tx.insert_items_before(sid, &mut new)
+    })
+    .unwrap();
+    let got = s.read(|c| items::page_items(c, sid, None, 100)).unwrap();
+    let order: Vec<(u64, &str)> = got
+        .iter()
+        .rev()
+        .map(|i| (i.seq, i.item_id.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (1, "a"),
+            (2, "x1"),
+            (3, "b"),
+            (4, "x2"),
+            (5, "x3"),
+            (6, "c"),
+            (7, "d")
+        ]
+    );
+    assert!(
+        got.iter()
+            .filter(|i| i.item_id != "a")
+            .all(|i| i.rev > before),
+        "every moved or new row is newer"
+    );
+    assert!(got.iter().find(|i| i.item_id == "a").unwrap().rev <= before);
+}
