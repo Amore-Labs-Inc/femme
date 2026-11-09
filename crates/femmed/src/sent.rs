@@ -138,9 +138,7 @@ pub(crate) fn pick(rows: &[(Item, Value)], echo_id: &str, echo_text: &str) -> Op
     }
     let like = |status: ItemStatus| {
         rows.iter().position(|(i, b)| {
-            i.status == status
-                && b.get("echo").is_none()
-                && same_message(text_of(b), echo_text)
+            i.status == status && b.get("echo").is_none() && same_message(text_of(b), echo_text)
         })
     };
     like(ItemStatus::Pending).or_else(|| like(ItemStatus::Failed))
@@ -367,7 +365,8 @@ impl Daemon {
     /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
     /// terminal holds nothing FEMME can see).
     pub(crate) fn idle_unread(&self, sid: Sid) {
-        let r = self.write_items(|tx, _, published| settle(tx, sid, &Gone::Idle(Vec::new()), published));
+        let r = self
+            .write_items(|tx, _, published| settle(tx, sid, &Gone::Idle(Vec::new()), published));
         if let Err(e) = r {
             tracing::warn!(%sid, %e, "unread messages not marked");
         }
@@ -491,11 +490,22 @@ mod tests {
         let sent = "Attached: /home/u/.local/state/femme/uploads/01JC/shot.png";
         let rows = [
             row("a", ItemStatus::Pending, json!({ "text": sent })),
-            row("b", ItemStatus::Pending, json!({ "text": "Attached: /x/other.png" })),
+            row(
+                "b",
+                ItemStatus::Pending,
+                json!({ "text": "Attached: /x/other.png" }),
+            ),
         ];
-        assert_eq!(pick(&rows, "d1", "[Image #1]\n\nAttached: /tmp/shot.png"), Some(0));
+        assert_eq!(
+            pick(&rows, "d1", "[Image #1]\n\nAttached: /tmp/shot.png"),
+            Some(0)
+        );
         assert_eq!(pick(&rows, "d2", "Attached: /tmp/third.png"), None);
-        assert_eq!(pick(&rows, "d3", "[Image #1]"), None, "no words, no file: unsure");
+        assert_eq!(
+            pick(&rows, "d3", "[Image #1]"),
+            None,
+            "no words, no file: unsure"
+        );
         assert!(!same_message("", ""));
     }
 
@@ -609,9 +619,17 @@ mod tests {
         put(&store, &one);
         put(&store, &two);
         assert!(pair(&store, sid, &echo(sid, "i-1", "run the tests", 2_000)));
-        settled(&store, sid, Gone::Idle(vec![(None, "then the linter".into())]));
+        settled(
+            &store,
+            sid,
+            Gone::Idle(vec![(None, "then the linter".into())]),
+        );
         assert_eq!(get(&store, sid, &two.item_id).status, ItemStatus::Pending);
-        assert!(pair(&store, sid, &echo(sid, "i-2", "then the linter", 3_000)));
+        assert!(pair(
+            &store,
+            sid,
+            &echo(sid, "i-2", "then the linter", 3_000)
+        ));
         settled(&store, sid, Gone::Idle(Vec::new()));
         for id in [&one.item_id, &two.item_id] {
             assert_eq!(get(&store, sid, id).status, ItemStatus::Completed);
@@ -646,9 +664,17 @@ mod tests {
         again.status = ItemStatus::Pending;
         again.body = Some(json!({"text": "again", "echo": "u-new", "sent_at": 9_000}).to_string());
         put(&store, &again);
-        settled(&store, sid, Gone::Idle(vec![(Some("u-new".into()), "again".into())]));
+        settled(
+            &store,
+            sid,
+            Gone::Idle(vec![(Some("u-new".into()), "again".into())]),
+        );
         assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Pending);
-        settled(&store, sid, Gone::Prompts(vec![(Some("u-new".into()), "again".into())]));
+        settled(
+            &store,
+            sid,
+            Gone::Prompts(vec![(Some("u-new".into()), "again".into())]),
+        );
         assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Failed);
     }
 
