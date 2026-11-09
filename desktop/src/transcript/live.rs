@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
-use femme_proto::state::{ItemStatus, SessionStatus};
+use femme_proto::state::{ItemKind, ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -397,6 +397,35 @@ impl Transcript {
         let doc = Arc::new(markdown::parse(text));
         self.docs.insert(seq, (ver, doc.clone()));
         doc
+    }
+
+    /// Moves the task of the call `call` (a Bash command or a subagent the turn waits for), or
+    /// with `None` every foreground task of the chat, to the background: the turn goes on. With
+    /// `None` and nothing in the foreground it does nothing (the key is harmless).
+    pub fn background(&mut self, call: Option<String>, cx: &mut Context<Self>) {
+        let Some(sid) = self.items.sid() else {
+            return;
+        };
+        if call.is_none()
+            && !self.items.iter().any(|e| {
+                e.item.kind == ItemKind::ToolCall && turns::tool_line(&self.items, e).backgroundable
+            })
+        {
+            return;
+        }
+        self.request(
+            Req::Background {
+                sid,
+                tool_use_id: call,
+            },
+            cx,
+            |this, res, cx| {
+                if let Err(e) = res {
+                    this.note = Some(format!("not moved to the background: {e}"));
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Runs `req` on the daemon and calls `done` with the answer, unless another session has been

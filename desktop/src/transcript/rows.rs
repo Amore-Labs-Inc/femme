@@ -570,15 +570,12 @@ impl Transcript {
         }
         let line = &view.line;
         let name_color = if line.failed { bad() } else { ink() };
+        let call_id = self.items.get(seq).map(|e| e.item.item_id.clone());
         // An Agent call whose subagent has items: the row opens its thread.
-        let agent = self
-            .items
-            .get(seq)
-            .map(|e| e.item.item_id.clone())
-            .filter(|id| {
-                matches!(line.name.as_str(), "Agent" | "Task")
-                    && self.items.view(Some(id)).next().is_some()
-            });
+        let agent = call_id.clone().filter(|id| {
+            matches!(line.name.as_str(), "Agent" | "Task")
+                && self.items.view(Some(id)).next().is_some()
+        });
         let head = div()
             .id(("tool", seq))
             .flex()
@@ -636,6 +633,27 @@ impl Transcript {
                         }))
                         .child("open ›"),
                 )
+            })
+            // a task the turn waits for: a click moves it to the background (Ctrl+B in Claude)
+            .when_some(call_id.filter(|_| line.backgroundable), |d, id| {
+                d.child(
+                    div()
+                        .id(("background", seq))
+                        .flex_none()
+                        .px(px(4.))
+                        .font_family(FONT_MONO)
+                        .text_size(px(12.))
+                        .text_color(accent_text())
+                        .hover(|s| s.text_color(neon()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.background(Some(id.clone()), cx);
+                        }))
+                        .child("⇣ background"),
+                )
+            })
+            .when(line.in_background, |d| {
+                d.child(div().flex_none().child(st("in background", pause())))
             })
             .when(line.running, |d| {
                 d.child(div().flex_none().child(st("running", pause())))
@@ -696,6 +714,8 @@ impl Transcript {
                 ),
                 failed: failed || e.item.status == ItemStatus::Failed,
                 running: false,
+                backgroundable: false,
+                in_background: false,
             };
             return Some(ToolView {
                 line,

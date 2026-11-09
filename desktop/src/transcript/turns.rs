@@ -196,6 +196,11 @@ pub struct ToolLine {
     pub failed: bool,
     /// It has not answered yet and the daemon still says the call is running.
     pub running: bool,
+    /// It runs as a task the turn waits for: `Req::Background` can move it to the background.
+    pub backgroundable: bool,
+    /// Its task was moved to the background and has not reported its end (an `Event` naming the
+    /// call) yet.
+    pub in_background: bool,
 }
 
 fn first_line(text: &str) -> String {
@@ -209,13 +214,13 @@ fn first_line(text: &str) -> String {
 /// The folded line of a tool call, with its result when it has one. A call whose body is not at
 /// hand (still arriving, or a blob) is read from its preview, which is `<name> <hint>`.
 pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
-    let (name, hint) = match items.parsed(call) {
-        Parsed::ToolCall(t) => (t.name.clone(), first_line(&t.hint())),
+    let (name, hint, task) = match items.parsed(call) {
+        Parsed::ToolCall(t) => (t.name.clone(), first_line(&t.hint()), t.task.clone()),
         _ => {
             let preview = call.item.preview.trim();
             match preview.split_once(char::is_whitespace) {
-                Some((name, hint)) => (name.to_owned(), first_line(hint)),
-                None => (preview.to_owned(), String::new()),
+                Some((name, hint)) => (name.to_owned(), first_line(hint), None),
+                None => (preview.to_owned(), String::new(), None),
             }
         }
     };
@@ -230,10 +235,20 @@ pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
     let failed = answer_failed
         || call.item.status == ItemStatus::Failed
         || result.is_some_and(|r| r.item.status == ItemStatus::Failed);
+    let running = result.is_none() && call.item.status == ItemStatus::InProgress;
+    // ponytail: a scan of the events per backgrounded row; an index if transcripts get long
+    let ended = || {
+        items.iter().any(|e| {
+            e.item.kind == ItemKind::Event
+                && super::agents::task_end(items, e).as_deref() == Some(call.item.item_id.as_str())
+        })
+    };
     ToolLine {
         name,
         hint,
-        running: result.is_none() && call.item.status == ItemStatus::InProgress,
+        running,
+        backgroundable: running && task.as_deref() == Some("foreground"),
+        in_background: task.as_deref() == Some("background") && !ended(),
         result: answer,
         failed,
     }
@@ -463,7 +478,7 @@ mod tests {
                 sid: SID,
                 item_id: id.into(),
                 seq: self.seq,
-                rev: 1,
+                rev: self.seq, // a row sent again (same id) wins by its newer rev
                 kind,
                 status,
                 preview: String::new(),
@@ -868,8 +883,44 @@ mod tests {
                 result: Some("first".into()),
                 failed: false,
                 running: false,
+                backgroundable: false,
+                in_background: false,
             }
         );
+    }
+
+    /// A call the agent runs as a foreground task offers the background; once moved it says so
+    /// until the task's end event names the call.
+    #[test]
+    fn a_foreground_task_offers_the_background_and_a_moved_one_says_so_until_its_end() {
+        let mut b = Build::new();
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::InProgress,
+            "t1",
+            json!({"name":"Bash","input":{"command":"sleep 45"},"call_id":"t1","task":"foreground"}),
+        );
+        let line = tool_line(&b.items, b.items.by_id("t1").unwrap());
+        assert!(line.running && line.backgroundable && !line.in_background);
+
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t1",
+            json!({"name":"Bash","input":{"command":"sleep 45"},"call_id":"t1","task":"background"}),
+        );
+        b.result("t1", false);
+        let line = tool_line(&b.items, b.items.by_id("t1").unwrap());
+        assert!(!line.running && !line.backgroundable && line.in_background);
+
+        b.add(
+            ItemKind::Event,
+            ItemStatus::Completed,
+            "e1",
+            json!({"text":"Sleep: completed","task":{"call":"t1","status":"completed"}}),
+        );
+        let line = tool_line(&b.items, b.items.by_id("t1").unwrap());
+        assert!(!line.in_background);
     }
 
     #[test]
