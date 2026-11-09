@@ -355,15 +355,15 @@ impl Transcript {
         )
     }
 
-    /// Under a message stored before the agent had it: `queued` while it waits, `read 13:53`
-    /// once the agent read it, and when the agent did not get it, a line that sends it again.
+    /// Under a message stored before the agent had it (a `Pending` or `Failed` one, or one with
+    /// `read_at`): `queued` while it waits, `read 13:53` once the agent read it, and when the
+    /// agent did not get it, a line that sends it again.
     fn delivery_line(&mut self, seq: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
         let e = self.items.get(seq)?;
-        let b: serde_json::Value = serde_json::from_str(e.item.body.as_deref()?).ok()?;
-        b.get("op").or_else(|| b.get("echo"))?;
         match e.item.status {
             ItemStatus::Pending => Some(meta("queued").into_any_element()),
             ItemStatus::Completed => {
+                let b: serde_json::Value = serde_json::from_str(e.item.body.as_deref()?).ok()?;
                 let at = b.get("read_at")?.as_i64()?;
                 Some(meta(format!("read {}", hhmm(at))).into_any_element())
             }
