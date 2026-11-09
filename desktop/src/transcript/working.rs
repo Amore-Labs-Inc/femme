@@ -27,9 +27,13 @@ pub struct Working {
 /// [`Items::view`]; a subagent's first item is its prompt).
 pub fn working(items: &Items, view: Option<&str>) -> Working {
     let all: Vec<_> = items.view(view).collect();
-    let start = all
-        .iter()
-        .rposition(|e| e.item.kind == ItemKind::UserMessage);
+    // a peer's message starts a turn as a prompt does
+    let start = all.iter().rposition(|e| {
+        matches!(
+            e.item.kind,
+            ItemKind::UserMessage | ItemKind::PeerMessage
+        )
+    });
     let turn = &all[start.map_or(0, |i| i + 1)..];
     let bytes = turn
         .iter()
@@ -129,6 +133,20 @@ mod tests {
         let mut it = Items::new(Some(Id(1)));
         it.apply_rows(&rows);
         it
+    }
+
+    #[test]
+    fn a_peer_message_starts_the_turn() {
+        use ItemKind::*;
+        use ItemStatus::*;
+        let it = items(vec![
+            item(1, UserMessage, Completed, "go", 1_000),
+            item(2, AssistantMessage, Completed, "done", 2_000),
+            item(3, PeerMessage, Completed, "hello from platform-12", 10_000),
+            item(4, AssistantMessage, InProgress, "replying", 11_000),
+        ]);
+        let w = working(&it, None);
+        assert_eq!((w.verb, w.since), ("Writing", Some(10_000)));
     }
 
     #[test]

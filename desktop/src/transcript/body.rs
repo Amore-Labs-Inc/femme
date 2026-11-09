@@ -130,6 +130,7 @@ pub fn parse(kind: ItemKind, json: Option<&str>) -> Parsed {
     };
     match kind {
         ItemKind::UserMessage
+        | ItemKind::PeerMessage
         | ItemKind::AssistantMessage
         | ItemKind::Thinking
         | ItemKind::Plan
@@ -140,6 +141,11 @@ pub fn parse(kind: ItemKind, json: Option<&str>) -> Parsed {
         ItemKind::TurnEnd => Parsed::TurnEnd(turn_end(json)),
         ItemKind::TurnStart => Parsed::Empty,
     }
+}
+
+/// The sender's session name in a `PeerMessage` body.
+pub fn peer_from(json: &str) -> String {
+    string_field(json, "from").unwrap_or_default()
 }
 
 /// The `text` of a message-like body (a bare JSON string counts as its own text).

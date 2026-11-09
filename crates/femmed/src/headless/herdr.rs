@@ -872,10 +872,14 @@ fn disk_line(line: &[u8], uploads: &Path) -> Option<Disk> {
 
 /// A message Claude took in while it worked (a `queued_command` attachment) as the `user` line
 /// the TUI writes for one sent between turns. One the user did not type (another session's, an
-/// auto-continuation) is marked so it is not their message; one for the model only is skipped.
+/// auto-continuation) is marked so it is not their message, and a peer's keeps its `origin`; one
+/// for the model only (`isMeta`, unless it is a peer's `<cross-session-message>`) is skipped.
 fn queued(v: Value) -> Option<Value> {
     let a = &v["attachment"];
-    if a["isMeta"] == true {
+    let peer = a["prompt"]
+        .as_str()
+        .is_some_and(|p| p.contains("<cross-session-message"));
+    if a["isMeta"] == true && !peer {
         return None;
     }
     let mut u = serde_json::json!({
@@ -885,6 +889,13 @@ fn queued(v: Value) -> Option<Value> {
         "message": {"role": "user", "content": a["prompt"]},
     });
     if a["origin"]["kind"].as_str().is_some_and(|k| k != "human") {
+        u["notTyped"] = Value::Bool(true);
+    }
+    // a peer's message keeps its origin, so the driver reads it as a `PeerMessage` from the sender
+    if a["origin"]["kind"] == "peer" {
+        u["origin"] = a["origin"].clone();
+    } else if a["origin"].is_null() && peer {
+        u["origin"] = serde_json::json!({"kind": "peer"});
         u["notTyped"] = Value::Bool(true);
     }
     Some(u)
@@ -988,7 +999,7 @@ fn sub_line(line: &[u8], parent: &str) -> Option<Vec<u8>> {
 
 /// [`disk_line`] on a parsed line, sidechain or not.
 fn disk_value(mut v: Value) -> Option<Value> {
-    if v["isMeta"] == true {
+    if v["isMeta"] == true && v["origin"]["kind"] != "peer" {
         return None;
     }
     match v["type"].as_str()? {
@@ -1358,6 +1369,44 @@ mod tests {
             serde_json::json!({"type":"file-history-snapshot"}),
         ] {
             assert_eq!(line(skipped), None);
+        }
+    }
+
+    /// A peer's message (SendMessage from another session) passes the `isMeta` drop, whether it
+    /// started a turn (a `user` entry) or landed mid-turn (a `queued_command` attachment), and the
+    /// driver maps both to a `PeerMessage` from the sender, not a `UserMessage`.
+    #[test]
+    fn a_peer_message_reads_as_a_peer_message() {
+        use femme_agents::Driver as _;
+        let framed = "Another Claude session sent a message:\n<cross-session-message from=\"uds:/x.sock\" from-name=\"platform-12\" from-mode=\"bypass\">\nhello\n</cross-session-message>\n\nThis came from another Claude session";
+        let origin = serde_json::json!({"kind":"peer","name":"platform-12","body":"hello"});
+        let entry = serde_json::json!({"type":"user","uuid":"u1","isMeta":true,"promptSource":"system",
+            "turnOrigin":"peer","origin":origin,"message":{"role":"user","content":framed}});
+        let queued = serde_json::json!({"type":"attachment","uuid":"u2","attachment":{"type":"queued_command",
+            "prompt":"<cross-session-message from=\"uds:/x.sock\" from-name=\"platform-12\" from-mode=\"bypass\">\nhello\n</cross-session-message>",
+            "isMeta":true}});
+        for v in [entry, queued] {
+            let l = line(v).unwrap();
+            assert_eq!((&l["type"], &l["origin"]["kind"]), (&Value::from("user"), &Value::from("peer")));
+            let mut d = femme_agents::claude::ClaudeDriver::new();
+            let mut out = femme_agents::Out::default();
+            d.on_start(&femme_agents::Launch::default(), &mut out);
+            let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"femme-init","response":{}}}"#;
+            d.on_line(0, init, &mut out);
+            let ev = d.on_line(1, l.to_string().as_bytes(), &mut out);
+            let kinds: Vec<_> = ev
+                .iter()
+                .filter_map(|e| match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        Some((*kind, body["from"].clone(), body["text"].clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                [(ItemKind::PeerMessage, Value::from("platform-12"), Value::from("hello"))]
+            );
         }
     }
 

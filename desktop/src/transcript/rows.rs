@@ -283,6 +283,7 @@ impl Transcript {
             // The compact note's own row: the hand-off row after it says the same, with the summary.
             ItemKind::Event if before_handoff => div().into_any_element(),
             ItemKind::UserMessage => self.user_row(seq, sel, cx),
+            ItemKind::PeerMessage => self.peer_row(seq, sel),
             ItemKind::AssistantMessage => self.assistant_row(seq, sel, cx),
             ItemKind::Plan => self.plan_row(seq, sel),
             ItemKind::Thinking => self.thinking_row(seq, sel, cx),
@@ -325,6 +326,44 @@ impl Transcript {
                 ))
             });
         column(div().flex().justify_end().child(bubble))
+    }
+
+    /// Another Claude session's message (SendMessage): a card on the left, headed by the sender,
+    /// so it never reads as something the user typed.
+    fn peer_row(&mut self, seq: u64, sel: &Sel) -> AnyElement {
+        let (text, _) = self.text_of(seq);
+        let from = self
+            .items
+            .get(seq)
+            .and_then(|e| e.item.body.as_deref())
+            .map(super::body::peer_from)
+            .unwrap_or_default();
+        let doc = self.doc(seq, &text);
+        column(
+            div().flex().justify_start().child(
+                card()
+                    .max_w(relative(0.85))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .font_family(FONT_PIXEL)
+                            .text_size(px(18.))
+                            .line_height(relative(1.))
+                            .text_color(accent_text())
+                            .child(Selectable::new(sel.slot(), format!("✉ from @{from}"))),
+                    )
+                    .when(!doc.blocks.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(BODY_SIZE)
+                                .line_height(relative(1.4))
+                                .child(md_view::doc(&doc, ink(), sel)),
+                        )
+                    }),
+            ),
+        )
     }
 
     fn assistant_row(&mut self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
