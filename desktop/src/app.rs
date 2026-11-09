@@ -635,6 +635,8 @@ impl FemmeApp {
     /// The accounts card opened or closed. It takes the keyboard when it opens (and remembers who had
     /// it) and gives it back when the user dismisses it; when nobody had it, the centre takes it.
     fn accounts_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let alert = self.accounts.read(cx).sign_in_bad();
+        self.menu.update(cx, |m, cx| m.set_accounts_alert(alert, cx));
         let open = self.accounts.read(cx).is_open();
         if open != self.modal_open {
             self.modal_open = open;

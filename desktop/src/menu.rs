@@ -330,6 +330,8 @@ pub struct FemmeMenu {
     asking: Option<Task<()>>,
     /// The wait that clears the result row.
     fading: Option<Task<()>>,
+    /// A Claude account's sign-in has ended (or is about to): a red dot on "Accounts".
+    accounts_alert: bool,
     _keys: Subscription,
 }
 
@@ -357,7 +359,16 @@ impl FemmeMenu {
             timer: None,
             asking: None,
             fading: None,
+            accounts_alert: false,
             _keys: keys,
+        }
+    }
+
+    /// Puts (or takes) the red dot on "Accounts": a sign-in has ended or ends within two days.
+    pub fn set_accounts_alert(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.accounts_alert != on {
+            self.accounts_alert = on;
+            cx.notify();
         }
     }
 
@@ -626,6 +637,9 @@ impl FemmeMenu {
             }))
             .on_click(cx.listener(move |t, _, _, cx| t.activate(item, cx)))
             .child(item.label())
+            .when(item == Item::Accounts && self.accounts_alert, |row| {
+                row.gap(px(8.)).child(dot(bad()))
+            })
             .when(item == Item::DarkMode, |row| {
                 row.justify_between().child(switch(theme::is_dark()))
             })
