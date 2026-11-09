@@ -17,6 +17,10 @@ pub const CAP_MIN: u8 = 50;
 pub const CAP_MAX: u8 = 99;
 /// Usage older than this many seconds gets a note saying how old it is.
 const STALE_AFTER: i64 = 15 * 60;
+/// A sign-in that ends within this many seconds gets a line: Claude Code's own warning window.
+const SIGN_IN_WARN: i64 = 10 * 86_400;
+/// A sign-in that ends within this many seconds is urgent (red).
+const SIGN_IN_URGENT: i64 = 2 * 86_400;
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key)?.as_str().filter(|s| !s.is_empty())
@@ -121,6 +125,18 @@ pub struct Account {
     pub stale: bool,
     /// When the windows were read, seconds since the epoch.
     pub fetched_at: Option<i64>,
+    /// When the stored claude.ai sign-in ends (`loginExpiresAt`), seconds since the epoch. Past it
+    /// every run on the account fails until it is signed in again.
+    pub login_ends: Option<i64>,
+}
+
+/// How loud the sign-in line is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// Amber: the sign-in ends within 10 days.
+    Warn,
+    /// Red: under two days, or ended.
+    Bad,
 }
 
 /// What cswap's `usageStatus` (and `usageError`) say about a missing reading.
@@ -185,7 +201,36 @@ impl Account {
             }),
             stale,
             fetched_at: fetched.and_then(clock::parse_iso),
+            login_ends: text(a, "loginExpiresAt").and_then(clock::parse_iso),
         })
+    }
+
+    /// The sign-in line and how loud it is, counted from `now`: nothing with more than 10 days left
+    /// (or no date), `sign-in ends in 7 d` (amber), `sign-in ends in 30 h` (red under two days),
+    /// `sign-in ended` (red).
+    pub fn sign_in(&self, now: i64) -> Option<(String, Level)> {
+        let left = self.login_ends? - now;
+        if left > SIGN_IN_WARN {
+            return None;
+        }
+        Some(if left <= 0 {
+            ("sign-in ended".into(), Level::Bad)
+        } else if left < SIGN_IN_URGENT {
+            (
+                format!("sign-in ends in {} h", (left + 1800) / 3600),
+                Level::Bad,
+            )
+        } else {
+            (
+                format!("sign-in ends in {} d", (left + 43_200) / 86_400),
+                Level::Warn,
+            )
+        })
+    }
+
+    /// Whether the sign-in line is red: the account needs signing in again (or will within two days).
+    pub fn sign_in_bad(&self, now: i64) -> bool {
+        matches!(self.sign_in(now), Some((_, Level::Bad)))
     }
 
     /// The windows to draw, labelled as the page labels them.
@@ -632,6 +677,53 @@ mod tests {
             rows[0].note(now() + 3600).as_deref(),
             Some("usage read 1h ago")
         );
+    }
+
+    #[test]
+    fn the_sign_in_line_comes_in_the_last_ten_days_and_goes_red_under_two() {
+        let all = rows(parse_accounts(&body("accounts")).unwrap());
+        assert_eq!(all[0].login_ends, clock::parse_iso("2026-11-16T10:00:00Z"));
+        // 2026-11-09 10:00 UTC: 7 days before the first account's sign-in ends.
+        let now = clock::parse_iso("2026-11-09T10:00:00Z").unwrap();
+        assert_eq!(
+            all[0].sign_in(now),
+            Some(("sign-in ends in 7 d".into(), Level::Warn))
+        );
+        assert_eq!(all[1].sign_in(now), None, "months left: quiet");
+        assert_eq!(
+            all[2].sign_in(now),
+            Some(("sign-in ended".into(), Level::Bad))
+        );
+        assert!(all[2].sign_in_bad(now) && !all[0].sign_in_bad(now));
+        assert_eq!(all[3].login_ends, None, "no date: quiet");
+        assert_eq!(all[3].sign_in(now), None);
+        let day = 86_400;
+        let at = |left: i64| Account {
+            login_ends: Some(now + left),
+            ..all[3].clone()
+        };
+        assert_eq!(at(11 * day).sign_in(now), None, "11 days: quiet");
+        assert_eq!(
+            at(10 * day).sign_in(now),
+            Some(("sign-in ends in 10 d".into(), Level::Warn))
+        );
+        assert_eq!(
+            at(30 * 3600).sign_in(now),
+            Some(("sign-in ends in 30 h".into(), Level::Bad))
+        );
+        assert_eq!(
+            at(2 * day).sign_in(now),
+            Some(("sign-in ends in 2 d".into(), Level::Warn))
+        );
+        assert_eq!(
+            at(0).sign_in(now),
+            Some(("sign-in ended".into(), Level::Bad))
+        );
+        // A garbled date is the same as none.
+        let garbled = r#"{"cswap":{"accounts":[{"number":9,"email":"x@example.test","loginExpiresAt":"soon"}]}}"#;
+        let odd = rows(parse_accounts(garbled).unwrap());
+        assert_eq!(odd[0].login_ends, None);
+        assert_eq!(odd[0].sign_in(now), None);
     }
 
     #[test]
