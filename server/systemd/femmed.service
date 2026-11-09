@@ -10,7 +10,9 @@ Environment=RUST_LOG=info
 ExecStart=%h/.local/bin/femmed serve
 # femmed pings the watchdog from its main loop; a wedged daemon is restarted, its sessions are not
 # touched: they run as femme-holder units in femme-sessions.slice and femmed reconnects to them.
-WatchdogSec=10
+# 60 s, not 10: a box deep in swap stalled a healthy daemon's ping past 10 s, and every restart
+# re-read the mirrored transcripts, which kept it in swap (seven kills in a row on 2026-11-09).
+WatchdogSec=60
 Restart=always
 RestartSec=1
 CPUWeight=500
