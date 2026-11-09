@@ -17,10 +17,11 @@ Restart=always
 RestartSec=1
 CPUWeight=500
 # The daemon's pages stay in RAM when the box swaps (2026-11-09: agents' builds pushed 4 GB into
-# swap, femmed went with them and missed its watchdog), and the OOM killer takes it last.
+# swap, femmed went with them and missed its watchdog). The ancestors carry the same MemoryMin
+# (`systemctl set-property` on user.slice, user-1000.slice, user@1000.service and app.slice), or
+# the kernel ignores it. No OOMScoreAdjust: a user unit cannot go below the user manager's 100.
 MemoryMin=1G
 MemoryLow=2G
-OOMScoreAdjust=-900
 
 [Install]
 WantedBy=default.target
