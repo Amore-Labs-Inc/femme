@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `./doctor.sh`: it checks the laptop, the server, the services, the sign-ins and the board, and prints the fix for each problem. Logs of a service on the server: `ssh <alias> journalctl --user -u <service> -n 50` (services: `herdr-server`, `herdr-notify`, `femme-board`, `femme-worker`, `femme-cswap`, `femme-fable-cap`, `femme-deploy`).
+Start with `./doctor.sh`: it checks the laptop, the server, the services, the sign-ins and the board, and prints the fix for each problem. Logs of a service on the server: `ssh <alias> journalctl --user -u <service> -n 50` (services: `herdr-server`, `herdr-notify`, `femme-board`, `femme-worker`, `femme-cswap`, `femme-fable-cap`, `femme-deploy`, `femme-box-health`).
 
 ## Common errors
 
@@ -30,3 +30,7 @@ find ~/.claude/debug -name '*.txt' -mmin -60 -exec awk '/API REQUEST|first byte|
 ```
 
 A stream with no bytes for 60 s (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`) is retried once, instead of after the default 180 s; the API pings every few seconds while the model thinks, so a minute of silence is a real stall.
+
+## When the box is slow or full
+
+`femme-box-health.timer` runs `server/box-health.sh` every hour: it sweeps cargo build output older than 14 days, Claude's stale `/tmp/claude-<uid>` dirs, Docker build cache and the journal, then checks disk (over 85 %), load (over twice the cores), swap (over 2 GB) and orphaned `femme-desktop`/`Xvfb` processes older than 30 minutes (a demo recording whose parent died; `Xvfb :1` is left alone), which it kills. A problem is logged as a warning (`journalctl --user -u femme-box-health`), written to `~/.local/state/femme/box-health.json` and opened once as a GitHub issue `box: <problem>` labelled `box-health` (the scheduler never works GitHub issues, only the board's). Run it now: `systemctl --user start femme-box-health`. `bootstrap.sh` also caps a cargo build at 3 of the 4 cores (`~/.cargo/config.toml`, only when there is none).
