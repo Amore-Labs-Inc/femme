@@ -764,7 +764,7 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
         let not_here = || Err(CoreError::Bad("a herdr pane: do that in the pane".into()));
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                Cmd::Prompt { text, reply } => {
+                Cmd::Prompt { text, reply, .. } => {
                     if super::model_switch(&text).is_some_and(|m| super::is_gateway(Some(&m))) {
                         let why =
                             "a herdr pane's Claude cannot move to DeepSeek: start a FEMME chat";
@@ -840,6 +840,7 @@ async fn herdr(bin: &str, hs: Option<&str>, args: &[&str]) -> Result<String, Cor
 mod tests {
     use super::*;
     use femme_proto::state::{ItemKind, ItemStatus};
+    use femme_proto::rpc::PromptHow;
     use femme_store::items as store_items;
 
     use crate::config::Config;
@@ -1103,7 +1104,7 @@ mod tests {
         assert_eq!(again.len(), items.len());
 
         // a prompt through the head runs herdr, and its failure is said
-        let r = d.sessions.head(sid).unwrap().prompt("go").await;
+        let r = d.sessions.head(sid).unwrap().prompt("go", PromptHow::Queue).await;
         assert!(matches!(r, Err(CoreError::Internal(_))), "{r:?}");
 
         // closed in FEMME: not brought back

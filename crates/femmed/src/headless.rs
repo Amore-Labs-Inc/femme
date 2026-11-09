@@ -92,6 +92,7 @@ type Reply = oneshot::Sender<Result<(), CoreError>>;
 enum Cmd {
     Prompt {
         text: String,
+        how: PromptHow,
         reply: Reply,
     },
     Interrupt {
@@ -140,9 +141,10 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
-    pub(crate) async fn prompt(&self, text: &str) -> Result<(), CoreError> {
+    pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Prompt {
             text: text.into(),
+            how,
             reply,
         })
         .await
@@ -473,8 +475,8 @@ impl Actor {
 
     async fn on_cmd(&mut self, d: &Daemon, cmd: Cmd) {
         match cmd {
-            Cmd::Prompt { text, reply } => {
-                let r = self.prompt(d, &text).await;
+            Cmd::Prompt { text, how, reply } => {
+                let r = self.prompt(d, &text, how).await;
                 let _ = reply.send(r);
             }
             Cmd::Interrupt { reply } => {
@@ -525,7 +527,9 @@ impl Actor {
         Ok(())
     }
 
-    async fn prompt(&mut self, d: &Daemon, text: &str) -> Result<(), CoreError> {
+    /// `how` goes to the driver as is: a Steer joins the running turn at its next tool boundary,
+    /// InterruptThenSend stops it first, Queue waits for it to end.
+    async fn prompt(&mut self, d: &Daemon, text: &str, how: PromptHow) -> Result<(), CoreError> {
         self.ready()?;
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
@@ -545,7 +549,7 @@ impl Actor {
             return Err(CoreError::Busy);
         }
         self.driver
-            .prompt(text, PromptHow::Queue, &mut self.out)
+            .prompt(text, how, &mut self.out)
             .map_err(driver_err)?;
         self.flush().await;
         let effort = effort_switch(text);
@@ -2857,7 +2861,10 @@ mod tests {
         rig.row();
         rig.a.spawn_process(&rig.d, None).await.unwrap();
         // the agent has not answered `initialize`: the driver holds the prompt back
-        rig.a.prompt(&rig.d, "second").await.unwrap();
+        rig.a
+            .prompt(&rig.d, "second", PromptHow::Queue)
+            .await
+            .unwrap();
         assert_eq!(rig.a.driver.held_prompts().len(), 1);
         // it dies: the prompt is dropped and kept for the restart, two seconds away
         rig.a.agent_exited(&rig.d, -9).await;

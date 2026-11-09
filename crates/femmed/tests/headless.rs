@@ -7,7 +7,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
-use femme_proto::rpc::{Answer, Attachment};
+use femme_proto::rpc::{Answer, Attachment, PromptHow};
 use femme_proto::state::{Attention, Context, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
 use femmed::core::{Core, CoreError, PaneRef};
@@ -970,7 +970,9 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         attach("../shot.png", b"\x89PNG two"),
         attach("my notes.bin", b"\xff\xfe\x00"),
     ];
-    d.prompt_attached(&pane, "look", &list).await.unwrap();
+    d.prompt_attached(&pane, "look", &list, PromptHow::Queue)
+        .await
+        .unwrap();
 
     let dir = b.dir.path().join("state/uploads").join(sid.to_string());
     let paths = ["shot.png", "shot-2.png", "my notes.bin"].map(|n| dir.join(n));
@@ -1008,7 +1010,7 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         blob: [9; 32],
     };
     let err = d
-        .prompt_attached(&pane, "never", &[list[0].clone(), gone])
+        .prompt_attached(&pane, "never", &[list[0].clone(), gone], PromptHow::Queue)
         .await;
     assert!(
         matches!(&err, Err(CoreError::Bad(m)) if m.contains("gone.png")),

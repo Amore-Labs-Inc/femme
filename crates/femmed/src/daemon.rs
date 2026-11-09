@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use async_trait::async_trait;
-use femme_proto::rpc::{Answer, IssueField, Scope};
+use femme_proto::rpc::{Answer, IssueField, PromptHow, Scope};
 use femme_proto::state::{Agent, Issue, Item, Mode, Pane, Row, Session};
 use femme_proto::Sid;
 use femme_store::{auth, issues, sessions, Store};
@@ -271,7 +271,7 @@ impl Core for Daemon {
     }
 
     async fn prompt(&self, pane: &PaneRef, text: &str) -> Result<(), CoreError> {
-        self.pane_prompt(pane, text).await
+        self.pane_prompt(pane, text, PromptHow::Queue).await
     }
 
     async fn input(&self, pane: &PaneRef, bytes: &[u8]) -> Result<(), CoreError> {
