@@ -250,6 +250,9 @@ pub enum Req {
     /// [`ItemKind::UserMessage`](crate::state::ItemKind::UserMessage)). The message stays where
     /// it is in the transcript and waits again.
     Resend { sid: Sid, item_id: String },
+    /// The session whose agent is the Claude conversation `agent_sid` (`femmed show` finds its own
+    /// chat by the process it runs under). Answered with `Resp::Session`, `NotFound` for none.
+    SessionOf { agent_sid: String },
 }
 
 /// One open pull request, as `Resp::Prs` lists it.
