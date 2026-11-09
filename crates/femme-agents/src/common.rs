@@ -53,6 +53,10 @@ impl Offsets {
     pub fn item_open(&mut self, id: &str, offset: u64) {
         self.open.entry(id.to_owned()).or_insert(offset);
     }
+    /// Where the open item `id` began, else the offset past the last line.
+    pub fn open_at(&self, id: &str) -> u64 {
+        self.open.get(id).copied().unwrap_or(self.next)
+    }
     /// Item `id` is final.
     pub fn item_close(&mut self, id: &str) {
         self.open.remove(id);

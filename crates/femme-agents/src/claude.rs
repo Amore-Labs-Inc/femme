@@ -190,6 +190,10 @@ pub struct ClaudeDriver {
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
+    /// Reads a TUI's transcript file (a herdr pane), not a stream-json process: nobody sends
+    /// `control_request`s, so `AskUserQuestion` and `ExitPlanMode` tool calls on the main thread
+    /// are the questions, and the file's `tool_use_result` says how the user answered in the TUI.
+    mirror: bool,
     seq: u64,
     off: Offsets,
     status: AgentStatus,
@@ -245,6 +249,7 @@ impl ClaudeDriver {
             ctx_used: None,
             awaiting_init: false,
             exited: false,
+            mirror: false,
             seq: 0,
             off: Offsets::default(),
             status: AgentStatus::Idle,
@@ -321,6 +326,14 @@ impl ClaudeDriver {
         };
         if let Some(body) = self.task_body(&call) {
             ev.push(AgentEvent::ItemUpdated { id: call, body });
+        }
+    }
+
+    /// A driver for a TUI's transcript file (see `mirror`).
+    pub fn mirror() -> Self {
+        Self {
+            mirror: true,
+            ..Self::new()
         }
     }
 
@@ -780,8 +793,17 @@ impl ClaudeDriver {
                     ItemStatus::Completed,
                     body(&Plan { text }),
                 ));
+                if self.mirror {
+                    let at = self.off.open_at(&id);
+                    self.ask(at, &id, &id, PLAN, &input, None, ev);
+                }
             }
-            ASK => {}
+            ASK => {
+                if self.mirror {
+                    let at = self.off.open_at(&id);
+                    self.ask(at, &id, &id, ASK, &input, None, ev);
+                }
+            }
             _ => ev.push(AgentEvent::ItemUpdated {
                 id: id.clone(),
                 body: body(&ToolCall {
@@ -1247,7 +1269,28 @@ impl ClaudeDriver {
         self.activity(offset, ev);
         let tool = req["tool_name"].as_str().unwrap_or("");
         let tid = req["tool_use_id"].as_str().unwrap_or(rid).to_owned();
-        let input = req["input"].clone();
+        let title = req["title"]
+            .as_str()
+            .or(req["description"].as_str())
+            .or(req["display_name"].as_str());
+        self.ask(offset, rid, &tid, tool, &req["input"], title, ev);
+    }
+
+    /// The agent waits on the user: the `AskUserQuestion` call `tid` asks its questions, an
+    /// `ExitPlanMode` or any other tool `tool` asks for an approval. Opens the `Question` items
+    /// and remembers the request `rid` (the tool call's own id for a mirror) until its result.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(
+        &mut self,
+        offset: u64,
+        rid: &str,
+        tid: &str,
+        tool: &str,
+        input: &Value,
+        title: Option<&str>,
+        ev: &mut Vec<AgentEvent>,
+    ) {
+        let input = input.clone();
         match self.pending.get(rid) {
             // the request we already show (or have answered), repeated: keep what we know about it
             Some(old) if old.tool_use_id == tid => return,
@@ -1258,7 +1301,7 @@ impl ClaudeDriver {
             None => {}
         }
         let mut parts = if tool == ASK {
-            ask_parts(rid, &tid, &input)
+            ask_parts(rid, tid, &input)
         } else {
             Vec::new()
         };
@@ -1274,11 +1317,7 @@ impl ClaudeDriver {
                     ["Approve", "Keep planning"],
                 )
             } else {
-                let what = req["title"]
-                    .as_str()
-                    .or(req["description"].as_str())
-                    .or(req["display_name"].as_str())
-                    .unwrap_or(tool);
+                let what = title.unwrap_or(tool);
                 (format!("Allow {what}?"), ["Allow", "Deny"])
             };
             let labels: Vec<String> = options.iter().map(|s| (*s).to_owned()).collect();
@@ -1318,7 +1357,7 @@ impl ClaudeDriver {
             rid.to_owned(),
             Pending {
                 kind,
-                tool_use_id: tid,
+                tool_use_id: tid.to_owned(),
                 input,
                 parts,
                 sent,
@@ -2664,5 +2703,24 @@ mod tests {
             "{ev:?}"
         );
         assert!(f.d.tasks.is_empty());
+    }
+
+    /// A pane's transcript never carries a `control_request`: the mirror asks on the tool call.
+    #[test]
+    fn a_mirror_asks_on_the_ask_user_question_call_itself() {
+        let text = std::fs::read_to_string("fixtures/claude/question.jsonl").unwrap();
+        let asked = |mut d: ClaudeDriver| {
+            let mut n = 0;
+            for (i, l) in text.lines().enumerate().take(42) {
+                let ev = d.on_line(i as u64, l.as_bytes(), &mut Out::default());
+                n += ev
+                    .iter()
+                    .filter(|e| matches!(e, AgentEvent::QuestionAsked { .. }))
+                    .count();
+            }
+            n
+        };
+        assert_eq!(asked(ClaudeDriver::new()), 0);
+        assert_eq!(asked(ClaudeDriver::mirror()), 1);
     }
 }
