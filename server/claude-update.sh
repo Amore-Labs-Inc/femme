@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Runs on the VPS from femme-claude-update.timer (03:00). Upgrades Claude Code; when the version
-# moved, a scout (Opus, effort max) reads what changed and hands off each feature useful to this
-# user, then one implementer per feature (Fable, effort medium) builds it in a fresh clone and opens
-# a pull request with a demo video. docs/claude-updates.md has the whole picture.
-#   claude-update.sh                     upgrade, then scout + implement if the version changed
+# Runs on the VPS from femme-claude-update.timer (03:00). Only when mise has a newer Claude Code:
+# upgrades it, then a scout (Opus, effort max) reads what changed, and which older features FEMME
+# still lacks, and hands off each one useful to this user; one implementer per feature (Fable,
+# effort medium) builds it in a fresh clone and opens a pull request with a demo video of FEMME.
+# docs/claude-updates.md has the whole picture.
+#   claude-update.sh                     if an update is pending: upgrade, scout, implement
 #   claude-update.sh --from X --to Y     no upgrade: run for that range (a rerun skips features
 #                                        whose PR is already open)
-#   claude-update.sh --force             upgrade, and run even when the version did not change
+#   claude-update.sh --force             run even with no pending update (testing)
 #   DRY=1 claude-update.sh ...           everything but claude: prints its commands and prompts
 # Progress: <state>/reports/claude-updates/<version>.log; claude's own output beside it in <version>/.
 set -uo pipefail
@@ -43,18 +44,19 @@ say() { printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$log"; }
 version() { claude --version 2>/dev/null | awk '{print $1}'; }
 cd "$HOME" || exit 1  # mise reads the config of the current dir: none of a project's
 
-# 1. Upgrade. The last version a run saw is kept, so an upgrade made elsewhere (bootstrap.sh's
-# `mise install`) is still noticed.
+# 1. Upgrade, only when mise knows a newer claude: no pending update, no run (--force runs anyway).
 if [ -z "$to" ]; then
-  before=$(cat "$reports/last-version" 2>/dev/null || version)
+  before=$(version)
+  outdated=$(mise outdated claude --json 2>>"$log") || { say "mise outdated claude failed"; exit 1; }
+  latest=$(jq -r '.claude.latest // empty' <<<"$outdated" 2>/dev/null)
+  if [ -z "$latest" ] && [ "$force" = 0 ]; then say "claude ${before:-?}: no pending update"; exit 0; fi
+  say "claude ${before:-?}: ${latest:+$latest pending}${latest:-no pending update, --force}"
   if [ "$dry" = 1 ]; then say "dry: would run: mise upgrade claude"
   else
     mise upgrade claude >>"$log" 2>&1; say "mise upgrade claude: exit $?"
   fi
   from=${from:-$before} to=$(version)
   [ -n "$to" ] || { say "claude --version failed after the upgrade"; exit 1; }
-  [ "$dry" = 1 ] || echo "$to" > "$reports/last-version"  # before the run: a version is tried once, not every night
-  if [ "$from" = "$to" ] && [ "$force" = 0 ]; then say "claude $to: no new version"; exit 0; fi
 fi
 [ -n "$from" ] || { echo "claude-update: --to needs --from" >&2; exit 2; }
 run=$reports/$to
