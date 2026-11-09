@@ -349,6 +349,7 @@ impl PiDriver {
                             text: h.text,
                             how: h.how,
                             reason: DropReason::Refused(str_of(v, "error").to_owned()),
+                            id: h.id,
                         });
                     }
                 }
@@ -382,6 +383,7 @@ impl PiDriver {
                         text: text.to_owned(),
                         how,
                         reason: DropReason::Refused("interrupted before pi delivered it".into()),
+                        id: None,
                     });
                 }
             }
@@ -1257,6 +1259,7 @@ impl Driver for PiDriver {
             text: h.text,
             how: h.how,
             reason: DropReason::Exited,
+            id: h.id,
         };
         ev.extend(
             std::mem::take(&mut self.pending)

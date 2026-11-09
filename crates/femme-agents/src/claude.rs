@@ -409,13 +409,43 @@ impl ClaudeDriver {
         c
     }
 
-    /// The user message for `h`; it becomes a command of ours until the CLI starts it.
+    /// The user message for `h`, under its own id when it has one; it becomes a command of ours
+    /// until the CLI starts it.
     fn user_line(&mut self, h: HeldPrompt) -> Value {
-        let uuid = uuid_v4();
+        let uuid = h.id.clone().unwrap_or_else(uuid_v4);
         let line = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":h.text}]},"uuid":uuid});
         self.cmd(&uuid).ours = Some(h);
         line
     }
+
+    /// [`Driver::prompt`] of a prompt already stamped.
+    fn send(&mut self, h: HeldPrompt, out: &mut Out) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+
+        match h.how {
+            // Written mid-turn the CLI folds a message into the running turn at the next tool
+            // boundary (and runs it as its own turn only when there is none), so a real "after
+            // this turn" needs the driver to hold it back.
+            PromptHow::Queue if self.busy() || !self.queue.is_empty() => hold(&mut self.queue, h),
+            PromptHow::Steer if self.awaiting_init => hold(&mut self.queue, h),
+            PromptHow::InterruptThenSend if self.busy() => {
+                // ponytail: with a message accepted but its turn not started yet the interrupt
+                // would hit nothing, so it is only sent once a turn runs; the caller can repeat it
+                if self.turn {
+                    self.control("int", json!({"subtype":"interrupt"}), out);
+                }
+                hold(&mut self.queue, h);
+            }
+            _ => {
+                let l = self.user_line(h);
+                out.line(&l);
+            }
+        }
+        Ok(())
+    }
+
 
     /// The command `u` is over. `lost` is why when it never ran, which is announced for a prompt
     /// of ours (a command that started has dropped its `ours`).
@@ -426,6 +456,7 @@ impl ClaudeDriver {
                 text: h.text,
                 how: h.how,
                 reason,
+                id: h.id,
             });
         }
     }
@@ -1570,30 +1601,21 @@ impl Driver for ClaudeDriver {
     }
 
     fn prompt(&mut self, text: &str, how: PromptHow, out: &mut Out) -> Result<(), Error> {
-        if self.exited {
-            return Err(Error::State("claude has exited"));
-        }
-        let h = held(text, how);
-        match how {
-            // Written mid-turn the CLI folds a message into the running turn at the next tool
-            // boundary (and runs it as its own turn only when there is none), so a real "after
-            // this turn" needs the driver to hold it back.
-            PromptHow::Queue if self.busy() || !self.queue.is_empty() => hold(&mut self.queue, h),
-            PromptHow::Steer if self.awaiting_init => hold(&mut self.queue, h),
-            PromptHow::InterruptThenSend if self.busy() => {
-                // ponytail: with a message accepted but its turn not started yet the interrupt
-                // would hit nothing, so it is only sent once a turn runs; the caller can repeat it
-                if self.turn {
-                    self.control("int", json!({"subtype":"interrupt"}), out);
-                }
-                hold(&mut self.queue, h);
-            }
-            _ => {
-                let l = self.user_line(h);
-                out.line(&l);
-            }
-        }
-        Ok(())
+        self.send(held(text, how), out)
+    }
+
+    /// The CLI echoes a user message with the `uuid` it was written with (checked on 2.1.319, a
+    /// message steered into a running turn too), so `id` is that uuid.
+    fn prompt_with_id(
+        &mut self,
+        id: &str,
+        text: &str,
+        how: PromptHow,
+        out: &mut Out,
+    ) -> Result<(), Error> {
+        let mut h = held(text, how);
+        h.id = Some(id.to_owned());
+        self.send(h, out)
     }
 
     fn interrupt(&mut self, out: &mut Out) -> Result<(), Error> {

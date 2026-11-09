@@ -1704,7 +1704,12 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
             }
             // the question's item is completed by its own event, the status follows from `Status`
             AgentEvent::QuestionResolved { .. } => {}
-            AgentEvent::PromptDropped { text, how, reason } => {
+            AgentEvent::PromptDropped {
+                text,
+                how,
+                reason,
+                id,
+            } => {
                 let why = match &reason {
                     DropReason::Exited => "the agent exited first".to_string(),
                     DropReason::Refused(r) => r.clone(),
@@ -1717,6 +1722,7 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                         text,
                         how,
                         queued_at_ms: u64::try_from(now).unwrap_or(0),
+                        id,
                     });
                 }
             }
@@ -2279,6 +2285,7 @@ mod tests {
             text: text.into(),
             how: PromptHow::Queue,
             reason,
+            id: None,
         };
         let evs = vec![
             drop("a", DropReason::Exited),

@@ -541,7 +541,7 @@ fn interrupt_then_send_clears_aborts_and_sends_first() {
         &mut out,
     );
     assert!(
-        matches!(&ev[..], [AgentEvent::ItemCompleted { id, kind: ItemKind::Event, body, .. }, AgentEvent::PromptDropped { text, how: PromptHow::Steer, reason: DropReason::Refused(_) }] if id == "o300" && body["text"] == "Not delivered (interrupted): s1" && text == "s1")
+        matches!(&ev[..], [AgentEvent::ItemCompleted { id, kind: ItemKind::Event, body, .. }, AgentEvent::PromptDropped { text, how: PromptHow::Steer, reason: DropReason::Refused(_), .. }] if id == "o300" && body["text"] == "Not delivered (interrupted): s1" && text == "s1")
     );
     let ev = d.on_line(400, br#"{"type":"agent_settled","aborted":true}"#, &mut out);
     assert!(matches!(
@@ -583,7 +583,7 @@ fn refused_prompts() {
         &mut out,
     );
     assert!(
-        matches!(&ev[..], [AgentEvent::ItemCompleted { id, kind: ItemKind::Event, body, .. }, AgentEvent::PromptDropped { text, how: PromptHow::Queue, reason: DropReason::Refused(why) }] if id == "o100" && body["text"] == "pi did not take the prompt: No API key found" && text == "a" && why == "No API key found")
+        matches!(&ev[..], [AgentEvent::ItemCompleted { id, kind: ItemKind::Event, body, .. }, AgentEvent::PromptDropped { text, how: PromptHow::Queue, reason: DropReason::Refused(why), .. }] if id == "o100" && body["text"] == "pi did not take the prompt: No API key found" && text == "a" && why == "No API key found")
     );
     assert_eq!(
         written(&mut out),
@@ -877,7 +877,8 @@ fn on_exit_closes_everything() {
             AgentEvent::PromptDropped {
                 text: "b".into(),
                 how: PromptHow::Queue,
-                reason: DropReason::Exited
+                reason: DropReason::Exited,
+                id: None
             },
             AgentEvent::ItemCompleted {
                 id: format!("o{end}:unsent0"),

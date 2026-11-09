@@ -865,7 +865,7 @@ mod new_api {
     fn dropped(ev: &[AgentEvent]) -> Vec<(String, PromptHow, DropReason)> {
         ev.iter()
             .filter_map(|e| {
-                if let AgentEvent::PromptDropped { text, how, reason } = e {
+                if let AgentEvent::PromptDropped { text, how, reason, .. } = e {
                     Some((text.clone(), *how, reason.clone()))
                 } else {
                     None
@@ -1182,9 +1182,14 @@ mod new_api {
             text: "again".into(),
             how: PromptHow::Queue,
             queued_at_ms: 12,
+            id: None,
         };
         let back: HeldPrompt = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
         assert_eq!(back, h);
+        // what a daemon saved before prompts had ids still reads
+        let old: HeldPrompt =
+            serde_json::from_str(r#"{"text":"again","how":"Queue","queued_at_ms":12}"#).unwrap();
+        assert_eq!(old, h);
     }
 }
 
@@ -1272,4 +1277,30 @@ fn a_mid_turn_steer_is_written_at_once_and_one_result_ends_both_messages() {
     assert_eq!(w.len(), 1, "{w:?}");
     assert_eq!(w[0]["message"]["content"][0]["text"], "after");
     assert_eq!(s.d.held_prompts().len(), 0);
+}
+
+// ---- the daemon's own ids: the CLI echoes a message under the uuid it was written with -----------
+
+/// `prompt_with_id` writes the message under the daemon's id, also when it was held back first, and
+/// a message the CLI drops is announced with that id, so the daemon finds the message it saved.
+#[test]
+fn a_prompt_with_an_id_is_written_held_and_dropped_under_it() {
+    let mut s = S::ready();
+    let a = "0b6e7c1e-4f2a-4d1b-9c3e-5a7d2f8e1b40";
+    let b = "3f9a2c71-8d4e-4b6a-a1c2-7e5f9d3b2a18";
+    s.d.prompt_with_id(a, "first", PromptHow::Queue, &mut s.out)
+        .unwrap();
+    let w = s.wrote();
+    assert_eq!(w[0]["uuid"], a, "written at once under its id: {w:?}");
+    s.start(a);
+    s.d.prompt_with_id(b, "second", PromptHow::Queue, &mut s.out)
+        .unwrap();
+    assert!(s.wrote().is_empty(), "held until the turn ends");
+    assert_eq!(s.d.held_prompts()[0].id.as_deref(), Some(b));
+    let ev = s.d.on_exit(Some(1));
+    assert!(
+        ev.iter().any(|e| matches!(e, AgentEvent::PromptDropped { text, id: Some(id), .. }
+            if text == "second" && id == b)),
+        "{ev:?}"
+    );
 }

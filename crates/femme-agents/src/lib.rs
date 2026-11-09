@@ -93,6 +93,8 @@ pub mod hooks;
 pub mod items;
 pub mod pi;
 
+pub use common::uuid_v4;
+
 use femme_proto::rpc::{Answer, PromptHow};
 use femme_proto::state::{Agent, ItemKind, ItemStatus, Question, Usage};
 use serde::{Deserialize, Serialize};
@@ -154,6 +156,10 @@ pub struct HeldPrompt {
     pub how: PromptHow,
     /// Unix milliseconds at which the driver accepted it.
     pub queued_at_ms: u64,
+    /// The id the agent's echo of it is to carry ([`Driver::prompt_with_id`]), so the daemon knows
+    /// its own message when it comes back. Kept when the prompt is held, dropped or sent again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// Why a prompt will never run ([`AgentEvent::PromptDropped`]).
@@ -328,6 +334,9 @@ pub enum AgentEvent {
         how: PromptHow,
         /// Why it was dropped.
         reason: DropReason,
+        /// The id it was given with [`Driver::prompt_with_id`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// A usage-limit reading the agent reported in-stream.
     RateLimit {
@@ -431,6 +440,20 @@ pub trait Driver: Send {
     /// already over (Codex, Pi) runs next, ahead of the held prompts, in the order the steers were
     /// given.
     fn prompt(&mut self, text: &str, how: PromptHow, out: &mut Out) -> Result<(), Error>;
+
+    /// [`Driver::prompt`], and the agent's echo of the message is to carry `id` (Claude's `uuid`):
+    /// the daemon pairs the echo with the message it saved. An agent that takes no id of ours
+    /// ignores it, which is the default.
+    fn prompt_with_id(
+        &mut self,
+        id: &str,
+        text: &str,
+        how: PromptHow,
+        out: &mut Out,
+    ) -> Result<(), Error> {
+        let _ = id;
+        self.prompt(text, how, out)
+    }
 
     /// Stop the current turn (like Esc in the TUI). Held prompts are kept ([`Driver::prompt`]).
     /// While no turn runs this is an `Ok` that writes nothing (Pi still cancels an open dialog,

@@ -528,6 +528,7 @@ impl CodexDriver {
                             text: h.text,
                             how: h.how,
                             reason: DropReason::Refused(msg),
+                            id: h.id,
                         });
                     }
                     self.flush(out);
@@ -1378,6 +1379,7 @@ impl Driver for CodexDriver {
                     text: h.text,
                     how: h.how,
                     reason: DropReason::Exited,
+                    id: h.id,
                 });
             }
         }
