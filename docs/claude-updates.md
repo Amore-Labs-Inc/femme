@@ -17,8 +17,8 @@ Optional (`CLAUDE_UPDATES=1` in `.env`, then `bootstrap.sh`): every night at 03:
    earlier hand-off: the scout proposes none of them again (a PR closed unmerged means no).
 5. One **implementer** per hand-off (Fable, effort medium), one after another, each in its own
    worktree on `claude-update/<version>/<slug>`: plan, build, test, small commits, a demo video
-   of FEMME with the feature in use (`claude-update/record-desktop.sh`), push, `gh pr create`. It never merges; a pre-push hook in the
-   clone only lets `claude-update/*` branches out.
+   of FEMME with the feature in use (`claude-update/record-desktop.sh`), push, `gh pr create`.
+   It never merges; a pre-push hook in the clone only lets `claude-update/*` branches out.
 
 The video lands in `<state>/pr-videos/<branch, '/' as '-'>.mp4` (8 MiB at most), where the
 desktop app finds it beside the PR. `record-desktop.sh <scene.sh> <video.mp4>`, run in the
@@ -32,9 +32,10 @@ add-on; `tools.sh` installs vhs, ttyd, asciinema and agg into `~/.local/bin`.
 ## Watching and rerunning
 
 `<state>` is `~/.local/state/femme`. Everything is under `<state>/reports/claude-updates/`:
-`upgrade.log` (the nightly "no pending update" lines), `<version>.log` (stage lines: `scout start`, `feature 2/5 <slug> start`, `pr opened <url>`, exit
-codes), `<version>.md` (the scout's report), `<version>/scout.jsonl` and `<version>/<slug>.jsonl`
-(each claude run's stream), `<version>/<slug>.plan.md`.
+`upgrade.log` (the nightly "no pending update" lines), `<version>.log` (stage lines: `scout
+start`, `feature 2/5 <slug> start`, `pr opened <url>`, exit codes), `<version>.md` (the scout's
+report), `<version>/ledger.md`, `<version>/scout.jsonl` and `<version>/<slug>.jsonl` (each claude
+run's stream), `<version>/<slug>.plan.md`.
 
 ```sh
 systemctl --user start femme-claude-update     # the 03:00 run, now
