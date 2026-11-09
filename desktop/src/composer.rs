@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use femme_client::Event;
 use femme_proto::rpc::{PromptHow, Req, Resp, Scope};
 use femme_proto::state::{Agent, Context as Xp, Row, SessionStatus};
-use femme_proto::Sid;
+use femme_proto::{OpId, Sid};
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
     ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle, Focusable,
@@ -112,8 +112,9 @@ struct Pending {
     /// The text as typed (not trimmed), to tell whether the input still holds it.
     text: String,
     ids: Vec<ChipId>,
-    /// Its faded bubble in the transcript ([`crate::net::Model::outbox`]), dropped if refused.
-    shown: u64,
+    /// The op id it went under, which names its faded bubble in the transcript
+    /// ([`crate::net::Model::outbox`]) until its stored message comes, and is dropped if refused.
+    shown: OpId,
 }
 
 impl Composer {
@@ -668,19 +669,21 @@ impl Composer {
         let draft = self.drafts.entry(sid);
         draft.sending = true;
         draft.notice = None;
-        // The transcript shows the prompt now, faded, until the daemon echoes it.
+        // The transcript shows the prompt now, faded, until the daemon's stored copy arrives.
         let files = attachments.iter().map(|a| a.name.clone()).collect();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
-        let shown = net.update(cx, |net, cx| {
+        let shown = OpId::new();
+        net.update(cx, |net, cx| {
             cx.notify();
             net.model
                 .outbox
-                .push(sid, body.clone(), files, Instant::now(), now_ms)
+                .push(sid, shown, body.clone(), files, now_ms)
         });
-        let answer = request(
+        let answer = request_as(
             &net,
+            shown,
             Req::Prompt {
                 sid,
                 text: body,
@@ -719,7 +722,8 @@ impl Composer {
             ids,
             shown,
         } = pending;
-        if result.is_err() {
+        // A `/` command is the agent's business: the daemon stores no message for it.
+        if result.is_err() || text.trim_start().starts_with('/') {
             if let Some(net) = &self.net {
                 net.update(cx, |net, cx| {
                     if net.model.outbox.forget(sid, shown) {
@@ -959,6 +963,25 @@ fn forget(previews: &Previews, chip: &Chip, cx: &mut App) {
     if let Some(image) = &chip.image {
         image.clone().remove_asset(cx);
     }
+}
+
+/// [`request`] under the op id `op` (a prompt's, which its stored message keeps).
+fn request_as(
+    net: &Entity<Net>,
+    op: OpId,
+    req: Req,
+    cx: &mut Context<Composer>,
+) -> Task<Result<Resp, String>> {
+    let (client, rt) = {
+        let net = net.read(cx);
+        (net.client(), net.rt())
+    };
+    let sent = rt.spawn(async move { client.request_as(op, req).await });
+    cx.spawn(async move |_, _| match sent.await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(why)) => Err(why.to_string()),
+        Err(why) => Err(why.to_string()),
+    })
 }
 
 /// Runs `req` on the daemon link. Unlike `Net::run` the error is this request's own: `Net::error`
