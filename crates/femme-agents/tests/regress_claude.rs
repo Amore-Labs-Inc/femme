@@ -1200,9 +1200,13 @@ fn a_peer_message_is_its_own_item_not_the_users() {
     assert!(ev.iter().any(|e| matches!(e,
         AgentEvent::ItemCompleted { kind: ItemKind::PeerMessage, body, .. }
             if body["from"] == "platform-12" && body["text"] == "hello")));
-    assert!(!ev
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, .. })));
+    assert!(!ev.iter().any(|e| matches!(
+        e,
+        AgentEvent::ItemCompleted {
+            kind: ItemKind::UserMessage,
+            ..
+        }
+    )));
 }
 
 /// Without `origin.name`/`body` (a transcript's `queued_command`), the sender and text come from
@@ -1221,7 +1225,51 @@ fn a_peer_message_falls_back_to_its_tags() {
 fn a_prompt_echo_without_origin_stays_a_user_message() {
     let mut s = S::ready();
     let u = s.send("hi", PromptHow::Queue).unwrap();
-    let ev = s.feed(json!({"type":"user","uuid":u,"isReplay":true,"message":{"role":"user","content":"hi"}}));
+    let ev = s.feed(
+        json!({"type":"user","uuid":u,"isReplay":true,"message":{"role":"user","content":"hi"}}),
+    );
     assert!(ev.iter().any(|e| matches!(e,
         AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "hi")));
+}
+
+// ---- mid-turn steer: written at once, ended by the turn's one result ----------------------------
+
+/// A Steer mid-turn is written at once (the CLI folds it into the running turn at its next tool
+/// boundary); the turn's one `result` lists both `user_message_uuids` and ends both commands, so
+/// nothing is left in flight and nothing is reported dropped. A Queue sent at the same moment
+/// stays held until then.
+#[test]
+fn a_mid_turn_steer_is_written_at_once_and_one_result_ends_both_messages() {
+    let mut s = S::ready();
+    let first = s.send("first", PromptHow::Queue).unwrap();
+    s.start(&first);
+    assert_eq!(s.d.status(), AgentStatus::Working);
+    let steer = s
+        .send("also say banana", PromptHow::Steer)
+        .expect("a Steer goes out while the turn runs");
+    assert_eq!(s.send("after", PromptHow::Queue), None, "a Queue waits");
+    // the CLI takes the steer into the running turn: queued, echoed, started
+    s.feed(lifecycle(&steer, "queued"));
+    let ev = s.feed(json!({"type":"user","isReplay":true,"uuid":steer,
+        "message":{"role":"user","content":[{"type":"text","text":"also say banana"}]}}));
+    assert!(
+        ev.iter().any(|e| matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "also say banana")),
+        "the echo is the user's bubble, inside the turn: {ev:?}"
+    );
+    s.feed(lifecycle(&steer, "started"));
+    assert!(s.wrote().is_empty(), "the queued one is still held");
+    let mut ev = s.feed(result_ok(&[&first, &steer]));
+    ev.extend(s.feed(lifecycle(&steer, "completed")));
+    ev.extend(s.feed(lifecycle(&first, "completed")));
+    assert_eq!(turn_events(&ev), ["TurnEnded"], "one turn: {ev:?}");
+    assert!(
+        !ev.iter()
+            .any(|e| matches!(e, AgentEvent::PromptDropped { .. })),
+        "both messages ran: {ev:?}"
+    );
+    // nothing of ours in flight any more: the held Queue goes out now
+    let w = s.wrote();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0]["message"]["content"][0]["text"], "after");
+    assert_eq!(s.d.held_prompts().len(), 0);
 }

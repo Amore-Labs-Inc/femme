@@ -50,6 +50,24 @@ pub struct ToolResult {
     pub output: String,
     /// The tool reported failure.
     pub is_error: bool,
+    /// The page an `Artifact` call published or read, when the result names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ArtifactLink>,
+}
+
+/// A claude.ai artifact page an `Artifact` tool result points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ArtifactLink {
+    /// `https://claude.ai/artifact/<id>`.
+    pub url: String,
+    /// The page's title; the file's name or the call's action when the result does not say.
+    pub title: String,
+    /// The version number of a publish (its `seq`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    /// The publish changed an existing page rather than making a new one.
+    #[serde(default)]
+    pub updated: bool,
 }
 
 /// `ItemKind::Question`: a question for the user, plus its answer once given.
@@ -189,6 +207,7 @@ mod tests {
             call_id: "t1".into(),
             output: "hi\n".into(),
             is_error: false,
+            link: None,
         });
         assert_eq!(c["call_id"], r["call_id"]);
     }

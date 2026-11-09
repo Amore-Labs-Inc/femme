@@ -7,7 +7,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
-use femme_proto::rpc::{Answer, Attachment};
+use femme_proto::rpc::{Answer, Attachment, PromptHow};
 use femme_proto::state::{Attention, Context, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
 use femmed::core::{Core, CoreError, PaneRef};
@@ -970,7 +970,9 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         attach("../shot.png", b"\x89PNG two"),
         attach("my notes.bin", b"\xff\xfe\x00"),
     ];
-    d.prompt_attached(&pane, "look", &list).await.unwrap();
+    d.prompt_attached(&pane, "look", &list, PromptHow::Queue)
+        .await
+        .unwrap();
 
     let dir = b.dir.path().join("state/uploads").join(sid.to_string());
     let paths = ["shot.png", "shot-2.png", "my notes.bin"].map(|n| dir.join(n));
@@ -1008,7 +1010,7 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         blob: [9; 32],
     };
     let err = d
-        .prompt_attached(&pane, "never", &[list[0].clone(), gone])
+        .prompt_attached(&pane, "never", &[list[0].clone(), gone], PromptHow::Queue)
         .await;
     assert!(
         matches!(&err, Err(CoreError::Bad(m)) if m.contains("gone.png")),
@@ -1016,5 +1018,113 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
     );
     assert!(!dir.join("shot-3.png").exists());
     assert!(!has_text(&items(&d, sid), ItemKind::UserMessage, "never"));
+    d.close_session(sid).await.unwrap();
+}
+
+/// The texts of `kind`, in transcript order.
+fn texts_of(v: &[Item], kind: ItemKind) -> Vec<String> {
+    v.iter().filter(|i| i.kind == kind).map(text_of).collect()
+}
+
+/// A `slow` turn is running, a few ticks in.
+async fn slow_turn(d: &Daemon, b: &Box_) -> (Sid, PaneRef) {
+    let s = d.create_session(headless(&b.home())).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    wait_for(d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.prompt(&pane, "slow").await.unwrap();
+    wait_for(d, sid, "working", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Working)
+    })
+    .await;
+    // the store holds the streamed text only when the item is done: wait by the clock instead
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    (sid, pane)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_steer_mid_turn_joins_the_running_turn() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    // the composer's Enter while working: written to the agent at once, folded into this turn
+    d.prompt_attached(&pane, "steer", &[], PromptHow::Steer)
+        .await
+        .unwrap();
+    let v = wait_items(&d, sid, "the steer's echo", |v| {
+        has_text(v, ItemKind::UserMessage, "steer")
+    })
+    .await;
+    assert!(
+        !v.iter()
+            .any(|i| i.kind == ItemKind::AssistantMessage && text_of(i).contains("tick 50")),
+        "the echo came while the turn still ran: {:#?}",
+        shape(&v)
+    );
+    let v = wait_items(&d, sid, "the turn's end", |v| {
+        v.iter()
+            .any(|i| i.kind == ItemKind::AssistantMessage && text_of(i).contains("echo: steer"))
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "steer"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 1, "one turn answered both: {:#?}", shape(&v));
+    assert!(answers[0].contains("tick 50"), "never interrupted: {}", answers[0]);
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_then_send_mid_turn_stops_the_turn_and_runs_the_prompt() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    d.prompt_attached(&pane, "instead", &[], PromptHow::InterruptThenSend)
+        .await
+        .unwrap();
+    let v = wait_items(&d, sid, "the new turn's answer", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: instead")
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "instead"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 2, "{:#?}", shape(&v));
+    assert!(
+        !answers[0].contains("tick 50"),
+        "the slow turn was cut short: {}",
+        answers[0]
+    );
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    d.close_session(sid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_core_prompt_path_still_waits_for_the_turn_to_end() {
+    // board, API, worker: `Core::prompt` is a Queue, held until the running turn is over
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    d.prompt(&pane, "second").await.unwrap();
+    let v = wait_items(&d, sid, "the second turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: second")
+    })
+    .await;
+    assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "second"]);
+    let answers = texts_of(&v, ItemKind::AssistantMessage);
+    assert_eq!(answers.len(), 2, "its own turn: {:#?}", shape(&v));
+    assert!(answers[0].contains("tick 50"), "after the whole first turn");
+    assert!(!answers[0].contains("echo: second"), "not folded in");
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
     d.close_session(sid).await.unwrap();
 }

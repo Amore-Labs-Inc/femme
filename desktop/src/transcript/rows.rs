@@ -644,8 +644,23 @@ impl Transcript {
                     .truncate()
                     .font_family(FONT_MONO)
                     .text_size(px(12.5))
-                    .text_color(muted())
-                    .child(Selectable::new(sel.slot(), line.hint.clone()).join(Join::Line)),
+                    .text_color(if line.link.is_some() {
+                        accent_text()
+                    } else {
+                        muted()
+                    })
+                    .child(
+                        Selectable::new(sel.slot(), line.hint.clone())
+                            .join(Join::Line)
+                            // the whole hint opens the page: hand pointer and click as the
+                            // transcript's other links (`cx.open_url`)
+                            .links(
+                                line.link
+                                    .iter()
+                                    .map(|url| (0..line.hint.len(), url.clone()))
+                                    .collect(),
+                            ),
+                    ),
             )
             .when_some(line.result.clone(), |d, result| {
                 d.child(
@@ -724,6 +739,7 @@ impl Transcript {
             let line = ToolLine {
                 name: "result".into(),
                 hint: String::new(),
+                link: None,
                 result: Some(
                     output
                         .as_deref()
