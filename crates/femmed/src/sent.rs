@@ -308,6 +308,17 @@ pub(crate) fn settle(
     Ok(())
 }
 
+/// Deletes the saved row `item_id` if it still waits; whether it did.
+fn take_back(tx: &mut Tx<'_>, sid: Sid, item_id: &str) -> femme_store::Result<bool> {
+    match store_items::get_item(tx, sid, item_id)? {
+        Some(i) if i.kind == ItemKind::UserMessage && i.status == ItemStatus::Pending => {
+            tx.delete_item(sid, item_id)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 impl Daemon {
     /// Stores `text` as `s`'s message waiting for the agent ([`saves`] says which are), with the
     /// client's op id; `None` for a message that is not saved.
@@ -332,11 +343,14 @@ impl Daemon {
     }
 
     /// Takes back a saved message the agent was never handed (the send failed at once, and the
-    /// client keeps the text to send again).
+    /// client keeps the text to send again), unless it is waiting no longer: an echo that paired
+    /// with it meanwhile means the agent has it after all.
     pub(crate) fn unsave(&self, sid: Sid, item_id: &str) {
         let r = (|| -> femme_store::Result<()> {
             let before = self.store.rev()?;
-            self.store.write(|tx| tx.delete_item(sid, item_id))?;
+            if !self.store.write(|tx| take_back(tx, sid, item_id))? {
+                return Ok(());
+            }
             let ch = self
                 .store
                 .changes_since(Scope::Session(sid), Some(before), usize::MAX)?;
@@ -652,4 +666,21 @@ mod tests {
         assert_eq!(get(&store, sid, &a.item_id).status, ItemStatus::Failed);
     }
 
+    /// A send that failed takes its row back, unless an echo paired with it first.
+    #[test]
+    fn taking_back_never_deletes_a_message_the_agent_read() {
+        let (store, sid) = store();
+        let a = saved_item(sid, "hi", None, None, 1_000);
+        let b = saved_item(sid, "typed too", None, None, 1_100);
+        put(&store, &a);
+        put(&store, &b);
+        assert!(pair(&store, sid, &echo(sid, "d7", "typed too", 2_000)));
+        assert!(!store.write(|tx| take_back(tx, sid, &b.item_id)).unwrap());
+        assert_eq!(get(&store, sid, &b.item_id).status, ItemStatus::Completed);
+        assert!(store.write(|tx| take_back(tx, sid, &a.item_id)).unwrap());
+        assert!(store
+            .read(|c| store_items::get_item(c, sid, &a.item_id))
+            .unwrap()
+            .is_none());
+    }
 }
