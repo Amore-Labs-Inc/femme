@@ -157,6 +157,9 @@ for u in $units; do cp "server/systemd/$u.service" ~/.config/systemd/user/; done
 # Only the timer is started here: deploy.sh runs this script, and starting its own service would wait on itself.
 # Optional (AUTODEPLOY=1): anyone who can merge to main can then run code on this box.
 [ "${AUTODEPLOY:-0}" != 1 ] || { cp server/systemd/femme-deploy.service server/systemd/femme-deploy.timer ~/.config/systemd/user/; units="$units femme-deploy.timer"; }
+# Optional (CLAUDE_UPDATES=1): at 03:00, upgrade Claude Code and open a PR per useful new feature
+# (server/claude-update.sh, docs/claude-updates.md).
+[ "${CLAUDE_UPDATES:-0}" != 1 ] || { cp server/systemd/femme-claude-update.service server/systemd/femme-claude-update.timer ~/.config/systemd/user/; units="$units femme-claude-update.timer"; }
 systemctl --user daemon-reload
 # femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
 [ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
@@ -169,6 +172,6 @@ if [ "$femmed" != 2 ]; then
     herdr plugin link "$PWD/plugin" >/dev/null || echo "WARN: could not link the femme plugin from $PWD/plugin" >&2
   fi
 fi
-systemctl --user restart $(printf '%s\n' $units | grep -vE '^(herdr-server|herdr-instinct|femme-deploy.timer)$')
+systemctl --user restart $(printf '%s\n' $units | grep -vE '^(herdr-server|herdr-instinct|femme-deploy.timer|femme-claude-update.timer)$')
 [ "$femmed" = 2 ] || herdr server reload-config >/dev/null 2>&1 || true
 systemctl --user is-active $units

@@ -1,0 +1,13 @@
+[Unit]
+Description=FEMME: upgrade Claude Code; on a new version, scout its features and open one PR per useful one
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/femme/server/claude-update.sh
+# Hours of agent work: below the sessions the user is in.
+Nice=10
+CPUWeight=50
+IOWeight=50
+TimeoutStartSec=infinity
