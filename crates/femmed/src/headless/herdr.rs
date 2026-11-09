@@ -20,7 +20,7 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use femme_agents::items::{body, UserMessage};
-use femme_agents::{driver_for, Driver, Out};
+use femme_agents::{Driver, Out};
 use femme_proto::state::Item;
 use femme_proto::state::{
     Agent, Attention, ItemKind, ItemStatus, Mode, Pane, PaneKind, Session, SessionStatus,
@@ -360,7 +360,7 @@ impl Tail {
             read: committed,
             committed,
             skip: false,
-            driver: driver_for(Agent::Claude),
+            driver: Box::new(femme_agents::claude::ClaudeDriver::mirror()),
             fold: FoldState::default(),
             model: None,
             permission: None,
@@ -1024,6 +1024,11 @@ fn disk_value(mut v: Value) -> Option<Value> {
     match v["type"].as_str()? {
         "assistant" => {}
         "user" => {
+            // the file's record of a tool's outcome (an AskUserQuestion's answers), as the
+            // stream names it
+            if let Some(r) = v.get("toolUseResult").cloned() {
+                v["tool_use_result"] = r;
+            }
             let content = &v["message"]["content"];
             let result = content
                 .as_array()
