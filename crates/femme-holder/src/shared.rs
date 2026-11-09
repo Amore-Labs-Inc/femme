@@ -92,14 +92,25 @@ impl Shared {
     /// is truly full. Replies are not events and are never dropped.
     // ponytail: a peer that never reads keeps its connection (256 queued messages) until it hangs up; add a stall timeout if one ever does
     pub fn emit(&self, ev: HolderEvent) {
-        let essential = matches!(ev, HolderEvent::ChildExited { .. } | HolderEvent::AgentStderr(_));
-        let Ok(bytes) = wire::encode(&HolderResp::Event(ev)) else { return };
+        let essential = matches!(
+            ev,
+            HolderEvent::ChildExited { .. } | HolderEvent::AgentStderr(_)
+        );
+        let Ok(bytes) = wire::encode(&HolderResp::Event(ev)) else {
+            return;
+        };
         for c in lock(&self.controls).iter() {
             if !offer(&c.out, essential, bytes.clone()) {
                 if essential {
-                    tracing::warn!(control = c.id, "control connection is not reading: an exit event was dropped");
+                    tracing::warn!(
+                        control = c.id,
+                        "control connection is not reading: an exit event was dropped"
+                    );
                 } else {
-                    tracing::debug!(control = c.id, "control connection is behind: an event was dropped");
+                    tracing::debug!(
+                        control = c.id,
+                        "control connection is behind: an event was dropped"
+                    );
                 }
             }
         }
@@ -123,10 +134,14 @@ impl Shared {
         if upto < lo + STEP {
             return;
         }
-        let r = std::fs::File::options().write(true).open(&self.spool_path).and_then(|f| {
-            use rustix::fs::FallocateFlags as F;
-            rustix::fs::fallocate(&f, F::PUNCH_HOLE | F::KEEP_SIZE, 0, upto).map_err(std::io::Error::from)
-        });
+        let r = std::fs::File::options()
+            .write(true)
+            .open(&self.spool_path)
+            .and_then(|f| {
+                use rustix::fs::FallocateFlags as F;
+                rustix::fs::fallocate(&f, F::PUNCH_HOLE | F::KEEP_SIZE, 0, upto)
+                    .map_err(std::io::Error::from)
+            });
         match r {
             Ok(()) => self.spool_lo.store(upto, Relaxed),
             Err(e) => tracing::warn!(%e, upto, "spool not freed"),
@@ -139,7 +154,10 @@ impl Shared {
             sid: self.sid,
             epoch: self.epoch,
             started: self.started_ms,
-            panes: lock(&self.panes).values().map(|p| lock(&p.info).clone()).collect(),
+            panes: lock(&self.panes)
+                .values()
+                .map(|p| lock(&p.info).clone())
+                .collect(),
             agent: self.agent_info(),
         }
     }
@@ -167,7 +185,9 @@ impl Shared {
 
     /// The agent has been reaped but its task has not announced the exit yet.
     fn agent_settling(&self) -> bool {
-        lock(&self.agent).as_ref().is_some_and(|a| !a.finished.load(Relaxed))
+        lock(&self.agent)
+            .as_ref()
+            .is_some_and(|a| !a.finished.load(Relaxed))
     }
 
     /// `Signal { target, sig }`: signal the child itself (not its process group).
@@ -199,7 +219,9 @@ impl Shared {
         }
         // ponytail: polls every 20 ms for at most 2 s, at shutdown only; wait on the pane and agent tasks instead if that ever matters
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while (self.any_child_alive() || self.agent_settling()) && tokio::time::Instant::now() < deadline {
+        while (self.any_child_alive() || self.agent_settling())
+            && tokio::time::Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         for pid in self.live_pids() {
@@ -222,11 +244,21 @@ mod tests {
         while offer(&tx, false, vec![0]) {
             chatty += 1;
         }
-        assert_eq!(chatty, 256 - EVENT_RESERVE, "chatty events leave the reserve free");
+        assert_eq!(
+            chatty,
+            256 - EVENT_RESERVE,
+            "chatty events leave the reserve free"
+        );
         for _ in 0..EVENT_RESERVE {
-            assert!(offer(&tx, true, vec![1]), "an exit event may use the reserve");
+            assert!(
+                offer(&tx, true, vec![1]),
+                "an exit event may use the reserve"
+            );
         }
-        assert!(!offer(&tx, true, vec![1]), "a full queue drops the event instead of waiting");
+        assert!(
+            !offer(&tx, true, vec![1]),
+            "a full queue drops the event instead of waiting"
+        );
         assert!(!tx.is_closed());
         // The peer catches up: the queue takes events again, in order, and is still open.
         assert_eq!(rx.try_recv().unwrap(), vec![0]);

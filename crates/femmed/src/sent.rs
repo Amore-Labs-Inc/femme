@@ -553,6 +553,7 @@ mod tests {
             permission: None,
             context: None,
             effort: None,
+            goal: None,
         };
         let sid = store.write(|tx| Ok(tx.insert_session(&s)?.id)).unwrap();
         (store, sid)

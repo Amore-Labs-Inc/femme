@@ -275,6 +275,7 @@ mod tests {
                         permission: None,
                         context: None,
                         effort: None,
+                        goal: None,
                     })?
                     .id)
             })

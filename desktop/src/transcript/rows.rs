@@ -651,13 +651,12 @@ impl Transcript {
     /// A status line the agent or the daemon put among the messages.
     fn note_row(&self, seq: u64, sel: &Sel) -> AnyElement {
         let (text, _) = self.text_of(seq);
-        let line = text.lines().next().unwrap_or("").to_owned();
         column(
             div()
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .text_color(muted())
-                .child(Selectable::new(sel.slot(), format!("· {line}"))),
+                .child(Selectable::new(sel.slot(), note_text(&text))),
         )
     }
 
@@ -1175,9 +1174,30 @@ fn action(id: String, label: &'static str, enabled: bool) -> gpui::Stateful<Div>
     b.child(label)
 }
 
+/// A note as its row shows it: whole (a goal verdict's reason runs over lines), behind a `·`
+/// unless it brings its own mark (`◎ goal not met yet · …`).
+fn note_text(text: &str) -> String {
+    let text = text.trim_end();
+    if text.starts_with('◎') {
+        text.to_owned()
+    } else {
+        format!("· {text}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_note_keeps_all_its_lines() {
+        assert_eq!(note_text("one\ntwo\nthree\n").lines().count(), 3);
+        assert_eq!(note_text("one\ntwo\nthree"), "· one\ntwo\nthree");
+        assert_eq!(
+            note_text("◎ goal not met yet · r"),
+            "◎ goal not met yet · r"
+        );
+    }
 
     #[test]
     fn a_short_text_is_shown_whole() {

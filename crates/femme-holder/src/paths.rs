@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use femme_proto::Sid;
 
 fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `$XDG_RUNTIME_DIR/femme`, or `None` when `XDG_RUNTIME_DIR` is unset.
@@ -56,6 +58,9 @@ mod tests {
             spool_path(Path::new("/st"), sid),
             Path::new("/st/spool/01J00000000000000000000000.jsonl")
         );
-        assert_eq!(snap_path(Path::new("/st"), sid), Path::new("/st/snap/01J00000000000000000000000.snap"));
+        assert_eq!(
+            snap_path(Path::new("/st"), sid),
+            Path::new("/st/snap/01J00000000000000000000000.snap")
+        );
     }
 }

@@ -11,7 +11,11 @@ pub struct Ring {
 
 impl Ring {
     pub fn new(cap: usize) -> Self {
-        Ring { buf: VecDeque::new(), cap, wrapped: false }
+        Ring {
+            buf: VecDeque::new(),
+            cap,
+            wrapped: false,
+        }
     }
 
     pub fn push(&mut self, data: &[u8]) {
@@ -36,7 +40,11 @@ impl Ring {
         let mut v = Vec::with_capacity(self.buf.len());
         v.extend_from_slice(a);
         v.extend_from_slice(b);
-        let start = if self.wrapped { v.iter().position(|b| b & 0xC0 != 0x80).unwrap_or(v.len()) } else { 0 };
+        let start = if self.wrapped {
+            v.iter().position(|b| b & 0xC0 != 0x80).unwrap_or(v.len())
+        } else {
+            0
+        };
         String::from_utf8_lossy(&v[start..]).into_owned()
     }
 }

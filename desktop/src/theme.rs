@@ -166,6 +166,10 @@ tokens! {
     bad,
     /// Lane: done / idle (`--done`).
     done,
+    /// The goal strip's mark (`◎`) while a `/goal` runs: amber, readable as text on paper.
+    goal,
+    /// The goal strip's mark and verdict once the goal is achieved: green, readable on paper.
+    goal_met,
     /// Work surface: panels, the centre, inputs, cards (same as `paper`).
     surface,
     /// Secondary surface: tab strips, the composer's attachment row, muted rows, dialogs (same as
@@ -288,6 +292,8 @@ const fn light() -> Palette {
         pr: rgb8(0x09AEA1),
         bad,
         done: rgb8(0x858585),
+        goal: rgb8(0x8A5200),
+        goal_met: rgb8(0x1B6B33),
         surface: paper,
         surface_muted: panel,
         border: ink,
@@ -344,6 +350,8 @@ const fn dark() -> Palette {
         pr: rgb8(0x2CD3C4),
         bad,
         done: rgb8(0x8C8C8C),
+        goal: rgb8(0xF2B544),
+        goal_met: rgb8(0x5FD38D),
         surface: paper,
         surface_muted: panel,
         border: ink,

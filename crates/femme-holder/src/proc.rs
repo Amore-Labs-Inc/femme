@@ -43,11 +43,16 @@ pub fn child_env(
     sid: Sid,
     pane: Option<u16>,
 ) -> Vec<(String, String)> {
-    let mut env: BTreeMap<String, String> =
-        inherit_from.into_iter().filter(|(k, _)| INHERIT.contains(&k.as_str()) || k.starts_with("LC_")).collect();
+    let mut env: BTreeMap<String, String> = inherit_from
+        .into_iter()
+        .filter(|(k, _)| INHERIT.contains(&k.as_str()) || k.starts_with("LC_"))
+        .collect();
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
-    if !["LANG", "LC_ALL", "LC_CTYPE"].iter().any(|k| env.contains_key(*k)) {
+    if !["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .any(|k| env.contains_key(*k))
+    {
         env.insert("LANG".into(), "C.UTF-8".into());
     }
     for (k, v) in extra {
@@ -77,7 +82,10 @@ pub fn deliver(pid: u32, sig: i32, group: bool) -> Result<(), String> {
 
 /// `kill(2)` on a pid or its process group; `ESRCH`-style failures are the caller's to ignore.
 pub fn send(pid: u32, sig: Signal, group: bool) -> rustix::io::Result<()> {
-    let pid = i32::try_from(pid).ok().and_then(Pid::from_raw).ok_or(rustix::io::Errno::SRCH)?;
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or(rustix::io::Errno::SRCH)?;
     if group {
         // The child is a session/group leader, so its pid is the group id. Fall back to the pid
         // alone if the group is already gone.
@@ -92,11 +100,16 @@ mod tests {
     use super::*;
 
     fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn get<'a>(env: &'a [(String, String)], k: &str) -> Option<&'a str> {
-        env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str())
+        env.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
     }
 
     fn sid() -> Sid {
@@ -128,7 +141,14 @@ mod tests {
 
     #[test]
     fn caller_env_wins_except_for_femme_ids() {
-        let extra = kv(&[("TERM", "screen"), ("FOO", "bar"), ("FEMME_SID", "evil"), ("FEMME_PANE", "9"), ("BAD=KEY", "x"), ("", "y")]);
+        let extra = kv(&[
+            ("TERM", "screen"),
+            ("FOO", "bar"),
+            ("FEMME_SID", "evil"),
+            ("FEMME_PANE", "9"),
+            ("BAD=KEY", "x"),
+            ("", "y"),
+        ]);
         let env = child_env(kv(&[("PATH", "/bin")]), &extra, sid(), Some(1));
         assert_eq!(get(&env, "TERM"), Some("screen"));
         assert_eq!(get(&env, "FOO"), Some("bar"));

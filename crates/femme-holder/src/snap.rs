@@ -52,7 +52,12 @@ impl Snapshot {
     /// Write to `path` atomically: a temp file next to it (mode 0600), then `rename`.
     pub fn write_atomic(&self, path: &Path) -> io::Result<()> {
         let tmp = path.with_extension("snap.tmp");
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
         f.write_all(&self.encode())?;
         drop(f);
         std::fs::rename(&tmp, path)
@@ -78,9 +83,19 @@ mod tests {
                     no: 0,
                     title: "vim".into(),
                     screen_text: "hello\nworld\n".into(),
-                    last_200_rows: vec![RowPatch { abs: 41, wrapped: false, runs: vec![(0, "hello".into())], wide_cols: vec![] }],
+                    last_200_rows: vec![RowPatch {
+                        abs: 41,
+                        wrapped: false,
+                        runs: vec![(0, "hello".into())],
+                        wide_cols: vec![],
+                    }],
                 },
-                SnapPane { no: 3, title: String::new(), screen_text: String::new(), last_200_rows: vec![] },
+                SnapPane {
+                    no: 3,
+                    title: String::new(),
+                    screen_text: String::new(),
+                    last_200_rows: vec![],
+                },
             ],
             agent_alive: true,
         }
@@ -100,7 +115,10 @@ mod tests {
         let s = sample();
         s.write_atomic(&path).unwrap();
         assert_eq!(Snapshot::read(&path).unwrap(), s);
-        assert!(!path.with_extension("snap.tmp").exists(), "temp file must be renamed away");
+        assert!(
+            !path.with_extension("snap.tmp").exists(),
+            "temp file must be renamed away"
+        );
         let mut s2 = s.clone();
         s2.agent_alive = false;
         s2.write_atomic(&path).unwrap();

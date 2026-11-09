@@ -26,11 +26,17 @@ const MAX_SOCKET_PATH: usize = 107;
 const SNAP_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn unix_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn private_dir(dir: &Path) -> anyhow::Result<()> {
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).with_context(|| format!("create {}", dir.display()))
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("create {}", dir.display()))
 }
 
 /// Make the socket path ours: a stale socket (nobody listening) is removed; a live one means
@@ -38,7 +44,12 @@ fn private_dir(dir: &Path) -> anyhow::Result<()> {
 async fn claim_socket(path: &Path) -> anyhow::Result<()> {
     match UnixStream::connect(path).await {
         Ok(_) => bail!("another holder is already serving {}", path.display()),
-        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
             let _ = std::fs::remove_file(path);
             Ok(())
         }
@@ -60,13 +71,17 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     let spool_path = paths::spool_path(&state_dir, args.sid);
     let snap_path = paths::snap_path(&state_dir, args.sid);
     if sock_path.as_os_str().len() > MAX_SOCKET_PATH {
-        bail!("socket path {} is longer than {MAX_SOCKET_PATH} bytes; use a shorter --runtime-dir", sock_path.display());
+        bail!(
+            "socket path {} is longer than {MAX_SOCKET_PATH} bytes; use a shorter --runtime-dir",
+            sock_path.display()
+        );
     }
     for p in [&sock_path, &spool_path, &snap_path] {
         private_dir(p.parent().context("path without a parent")?)?;
     }
     claim_socket(&sock_path).await?;
-    let listener = UnixListener::bind(&sock_path).with_context(|| format!("bind {}", sock_path.display()))?;
+    let listener =
+        UnixListener::bind(&sock_path).with_context(|| format!("bind {}", sock_path.display()))?;
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
 
     let started_ms = unix_ms();
@@ -96,7 +111,11 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     });
 
     tokio::task::spawn_local(accept_loop(sh.clone(), listener));
-    tokio::task::spawn_local(housekeeping(sh.clone(), Duration::from_millis(args.tick_ms), Duration::from_secs(args.idle_exit_secs)));
+    tokio::task::spawn_local(housekeeping(
+        sh.clone(),
+        Duration::from_millis(args.tick_ms),
+        Duration::from_secs(args.idle_exit_secs),
+    ));
     let sd = !args.no_sd_notify;
     if sd {
         if let Err(e) = sd_notify::notify(&[NotifyState::Ready]) {
@@ -165,7 +184,10 @@ async fn housekeeping(sh: Arc<Shared>, tick: Duration, idle: Duration) {
         if sh.conns.load(Relaxed) == 0 && !sh.any_child_alive() {
             let since = *idle_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= idle {
-                tracing::info!("nothing alive and nobody connected for {}s: exiting", idle.as_secs());
+                tracing::info!(
+                    "nothing alive and nobody connected for {}s: exiting",
+                    idle.as_secs()
+                );
                 sh.shutdown.notify_one();
             }
         } else {
@@ -190,7 +212,12 @@ async fn snapshot(sh: &Arc<Shared>) {
         }
     }
     panes.sort_by_key(|p| p.no);
-    let snap = Snapshot { sid: sh.sid, written: unix_ms(), panes, agent_alive: sh.agent_info().is_some_and(|a| a.alive) };
+    let snap = Snapshot {
+        sid: sh.sid,
+        written: unix_ms(),
+        panes,
+        agent_alive: sh.agent_info().is_some_and(|a| a.alive),
+    };
     let path = sh.snap_path.clone();
     match tokio::task::spawn_blocking(move || snap.write_atomic(&path)).await {
         Ok(Ok(())) => {}

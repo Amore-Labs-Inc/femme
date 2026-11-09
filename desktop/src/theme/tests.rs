@@ -69,6 +69,14 @@ fn text_is_readable_on_its_fills() {
             ("label on teal", label(p.pr), p.pr),
             ("label on queued grey", label(p.queue), p.queue),
             ("label on done grey", label(p.done), p.done),
+            ("goal mark on paper (the goal strip)", p.goal, p.paper),
+            (
+                "goal mark on panel grey (the strip hovered)",
+                p.goal,
+                p.panel,
+            ),
+            ("achieved goal on paper", p.goal_met, p.paper),
+            ("achieved goal on panel grey", p.goal_met, p.panel),
         ];
         for (name, fg, bg) in pairs {
             let c = contrast(fg, bg);

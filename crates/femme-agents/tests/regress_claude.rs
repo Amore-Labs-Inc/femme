@@ -865,7 +865,10 @@ mod new_api {
     fn dropped(ev: &[AgentEvent]) -> Vec<(String, PromptHow, DropReason)> {
         ev.iter()
             .filter_map(|e| {
-                if let AgentEvent::PromptDropped { text, how, reason, .. } = e {
+                if let AgentEvent::PromptDropped {
+                    text, how, reason, ..
+                } = e
+                {
                     Some((text.clone(), *how, reason.clone()))
                 } else {
                     None
@@ -1299,8 +1302,10 @@ fn a_prompt_with_an_id_is_written_held_and_dropped_under_it() {
     assert_eq!(s.d.held_prompts()[0].id.as_deref(), Some(b));
     let ev = s.d.on_exit(Some(1));
     assert!(
-        ev.iter().any(|e| matches!(e, AgentEvent::PromptDropped { text, id: Some(id), .. }
-            if text == "second" && id == b)),
+        ev.iter().any(
+            |e| matches!(e, AgentEvent::PromptDropped { text, id: Some(id), .. }
+            if text == "second" && id == b)
+        ),
         "{ev:?}"
     );
 }

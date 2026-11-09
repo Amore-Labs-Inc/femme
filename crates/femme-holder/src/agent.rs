@@ -45,11 +45,18 @@ pub struct AgentHandle {
 
 /// `SpawnAgent`. At most one agent is alive at a time; a new one may follow an exited one and
 /// keeps appending to the same spool.
-pub async fn spawn(sh: &Arc<Shared>, cmd: Vec<String>, cwd: String, env: Vec<(String, String)>) -> Result<(), String> {
+pub async fn spawn(
+    sh: &Arc<Shared>,
+    cmd: Vec<String>,
+    cwd: String,
+    env: Vec<(String, String)>,
+) -> Result<(), String> {
     if sh.stopping.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("holder is shutting down".into());
     }
-    let Some((prog, args)) = cmd.split_first() else { return Err("empty command".into()) };
+    let Some((prog, args)) = cmd.split_first() else {
+        return Err("empty command".into());
+    };
     if !cwd.is_empty() && !Path::new(&cwd).is_dir() {
         return Err(format!("cwd {cwd} is not a directory"));
     }
@@ -91,10 +98,24 @@ pub async fn spawn(sh: &Arc<Shared>, cmd: Vec<String>, cwd: String, env: Vec<(St
         return Err("agent pipes were not created".into());
     };
 
-    let info = Arc::new(Mutex::new(HolderAgent { pid, alive: true, exit: None, spool_lo: 0, spool_hi: 0 }));
+    let info = Arc::new(Mutex::new(HolderAgent {
+        pid,
+        alive: true,
+        exit: None,
+        spool_lo: 0,
+        spool_hi: 0,
+    }));
     let (tx, mut rx) = mpsc::channel::<StdinCmd>(STDIN_QUEUE);
-    let (queued, finished) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
-    *lock(&sh.agent) = Some(AgentHandle { info: info.clone(), tx, queued: queued.clone(), finished: finished.clone() });
+    let (queued, finished) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    *lock(&sh.agent) = Some(AgentHandle {
+        info: info.clone(),
+        tx,
+        queued: queued.clone(),
+        finished: finished.clone(),
+    });
     sh.mark_dirty();
     tracing::info!(pid, cmd = %prog, "agent started");
 
@@ -102,7 +123,11 @@ pub async fn spawn(sh: &Arc<Shared>, cmd: Vec<String>, cwd: String, env: Vec<(St
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 StdinCmd::Write(b) => {
-                    let r = async { stdin.write_all(&b).await?; stdin.flush().await }.await;
+                    let r = async {
+                        stdin.write_all(&b).await?;
+                        stdin.flush().await
+                    }
+                    .await;
                     queued.fetch_sub(b.len(), Relaxed);
                     if let Err(e) = r {
                         tracing::debug!("agent stdin closed: {e}");
@@ -139,7 +164,10 @@ pub async fn spawn(sh: &Arc<Shared>, cmd: Vec<String>, cwd: String, env: Vec<(St
         // The tail goes first, so whoever handles `ChildExited` already has it.
         let tail = lock(&ring).tail_string();
         sh.emit(HolderEvent::AgentStderr(tail));
-        sh.emit(HolderEvent::ChildExited { target: Target::Agent, status: code });
+        sh.emit(HolderEvent::ChildExited {
+            target: Target::Agent,
+            status: code,
+        });
         finished.store(true, Relaxed);
     });
     Ok(())
@@ -160,10 +188,17 @@ async fn pump_stdout(sh: Arc<Shared>, mut out: ChildStdout, mut file: tokio::fs:
             }
         };
         loop {
-            match async { file.write_all(&buf[..n]).await?; file.flush().await }.await {
+            match async {
+                file.write_all(&buf[..n]).await?;
+                file.flush().await
+            }
+            .await
+            {
                 Ok(()) => break,
                 Err(e) => {
-                    tracing::error!("spool write failed ({e}); the agent is stalled until it succeeds");
+                    tracing::error!(
+                        "spool write failed ({e}); the agent is stalled until it succeeds"
+                    );
                     // A write that failed half way (disk full) left bytes past the recorded end, and
                     // the retry writes them again: cut them off, or the spool would hold them twice.
                     loop {
@@ -209,7 +244,9 @@ pub fn stdin(sh: &Shared, cmd: StdinCmd) -> Result<(), String> {
     };
     let queued = agent.queued.load(Relaxed);
     if n != 0 && queued != 0 && queued + n > STDIN_BUDGET {
-        return Err(format!("agent stdin backlog is full ({queued} bytes waiting)"));
+        return Err(format!(
+            "agent stdin backlog is full ({queued} bytes waiting)"
+        ));
     }
     agent.queued.fetch_add(n, Relaxed);
     agent.tx.try_send(cmd).map_err(|e| {

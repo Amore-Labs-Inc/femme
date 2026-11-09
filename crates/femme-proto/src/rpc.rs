@@ -242,17 +242,26 @@ pub enum Req {
     /// Starts a Claude chat (label `fix #<number>`) in a worktree of the pull request's branch that
     /// merges main in, resolves the conflicts, tests and pushes. Answered with `Resp::Session`; a
     /// fix already running for it is answered with that one.
-    PrFix { number: u64 },
+    PrFix {
+        number: u64,
+    },
     /// Reads (`on: None`) or sets whether a merge from FEMME starts a fix for every
     /// `claude-update/*` pull request it leaves conflicting. Answered with `Resp::PrAutoFix`.
-    PrAutoFix { on: Option<bool> },
+    PrAutoFix {
+        on: Option<bool>,
+    },
     /// Gives the agent again a message it did not get (a `UserMessage` in `Failed`, see
     /// [`ItemKind::UserMessage`](crate::state::ItemKind::UserMessage)). The message stays where
     /// it is in the transcript and waits again.
-    Resend { sid: Sid, item_id: String },
+    Resend {
+        sid: Sid,
+        item_id: String,
+    },
     /// The session whose agent is the Claude conversation `agent_sid` (`femmed show` finds its own
     /// chat by the process it runs under). Answered with `Resp::Session`, `NotFound` for none.
-    SessionOf { agent_sid: String },
+    SessionOf {
+        agent_sid: String,
+    },
 }
 
 /// One open pull request, as `Resp::Prs` lists it.

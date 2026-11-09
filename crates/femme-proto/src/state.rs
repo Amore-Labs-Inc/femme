@@ -74,6 +74,31 @@ pub struct Session {
     pub context: Option<Context>,
     /// How hard Claude thinks (`low` ... `max`), when the daemon set it or `/effort` changed it.
     pub effort: Option<String>,
+    /// Claude's `/goal`, while one is set or was just judged: the condition and the checker's
+    /// last verdict. `None` when the session never had one, or the next prompt after `Met`.
+    pub goal: Option<Goal>,
+}
+
+/// A `/goal` of a Claude session (2.1.319+): a Stop hook keeps Claude working until a checker
+/// judges `condition` met. The transcript on disk says each verdict as a `goal_status` line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Goal {
+    pub condition: String,
+    pub state: GoalState,
+    /// What the checker said on its last verdict (`NotMet`, `Met`).
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GoalState {
+    /// Set, no verdict yet (or Claude is working on after a `NotMet`).
+    Active,
+    /// The checker said no; Claude goes on.
+    NotMet,
+    /// The checker said yes: `Goal achieved`.
+    Met,
+    /// `/goal clear`.
+    Cleared,
 }
 
 /// How full an agent's context window is.

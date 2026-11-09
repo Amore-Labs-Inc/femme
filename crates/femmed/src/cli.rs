@@ -451,7 +451,12 @@ async fn show(file: &Path, caption: Option<String>) -> anyhow::Result<String> {
     let own = own_conversation(&home_dir()?);
     let sid = match &own {
         Some(conv) => match client
-            .request_timeout(Req::SessionOf { agent_sid: conv.clone() }, ANSWER_WAIT)
+            .request_timeout(
+                Req::SessionOf {
+                    agent_sid: conv.clone(),
+                },
+                ANSWER_WAIT,
+            )
             .await
         {
             Ok(Resp::Session(sid)) => Some(sid),
