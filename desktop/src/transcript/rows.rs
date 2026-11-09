@@ -171,6 +171,20 @@ fn sent_row(sent: &Sent, sel: &Sel) -> AnyElement {
     )
 }
 
+/// The message an `Event` says the agent read (its body's `read`), when it is such a mark.
+fn read_of(item: &femme_proto::state::Item) -> Option<String> {
+    let b: serde_json::Value = serde_json::from_str(item.body.as_deref()?).ok()?;
+    b.get("read")?.as_str().map(str::to_owned)
+}
+
+/// `ms` since the epoch as the local `HH:MM`.
+fn hhmm(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let local = secs + crate::accounts::clock::local_offset(secs);
+    let day = local.rem_euclid(86_400);
+    format!("{:02}:{:02}", day / 3600, day % 3600 / 60)
+}
+
 impl Transcript {
     /// The element of row `ix` of the list.
     pub(super) fn row(
@@ -266,6 +280,7 @@ impl Transcript {
             return div().into_any_element();
         };
         let kind = e.item.kind;
+        let read = read_of(&e.item);
         let handoff = is_handoff(&e.item.preview);
         let before_handoff = self
             .items
@@ -289,7 +304,10 @@ impl Transcript {
             ItemKind::Thinking => self.thinking_row(seq, sel, cx),
             ItemKind::Question => self.question_row(seq, sel, window, cx),
             ItemKind::ToolResult => self.tool_row(seq, sel, cx),
-            ItemKind::Event => self.note_row(seq, sel),
+            ItemKind::Event => match read {
+                Some(id) => self.read_row(seq, &id, sel, cx),
+                None => self.note_row(seq, sel),
+            },
             ItemKind::TurnEnd => self.end_row(seq, sel),
             ItemKind::ToolCall | ItemKind::TurnStart => div().into_any_element(),
         }
@@ -325,7 +343,123 @@ impl Transcript {
                     }),
                 ))
             });
-        column(div().flex().justify_end().child(bubble))
+        let state = self.delivery_line(seq, cx);
+        column(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(4.))
+                .child(bubble)
+                .when_some(state, |d, line| d.child(line)),
+        )
+    }
+
+    /// Under a message stored before the agent had it: `queued` while it waits, `read 13:53`
+    /// once the agent read it, and when the agent did not get it, a line that sends it again.
+    fn delivery_line(&mut self, seq: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let e = self.items.get(seq)?;
+        let b: serde_json::Value = serde_json::from_str(e.item.body.as_deref()?).ok()?;
+        b.get("op").or_else(|| b.get("echo"))?;
+        match e.item.status {
+            ItemStatus::Pending => Some(meta("queued").into_any_element()),
+            ItemStatus::Completed => {
+                let at = b.get("read_at")?.as_i64()?;
+                Some(meta(format!("read {}", hhmm(at))).into_any_element())
+            }
+            ItemStatus::Failed => {
+                let (sid, id) = (e.item.sid, e.item.item_id.clone());
+                let who = self.agent_name(cx);
+                Some(
+                    div()
+                        .id(("resend", seq))
+                        .font_family(FONT_MONO)
+                        .text_size(META_SIZE)
+                        .text_color(bad())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hover()))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.resend(sid, id.clone(), cx)),
+                        )
+                        .child(format!("{who} didn't get this · resend"))
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// The agent of the session shown, by name.
+    fn agent_name(&self, cx: &Context<Self>) -> &'static str {
+        let agent = self.items.sid().and_then(|sid| {
+            let net = self.net.as_ref()?;
+            net.read(cx).model.sessions.get(&sid).map(|s| s.agent)
+        });
+        match agent {
+            Some(femme_proto::state::Agent::Codex) => "Codex",
+            Some(femme_proto::state::Agent::Pi) => "pi",
+            Some(femme_proto::state::Agent::Shell) => "The shell",
+            _ => "Claude",
+        }
+    }
+
+    /// Gives the agent again a message it did not get; it waits again where it is.
+    fn resend(&mut self, sid: femme_proto::Sid, item_id: String, cx: &mut Context<Self>) {
+        self.request(
+            femme_proto::rpc::Req::Resend { sid, item_id },
+            cx,
+            |this, res, cx| {
+                if let Err(e) = res {
+                    this.note = Some(format!("the message was not sent again: {e}"));
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Where the agent read a message stored before it had it: one thin line that scrolls to the
+    /// message. Nothing when the message is the row right above (it was read at once).
+    fn read_row(&mut self, seq: u64, read: &str, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
+        let Some(orig) = self.items.by_id(read).map(|e| e.item.seq) else {
+            return self.note_row(seq, sel);
+        };
+        let rows = &self.layout.rows;
+        let here = rows.iter().position(|r| r.key == Key::Item(seq));
+        let there = rows.iter().position(|r| r.key == Key::Item(orig));
+        if let (Some(here), Some(there)) = (here, there) {
+            if here == there + 1 {
+                return div().into_any_element();
+            }
+        }
+        let (text, _) = self.text_of(seq);
+        let line = text.lines().next().unwrap_or("").to_owned();
+        column(
+            div()
+                .id(("read", seq))
+                .font_family(FONT_MONO)
+                .text_size(px(12.))
+                .text_color(muted())
+                .cursor_pointer()
+                .hover(|s| s.bg(panel()))
+                .on_click(cx.listener(move |this, click, _, cx| {
+                    if !select::plain_click(click) {
+                        return;
+                    }
+                    if let Some(ix) = this
+                        .layout
+                        .rows
+                        .iter()
+                        .position(|r| r.key == Key::Item(orig))
+                    {
+                        this.list.scroll_to(gpui::ListOffset {
+                            item_ix: ix,
+                            offset_in_item: px(0.),
+                        });
+                        cx.notify();
+                    }
+                }))
+                .child(Selectable::new(sel.slot(), format!("↳ {line}"))),
+        )
     }
 
     /// Another Claude session's message (SendMessage): a card on the left, headed by the sender,
