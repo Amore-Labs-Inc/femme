@@ -15,6 +15,7 @@
 //! headless agent and the agent's own TUI in pane 1, never with two agent processes at once.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Weak;
 use std::time::Duration;
 
@@ -28,7 +29,8 @@ use femme_agents::{
 use femme_proto::holder::{HolderEvent, Target};
 use femme_proto::rpc::{Answer, PromptHow};
 use femme_proto::state::{
-    Agent, Attention, Context, Item, ItemKind, ItemStatus, Mode, Question, Session, SessionStatus,
+    Agent, Attention, Context, Goal, GoalState, Item, ItemKind, ItemStatus, Mode, Question,
+    Session, SessionStatus,
 };
 use femme_proto::{Id, Sid};
 use femme_store::{items as store_items, sessions, Store, Tx};
@@ -276,7 +278,6 @@ pub(crate) async fn reattach(d: &Daemon, s: &Session, holder: Holder) -> Result<
             extra_env: d.sessions.child_env(&d.cfg, &path),
             hooks_path: None,
             effort: None,
-            goal: None,
         };
         let attach = Attach {
             resume_offset: from,
@@ -350,6 +351,15 @@ struct Actor {
     /// The agent was stopped to start again on another provider's model.
     switching: bool,
     stop: bool,
+    /// Claude's `/goal` is on (set, or judged not met yet): the transcript on disk is followed for
+    /// the checker's verdicts, which the stream never carries (see [`GoalTail`]).
+    goal: Option<GoalTail>,
+}
+
+/// The transcript on disk of a session with a `/goal`, read from where the goal was set.
+struct GoalTail {
+    path: Option<PathBuf>,
+    read: u64,
 }
 
 /// Why a batch of events is being applied.
@@ -401,6 +411,7 @@ impl Actor {
             failed: false,
             switching: false,
             stop: false,
+            goal: None,
         }
     }
 
@@ -550,6 +561,10 @@ impl Actor {
             .map_err(driver_err)?;
         self.flush().await;
         let effort = effort_switch(text);
+        let goal = goal_switch(text);
+        if goal.as_ref().is_some_and(|g| g.state == GoalState::Active) {
+            self.open_goal_tail(d);
+        }
         // The agent's own turn starts a moment later: say `working` first, so a reader never takes
         // the last task as finished in between.
         self.update(d, None, |s| {
@@ -558,9 +573,71 @@ impl Actor {
             if effort.is_some() {
                 s.effort = effort;
             }
+            match goal {
+                Some(g) => s.goal = Some(g),
+                // an achieved goal stays on show until the next prompt
+                None if s.goal.as_ref().is_some_and(|g| g.state == GoalState::Met) => {
+                    s.goal = None;
+                }
+                None => {}
+            }
         });
         self.commit(d, Vec::new()).await;
         Ok(())
+    }
+
+    /// Starts following the transcript on disk for the goal's verdicts, from its end now (the
+    /// sentinel of the goal being set comes after). No file yet (a session's first prompt): it is
+    /// looked up again on the next chunk.
+    fn open_goal_tail(&mut self, d: &Daemon) {
+        let path = d
+            .session(self.sid)
+            .ok()
+            .and_then(|s| s.agent_sid)
+            .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+        let read = path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map_or(0, |m| m.len());
+        self.goal = Some(GoalTail { path, read });
+    }
+
+    /// The goal verdicts the transcript on disk gained since the last look: the newest goes to the
+    /// row; `Met` or `Cleared` ends the following.
+    async fn tail_goal(&mut self, d: &Daemon) {
+        let Some(t) = &mut self.goal else {
+            return;
+        };
+        if t.path.is_none() {
+            t.path = d
+                .session(self.sid)
+                .ok()
+                .and_then(|s| s.agent_sid)
+                .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+        }
+        let Some(path) = t.path.clone() else {
+            return;
+        };
+        let at = t.read;
+        let data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
+            Ok(Ok(Some(data))) => data,
+            Ok(Ok(None)) => {
+                t.read = 0; // rewritten: start over
+                return;
+            }
+            _ => return,
+        };
+        let Some(end) = data.iter().rposition(|b| *b == b'\n') else {
+            return;
+        };
+        t.read += end as u64 + 1;
+        let last = data[..end].split(|b| *b == b'\n').rev().find_map(goal_line);
+        if let Some(g) = last {
+            if matches!(g.state, GoalState::Met | GoalState::Cleared) {
+                self.goal = None;
+            }
+            self.update(d, None, |s| s.goal = Some(g));
+        }
     }
 
     async fn interrupt(&mut self) -> Result<(), CoreError> {
@@ -749,6 +826,7 @@ impl Actor {
     async fn on_chunk(&mut self, d: &Daemon, offset: u64, data: Bytes) {
         self.ingest(d, offset, data).await;
         self.replay_check(d).await;
+        self.tail_goal(d).await;
     }
 
     /// Feeds the driver the complete lines of a chunk.
@@ -898,6 +976,7 @@ impl Actor {
             ctx_used: f.ctx_used,
             ctx_window: f.ctx_window,
             compacted: if live_line { f.compacted } else { 0 },
+            goal: f.goal,
         };
         let first = row_first(row.state);
         if first {
@@ -917,6 +996,7 @@ impl Actor {
             && fx.ctx_used.is_none()
             && fx.ctx_window.is_none()
             && fx.compacted == 0
+            && fx.goal.is_none()
             && !fx.ready
         {
             return;
@@ -926,7 +1006,14 @@ impl Actor {
                 s.permission = Some(p.clone());
             }
             if let Some(a) = &fx.agent_sid {
+                // a new conversation (`/clear`) has no goal
+                if s.agent_sid.as_ref().is_some_and(|old| old != a) {
+                    s.goal = None;
+                }
                 s.agent_sid = Some(a.clone());
+            }
+            if let Some(g) = &fx.goal {
+                s.goal = Some(g.clone());
             }
             if let Some(m) = &fx.model {
                 s.model = Some(m.clone());
@@ -1083,7 +1170,6 @@ impl Actor {
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
             effort: None,
-            goal: None,
         };
         let mut sp = self
             .driver
@@ -1390,6 +1476,34 @@ fn effort_switch(text: &str) -> Option<String> {
     (!level.is_empty() && !level.contains(char::is_whitespace)).then(|| level.to_lowercase())
 }
 
+/// What a `/goal` prompt does to the session's goal: `/goal <condition>` sets one (`Active`,
+/// the checker's sentinel confirms it), `/goal clear` ends it; `/goal` alone only asks.
+fn goal_switch(text: &str) -> Option<Goal> {
+    let rest = text.trim().strip_prefix("/goal")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let condition = rest.trim();
+    let state = match condition {
+        "" => return None,
+        "clear" => GoalState::Cleared,
+        _ => GoalState::Active,
+    };
+    Some(Goal {
+        condition: condition.to_owned(),
+        state,
+        reason: None,
+    })
+}
+
+/// A transcript line's goal verdict (`{"type":"attachment","attachment":{"type":"goal_status"..}}`).
+fn goal_line(line: &[u8]) -> Option<Goal> {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    (v["type"] == "attachment")
+        .then(|| femme_agents::claude::goal_status(&v["attachment"]))
+        .flatten()
+}
+
 /// The mode after `now` in Claude's Shift+Tab order.
 fn next_permission(now: Option<&str>) -> &'static str {
     match now {
@@ -1513,6 +1627,10 @@ struct Folded {
     dropped: Vec<HeldPrompt>,
     turn_started: bool,
     turn_ended: bool,
+    /// Claude's `/goal` as the batch last said it.
+    goal: Option<Goal>,
+    /// A prompt of the main thread landed (a mirrored pane's typed line).
+    prompted: bool,
 }
 
 /// The session row's share of a batch.
@@ -1531,6 +1649,7 @@ struct RowFx {
     /// that was running, and the row counted them the first time; the lines the agent wrote while
     /// the daemon was away are read as that same replay, so they are not counted either.
     compacted: u32,
+    goal: Option<Goal>,
 }
 
 fn new_item(
@@ -1639,6 +1758,9 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 parent,
             } => {
                 st.streams.remove(&id);
+                if kind == ItemKind::UserMessage && parent.is_none() {
+                    f.prompted = true;
+                }
                 let mut item = new_item(sid, id, kind, status, Some(&body), now);
                 item.parent = parent;
                 f.puts.push(Put::Done(item));
@@ -1718,6 +1840,7 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.compacted += 1;
                 f.ctx_used = Some(0);
             }
+            AgentEvent::Goal(g) => f.goal = Some(g),
             AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
         }
     }
@@ -2581,6 +2704,22 @@ mod tests {
             Some("claude-haiku-5-5")
         );
         assert_eq!(model_switch("/model whatever"), None);
+        assert_eq!(
+            goal_switch("/goal the file says done").map(|g| (g.state, g.condition)),
+            Some((GoalState::Active, "the file says done".into()))
+        );
+        assert_eq!(
+            goal_switch("/goal clear").map(|g| g.state),
+            Some(GoalState::Cleared)
+        );
+        assert_eq!(goal_switch("/goal"), None);
+        assert_eq!(goal_switch("/goals x"), None);
+        let line = br#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"condition":"c","reason":"r"}}"#;
+        assert_eq!(
+            goal_line(line).map(|g| (g.state, g.reason)),
+            Some((GoalState::Met, Some("r".into())))
+        );
+        assert_eq!(goal_line(br#"{"type":"user"}"#), None);
         assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
         assert_eq!(effort_switch("/effort"), None);
         assert_eq!(effort_switch("/effort a b"), None);

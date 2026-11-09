@@ -20,7 +20,9 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use femme_agents::{driver_for, Driver, Out};
-use femme_proto::state::{Agent, Attention, Mode, Pane, PaneKind, Session, SessionStatus};
+use femme_proto::state::{
+    Agent, Attention, Goal, GoalState, Mode, Pane, PaneKind, Session, SessionStatus,
+};
 use femme_proto::{Id, PaneId, Sid};
 use femme_store::sessions;
 use serde_json::Value;
@@ -314,6 +316,10 @@ struct Tail {
     fold: FoldState,
     model: Option<String>,
     permission: Option<String>,
+    /// The `/goal` as the lines read so far last said it, for the row.
+    goal: Option<Goal>,
+    /// A prompt was typed since the last row write: an achieved goal leaves the row.
+    prompted: bool,
     /// What the lines read so far said of the context, for the row: what the last call read,
     /// the window, and the compactions since the last row write.
     ctx_used: Option<u64>,
@@ -353,6 +359,8 @@ impl Tail {
             fold: FoldState::default(),
             model: None,
             permission: None,
+            goal: None,
+            prompted: false,
             ctx_used: None,
             ctx_window: None,
             compacted: 0,
@@ -427,6 +435,10 @@ impl Tail {
             if f.permission.is_some() {
                 self.permission = f.permission;
             }
+            if f.goal.is_some() {
+                self.goal = f.goal;
+            }
+            self.prompted |= f.prompted;
             if f.ctx_used.is_some() {
                 self.ctx_used = f.ctx_used;
             }
@@ -461,6 +473,18 @@ impl Tail {
         }
         if let Some(p) = self.permission.take() {
             let _ = d.update(sid, |s| s.permission = Some(p));
+        }
+        let (goal, prompted) = (self.goal.take(), std::mem::take(&mut self.prompted));
+        if goal.is_some() || prompted {
+            let _ = d.update(sid, |s| {
+                if let Some(g) = goal {
+                    s.goal = Some(g);
+                }
+                // an achieved goal stays on show until the next prompt
+                if prompted && s.goal.as_ref().is_some_and(|g| g.state == GoalState::Met) {
+                    s.goal = None;
+                }
+            });
         }
         let (used, window, compacted) = (
             self.ctx_used.take(),
@@ -562,7 +586,7 @@ fn read_subs(dir: &Path, known: &[(PathBuf, u64)]) -> Vec<SubRead> {
 
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
 /// not alphanumeric made '-', so it is looked up, not rebuilt.
-fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
+pub(super) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
     let name = format!("{uuid}.jsonl");
     std::fs::read_dir(home.join(".claude/projects"))
         .ok()?
@@ -572,7 +596,7 @@ fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
 }
 
 /// What the file holds from `at` on (at most [`READ_MAX`]); `None` when it is shorter than `at`.
-fn read_from(path: &Path, at: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(super) fn read_from(path: &Path, at: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
     if len < at {
@@ -742,6 +766,8 @@ fn disk_value(mut v: Value) -> Option<Value> {
             });
         }
         "system" => {}
+        // the goal checker's verdicts; the driver reads them, no other attachment is shown
+        "attachment" if v["attachment"]["type"] == "goal_status" => {}
         // the TUI notes every mode change (Shift+Tab): the stream says it as a status
         "permission-mode" => {
             v = serde_json::json!({
@@ -885,6 +911,48 @@ mod tests {
     fn line(v: Value) -> Option<Value> {
         disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))
             .map(|b| serde_json::from_slice(&b).unwrap())
+    }
+
+    /// The transcript's goal lines, read as a mirrored pane reads them (file, driver, fold), give
+    /// the goal its states in order.
+    #[test]
+    fn the_files_goal_lines_become_the_sessions_goal() {
+        let mut drv = driver_for(Agent::Claude);
+        let mut st = FoldState::default();
+        let mut state = |v: Value| {
+            let line = disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))?;
+            let ev = drv.on_line(0, &line, &mut Out::default());
+            fold(&mut st, Sid::new(), "d0", ev, 0)
+                .goal
+                .map(|g| (g.state, g.reason))
+        };
+        let att = |a: Value| serde_json::json!({"type":"attachment","attachment":a});
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":false,"sentinel":true,"condition":"c"})
+            )),
+            Some((GoalState::Active, None))
+        );
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":false,"condition":"c","reason":"r1"})
+            )),
+            Some((GoalState::NotMet, Some("r1".into())))
+        );
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":true,"condition":"c","reason":"r2"})
+            )),
+            Some((GoalState::Met, Some("r2".into())))
+        );
+        assert_eq!(
+            state(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"text",
+                "text":"<local-command-stdout>Goal cleared: c</local-command-stdout>"}]}})
+            ),
+            Some((GoalState::Cleared, None))
+        );
+        assert_eq!(state(att(serde_json::json!({"type":"other"}))), None);
     }
 
     #[test]
