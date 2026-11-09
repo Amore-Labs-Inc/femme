@@ -27,7 +27,7 @@ pub(crate) fn err(code: ErrCode, msg: impl Into<String>) -> WireErr {
     }
 }
 
-fn wire(e: CoreError) -> WireErr {
+pub(crate) fn wire(e: CoreError) -> WireErr {
     let code = match &e {
         CoreError::NotFound => ErrCode::NotFound,
         CoreError::Busy => ErrCode::Busy,
@@ -65,6 +65,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::Commands
             | Req::Prs
             | Req::PrVideo { .. }
+            | Req::PrAutoFix { on: None }
     )
 }
 
@@ -194,9 +195,11 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             five_hour,
             weekly,
         } => super::caps::set_cap(&d.cfg, account, five_hour, weekly).await,
-        Req::Prs => super::prs::list(&d.cfg).await,
+        Req::Prs => super::prs::list(d).await,
         Req::PrVideo { name } => super::prs::video(&d.cfg, &name).await,
-        Req::PrMerge { number } => super::prs::merge(&d.cfg, number).await,
+        Req::PrMerge { number } => super::prs::merge(d, number).await,
+        Req::PrFix { number } => super::prs::fix(d, owner(ctx), number).await,
+        Req::PrAutoFix { on } => super::prs::set_auto_fix(&d.cfg, on).await,
         Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
     }
 }
@@ -297,6 +300,15 @@ fn main_pane(d: &Daemon, sid: Sid) -> Result<PaneRef, WireErr> {
 }
 
 #[allow(clippy::too_many_arguments)] // the request's own fields, one each
+/// Who a session a client asks for belongs to: its device, `device:ssh` over ssh.
+fn owner(ctx: &Ctx) -> String {
+    if ctx.device.is_nil() {
+        "device:ssh".to_string()
+    } else {
+        format!("device:{}", ctx.device)
+    }
+}
+
 async fn create(
     ctx: &Ctx,
     cwd: String,
@@ -339,11 +351,7 @@ async fn create(
     if !tokio::fs::metadata(&cwd).await.is_ok_and(|m| m.is_dir()) {
         return Err(err(ErrCode::Bad, format!("{cwd}: not a folder")));
     }
-    let owner = if ctx.device.is_nil() {
-        "device:ssh".to_string()
-    } else {
-        format!("device:{}", ctx.device)
-    };
+    let owner = owner(ctx);
     let info = d
         .create_session(CreateSession {
             cwd,
