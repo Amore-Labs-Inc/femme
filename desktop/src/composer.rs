@@ -10,17 +10,20 @@ mod chips;
 mod disk;
 mod draft;
 mod files;
+mod history;
 mod permission;
 mod slash;
 mod sniff;
 mod xp;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use femme_proto::rpc::{PromptHow, Req, Resp};
-use femme_proto::state::{Agent, Context as Xp, SessionStatus};
+use femme_client::Event;
+use femme_proto::rpc::{PromptHow, Req, Resp, Scope};
+use femme_proto::state::{Agent, Context as Xp, Row, SessionStatus};
 use femme_proto::Sid;
 use gpui::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClipboardEntry,
@@ -36,7 +39,7 @@ use self::chips::Previews;
 use self::draft::{
     join_notices, picker_notice, Chip, ChipId, Drafts, Outgoing, Target, UPLOAD_GONE,
 };
-use crate::net::{Link, Net};
+use crate::net::{ClientEvent, Link, Net};
 use crate::theme::{
     self, bad, muted, neon, panel, paper, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, META_SIZE,
 };
@@ -96,6 +99,10 @@ pub struct Composer {
     menu_off: bool,
     /// Whether the last render drew the menu, so that an edit that closes it re-renders.
     menu_shown: bool,
+    /// What the user sent in each session, for Up and Down ([`history`]).
+    history: HashMap<Sid, history::History>,
+    /// Where Up and Down have got to in the selected session's history.
+    browse: history::Browse,
     _subs: Vec<Subscription>,
 }
 
@@ -135,6 +142,29 @@ impl Composer {
                     cx.notify();
                 }
             }));
+            // The session's own `UserMessage` rows, which the transcript's subscription brings in.
+            subs.push(cx.subscribe(net, |this, _, ev: &ClientEvent, _| match &ev.0 {
+                Event::Changes {
+                    scope: Scope::Session(sid),
+                    rows,
+                    ..
+                } => {
+                    let h = this.history.entry(*sid).or_default();
+                    for row in rows {
+                        if let Row::Item(item) = row {
+                            h.item(item);
+                        }
+                    }
+                }
+                Event::Reset {
+                    scope: Scope::Session(sid),
+                } => {
+                    if let Some(h) = this.history.get_mut(sid) {
+                        h.reset();
+                    }
+                }
+                _ => {}
+            }));
         }
         Composer {
             net,
@@ -160,6 +190,8 @@ impl Composer {
             query: String::new(),
             menu_off: false,
             menu_shown: false,
+            history: HashMap::new(),
+            browse: history::Browse::default(),
             _subs: subs,
         }
     }
@@ -177,6 +209,7 @@ impl Composer {
             self.drafts.park(old, text);
         }
         self.session = sid;
+        self.browse.end();
         self.reload = true;
         self.menu_off = false;
         cx.notify();
@@ -287,7 +320,49 @@ impl Composer {
             }
             return;
         }
-        self.menu_key(k, window, cx);
+        if !self.menu_key(k, window, cx) {
+            self.history_key(k, window, cx);
+        }
+    }
+
+    /// Up on the input's first row brings back the previous prompt sent in the session, again for
+    /// older ones; Down on its last row goes forward, and past the newest gives back the draft
+    /// typed before. Elsewhere in a multi-line text the keys move the caret as usual. Esc ends it.
+    fn history_key(&mut self, k: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(input), Some(sid)) = (self.input.clone(), self.session) else {
+            return;
+        };
+        if k.key == "escape" {
+            self.browse.end();
+            return;
+        }
+        if k.modifiers.modified() || !matches!(k.key.as_str(), "up" | "down") {
+            return;
+        }
+        if !self.target(cx).takes_prompts() {
+            return;
+        }
+        let (first, last) = caret_edges(input.read(cx));
+        let list = self.history.get(&sid).map(|h| h.list()).unwrap_or_default();
+        let text = match k.key.as_str() {
+            "up" if first => {
+                let current = input.read(cx).value().to_string();
+                self.browse.up(&list, &current)
+            }
+            "down" if last && self.browse.active() => self.browse.down(&list),
+            _ => None,
+        };
+        let Some(text) = text else { return };
+        input.update(cx, |input, cx| {
+            input.set_value(text.clone(), window, cx);
+            let end = input.text().len();
+            input.set_selected_range(end..end, cx);
+        });
+        // `set_value` sends no `Change`; a recalled `/command` does not open the menu.
+        self.input_empty = text.is_empty();
+        self.menu_off = true;
+        cx.stop_propagation();
+        cx.notify();
     }
 
     fn ensure_input(
@@ -368,11 +443,8 @@ impl Composer {
                 secondary,
                 shift: false,
             } => {
-                let how = if *secondary {
-                    PromptHow::Steer
-                } else {
-                    PromptHow::Queue
-                };
+                let text = input.read(cx).value().to_string();
+                let how = slash::how_for(self.working(cx), *secondary, &text);
                 self.send(how, window, cx);
             }
             InputEvent::Change => {
@@ -485,11 +557,11 @@ impl Composer {
 
     /// The `/` menu's keys, ahead of the input's bindings: Up/Down pick, Tab and Enter complete
     /// (Enter on a whole command name sends it as usual), Esc closes. With the menu closed every
-    /// key goes on.
-    fn menu_key(&mut self, k: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+    /// key goes on. Whether the key was the menu's.
+    fn menu_key(&mut self, k: &Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let rows = self.menu(cx);
         if rows.is_empty() {
-            return;
+            return false;
         }
         let pick = self.pick.min(rows.len() - 1);
         match k.key.as_str() {
@@ -500,14 +572,15 @@ impl Composer {
             "enter" if !k.modifiers.shift => {
                 let text = self.input.as_ref().map(|i| i.read(cx).value());
                 if text.is_some_and(|t| slash::exact(&t, &self.commands)) {
-                    return;
+                    return true;
                 }
                 self.complete(&rows[pick], window, cx);
             }
-            _ => return,
+            _ => return false,
         }
         cx.stop_propagation();
         cx.notify();
+        true
     }
 
     /// The `/` menu above the input: one ruled list of `/name` rows, the picked one lit.
@@ -533,17 +606,20 @@ impl Composer {
         }
     }
 
+    /// Whether the session on show is in a turn.
+    fn working(&self, cx: &App) -> bool {
+        self.net
+            .as_ref()
+            .zip(self.session)
+            .and_then(|(net, sid)| net.read(cx).model.sessions.get(&sid))
+            .is_some_and(|s| s.status == SessionStatus::Working)
+    }
+
     fn interrupt(&mut self, cx: &mut Context<Self>) -> bool {
         let (Some(net), Some(sid)) = (self.net.clone(), self.session) else {
             return false;
         };
-        let working = net
-            .read(cx)
-            .model
-            .sessions
-            .get(&sid)
-            .is_some_and(|s| s.status == SessionStatus::Working);
-        if !working {
+        if !self.working(cx) {
             return false;
         }
         let answer = request(&net, Req::Interrupt { sid }, cx);
@@ -559,8 +635,9 @@ impl Composer {
         true
     }
 
-    /// Sends the input's text and the ready chips as a prompt: `how` is `Queue` for Enter and
-    /// `Steer` for Ctrl-Enter. Nothing is cleared until the daemon has answered.
+    /// Sends the input's text and the ready chips as a prompt, `how` per [`slash::how_for`]: in a
+    /// working session Enter steers, ctrl-Enter interrupts first, a `/command` queues. Nothing is
+    /// cleared until the daemon has answered.
     fn send(&mut self, how: PromptHow, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(net), Some(input), Some(sid)) =
             (self.net.clone(), self.input.clone(), self.session)
@@ -586,6 +663,8 @@ impl Composer {
                 return;
             }
         };
+        self.browse.end();
+        self.history.entry(sid).or_default().sent(&text);
         let draft = self.drafts.entry(sid);
         draft.sending = true;
         draft.notice = None;
@@ -857,6 +936,23 @@ impl Composer {
     }
 }
 
+/// Whether the input's caret is on its first and on its last row, wrapped rows counted once the
+/// input has been laid out.
+fn caret_edges(input: &TextareaState) -> (bool, bool) {
+    let text = input.value();
+    let cursor = input.cursor();
+    let map = input.display_map();
+    let rows = map.display_row_count();
+    if rows == 0 {
+        return history::edges(&text, cursor);
+    }
+    let (line, col) = history::line_col(&text, cursor);
+    let row = map
+        .buffer_pos_to_display_pos(gpui_component::input::BufferPoint::new(line, col))
+        .row;
+    (row == 0, row + 1 >= rows)
+}
+
 /// Lets go of what a chip that is gone held: its preview entity and gpui's decoded copy.
 fn forget(previews: &Previews, chip: &Chip, cx: &mut App) {
     previews.borrow_mut().remove(&chip.id);
@@ -960,9 +1056,16 @@ impl Render for Composer {
             disabled_button("c-attach", "+")
         };
         let send = if can_send {
-            button_dark("c-send", "send").on_click(
-                cx.listener(|this, _, window, cx| this.send(PromptHow::Queue, window, cx)),
-            )
+            // the button is a plain Enter: it steers a working session, like the terminal's Enter
+            button_dark("c-send", "send").on_click(cx.listener(|this, _, window, cx| {
+                let text = this
+                    .input
+                    .as_ref()
+                    .map(|i| i.read(cx).value().to_string())
+                    .unwrap_or_default();
+                let how = slash::how_for(this.working(cx), false, &text);
+                this.send(how, window, cx);
+            }))
         } else {
             disabled_button("c-send", "send")
         };

@@ -618,7 +618,7 @@ fn time_ms(v: &Value) -> Option<i64> {
 
 /// `YYYY-MM-DDTHH:MM:SS[.fraction](Z|+HH:MM|-HH:MM)` as unix ms, the fraction cut to ms.
 // ponytail: the RFC 3339 that /usage prints, ranges checked loosely (Feb 31 rolls into March); a date crate if more shows up.
-fn rfc3339_ms(s: &str) -> Option<i64> {
+pub(crate) fn rfc3339_ms(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() < 20
         || b[4] != b'-'

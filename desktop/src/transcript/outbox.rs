@@ -80,7 +80,7 @@ impl Outbox {
 
     /// Rows of `sid`'s scope: each `UserMessage` takes off the oldest prompt whose text it starts
     /// with (the daemon appends `Attached:` lines), else, when none matches, the oldest one sent
-    /// before it. Whether any went.
+    /// before it. Whether any went. A `PeerMessage` (another session's) takes nothing off.
     pub fn echo(&mut self, sid: Sid, rows: &[Row]) -> bool {
         let Some(list) = self.by_sid.get_mut(&sid) else {
             return false;

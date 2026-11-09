@@ -4,7 +4,9 @@
 # from tests/session.rs, reporting through the hooks. Prompts it understands, in either mode:
 #   ask    asks a question (options a / b) and waits for the answer
 #   ask2   headless only: asks two in one request ("Which?" a / b, "Second?" x / y), waits for both
-#   slow   50 lines 200 ms apart (an interrupt or a restart can land inside)
+#   slow   50 lines 200 ms apart (an interrupt or a restart can land inside); a user message
+#          written while it runs is folded in like the CLI does at a tool boundary: echoed at once
+#          with isReplay, "echo: <it>" appended to the stream, both uuids in the one result
 #   compact  headless only: a big call (150002 tokens read), the compaction, then 50 lines 200 ms apart
 #   bgtask headless only: a Bash call run as a foreground task (`task_started`) for 5 s; a
 #          `background_tasks` control request moves it to the background (claude 2.1.319): the
@@ -132,26 +134,34 @@ def usage(n):
     return {"input_tokens": 2, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": n}
 
 
+FOLDED = []  # uuids of the messages folded into the running turn (`stream(fold=True)`)
+
+
 def result(u, ok=True, n=4):
+    us = [u] + FOLDED
+    FOLDED.clear()
     r = {"type": "result", "subtype": "success", "is_error": False, "duration_ms": 100, "duration_api_ms": 90,
          "num_turns": 1, "session_id": SID, "total_cost_usd": 0.001, "usage": usage(n), "uuid": uid(),
-         "user_message_uuids": [u]}
+         "user_message_uuids": us}
     if ok:
         r.update(stop_reason="end_turn", terminal_reason="completed", result="")
         # one entry per model the turn used; the window is what the composer's bar is measured against
         r["modelUsage"] = {MODEL: {"inputTokens": 2, "outputTokens": n, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
                                    "contextWindow": 200000, "maxOutputTokens": 64000}}
         out(r)
-        lifecycle(u, "completed")
+        for x in us:
+            lifecycle(x, "completed")
     else:
         r.update(stop_reason=None, terminal_reason="aborted_streaming", duration_ms=0, duration_api_ms=0, result="")
         out(r)
-        lifecycle(u, "cancelled")
+        for x in us:
+            lifecycle(x, "cancelled")
     system("session_state_changed", state="idle", sdk_host_only=True)
 
 
-def stream(mid, texts, gap, interruptible, u):
-    """Streams `texts` as one text block, `gap` s apart. Returns False when interrupted."""
+def stream(mid, texts, gap, interruptible, u, fold=False):
+    """Streams `texts` as one text block, `gap` s apart. Returns False when interrupted.
+    With `fold`, a user message that arrives meanwhile joins this turn (see `slow`)."""
     out({"type": "stream_event", "event": {"type": "message_start", "message": {
         "model": MODEL, "id": mid, "type": "message", "role": "assistant", "content": [], "stop_reason": None,
         "usage": usage(0)}}, "session_id": SID, "parent_tool_use_id": None, "uuid": uid(), "api_message_id": mid,
@@ -159,15 +169,29 @@ def stream(mid, texts, gap, interruptible, u):
     out({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
          "session_id": SID, "parent_tool_use_id": None, "uuid": uid()})
     got = []
-    for i, t in enumerate(texts):
+    texts = list(texts)
+    i = 0
+    while i < len(texts):
+        t = texts[i]
         if i and not pause(gap, interruptible):
             out({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0},
                  "session_id": SID, "parent_tool_use_id": None, "uuid": uid()})
             user_text("[Request interrupted by user]")
             return False
+        if fold:
+            while inbox and inbox[0].get("type") == "user":
+                v = inbox.pop(0)
+                u2 = v.get("uuid") or uid()
+                text2 = "".join(b.get("text", "") for b in v["message"]["content"] if b.get("type") == "text")
+                lifecycle(u2, "queued")
+                user_text(text2, u2, replay=True)
+                lifecycle(u2, "started")
+                FOLDED.append(u2)
+                texts.append(f"echo: {text2}\n")
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": t}},
              "session_id": SID, "parent_tool_use_id": None, "uuid": uid()})
         got.append(t)
+        i += 1
     out({"type": "assistant", "message": {"model": MODEL, "id": mid, "type": "message", "role": "assistant",
          "content": [{"type": "text", "text": "".join(got)}], "stop_reason": None, "usage": usage(len(got))},
          "parent_tool_use_id": None, "session_id": SID, "uuid": uid(), "user_message_uuid": u, "user_message_uuids": [u]})
@@ -317,7 +341,7 @@ def turn(v):
     if word in ("ask", "ask2"):
         ok = ask(u, word == "ask2")
     elif word == "slow":
-        ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u)
+        ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u, fold=True)
     elif word == "bgtask":
         ok = bgtask(u)
         if ok is None:

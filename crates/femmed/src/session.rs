@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use femme_agents::hooks::{self, HookEvent};
 use femme_proto::holder::{HolderEvent, ScreenFmt, Target};
+use femme_proto::rpc::PromptHow;
 use femme_proto::state::{Agent, Attention, Mode, Pane, PaneKind, Session, SessionStatus};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
 use femme_proto::{Id, PaneId, Sid};
@@ -756,7 +757,14 @@ impl Daemon {
         Ok(Screen { text, status })
     }
 
-    pub(crate) async fn pane_prompt(&self, pane: &PaneRef, text: &str) -> Result<(), CoreError> {
+    /// [`Core::prompt`](crate::core::Core::prompt) with a say in when it runs: a headless driver
+    /// gets `how`; a TUI pane ignores it (the TUI queues typed text itself).
+    pub(crate) async fn pane_prompt(
+        &self,
+        pane: &PaneRef,
+        text: &str,
+        how: PromptHow,
+    ) -> Result<(), CoreError> {
         let (mut s, p) = self.resolve(pane)?;
         if s.agent == Agent::Shell || p.kind != PaneKind::Agent {
             return Err(CoreError::Busy);
@@ -772,7 +780,7 @@ impl Daemon {
                 .sessions
                 .head(s.id)
                 .ok_or_else(gone)?
-                .prompt(text)
+                .prompt(text, how)
                 .await;
         }
         // A fresh agent reports in with its first hook; give it a moment.

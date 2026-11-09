@@ -67,8 +67,8 @@ use crate::common::{
     drop_held, held, hold, parse, preview, raw_text, set_status, uuid_v4, Offsets,
 };
 use crate::items::{
-    body, AssistantMessage, Event, Plan, QuestionItem, TaskEnd, TaskState, Thinking, ToolCall,
-    ToolResult, UserMessage,
+    body, ArtifactLink, AssistantMessage, Event, PeerMessage, Plan, QuestionItem, TaskEnd,
+    TaskState, Thinking, ToolCall, ToolResult, UserMessage,
 };
 use crate::{
     AgentEvent, AgentStatus, Attach, Driver, DropReason, Error, HeldPrompt, Launch, Out, Spawn,
@@ -931,6 +931,15 @@ impl ClaudeDriver {
                 }
             }
             ev.push(event_item(id, out));
+        } else if v["origin"]["kind"] == "peer" {
+            // another Claude session's SendMessage, delivered as a user line the user did not type
+            self.activity(offset, ev);
+            ev.push(done(
+                id,
+                ItemKind::PeerMessage,
+                ItemStatus::Completed,
+                body(&peer_message(&v["origin"], &text)),
+            ));
         } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
             // a subagent's text is the prompt it was given
             self.activity(offset, ev);
@@ -963,6 +972,10 @@ impl ClaudeDriver {
         } else {
             ItemStatus::Completed
         };
+        let link = call
+            .as_ref()
+            .filter(|c| c.name == "Artifact")
+            .and_then(|c| artifact_link(&c.input, &output, &line["tool_use_result"]));
         let result = done(
             format!("{id}:result"),
             ItemKind::ToolResult,
@@ -971,6 +984,7 @@ impl ClaudeDriver {
                 call_id: id.to_owned(),
                 output,
                 is_error,
+                link,
             }),
         );
         let Some(call) = call else {
@@ -1699,6 +1713,46 @@ fn scope(pid: &str, id: &mut String) {
 }
 
 /// Tools whose call is shown as Question/Plan items instead of a ToolCall.
+/// The page an `Artifact` call points at: the structured result of a publish (`url`, `title`,
+/// `seq`, `updated`), else the first claude.ai/artifact address in the text, else the `url` the
+/// call read. The title falls back to the file's name, then to the call's action.
+fn artifact_link(input: &Value, output: &str, data: &Value) -> Option<ArtifactLink> {
+    const PAGE: &str = "https://claude.ai/artifact/";
+    let in_text = output.find(PAGE).map(|i| {
+        let rest = &output[i..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ')' || c == ',')
+            .unwrap_or(rest.len());
+        rest[..end].to_owned()
+    });
+    let url = data["url"]
+        .as_str()
+        .map(str::to_owned)
+        .or(in_text)
+        .or_else(|| {
+            input["url"]
+                .as_str()
+                .filter(|u| u.starts_with(PAGE))
+                .map(str::to_owned)
+        })?;
+    let title = data["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let path = input["file_path"].as_str()?;
+            Some(path.rsplit('/').next().unwrap_or(path).to_owned())
+        })
+        .or_else(|| input["action"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "page".to_owned());
+    Some(ArtifactLink {
+        url,
+        title,
+        version: data["seq"].as_u64(),
+        updated: data["updated"].as_bool() == Some(true),
+    })
+}
+
 fn hidden(name: &str) -> bool {
     name == ASK || name == PLAN
 }
@@ -1762,6 +1816,25 @@ fn command_line(text: &str) -> Option<String> {
         Some(args) => format!("{name} {args}"),
         None => name.to_owned(),
     })
+}
+
+/// A peer's message from the line's `origin` (`name`, `body`), else from the
+/// `<cross-session-message from-name="…">…</cross-session-message>` framing in `text`.
+fn peer_message(origin: &Value, text: &str) -> PeerMessage {
+    let from = origin["name"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("from-name=\"")?;
+        rest.split_once('"').map(|(n, _)| n.to_owned())
+    });
+    let body = origin["body"].as_str().map(str::to_owned).or_else(|| {
+        let (_, rest) = text.split_once("<cross-session-message")?;
+        let (_, rest) = rest.split_once('>')?;
+        rest.split_once("</cross-session-message>")
+            .map(|(b, _)| b.trim().to_owned())
+    });
+    PeerMessage {
+        from: from.unwrap_or_default(),
+        text: body.unwrap_or_else(|| text.to_owned()),
+    }
 }
 
 /// What the first `<t>...</t>` in `text` holds, trimmed.
@@ -2171,6 +2244,69 @@ mod tests {
         let mut out = Out::default();
         d.set_permission_mode("auto", &mut out).unwrap();
         assert!(String::from_utf8_lossy(&out.stdin).contains(r#""subtype":"set_permission_mode""#));
+    }
+
+    // ---- the Artifact tool (shapes of claude 2.1.319) ----------------------------------------
+
+    #[test]
+    fn an_artifact_publish_links_its_page() {
+        let input = json!({"file_path":"/tmp/x/page.html"});
+        let text = "Published /tmp/x/page.html at https://claude.ai/artifact/AbC123 (Version 2, version id 1-2)";
+        let data = json!({"url":"https://claude.ai/artifact/AbC123","title":"Lesson tree","seq":2,"updated":true});
+        assert_eq!(
+            artifact_link(&input, text, &data),
+            Some(ArtifactLink {
+                url: "https://claude.ai/artifact/AbC123".into(),
+                title: "Lesson tree".into(),
+                version: Some(2),
+                updated: true,
+            })
+        );
+        // no structured data: the address is in the text, the title is the file's name
+        assert_eq!(
+            artifact_link(&input, text, &Value::Null),
+            Some(ArtifactLink {
+                url: "https://claude.ai/artifact/AbC123".into(),
+                title: "page.html".into(),
+                version: None,
+                updated: false,
+            })
+        );
+        // a read: the input's url, the action as title
+        let read = json!({"action":"read","url":"https://claude.ai/artifact/Zz9"});
+        let l = artifact_link(&read, "<html>…", &Value::Null).unwrap();
+        assert_eq!(
+            (l.url.as_str(), l.title.as_str()),
+            ("https://claude.ai/artifact/Zz9", "read")
+        );
+        assert_eq!(
+            artifact_link(&json!({"action":"list"}), "none", &Value::Null),
+            None
+        );
+    }
+
+    #[test]
+    fn an_artifact_result_item_carries_the_link() {
+        let mut f = Feed::new();
+        f.line(json!({"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":"Artifact","input":{"file_path":"/tmp/x/page.html"}}]},
+            "session_id":"s","parent_tool_use_id":null,"uuid":"u1"}));
+        let ev = f.line(json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result",
+            "tool_use_id":"t1","content":"Published /tmp/x/page.html at https://claude.ai/artifact/AbC123 (Version 1, version id 1-1)"}]},
+            "session_id":"s","parent_tool_use_id":null,"uuid":"u2",
+            "tool_use_result":{"url":"https://claude.ai/artifact/AbC123","title":"FEMME artifact test","seq":1,"updated":false}}));
+        let link = ev
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ItemCompleted { id, body, .. } if id == "t1:result" => {
+                    Some(body["link"].clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(link["url"], "https://claude.ai/artifact/AbC123");
+        assert_eq!(link["title"], "FEMME artifact test");
+        assert_eq!(link["version"], 1);
     }
 
     // ---- the context window (shapes of claude 2.1.302, made-up numbers) ----------------------

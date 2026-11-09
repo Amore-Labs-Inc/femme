@@ -54,7 +54,11 @@ pub(crate) fn session_from_row(r: &Row<'_>) -> Result<Session> {
 }
 
 /// Three nullable columns make one `Context`: NULL `ctx_used` means the agent never said.
-fn context_cols(used: Option<i64>, window: Option<i64>, compactions: Option<i64>) -> Option<Context> {
+fn context_cols(
+    used: Option<i64>,
+    window: Option<i64>,
+    compactions: Option<i64>,
+) -> Option<Context> {
     Some(Context {
         used: used? as u64,
         window: window.unwrap_or(0) as u64,

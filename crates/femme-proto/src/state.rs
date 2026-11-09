@@ -107,6 +107,8 @@ pub struct Pane {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ItemKind {
     UserMessage,
+    /// A message another Claude Code session on this machine sent (SendMessage), not the user's.
+    PeerMessage,
     AssistantMessage,
     Thinking,
     ToolCall,

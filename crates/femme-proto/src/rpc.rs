@@ -238,6 +238,13 @@ pub enum Req {
     PrClose {
         number: u64,
     },
+    /// Starts a Claude chat (label `fix #<number>`) in a worktree of the pull request's branch that
+    /// merges main in, resolves the conflicts, tests and pushes. Answered with `Resp::Session`; a
+    /// fix already running for it is answered with that one.
+    PrFix { number: u64 },
+    /// Reads (`on: None`) or sets whether a merge from FEMME starts a fix for every
+    /// `claude-update/*` pull request it leaves conflicting. Answered with `Resp::PrAutoFix`.
+    PrAutoFix { on: Option<bool> },
 }
 
 /// One open pull request, as `Resp::Prs` lists it.
@@ -254,6 +261,13 @@ pub struct Pr {
     pub deletions: u64,
     /// The demo video's file name, for `PrVideo`, when `<state>/pr-videos` has one for the branch.
     pub video: Option<String>,
+    /// Whether it merges into main cleanly: `Some(false)` when it conflicts, `None` while GitHub
+    /// has not worked it out yet.
+    #[serde(default)]
+    pub mergeable: Option<bool>,
+    /// The live `fix #<number>` chat working on it (`PrFix`).
+    #[serde(default)]
+    pub fixing: Option<Sid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +326,8 @@ pub enum Resp {
         names: Vec<String>,
     },
     Prs(Vec<Pr>),
+    /// Whether merges start fixes for the pull requests they leave conflicting.
+    PrAutoFix(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

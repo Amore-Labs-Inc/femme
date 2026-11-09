@@ -13,7 +13,7 @@
 #   shot NAME                  $SHOTS/NAME.png (default /tmp/femme-shots/<video name>/), to find coordinates and check the effect
 # The daemon and the desktop get their own empty HOME: the box's mirrored chats (herdr panes,
 # ~/.claude/sessions) and the user's files never reach the video. Claude sessions there run the real
-# `claude` with the box's sign-in (CLAUDE_CONFIG_DIR); FAKE_CLAUDE=1 runs the test fake instead. The video is H.264, at most 8 MiB (re-encoded smaller when over).
+# `claude` with the box's sign-in and nothing else of ~/.claude; FAKE_CLAUDE=1 runs the test fake instead. The video is H.264, at most 8 MiB (re-encoded smaller when over).
 set -euo pipefail
 [ $# -eq 2 ] || { echo "usage: record-desktop.sh <scene.sh> <video.mp4>" >&2; exit 2; }
 scene=$(realpath "$1") out=$(realpath -m "$2")
@@ -30,6 +30,12 @@ chmod 700 "$tmp/run"
 pids=()
 cleanup() {
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  # The daemon's holders and chats outlive it: everything that runs with this HOME goes too.
+  local e
+  for e in /proc/[0-9]*/environ; do
+    { tr '\0' '\n' <"$e"; } 2>/dev/null | grep -qxF "HOME=$tmp/home" && kill "${e//[!0-9]/}" 2>/dev/null
+  done
+  sleep 1  # let them exit before their files go
   wait 2>/dev/null || true
   rm -rf "$tmp"
 }
@@ -52,7 +58,12 @@ daemon_env=(HOME="$tmp/home" FEMME_STATE="$tmp/state" XDG_RUNTIME_DIR="$tmp/run"
 if [ "${FAKE_CLAUDE:-0}" = 1 ]; then
   ln -s "$root/crates/femme-agents/fixtures/claude/fake-claude.py" "$tmp/bin/claude"
 else
-  ln -s "$(mise which claude)" "$tmp/bin/claude"; daemon_env+=(CLAUDE_CONFIG_DIR="$HOME/.claude")
+  # Chats use the empty HOME's ~/.claude with only the box's sign-in linked in (the daemon passes
+  # no CLAUDE_CONFIG_DIR on): the box's live sessions can't see them (ListAgents, SendMessage) and
+  # the user's CLAUDE.md, hooks and plugins stay out.
+  mkdir -m 700 "$tmp/home/.claude"
+  ln -s "$HOME/.claude/.credentials.json" "$tmp/home/.claude/.credentials.json"
+  ln -s "$(mise which claude)" "$tmp/bin/claude"
 fi
 env "${daemon_env[@]}" PATH="$tmp/bin:$PATH" "$femmed" serve >"$tmp/femmed.log" 2>&1 &
 pids+=($!)

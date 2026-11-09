@@ -92,6 +92,7 @@ type Reply = oneshot::Sender<Result<(), CoreError>>;
 enum Cmd {
     Prompt {
         text: String,
+        how: PromptHow,
         reply: Reply,
     },
     Interrupt {
@@ -145,9 +146,10 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
-    pub(crate) async fn prompt(&self, text: &str) -> Result<(), CoreError> {
+    pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Prompt {
             text: text.into(),
+            how,
             reply,
         })
         .await
@@ -486,8 +488,8 @@ impl Actor {
 
     async fn on_cmd(&mut self, d: &Daemon, cmd: Cmd) {
         match cmd {
-            Cmd::Prompt { text, reply } => {
-                let r = self.prompt(d, &text).await;
+            Cmd::Prompt { text, how, reply } => {
+                let r = self.prompt(d, &text, how).await;
                 let _ = reply.send(r);
             }
             Cmd::Interrupt { reply } => {
@@ -542,7 +544,9 @@ impl Actor {
         Ok(())
     }
 
-    async fn prompt(&mut self, d: &Daemon, text: &str) -> Result<(), CoreError> {
+    /// `how` goes to the driver as is: a Steer joins the running turn at its next tool boundary,
+    /// InterruptThenSend stops it first, Queue waits for it to end.
+    async fn prompt(&mut self, d: &Daemon, text: &str, how: PromptHow) -> Result<(), CoreError> {
         self.ready()?;
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
@@ -562,7 +566,7 @@ impl Actor {
             return Err(CoreError::Busy);
         }
         self.driver
-            .prompt(text, PromptHow::Queue, &mut self.out)
+            .prompt(text, how, &mut self.out)
             .map_err(driver_err)?;
         self.flush().await;
         let effort = effort_switch(text);
@@ -1065,6 +1069,7 @@ impl Actor {
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
         // ponytail: the desktop's chats think at medium; /effort changes it until the next start
         let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
             .then(|| "medium".to_owned());
@@ -1383,6 +1388,19 @@ fn cut(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Claude Code's Artifact tool (a page on claude.ai) is off in `claude -p` unless the environment
+/// asks for it. A Claude chat gets it; the DeepSeek gateway route cannot use claude.ai, Codex and
+/// Pi have no such tool. The box has no display, so the CLI never opens a browser itself.
+pub(crate) fn artifact_env(agent: Agent, model: Option<&str>) -> Vec<(String, String)> {
+    if agent != Agent::Claude || is_gateway(model) {
+        return Vec::new();
+    }
+    vec![
+        ("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned()),
+        ("CLAUDE_CODE_ARTIFACT_AUTO_OPEN".to_owned(), "0".to_owned()),
+    ]
 }
 
 /// A model of OpenGateway's (`deepseek/...`): another provider than Anthropic's.
@@ -1812,6 +1830,7 @@ fn preview_of(kind: ItemKind, b: &Value) -> String {
     let first = |t: &str| t.lines().next().unwrap_or("").to_string();
     match kind {
         ItemKind::UserMessage
+        | ItemKind::PeerMessage
         | ItemKind::AssistantMessage
         | ItemKind::Thinking
         | ItemKind::Plan
@@ -1854,6 +1873,7 @@ fn render(items: &[(Item, Value)], streams: &HashMap<String, String>) -> String 
         };
         let line = match item.kind {
             ItemKind::UserMessage => format!("> {}", text("text")),
+            ItemKind::PeerMessage => format!("@{}: {}", text("from"), text("text")),
             ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
             ItemKind::ToolCall => format!("* {}", item.preview),
             ItemKind::ToolResult => format!("  {}", item.preview),
@@ -2628,6 +2648,16 @@ mod tests {
         assert_eq!(effort_switch("/effort a b"), None);
         assert_eq!(model_switch("use the opus model"), None);
         assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
+    }
+
+    #[test]
+    fn a_claude_chat_gets_the_artifact_tool_the_others_do_not() {
+        let on = |m| artifact_env(Agent::Claude, m);
+        assert!(on(None).contains(&("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned())));
+        assert!(!on(Some("claude-opus-5-5")).is_empty());
+        assert!(on(Some(DEEPSEEK)).is_empty());
+        assert!(artifact_env(Agent::Codex, None).is_empty());
+        assert!(artifact_env(Agent::Pi, None).is_empty());
         let mut at = None;
         let mut seen = Vec::new();
         for _ in 0..5 {
@@ -2902,7 +2932,10 @@ mod tests {
         rig.row();
         rig.a.spawn_process(&rig.d, None).await.unwrap();
         // the agent has not answered `initialize`: the driver holds the prompt back
-        rig.a.prompt(&rig.d, "second").await.unwrap();
+        rig.a
+            .prompt(&rig.d, "second", PromptHow::Queue)
+            .await
+            .unwrap();
         assert_eq!(rig.a.driver.held_prompts().len(), 1);
         // it dies: the prompt is dropped and kept for the restart, two seconds away
         rig.a.agent_exited(&rig.d, -9).await;
