@@ -151,6 +151,31 @@ pub enum Req {
     /// `femmed show`: the agent shows the user a file. The blob (a `BlobPut`) is saved beside the
     /// session's uploads and an assistant item with `caption` and an `Attached:` line is appended.
     Show { sid: Sid, name: String, blob: [u8; 32], caption: String },
+    /// The box repo's open pull requests (`gh pr list`). Answered with `Resp::Prs`.
+    Prs,
+    /// A pull request's demo video, `Pr::video` (a file in `<state>/pr-videos`). Answered with
+    /// `Resp::Blob`.
+    PrVideo { name: String },
+    /// Squash-merges the pull request into main; the box's deploy timer then ships it.
+    PrMerge { number: u64 },
+    /// Closes the pull request without merging and deletes its branch.
+    PrClose { number: u64 },
+}
+
+/// One open pull request, as `Resp::Prs` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pr {
+    pub number: u64,
+    pub title: String,
+    pub branch: String,
+    pub author: String,
+    pub url: String,
+    /// The description, Markdown.
+    pub body: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// The demo video's file name, for `PrVideo`, when `<state>/pr-videos` has one for the branch.
+    pub video: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +222,7 @@ pub enum Resp {
     },
     /// The answer to `Commands`: names without the leading `/`.
     Commands { names: Vec<String> },
+    Prs(Vec<Pr>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
