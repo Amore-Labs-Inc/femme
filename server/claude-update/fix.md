@@ -1,6 +1,6 @@
-Pull request #@NUMBER@ (branch @BRANCH@), opened tonight by FEMME's nightly Claude Code update, no
-longer merges into main: main moved while the night ran. This folder (@WORKTREE@) is a worktree of
-the branch at its tip on GitHub. Nobody is at the keyboard; the user merges in the morning.
+Pull request #@NUMBER@ (branch @BRANCH@) no longer merges into main: main moved after it was
+opened. This folder (@WORKTREE@) is a worktree of the branch at its tip on GitHub. Nobody is at the
+keyboard: once you push, the pull request is merged and deployed.
 
 1. `git fetch origin && git merge origin/main`.
 2. Resolve every conflict so both sides keep working: main's change and this pull request's intent.
