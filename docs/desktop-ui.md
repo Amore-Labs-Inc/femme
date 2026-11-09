@@ -26,7 +26,7 @@ Keep it current: when your module's public API changes, edit your section in the
 ```
 
 - **Top bar**: the `femme` wordmark is a button: hover or click opens a dropdown (version, check for
-  updates, accounts, dark mode, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
+  updates, pull requests, accounts, dark mode, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
   The link status stays next to it. No lanes, no palette button, no panel buttons.
 - **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
@@ -107,6 +107,18 @@ Keep it current: when your module's public API changes, edit your section in the
   time, and **two editable caps** (5 h %, 7 d %) at which the box rotates off that account; an AWS
   line; API keys with revoke / connect GitHub / add (name + optional GitHub token); sign-out is NOT
   shown (the desktop has no cookie). `Esc` or the `‹` button closes it.
+- **Pull requests** (`femme ▾ ▸ Pull requests`, `desktop/src/prs.rs` + `prs/view.rs`): a card over
+  the centre like accounts. Left, the box repo's open pull requests (`Req::Prs`): `#n title`, branch,
+  `+adds −dels`, author; up/down move the selection. Right, the selected one: title, branch and
+  author, its link (a click opens the browser), its description as Markdown (the transcript's
+  `md_view`), `Watch demo` when `Pr::video` is set (`Req::PrVideo` → the lightbox: a GIF as a
+  picture, anything else in the player), `Merge & deploy` and `Close PR`. Both act only on the
+  second click, on a confirm row that says what happens (`Esc` cancels it). A merge notes
+  `ServerInfo.deployed` first, sends `PrMerge`, then asks `ServerInfo` every 5 s for 10 min: the
+  strip under the title says `#n merged · deploying… 1m 05s`, then `#n deployed <sha>`, or that the
+  box still runs the old commit. Errors show in the red strip; a daemon without the requests is
+  "daemon too old for pull requests". `refresh` in the title bar and every open read the list again.
+  `Esc` or `‹` closes it; the deploy watch goes on while it is closed.
 - **At start** (once connected): the newest live Claude session is shown (one that crashed, failed
   or lost its holder does not count); none → a new headless Claude session in the home directory is
   created and shown; `claude` missing on the box (the create fails) → a shell session. The user
