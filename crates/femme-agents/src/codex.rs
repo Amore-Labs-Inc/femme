@@ -1577,6 +1577,7 @@ fn tool(ty: &str, id: &str, item: &Value) -> Tool {
             name,
             input,
             call_id: id.to_owned(),
+            task: None,
         },
         preview,
         output,
