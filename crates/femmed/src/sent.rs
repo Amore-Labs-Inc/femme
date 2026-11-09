@@ -360,8 +360,6 @@ impl Daemon {
         }
     }
 
-    // ponytail: herdr's sync is to call this when a pane goes from working to idle
-    #[allow(dead_code)]
     /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
     /// terminal holds nothing FEMME can see).
     pub(crate) fn idle_unread(&self, sid: Sid) {

@@ -85,9 +85,19 @@ pub(crate) async fn run(d: Weak<Daemon>) {
         }
         for t in tails.values_mut() {
             t.tail(&d).await;
+            // the pane went idle a while ago and the transcript is read: what it did not echo
+            // it did not get
+            if t.idle_since.is_some_and(|i| i.elapsed() > IDLE_SETTLE) {
+                t.idle_since = None;
+                d.idle_unread(t.sid);
+            }
         }
     }
 }
+
+/// How long after a pane goes idle its unechoed messages count as not got: the transcript's last
+/// lines are read by then.
+const IDLE_SETTLE: Duration = Duration::from_secs(5);
 
 /// Every Claude pane of every running herdr session. The conversation is Claude's own word for it
 /// (`~/.claude/sessions/<pid>.json`) when there is one: herdr takes it from Claude's hooks, so any
@@ -240,6 +250,15 @@ async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, T
         }
         let state = status_of(&p.status);
         let title = (!p.title.is_empty()).then(|| p.title.clone());
+        if let (Some((now, _)), Some(t)) = (state, tails.get_mut(&s.id)) {
+            match (s.status, now) {
+                (SessionStatus::Working, SessionStatus::Idle) => {
+                    t.idle_since = Some(std::time::Instant::now());
+                }
+                (_, SessionStatus::Working) => t.idle_since = None,
+                _ => {}
+            }
+        }
         let stale = state.is_some_and(|st| st != (s.status, s.attention)) || title != s.label;
         if stale {
             match d.update(s.id, |s| {
@@ -332,6 +351,8 @@ struct Tail {
     /// Whether the subagent transcripts there at start are read from their end (the store holds
     /// the session already) on the next look; false after the first.
     subs_from_end: bool,
+    /// When the pane last went from working to idle, until its unechoed messages are settled.
+    idle_since: Option<std::time::Instant>,
     /// Lines of kinds this reader does not know, by kind: each kind is one note, its count kept.
     // ponytail: counted from where this run started reading, so a restart counts again from there
     unknown: HashMap<String, u32>,
@@ -370,6 +391,7 @@ impl Tail {
             pending: Vec::new(),
             subs: HashMap::new(),
             subs_from_end: committed > 0,
+            idle_since: None,
             unknown: HashMap::new(),
         }
     }
