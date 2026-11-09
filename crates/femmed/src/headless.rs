@@ -276,6 +276,7 @@ pub(crate) async fn reattach(d: &Daemon, s: &Session, holder: Holder) -> Result<
             extra_env: d.sessions.child_env(&d.cfg, &path),
             hooks_path: None,
             effort: None,
+            goal: None,
         };
         let attach = Attach {
             resume_offset: from,
@@ -1082,6 +1083,7 @@ impl Actor {
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
             effort: None,
+            goal: None,
         };
         let mut sp = self
             .driver
@@ -2154,6 +2156,7 @@ mod tests {
             permission: None,
             context: None,
             effort: None,
+            goal: None,
         }
     }
 

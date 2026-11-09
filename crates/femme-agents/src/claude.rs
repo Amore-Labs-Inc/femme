@@ -2168,15 +2168,21 @@ mod tests {
         );
         let att = |a: Value| json!({"type":"attachment","attachment":a});
         assert_eq!(
-            state(f.line(att(json!({"type":"goal_status","met":false,"sentinel":true,"condition":"c"})))),
+            state(f.line(att(
+                json!({"type":"goal_status","met":false,"sentinel":true,"condition":"c"})
+            ))),
             Some((GoalState::Active, None))
         );
         assert_eq!(
-            state(f.line(att(json!({"type":"goal_status","met":false,"condition":"c","reason":"r1"})))),
+            state(f.line(att(
+                json!({"type":"goal_status","met":false,"condition":"c","reason":"r1"})
+            ))),
             Some((GoalState::NotMet, Some("r1".into())))
         );
         assert_eq!(
-            state(f.line(att(json!({"type":"goal_status","met":true,"condition":"c","reason":"r2"})))),
+            state(f.line(att(
+                json!({"type":"goal_status","met":true,"condition":"c","reason":"r2"})
+            ))),
             Some((GoalState::Met, Some("r2".into())))
         );
         assert_eq!(
