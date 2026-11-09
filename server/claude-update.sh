@@ -131,13 +131,13 @@ render() {
 # claude <dir> <logfile> <timeout> <prompt> <args...>: headless, its stream into <logfile>.
 claude_run() {
   local dir=$1 out=$2 limit=$3 prompt=$4; shift 4
-  local cmd=(timeout "$limit" claude -p "$prompt" "$@" --dangerously-skip-permissions --output-format stream-json --verbose)
+  local cmd=("$lib/claude-once.sh" "$limit" "$out" -p "$prompt" "$@" --dangerously-skip-permissions --output-format stream-json --verbose)
   if [ "$dry" = 1 ]; then
     say "dry: in $dir: $(printf '%q ' "${cmd[@]:0:4}") <prompt> ${cmd[*]:5} > $out"
     printf '%s\n' "----- prompt -----" "$prompt" "----- end prompt -----" | tee -a "$log"
     return 0
   fi
-  (cd "$dir" && "${cmd[@]}" </dev/null >"$out" 2>&1)
+  (cd "$dir" && "${cmd[@]}" >>"$log" 2>&1)
 }
 
 # 3. Scout.

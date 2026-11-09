@@ -56,8 +56,8 @@ for try in 1 2 3; do
   prompt=$(sed -e "s|@NUMBER@|$n|g" -e "s|@BRANCH@|$branch|g" -e "s|@WORKTREE@|$wt|g" "$here/claude-update/fix.md")
   say "#$n: conflicts with main, Claude resolves them in $wt"
   (cd "$wt" && RUSTC_WRAPPER=$(mise which sccache 2>/dev/null) CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-    timeout 1h claude -p "$prompt" --model "${FIX_MODEL:-fable}" --effort medium --dangerously-skip-permissions \
-    --output-format stream-json --verbose </dev/null >"${log%.log}.$try.jsonl" 2>&1)
+    "$here/claude-update/claude-once.sh" 1h "${log%.log}.$try.jsonl" -p "$prompt" --model "${FIX_MODEL:-fable}" \
+    --effort medium --dangerously-skip-permissions --output-format stream-json --verbose)
   say "#$n: Claude exit $?"
   rm -rf "$wt/target" "$wt/desktop/target"  # pushed; the build output is not needed
 done
