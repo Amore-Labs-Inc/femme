@@ -80,14 +80,19 @@ fn saved_item(sid: Sid, text: &str, op: Option<OpId>, echo: Option<&str>, now: i
     }
 }
 
-/// A message's text for comparing: without the `Attached:` lines the daemon adds and the
-/// `[Image #N]` marks Claude's terminal adds, every run of spaces and newlines one space.
+/// A message's text for comparing: without the `Attached:` lines the daemon adds, and the
+/// `[Image #N]` marks and `<pasted_content id="..">` wrapping Claude's terminal adds to what is
+/// pasted into it, every run of spaces and newlines one space.
 pub(crate) fn normalize(text: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
         .filter(|l| !l.trim_start().starts_with("Attached: "))
         .collect();
-    let mut s = kept.join("\n");
+    let mut s = kept.join("\n").replace("</pasted_content>", " ");
+    while let Some(i) = s.find("<pasted_content") {
+        let Some(end) = s[i..].find('>') else { break };
+        s.replace_range(i..i + end + 1, " ");
+    }
     while let Some(i) = s.find("[Image #") {
         let after = &s[i + "[Image #".len()..];
         let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
@@ -517,6 +522,12 @@ mod tests {
         assert_eq!(pick(&rows, "d9", echo), Some(0));
         assert_eq!(normalize("a [Image #x] b"), "a [Image #x] b");
         assert_eq!(normalize("Attached: /a.png"), "");
+        // what Claude's terminal wrote for a paste into a herdr pane (from the box, 2026-11-09)
+        let pasted = "\n\n<pasted_content id=\"b150\">\nlets restart with a blue squirrel\nMerhaba x!\n</pasted_content>";
+        assert_eq!(
+            normalize(pasted),
+            normalize("lets restart with a blue squirrel\nMerhaba x!")
+        );
     }
 
     use femme_store::Store;
