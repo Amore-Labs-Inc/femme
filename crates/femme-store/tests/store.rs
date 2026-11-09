@@ -3819,7 +3819,7 @@ fn items_inserted_before_others_take_their_place_in_order() {
 fn items_with_a_status_are_listed_oldest_first() {
     let s = store();
     let sid = insert_session(&s, None).id;
-    let mut put = |id: &str, kind: ItemKind, status: ItemStatus| {
+    let put = |id: &str, kind: ItemKind, status: ItemStatus| {
         let mut i = item(sid, id, r#"{"text":"hi"}"#);
         i.kind = kind;
         i.status = status;

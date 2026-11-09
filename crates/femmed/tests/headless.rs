@@ -38,11 +38,19 @@ fn shape(items: &[Item]) -> Vec<(ItemKind, ItemStatus, Value)> {
     items
         .iter()
         .map(|i| {
-            let body = i
+            let mut body: Value = i
                 .body
                 .as_deref()
                 .map(|b| serde_json::from_str(b).unwrap())
                 .unwrap_or(Value::Null);
+            // a saved message's ids and times are its own each run
+            if let Some(o) = body.as_object_mut() {
+                for k in ["echo", "read_at", "read", "op"] {
+                    if o.remove(k).is_some() {
+                        o.insert(k.into(), Value::Bool(true));
+                    }
+                }
+            }
             (i.kind, i.status, body)
         })
         .collect()
@@ -1014,12 +1022,15 @@ async fn a_prompt_the_agent_dropped_when_it_died_does_not_run_after_a_takeover_a
     let _stop = stop;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let v = items(&d, sid);
+    // the saved message stays, and says the agent did not get it
     assert!(
-        !v.iter()
-            .any(|i| i.kind == ItemKind::UserMessage && text_of(i) == "second"),
+        v.iter().any(|i| i.kind == ItemKind::UserMessage
+            && text_of(i) == "second"
+            && i.status == ItemStatus::Failed),
         "a turn nobody asked for: {:#?}",
         shape(&v)
     );
+
     assert_eq!(held(&d), 0);
     d.close_session(sid).await.unwrap();
 }
@@ -1047,7 +1058,7 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         attach("../shot.png", b"\x89PNG two"),
         attach("my notes.bin", b"\xff\xfe\x00"),
     ];
-    d.prompt_attached(&pane, "look", &list, PromptHow::Queue)
+    d.prompt_attached(&pane, "look", &list, PromptHow::Queue, None)
         .await
         .unwrap();
 
@@ -1087,7 +1098,13 @@ async fn a_prompt_with_attachments_saves_them_and_the_transcript_says_where() {
         blob: [9; 32],
     };
     let err = d
-        .prompt_attached(&pane, "never", &[list[0].clone(), gone], PromptHow::Queue)
+        .prompt_attached(
+            &pane,
+            "never",
+            &[list[0].clone(), gone],
+            PromptHow::Queue,
+            None,
+        )
         .await;
     assert!(
         matches!(&err, Err(CoreError::Bad(m)) if m.contains("gone.png")),
@@ -1127,7 +1144,7 @@ async fn a_steer_mid_turn_joins_the_running_turn() {
     let (d, _stop) = b.start(None).await;
     let (sid, pane) = slow_turn(&d, &b).await;
     // the composer's Enter while working: written to the agent at once, folded into this turn
-    d.prompt_attached(&pane, "steer", &[], PromptHow::Steer)
+    d.prompt_attached(&pane, "steer", &[], PromptHow::Steer, None)
         .await
         .unwrap();
     let v = wait_items(&d, sid, "the steer's echo", |v| {
@@ -1148,7 +1165,11 @@ async fn a_steer_mid_turn_joins_the_running_turn() {
     assert_eq!(texts_of(&v, ItemKind::UserMessage), ["slow", "steer"]);
     let answers = texts_of(&v, ItemKind::AssistantMessage);
     assert_eq!(answers.len(), 1, "one turn answered both: {:#?}", shape(&v));
-    assert!(answers[0].contains("tick 50"), "never interrupted: {}", answers[0]);
+    assert!(
+        answers[0].contains("tick 50"),
+        "never interrupted: {}",
+        answers[0]
+    );
     wait_for(&d, sid, "idle", |s| {
         s.is_some_and(|s| s.status == SessionStatus::Idle)
     })
@@ -1161,7 +1182,7 @@ async fn interrupt_then_send_mid_turn_stops_the_turn_and_runs_the_prompt() {
     let b = Box_::new();
     let (d, _stop) = b.start(None).await;
     let (sid, pane) = slow_turn(&d, &b).await;
-    d.prompt_attached(&pane, "instead", &[], PromptHow::InterruptThenSend)
+    d.prompt_attached(&pane, "instead", &[], PromptHow::InterruptThenSend, None)
         .await
         .unwrap();
     let v = wait_items(&d, sid, "the new turn's answer", |v| {

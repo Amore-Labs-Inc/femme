@@ -273,7 +273,7 @@ impl Core for Daemon {
     }
 
     async fn prompt(&self, pane: &PaneRef, text: &str) -> Result<(), CoreError> {
-        self.pane_prompt(pane, text, PromptHow::Queue).await
+        self.pane_prompt(pane, text, PromptHow::Queue, None).await
     }
 
     async fn input(&self, pane: &PaneRef, bytes: &[u8]) -> Result<(), CoreError> {

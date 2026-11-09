@@ -6,7 +6,7 @@ use std::path::Path;
 
 use femme_proto::rpc::{Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT};
 use femme_proto::state::{Agent, Mode};
-use femme_proto::Sid;
+use femme_proto::{OpId, Sid};
 use femme_store::{items, sessions};
 
 use super::{Ctx, BODY_MAX};
@@ -82,7 +82,8 @@ fn done(r: Result<(), CoreError>) -> Result<Resp, WireErr> {
     r.map(|()| Resp::Ok).map_err(wire)
 }
 
-pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
+/// Runs `req`; `op` is its op id, which a prompt's stored message keeps so the desktop knows it.
+pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, WireErr> {
     let d = &ctx.daemon;
     match req {
         Req::Subscribe { scope, after } => d
@@ -126,7 +127,10 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             how,
         } => {
             let pane = main_pane(d, sid)?;
-            done(d.prompt_attached(&pane, &text, &attachments, how).await)
+            done(
+                d.prompt_attached(&pane, &text, &attachments, how, Some(op))
+                    .await,
+            )
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
         Req::Background { sid, tool_use_id } => {
@@ -202,6 +206,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
         Req::PrVideo { name } => super::prs::video(&d.cfg, &name).await,
         Req::PrMerge { number } => super::prs::merge(d, number).await,
         Req::PrFix { number } => super::prs::fix(d, owner(ctx), number).await,
+        Req::Resend { sid, item_id } => done(d.resend(sid, &item_id).await),
         Req::PrAutoFix { on } => super::prs::set_auto_fix(&d.cfg, on).await,
         Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
     }

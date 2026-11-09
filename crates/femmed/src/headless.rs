@@ -41,6 +41,7 @@ use crate::core::CoreError;
 use crate::daemon::{core_err, now_ms, Daemon};
 use crate::holder_client::{Holder, SpoolLines};
 use crate::scheduler::UsageSnapshot;
+use crate::sent;
 use crate::session::{
     agent_label, find_on_path, gateway_env, gone, holder_err, label, COLS, MAIN, ROWS,
 };
@@ -93,6 +94,8 @@ enum Cmd {
     Prompt {
         text: String,
         how: PromptHow,
+        /// The id the agent is to echo it under ([`crate::sent`]).
+        id: Option<String>,
         reply: Reply,
     },
     Interrupt {
@@ -146,10 +149,22 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
+    #[cfg(test)]
     pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
+        self.prompt_as(text, how, None).await
+    }
+
+    /// [`Head::prompt`], echoed by the agent under `id` when it takes one.
+    pub(crate) async fn prompt_as(
+        &self,
+        text: &str,
+        how: PromptHow,
+        id: Option<String>,
+    ) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Prompt {
             text: text.into(),
             how,
+            id,
             reply,
         })
         .await
@@ -351,6 +366,8 @@ struct Actor {
     // ponytail: unbounded while the store keeps failing, each batch is only a few KiB; cap it (and
     // fail the session) if a store that stays broken is ever seen.
     pending_puts: Vec<Put>,
+    /// Echo ids of saved messages the agent will not get, for the next commit.
+    missed: Vec<String>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
     resend: Vec<HeldPrompt>,
     restart_at: Option<Instant>,
@@ -406,6 +423,7 @@ impl Actor {
             boot_acts: Vec::new(),
             fold: FoldState::default(),
             pending_puts: Vec::new(),
+            missed: Vec::new(),
             resend: Vec::new(),
             restart_at: None,
             restarted_at: None,
@@ -488,8 +506,13 @@ impl Actor {
 
     async fn on_cmd(&mut self, d: &Daemon, cmd: Cmd) {
         match cmd {
-            Cmd::Prompt { text, how, reply } => {
-                let r = self.prompt(d, &text, how).await;
+            Cmd::Prompt {
+                text,
+                how,
+                id,
+                reply,
+            } => {
+                let r = self.prompt(d, &text, how, id.as_deref()).await;
                 let _ = reply.send(r);
             }
             Cmd::Interrupt { reply } => {
@@ -546,7 +569,13 @@ impl Actor {
 
     /// `how` goes to the driver as is: a Steer joins the running turn at its next tool boundary,
     /// InterruptThenSend stops it first, Queue waits for it to end.
-    async fn prompt(&mut self, d: &Daemon, text: &str, how: PromptHow) -> Result<(), CoreError> {
+    async fn prompt(
+        &mut self,
+        d: &Daemon,
+        text: &str,
+        how: PromptHow,
+        id: Option<&str>,
+    ) -> Result<(), CoreError> {
         self.ready()?;
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
@@ -565,9 +594,11 @@ impl Actor {
         if !takes || row.attention == Attention::Blocked {
             return Err(CoreError::Busy);
         }
-        self.driver
-            .prompt(text, how, &mut self.out)
-            .map_err(driver_err)?;
+        match id {
+            Some(id) => self.driver.prompt_with_id(id, text, how, &mut self.out),
+            None => self.driver.prompt(text, how, &mut self.out),
+        }
+        .map_err(driver_err)?;
         self.flush().await;
         let effort = effort_switch(text);
         // The agent's own turn starts a moment later: say `working` first, so a reader never takes
@@ -864,7 +895,13 @@ impl Actor {
             return;
         }
         for h in std::mem::take(&mut self.resend) {
-            if let Err(e) = self.driver.prompt(&h.text, h.how, &mut self.out) {
+            let r = match &h.id {
+                Some(id) => self
+                    .driver
+                    .prompt_with_id(id, &h.text, h.how, &mut self.out),
+                None => self.driver.prompt(&h.text, h.how, &mut self.out),
+            };
+            if let Err(e) = r {
                 tracing::warn!(sid = %self.sid, %e, "a held prompt was not sent again");
             }
         }
@@ -907,6 +944,7 @@ impl Actor {
         }
         if !replay {
             self.resend.extend(f.dropped);
+            self.missed.extend(f.missed);
         }
         if f.turn_started {
             let _ = self.machine.step(Ev::TurnStarted);
@@ -1016,13 +1054,17 @@ impl Actor {
         // not while replaying: the driver has not seen the questions it holds answers for yet
         let state = (self.replay_until.is_none() && saved != self.saved).then(|| saved.json());
         let before = self.committed;
-        if puts.is_empty() && committed == before && state.is_none() {
+        let missed = std::mem::take(&mut self.missed);
+        if puts.is_empty() && committed == before && state.is_none() && missed.is_empty() {
             return;
         }
         let (sid, epoch) = (self.sid, self.epoch);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
+            }
+            if !missed.is_empty() {
+                sent::missed(tx, sid, &missed, published)?;
             }
             if committed != before {
                 tx.set_spool_committed(sid, committed)?;
@@ -1047,6 +1089,7 @@ impl Actor {
             Err(e) => {
                 tracing::warn!(sid = %self.sid, %e, "transcript not stored, kept for later");
                 self.pending_puts = puts;
+                self.missed = missed;
             }
         }
     }
@@ -1222,6 +1265,12 @@ impl Actor {
     async fn fail(&mut self, d: &Daemon, text: &str) {
         self.failed = true;
         self.restart_at = None;
+        // nothing runs them now: the messages that waited for a process were not got
+        let held = std::mem::take(&mut self.resend)
+            .into_iter()
+            .chain(self.driver.held_prompts());
+        self.missed.extend(held.filter_map(|h| h.id));
+        self.commit(d, Vec::new()).await;
         self.event(d, text);
         self.update(d, None, |s| {
             s.status = SessionStatus::Failed;
@@ -1273,7 +1322,8 @@ impl Actor {
                     // The prompts that waited for a headless process each have an Event item that
                     // says they did not run, and the conversation moves to the terminal: none may
                     // come back as a turn nobody asked for after the next restart.
-                    self.resend.clear();
+                    let held = std::mem::take(&mut self.resend);
+                    self.missed.extend(held.into_iter().filter_map(|h| h.id));
                     self.commit(d, Vec::new()).await;
                     self.spawn_tui(d).await
                 }
@@ -1553,6 +1603,8 @@ struct Folded {
     compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
+    /// The echo ids of prompts the agent will not get ([`crate::sent::missed`]).
+    missed: Vec<String>,
     turn_started: bool,
     turn_ended: bool,
 }
@@ -1717,7 +1769,9 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 let line = format!("A message was not run ({why}): {}", cut(&text, 300));
                 f.puts
                     .push(Put::Done(event_item(sid, next_id(), &line, now)));
-                if reason == DropReason::Exited {
+                if reason != DropReason::Exited {
+                    f.missed.extend(id);
+                } else {
                     f.dropped.push(HeldPrompt {
                         text,
                         how,
@@ -1803,11 +1857,23 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
         }
         Put::Done(item) => {
             let mut item = item.clone();
-            if let Some(old) = store_items::get_item(tx, sid, &item.item_id)? {
-                if same(&old, &item) {
-                    return Ok(());
+            match store_items::get_item(tx, sid, &item.item_id)? {
+                // the echo of a saved message, paired when it first came
+                Some(old) if sent::is_read_mark(&old) => return Ok(()),
+                Some(old) => {
+                    if same(&old, &item) {
+                        return Ok(());
+                    }
+                    item.ts = old.ts;
                 }
-                item.ts = old.ts;
+                None => {
+                    if sent::reconcile(tx, sid, &item, published)? {
+                        return Ok(());
+                    }
+                    if item.kind == ItemKind::TurnEnd {
+                        sent::missed_by_turn(tx, sid, &item, published)?;
+                    }
+                }
             }
             published.push(tx.put_item(&item)?);
         }
@@ -1878,7 +1944,11 @@ fn render(items: &[(Item, Value)], streams: &HashMap<String, String>) -> String 
                 .to_string(),
         };
         let line = match item.kind {
-            ItemKind::UserMessage => format!("> {}", text("text")),
+            ItemKind::UserMessage => match item.status {
+                ItemStatus::Pending => format!("> {} (queued)", text("text")),
+                ItemStatus::Failed => format!("> {} (not received)", text("text")),
+                _ => format!("> {}", text("text")),
+            },
             ItemKind::PeerMessage => format!("@{}: {}", text("from"), text("text")),
             ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
             ItemKind::ToolCall => format!("* {}", item.preview),
@@ -2247,6 +2317,39 @@ mod tests {
             })
             .unwrap();
         published
+    }
+
+    /// The echo of a saved message reads it, once: a replay of the same line changes nothing.
+    #[test]
+    fn a_saved_message_is_read_by_its_echo_and_a_replay_leaves_it_read() {
+        let (store, sid) = store_with_session();
+        let mut saved = item(ItemKind::UserMessage, ItemStatus::Pending, "fix it");
+        saved.sid = sid;
+        saved.item_id = "01JC0SAVED".into();
+        saved.body =
+            Some(r#"{"text":"fix it","echo":"c8eed47b-e7a7-4739-8260-f78e891051e8"}"#.into());
+        saved.ts = 1_000;
+        saved.seq = 0;
+        apply_puts(&store, sid, vec![Put::Done(saved)]);
+        let mut echo = item(ItemKind::UserMessage, ItemStatus::Completed, "fix it");
+        echo.sid = sid;
+        echo.item_id = "c8eed47b-e7a7-4739-8260-f78e891051e8".into();
+        echo.body = Some(r#"{"text":"fix it"}"#.into());
+        echo.ts = 4_000;
+        echo.seq = 0;
+        let first = apply_puts(&store, sid, vec![Put::Done(echo.clone())]);
+        assert_eq!(
+            first.iter().map(|i| (i.kind, i.status)).collect::<Vec<_>>(),
+            [
+                (ItemKind::UserMessage, ItemStatus::Completed),
+                (ItemKind::Event, ItemStatus::Completed)
+            ]
+        );
+        assert!(apply_puts(&store, sid, vec![Put::Done(echo)]).is_empty());
+        let all = store
+            .read(|c| store_items::page_items(c, sid, None, 10))
+            .unwrap();
+        assert_eq!(all.len(), 2, "the message and where it was read: {all:?}");
     }
 
     #[test]
@@ -2940,7 +3043,7 @@ mod tests {
         rig.a.spawn_process(&rig.d, None).await.unwrap();
         // the agent has not answered `initialize`: the driver holds the prompt back
         rig.a
-            .prompt(&rig.d, "second", PromptHow::Queue)
+            .prompt(&rig.d, "second", PromptHow::Queue, None)
             .await
             .unwrap();
         assert_eq!(rig.a.driver.held_prompts().len(), 1);

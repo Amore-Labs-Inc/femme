@@ -19,7 +19,7 @@ use femme_proto::holder::{HolderEvent, ScreenFmt, Target};
 use femme_proto::rpc::PromptHow;
 use femme_proto::state::{Agent, Attention, Mode, Pane, PaneKind, Session, SessionStatus};
 use femme_proto::term::{Key, KeyCode, Mods, TermDown, TermUp};
-use femme_proto::{Id, PaneId, Sid};
+use femme_proto::{Id, OpId, PaneId, Sid};
 use femme_store::sessions;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
@@ -758,12 +758,15 @@ impl Daemon {
     }
 
     /// [`Core::prompt`](crate::core::Core::prompt) with a say in when it runs: a headless driver
-    /// gets `how`; a TUI pane ignores it (the TUI queues typed text itself).
+    /// gets `how`; a TUI pane ignores it (the TUI queues typed text itself). A headless session's
+    /// message is stored first ([`crate::sent`]), with the client's `op`, and taken back if the
+    /// agent cannot be handed it.
     pub(crate) async fn pane_prompt(
         &self,
         pane: &PaneRef,
         text: &str,
         how: PromptHow,
+        op: Option<OpId>,
     ) -> Result<(), CoreError> {
         let (mut s, p) = self.resolve(pane)?;
         if s.agent == Agent::Shell || p.kind != PaneKind::Agent {
@@ -776,12 +779,14 @@ impl Daemon {
             }
         }
         if s.mode == Mode::Headless {
-            return self
-                .sessions
-                .head(s.id)
-                .ok_or_else(gone)?
-                .prompt(text, how)
-                .await;
+            let head = self.sessions.head(s.id).ok_or_else(gone)?;
+            let saved = self.save_prompt(&s, text, op)?;
+            let echo = saved.as_ref().and_then(|v| v.echo.clone());
+            let r = head.prompt_as(text, how, echo).await;
+            if let (Err(_), Some(v)) = (&r, &saved) {
+                self.unsave(s.id, &v.item_id);
+            }
+            return r;
         }
         // A fresh agent reports in with its first hook; give it a moment.
         // ponytail: polls the store; a hub subscription when the desktop needs the same wait.

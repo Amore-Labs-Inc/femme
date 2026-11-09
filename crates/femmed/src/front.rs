@@ -624,7 +624,7 @@ impl Ctx {
             return Err(req::err(ErrCode::Bad, "an op id is never nil"));
         }
         if !req::mutates(&req) {
-            return req::dispatch(self, req).await;
+            return req::dispatch(self, op, req).await;
         }
         let digest = sha256(&wire);
         let key = (self.device, op);
@@ -676,7 +676,7 @@ impl Ctx {
             Ok(None) => {}
             Err(e) => tracing::warn!(%op, %e, "op lookup failed; running the op"),
         }
-        let out = req::dispatch(self, req).await;
+        let out = req::dispatch(self, op, req).await;
         // A "not now" is not the op's answer: remembered, it would be given to every retry for a
         // day, and the retry is what the desktop makes it for.
         if matches!(&out, Err(e) if matches!(e.code, ErrCode::Busy | ErrCode::Internal)) {

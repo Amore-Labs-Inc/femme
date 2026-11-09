@@ -246,6 +246,10 @@ pub enum Req {
     /// Reads (`on: None`) or sets whether a merge from FEMME starts a fix for every
     /// `claude-update/*` pull request it leaves conflicting. Answered with `Resp::PrAutoFix`.
     PrAutoFix { on: Option<bool> },
+    /// Gives the agent again a message it did not get (a `UserMessage` in `Failed`, see
+    /// [`ItemKind::UserMessage`](crate::state::ItemKind::UserMessage)). The message stays where
+    /// it is in the transcript and waits again.
+    Resend { sid: Sid, item_id: String },
 }
 
 /// One open pull request, as `Resp::Prs` lists it.

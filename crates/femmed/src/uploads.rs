@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use femme_proto::rpc::{Attachment, PromptHow};
 use femme_proto::state::{Item, ItemKind, ItemStatus};
-use femme_proto::Sid;
+use femme_proto::{OpId, Sid};
 use femme_store::Store;
 use ulid::Ulid;
 
@@ -40,9 +40,10 @@ impl Daemon {
         text: &str,
         attachments: &[Attachment],
         how: PromptHow,
+        op: Option<OpId>,
     ) -> Result<(), CoreError> {
         if attachments.is_empty() {
-            return self.pane_prompt(pane, text, how).await;
+            return self.pane_prompt(pane, text, how, op).await;
         }
         if attachments.len() > ATTACHMENTS_MAX {
             let why = format!("at most {ATTACHMENTS_MAX} attachments to a prompt");
@@ -57,7 +58,7 @@ impl Daemon {
         // ponytail: the files stay when the prompt then fails (`Busy`, say): a retry makes
         // `name-2` beside them, and the session's purge sweeps them all. Deleting them would break
         // a prompt that was half delivered.
-        self.pane_prompt(pane, &with_lines(text, &paths), how)
+        self.pane_prompt(pane, &with_lines(text, &paths), how, op)
             .await
     }
 
