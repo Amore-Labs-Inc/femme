@@ -1,6 +1,8 @@
 //! The `/` menu: which of the daemon's commands (`Req::Commands`) to offer while the draft is a
 //! command word being typed. Pure, so the view in `composer.rs` only draws and routes keys.
 
+use femme_proto::rpc::PromptHow;
+
 /// The most rows the menu shows.
 pub const MAX: usize = 8;
 
@@ -87,12 +89,38 @@ pub fn complete(name: &str) -> String {
     format!("/{name} ")
 }
 
+/// How a send reaches a session that is `working`, as the terminal's keys do: Enter joins the
+/// running turn at its next tool boundary (`Steer`), ctrl-Enter (`secondary`) stops the turn and
+/// sends now (`InterruptThenSend`), and a `/command` waits for the turn to end (`Queue`), since the
+/// terminal holds commands back too. An idle session takes every key as a plain send.
+// ponytail: the terminal's newer "send now" moves running shell or subagent work to the background
+// instead of interrupting it; ctrl-Enter can do the same once FEMME has a background request.
+pub fn how_for(working: bool, secondary: bool, text: &str) -> PromptHow {
+    match (working, secondary) {
+        (false, _) => PromptHow::Queue,
+        (true, _) if text.trim_start().starts_with('/') => PromptHow::Queue,
+        (true, false) => PromptHow::Steer,
+        (true, true) => PromptHow::InterruptThenSend,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn enter_steers_a_working_session_and_commands_wait() {
+        use PromptHow::*;
+        assert_eq!(how_for(true, false, "also say banana"), Steer);
+        assert_eq!(how_for(true, true, "stop, do this"), InterruptThenSend);
+        assert_eq!(how_for(true, false, "/compact"), Queue);
+        assert_eq!(how_for(true, true, "/compact"), Queue);
+        assert_eq!(how_for(false, false, "hi"), Queue);
+        assert_eq!(how_for(false, true, "hi"), Queue);
     }
 
     #[test]
