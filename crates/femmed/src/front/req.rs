@@ -122,13 +122,10 @@ pub(crate) async fn dispatch(ctx: &Ctx, req: Req) -> Result<Resp, WireErr> {
             sid,
             text,
             attachments,
-            ..
+            how,
         } => {
-            // ponytail: `how` is not looked at: every prompt is a Queue (the core's `prompt` goes
-            // after the running turn). Steer and InterruptThenSend want the headless driver's inject
-            // and an interrupt-first, which `Core` has no call for yet.
             let pane = main_pane(d, sid)?;
-            done(d.prompt_attached(&pane, &text, &attachments).await)
+            done(d.prompt_attached(&pane, &text, &attachments, how).await)
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
         Req::AnswerQuestion {

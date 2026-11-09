@@ -368,11 +368,8 @@ impl Composer {
                 secondary,
                 shift: false,
             } => {
-                let how = if *secondary {
-                    PromptHow::Steer
-                } else {
-                    PromptHow::Queue
-                };
+                let text = input.read(cx).value().to_string();
+                let how = slash::how_for(self.working(cx), *secondary, &text);
                 self.send(how, window, cx);
             }
             InputEvent::Change => {
@@ -533,17 +530,20 @@ impl Composer {
         }
     }
 
+    /// Whether the session on show is in a turn.
+    fn working(&self, cx: &App) -> bool {
+        self.net
+            .as_ref()
+            .zip(self.session)
+            .and_then(|(net, sid)| net.read(cx).model.sessions.get(&sid))
+            .is_some_and(|s| s.status == SessionStatus::Working)
+    }
+
     fn interrupt(&mut self, cx: &mut Context<Self>) -> bool {
         let (Some(net), Some(sid)) = (self.net.clone(), self.session) else {
             return false;
         };
-        let working = net
-            .read(cx)
-            .model
-            .sessions
-            .get(&sid)
-            .is_some_and(|s| s.status == SessionStatus::Working);
-        if !working {
+        if !self.working(cx) {
             return false;
         }
         let answer = request(&net, Req::Interrupt { sid }, cx);
@@ -559,8 +559,9 @@ impl Composer {
         true
     }
 
-    /// Sends the input's text and the ready chips as a prompt: `how` is `Queue` for Enter and
-    /// `Steer` for Ctrl-Enter. Nothing is cleared until the daemon has answered.
+    /// Sends the input's text and the ready chips as a prompt, `how` per [`slash::how_for`]: in a
+    /// working session Enter steers, ctrl-Enter interrupts first, a `/command` queues. Nothing is
+    /// cleared until the daemon has answered.
     fn send(&mut self, how: PromptHow, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(net), Some(input), Some(sid)) =
             (self.net.clone(), self.input.clone(), self.session)
@@ -960,9 +961,16 @@ impl Render for Composer {
             disabled_button("c-attach", "+")
         };
         let send = if can_send {
-            button_dark("c-send", "send").on_click(
-                cx.listener(|this, _, window, cx| this.send(PromptHow::Queue, window, cx)),
-            )
+            // the button is a plain Enter: it steers a working session, like the terminal's Enter
+            button_dark("c-send", "send").on_click(cx.listener(|this, _, window, cx| {
+                let text = this
+                    .input
+                    .as_ref()
+                    .map(|i| i.read(cx).value().to_string())
+                    .unwrap_or_default();
+                let how = slash::how_for(this.working(cx), false, &text);
+                this.send(how, window, cx);
+            }))
         } else {
             disabled_button("c-send", "send")
         };
