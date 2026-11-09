@@ -44,6 +44,9 @@ pub struct ToolCall {
     pub name: String,
     /// The tool's input; `None` until it is complete, or when it was cut.
     pub input: Option<Value>,
+    /// Where the call's task runs, once the agent runs it as one (Claude: a Bash command or a
+    /// subagent): `foreground` while the turn waits for it, `background` once it was moved.
+    pub task: Option<String>,
 }
 
 impl ToolCall {
@@ -162,12 +165,14 @@ fn tool_call(json: &str) -> ToolCall {
         Ok(v) => ToolCall {
             name: v["name"].as_str().unwrap_or("tool").to_owned(),
             input: v.get("input").cloned(),
+            task: v["task"].as_str().map(str::to_owned),
         },
         // Cut inside the input (keys are sorted, so `input` comes before `name`): the name is gone
         // with the tail; the caller falls back to the item's preview.
         Err(_) => ToolCall {
             name: string_field(json, "name").unwrap_or_default(),
             input: None,
+            task: None,
         },
     }
 }

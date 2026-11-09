@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use femme_proto::Sid;
-use femme_proto::rpc::{Err as WireErr, ErrCode, MAX_BLOB_PUT, Pr, Resp};
+use femme_proto::rpc::{Err as WireErr, ErrCode, Pr, Resp, MAX_BLOB_PUT};
 use femme_proto::state::{Agent, Mode};
+use femme_proto::Sid;
 use serde::Deserialize;
 use tokio::process::Command;
 

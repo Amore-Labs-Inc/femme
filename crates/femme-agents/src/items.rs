@@ -39,6 +39,21 @@ pub struct ToolCall {
     pub input: Value,
     /// The agent's id for this call (Claude `tool_use.id`, Codex item id, Pi toolCallId).
     pub call_id: String,
+    /// Set once the agent runs the call as a task (Claude's `task_started`: a Bash command or a
+    /// subagent): `Foreground` while the turn waits for it (and [`crate::Driver::background`] can
+    /// move it), `Background` once it runs on its own. Stays on the completed call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskState>,
+}
+
+/// Where a tool call's task runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    /// The turn waits for it.
+    Foreground,
+    /// It runs on its own; the turn went on and a `task_notification` event ends it.
+    Background,
 }
 
 /// `ItemKind::ToolResult`: what a tool returned. Id of the item is `<call_id>:result`.
@@ -202,6 +217,7 @@ mod tests {
             name: "Bash".into(),
             input: json!({"command":"echo hi"}),
             call_id: "t1".into(),
+            task: None,
         });
         let r = body(&ToolResult {
             call_id: "t1".into(),

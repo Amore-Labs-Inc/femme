@@ -707,6 +707,7 @@ impl PiDriver {
             name,
             input,
             call_id: id.to_owned(),
+            task: None,
         })
     }
 

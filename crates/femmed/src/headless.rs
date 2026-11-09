@@ -98,6 +98,11 @@ enum Cmd {
     Interrupt {
         reply: Reply,
     },
+    /// Ctrl+B: the foreground task of the call (or every one) goes to the background.
+    Background {
+        tool_use_id: Option<String>,
+        reply: Reply,
+    },
     Answer {
         request_id: String,
         answer: Answer,
@@ -152,6 +157,14 @@ impl Head {
 
     pub(crate) async fn interrupt(&self) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Interrupt { reply }).await
+    }
+
+    pub(crate) async fn background(&self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::Background {
+            tool_use_id: tool_use_id.map(str::to_owned),
+            reply,
+        })
+        .await
     }
 
     pub(crate) async fn answer(&self, request_id: &str, answer: Answer) -> Result<(), CoreError> {
@@ -483,6 +496,10 @@ impl Actor {
                 let r = self.interrupt().await;
                 let _ = reply.send(r);
             }
+            Cmd::Background { tool_use_id, reply } => {
+                let r = self.background(tool_use_id.as_deref()).await;
+                let _ = reply.send(r);
+            }
             Cmd::Answer {
                 request_id,
                 answer,
@@ -569,6 +586,15 @@ impl Actor {
     async fn interrupt(&mut self) -> Result<(), CoreError> {
         self.ready()?;
         self.driver.interrupt(&mut self.out).map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
+    async fn background(&mut self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
+        self.ready()?;
+        self.driver
+            .background(tool_use_id, &mut self.out)
+            .map_err(driver_err)?;
         self.flush().await;
         Ok(())
     }
@@ -2028,6 +2054,25 @@ impl Daemon {
             .head(sid)
             .ok_or(CoreError::Busy)?
             .interrupt()
+            .await
+    }
+
+    pub(crate) async fn background_task(
+        &self,
+        sid: Sid,
+        tool_use_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let s = self.session(sid)?;
+        if s.agent == Agent::Shell {
+            return Err(CoreError::Busy);
+        }
+        if s.mode == Mode::Tui {
+            return self.send_bytes(sid, b"\x02").await; // Ctrl+B
+        }
+        self.sessions
+            .head(sid)
+            .ok_or(CoreError::Busy)?
+            .background(tool_use_id)
             .await
     }
 

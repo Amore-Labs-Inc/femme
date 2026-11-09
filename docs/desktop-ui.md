@@ -81,6 +81,13 @@ Keep it current: when your module's public API changes, edit your section in the
   chip stays, `●` and counting, until the agent reports it stopped, as Claude Code's own list of
   background tasks does. The Agent row stays in the main thread as the way back in. The composer
   is unchanged: a message sent while a subagent is on show goes to the session as always.
+- **Background tasks** (Claude Code 2.1.319): a Bash command or an Agent the turn waits for is a
+  task (`task_started`), and its tool row shows `⇣ background` at its right while it runs. A click
+  moves that task to the background (`Req::Background{sid, tool_use_id}`, Claude's `background_tasks`
+  control request): the call's result says it was backgrounded, the turn goes on, and the row says
+  `in background` until the task's end comes as an event (`task_notification`), which starts a turn
+  of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
+  of the chat on show, as `Ctrl+B` does in Claude's own TUI (a mirrored pane gets that key).
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text
@@ -199,6 +206,7 @@ Not touched by anyone: `desktop/src/connect.rs`, `display.rs`, `terminal/element
 | `BlobPut{name, data}` | `BlobHash(h)` | `data` ≤ `MAX_BLOB_PUT` (8 MiB; this request may weigh that much, every other one 1 MiB) into the `blobs` table (hash = sha256); `name` is not kept. A `Prompt` whose `attachments` name blobs: each is written to `<state>/uploads/<sid>/<name>` (last path component, control characters become `_`, leading dots dropped, `-2` before the extension for a taken name; at most 16; a blob that is gone is `Bad`) and the prompt text gets a blank line and one `Attached: <absolute path>` line per file. **`BlobGet` serves an upload only until retention sweeps it**: a blob no transcript item refers to goes at the next daemon start or daily sweep. So `BlobPut` and `Prompt` close together, and a transcript row that shows an attachment reads the file at its `Attached:` path with `FsRead`. |
 | `Caps` / `SetCap{account, five_hour, weekly}` | `Caps(Vec<AccountCap>)` / `Ok` | Stored in `<state>/caps.json` (`{"<number>": {"five_hour": 80, "weekly": 90}}`), written atomically. `server/fable-cap.sh` reads it: an account past *its* cap (either window) is `cswap disable`d and, if active, the box `cswap switch --strategy best`; below it again → `cswap enable`. `femme-cswap.service` keeps the global `CAP`, which still moves the box off the active account, so a per-account cap above it cannot keep an account in use longer. A cap is 50 to 99 (else `Bad`) and `account` is cswap's number, from 1; both `None` clears. The scheduler's pause at `CAP` stays global (`/usage` carries no account). |
 | `ServerInfo` | `ServerInfo{version, deployed}` | `env!("CARGO_PKG_VERSION")` and `<state>/deployed` trimmed. |
+| `Background{sid, tool_use_id}` | `Ok` | Headless: the driver's `background_tasks` control request for the call (`None`: every foreground task); a TUI or herdr pane gets `Ctrl+B`. `Busy` when nothing runs in the foreground. |
 | `FsList{sid, path}` / `FsRead{sid, path}` | `FsEntries` / `FsData` | Implement: `path` relative to the session's `cwd` (absolute allowed under `$HOME`), no `..` escapes, no symlink out of home, hidden files listed, directories sorted dirs-first. `FsRead` is capped just under a frame, 16 MiB − 4 KiB (else `Bad`): a reply has to fit one 16 MiB frame. The session's own `<state>/uploads/<sid>/` is readable too, wherever the state folder is. |
 
 Usage JSON: `GET /api/accounts` → `{"cswap": <cswap list --json>, "aws": {...}}`; each account has

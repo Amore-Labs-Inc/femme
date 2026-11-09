@@ -40,7 +40,7 @@ fn launched(items: &Items, result: &Entry) -> bool {
 }
 
 /// The call an event line says stopped (`femme_agents::items::TaskEnd`).
-fn task_end(items: &Items, e: &Entry) -> Option<String> {
+pub(super) fn task_end(items: &Items, e: &Entry) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(items.json(e)?).ok()?;
     v["task"]["call"].as_str().map(str::to_owned)
 }

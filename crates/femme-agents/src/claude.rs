@@ -68,7 +68,7 @@ use crate::common::{
 };
 use crate::items::{
     body, ArtifactLink, AssistantMessage, Event, PeerMessage, Plan, QuestionItem, TaskEnd,
-    Thinking, ToolCall, ToolResult, UserMessage,
+    TaskState, Thinking, ToolCall, ToolResult, UserMessage,
 };
 use crate::{
     AgentEvent, AgentStatus, Attach, Driver, DropReason, Error, HeldPrompt, Launch, Out, Spawn,
@@ -215,6 +215,16 @@ pub struct ClaudeDriver {
     parent: Option<String>,
     /// Stream state of the other subagents, by `Agent` tool call id.
     subs: BTreeMap<String, Thread>,
+    /// Tasks the CLI reported (`task_started`) and has not ended, by task id.
+    tasks: BTreeMap<String, Task>,
+}
+
+/// A running task (a Bash command or a subagent) of a tool call.
+#[derive(Debug)]
+struct Task {
+    /// The tool call's id.
+    call: String,
+    background: bool,
 }
 
 impl Default for ClaudeDriver {
@@ -252,6 +262,65 @@ impl ClaudeDriver {
             rl: BTreeMap::new(),
             parent: None,
             subs: BTreeMap::new(),
+            tasks: BTreeMap::new(),
+        }
+    }
+
+    /// Where the call's task runs, if it has one.
+    fn task_of(&self, call: &str) -> Option<TaskState> {
+        self.tasks.values().find(|t| t.call == call).map(|t| {
+            if t.background {
+                TaskState::Background
+            } else {
+                TaskState::Foreground
+            }
+        })
+    }
+
+    /// The call `id` with its current `task`, from whichever thread holds it, for an `ItemUpdated`.
+    fn task_body(&self, id: &str) -> Option<Value> {
+        let c = self
+            .calls
+            .get(id)
+            .or_else(|| self.subs.values().find_map(|t| t.calls.get(id)))?;
+        Some(body(&ToolCall {
+            name: c.name.clone(),
+            input: c.input.clone(),
+            call_id: id.to_owned(),
+            task: self.task_of(id),
+        }))
+    }
+
+    /// A task began, or moved to the background: the call's row learns it.
+    fn task_set(
+        &mut self,
+        task_id: &str,
+        call: Option<&str>,
+        background: bool,
+        ev: &mut Vec<AgentEvent>,
+    ) {
+        let call = match (self.tasks.get_mut(task_id), call) {
+            (Some(t), _) => {
+                if t.background == background {
+                    return;
+                }
+                t.background = background;
+                t.call.clone()
+            }
+            (None, Some(call)) => {
+                self.tasks.insert(
+                    task_id.to_owned(),
+                    Task {
+                        call: call.to_owned(),
+                        background,
+                    },
+                );
+                call.to_owned()
+            }
+            (None, None) => return, // a task we never saw start
+        };
+        if let Some(body) = self.task_body(&call) {
+            ev.push(AgentEvent::ItemUpdated { id: call, body });
         }
     }
 
@@ -418,7 +487,37 @@ impl ClaudeDriver {
                 }
                 self.permission_mode(v, ev);
             }
-            "task_notification" => ev.push(task_end(item_id(v, offset), v)),
+            "task_started" => self.task_set(
+                v["task_id"].as_str().unwrap_or(""),
+                v["tool_use_id"].as_str(),
+                v["is_backgrounded"].as_bool().unwrap_or(false),
+                ev,
+            ),
+            "task_updated" => {
+                if let Some(bg) = v["patch"]["is_backgrounded"].as_bool() {
+                    self.task_set(v["task_id"].as_str().unwrap_or(""), None, bg, ev);
+                }
+            }
+            // the list of tasks running in the background
+            "background_tasks_changed" => {
+                let ids: Vec<String> = v["tasks"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t["task_id"].as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for id in ids {
+                    self.task_set(&id, None, true, ev);
+                }
+            }
+            "task_notification" => {
+                if let Some(id) = v["task_id"].as_str() {
+                    self.tasks.remove(id);
+                }
+                ev.push(task_end(item_id(v, offset), v));
+            }
             "compact_boundary" => {
                 ev.push(event_item(item_id(v, offset), "Conversation compacted"));
                 // the stream says `compact_metadata`, the transcript on disk `compactMetadata`
@@ -689,6 +788,7 @@ impl ClaudeDriver {
                     name: name.clone(),
                     input: input.clone(),
                     call_id: id.clone(),
+                    task: self.task_of(&id),
                 }),
             }),
         }
@@ -720,6 +820,7 @@ impl ClaudeDriver {
                     name: b.name,
                     input: Value::Null,
                     call_id: b.id.clone(),
+                    task: None,
                 }),
             ),
         };
@@ -902,6 +1003,7 @@ impl ClaudeDriver {
                 name: call.name,
                 input: call.input,
                 call_id: id.to_owned(),
+                task: self.task_of(id),
             }),
         ));
         ev.push(result);
@@ -1048,6 +1150,7 @@ impl ClaudeDriver {
                     body(&ToolCall {
                         name: c.name,
                         input: c.input,
+                        task: self.task_of(&id),
                         call_id: id,
                     }),
                 ));
@@ -1466,6 +1569,25 @@ impl Driver for ClaudeDriver {
         if self.turn {
             self.control("int", json!({"subtype":"interrupt"}), out);
         }
+        Ok(())
+    }
+
+    fn background(&mut self, tool_use_id: Option<&str>, out: &mut Out) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+        if self.awaiting_init {
+            return Err(Error::State("claude has not finished starting"));
+        }
+        let foreground = |t: &Task| !t.background && tool_use_id.is_none_or(|id| t.call == id);
+        if !self.tasks.values().any(foreground) {
+            return Err(Error::State("nothing runs in the foreground"));
+        }
+        let mut req = json!({"subtype":"background_tasks"});
+        if let Some(id) = tool_use_id {
+            req["tool_use_id"] = Value::String(id.to_owned());
+        }
+        self.control("bg", req, out);
         Ok(())
     }
 
@@ -2444,5 +2566,103 @@ mod tests {
                 pre_tokens: Some(310_172)
             })
         );
+    }
+
+    fn last_line(out: &Out) -> &[u8] {
+        out.stdin
+            .split(|b| *b == b'\n')
+            .rfind(|l| !l.is_empty())
+            .unwrap()
+    }
+
+    /// Claude 2.1.319: `task_started` says which call waits in the foreground, `task_updated`
+    /// (after a `background_tasks` request) that it moved; the call's row sees both, and the
+    /// request itself is the control line, with or without a call id.
+    #[test]
+    fn a_foreground_task_can_be_backgrounded() {
+        let mut f = Feed::new();
+        f.d.on_start(&Launch::default(), &mut Out::default());
+        f.line(json!({"type":"control_response","response":{"subtype":"success","request_id":INIT_ID,"response":{}}}));
+        f.line(
+            json!({"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 45"}}]},
+            "parent_tool_use_id":null,"uuid":"u1"}),
+        );
+        let mut out = Out::default();
+        assert!(
+            matches!(f.d.background(None, &mut out), Err(Error::State(_))),
+            "no task yet"
+        );
+        let ev = f.line(
+            json!({"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"toolu_1",
+            "description":"Sleep","is_backgrounded":false,"task_type":"local_bash","uuid":"u2"}),
+        );
+        match &ev[..] {
+            [AgentEvent::ItemUpdated { id, body }] => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(body["task"], "foreground", "{body}");
+                assert_eq!(body["name"], "Bash");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            f.d.background(Some("toolu_9"), &mut out),
+            Err(Error::State(_))
+        ));
+        f.d.background(Some("toolu_1"), &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(line["type"], "control_request");
+        assert!(line["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("femme-bg-"));
+        assert_eq!(
+            line["request"],
+            json!({"subtype":"background_tasks","tool_use_id":"toolu_1"})
+        );
+        f.d.background(None, &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(line["request"], json!({"subtype":"background_tasks"}));
+
+        let ev = f.line(json!({"type":"system","subtype":"task_updated","task_id":"t1","patch":{"is_backgrounded":true},"uuid":"u3"}));
+        match &ev[..] {
+            [AgentEvent::ItemUpdated { id, body }] => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(body["task"], "background", "{body}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // said again by the task list: nothing new
+        assert!(f
+            .line(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1"}],"uuid":"u4"}))
+            .is_empty());
+        assert!(
+            matches!(f.d.background(None, &mut out), Err(Error::State(_))),
+            "nothing left in the foreground"
+        );
+        // the result keeps the state on the completed call
+        let ev = f.line(json!({"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result",
+            "content":"Command was manually backgrounded by user with ID: t1.","is_error":false}]},"parent_tool_use_id":null,"uuid":"u5"}));
+        let call = ev
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ItemCompleted { id, body, .. } if id == "toolu_1" => Some(body.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(call["task"], "background", "{call}");
+        let ev = f.line(json!({"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"toolu_1",
+            "status":"completed","summary":"Sleep","uuid":"u6"}));
+        assert!(
+            matches!(
+                &ev[..],
+                [AgentEvent::ItemCompleted {
+                    kind: ItemKind::Event,
+                    ..
+                }]
+            ),
+            "{ev:?}"
+        );
+        assert!(f.d.tasks.is_empty());
     }
 }

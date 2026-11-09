@@ -8,6 +8,9 @@
 #          written while it runs is folded in like the CLI does at a tool boundary: echoed at once
 #          with isReplay, "echo: <it>" appended to the stream, both uuids in the one result
 #   compact  headless only: a big call (150002 tokens read), the compaction, then 50 lines 200 ms apart
+#   bgtask headless only: a Bash call run as a foreground task (`task_started`) for 5 s; a
+#          `background_tasks` control request moves it to the background (claude 2.1.319): the
+#          result says so, the turn ends, and 1 s later the task's notification starts a turn
 #   quit   exits 0 mid-turn        crash   exits 1 with text on stderr
 #   <any>  replies "echo: <any>", with a 100 ms pause mid-turn
 import json
@@ -278,6 +281,48 @@ def ask(u, two=False):
     return stream(f"msg_{uid()[:8]}", ["you chose: ", chosen], 0.0, True, u)
 
 
+def tool_result(tid, text):
+    out({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid,
+         "content": text, "is_error": False}]}, "parent_tool_use_id": None, "session_id": SID, "uuid": uid()})
+
+
+def bgtask(u):
+    """A foreground task for 5 s, or until a `background_tasks` request. Returns None when the
+    turn was ended here (backgrounded), else whether the stream went through."""
+    tid, task = f"toolu_{uid()[:8]}", f"task_{uid()[:6]}"
+    out({"type": "assistant", "message": {"model": MODEL, "id": f"msg_{uid()[:8]}", "type": "message", "role": "assistant",
+         "content": [{"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": "sleep 5", "description": "Sleep"}}],
+         "stop_reason": None, "usage": usage(7)}, "parent_tool_use_id": None, "session_id": SID, "uuid": uid(),
+         "user_message_uuid": u, "user_message_uuids": [u]})
+    system("task_started", task_id=task, run_id="run-1", tool_use_id=tid, description="Sleep", is_backgrounded=False,
+           task_type="local_bash")
+    end, bg = time.monotonic() + 5, False
+    while time.monotonic() < end:
+        v = read_line(end - time.monotonic())
+        if v is None:
+            break
+        if v.get("type") == "control_request" and v.get("request", {}).get("subtype") == "background_tasks":
+            control_ok(v.get("request_id", ""))
+            bg = True
+            break
+        if control(v) == "interrupt":
+            user_text("[Request interrupted by user]")
+            return False
+    if not bg:
+        tool_result(tid, "")
+        return stream(f"msg_{uid()[:8]}", ["slept"], 0.0, True, u)
+    system("background_tasks_changed", tasks=[{"task_id": task, "run_id": "run-1", "task_type": "local_bash", "description": "Sleep"}])
+    system("task_updated", task_id=task, run_id="run-1", patch={"is_backgrounded": True})
+    tool_result(tid, f"Command was manually backgrounded by user with ID: {task}. Output is being written to: /tmp/{task}.output.")
+    result(u, stream(f"msg_{uid()[:8]}", ["in the background"], 0.0, True, u))
+    pause(1.0, False)
+    system("task_notification", task_id=task, run_id="run-1", tool_use_id=tid, status="completed", output_file=f"/tmp/{task}.output",
+           summary="Sleep")
+    u2 = uid()
+    result(u2, stream(f"msg_{uid()[:8]}", ["the task printed 42"], 0.0, True, u2))
+    return None
+
+
 def turn(v):
     u = v.get("uuid") or uid()
     text = "".join(b.get("text", "") for b in v.get("message", {}).get("content", []) if b.get("type") == "text")
@@ -297,6 +342,10 @@ def turn(v):
         ok = ask(u, word == "ask2")
     elif word == "slow":
         ok = stream(f"msg_{uid()[:8]}", [f"tick {i}\n" for i in range(1, 51)], 0.2, True, u, fold=True)
+    elif word == "bgtask":
+        ok = bgtask(u)
+        if ok is None:
+            return
     elif word == "compact":
         big = {"input_tokens": 2, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 150000, "output_tokens": 1}
         out({"type": "assistant", "message": {"model": MODEL, "id": f"msg_{uid()[:8]}", "type": "message", "role": "assistant",

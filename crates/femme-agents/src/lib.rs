@@ -438,6 +438,15 @@ pub trait Driver: Send {
     /// [`Driver::on_exit`] it is `Error::State`.
     fn interrupt(&mut self, out: &mut Out) -> Result<(), Error>;
 
+    /// Move the task of the tool call `tool_use_id` (a Bash command or a subagent the turn waits
+    /// for), or with `None` every foreground task, to the background (Ctrl+B in Claude's TUI): the
+    /// turn goes on, the call's result says it was backgrounded, and a task-end event follows when
+    /// it finishes. `Error::State` when nothing runs in the foreground, `Error::Unsupported` for
+    /// agents without background tasks.
+    fn background(&mut self, _tool_use_id: Option<&str>, _out: &mut Out) -> Result<(), Error> {
+        Err(Error::Unsupported("background tasks"))
+    }
+
     /// Answer a pending [`AgentEvent::QuestionAsked`]. A question that was already answered
     /// (also one the daemon reported as answered through [`Attach::answers`]) or that the agent
     /// withdrew is `Error::UnknownRequest`; after [`Driver::on_exit`] it is `Error::State`.
