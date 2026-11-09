@@ -44,6 +44,15 @@ Keep it current: when your module's public API changes, edit your section in the
   draw it as the user's: the compact note and that message fold into one muted row
   (`▸ · conversation compacted · summary`), a click shows the summary. Detection is the template's
   prefix, display only.
+- **A message from another Claude session**: Claude Code sessions on one machine message each
+  other (`SendMessage` to a name `ListAgents` shows, 2.1.224+). The CLI delivers it as a *user*
+  line with `origin.kind: "peer"`; the daemon stores it as `PeerMessage {from, text}` (the
+  sender's name and the text without the `<cross-session-message>` framing), never as a
+  `UserMessage`, so the outbox does not take a pending prompt off for it and it is not the
+  user's words anywhere. The transcript draws it as a card on the *left*, headed `✉ from @name`
+  in the accent colour, the text as markdown; a reply follows under it like any turn. It arrives
+  mid-turn when the session was busy (a `queued_command` in a TUI transcript) and sits where it
+  came. (`transcript/rows.rs` `peer_row`.)
 - **The agent shows a picture**: `femmed show <file> [caption]`, run inside a session (the holder
   sets `FEMME_SID`), uploads the file (`BlobPut`) and sends `Show`; the daemon keeps a copy in
   `<state>/uploads/<sid>/` and appends an assistant item whose text is the caption plus an
