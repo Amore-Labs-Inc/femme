@@ -1786,6 +1786,7 @@ fn preview_of(kind: ItemKind, b: &Value) -> String {
     let first = |t: &str| t.lines().next().unwrap_or("").to_string();
     match kind {
         ItemKind::UserMessage
+        | ItemKind::PeerMessage
         | ItemKind::AssistantMessage
         | ItemKind::Thinking
         | ItemKind::Plan
@@ -1828,6 +1829,7 @@ fn render(items: &[(Item, Value)], streams: &HashMap<String, String>) -> String 
         };
         let line = match item.kind {
             ItemKind::UserMessage => format!("> {}", text("text")),
+            ItemKind::PeerMessage => format!("@{}: {}", text("from"), text("text")),
             ItemKind::AssistantMessage | ItemKind::Plan => text("text"),
             ItemKind::ToolCall => format!("* {}", item.preview),
             ItemKind::ToolResult => format!("  {}", item.preview),
