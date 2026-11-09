@@ -52,7 +52,10 @@ daemon_env=(HOME="$tmp/home" FEMME_STATE="$tmp/state" XDG_RUNTIME_DIR="$tmp/run"
 if [ "${FAKE_CLAUDE:-0}" = 1 ]; then
   ln -s "$root/crates/femme-agents/fixtures/claude/fake-claude.py" "$tmp/bin/claude"
 else
-  ln -s "$(mise which claude)" "$tmp/bin/claude"; daemon_env+=(CLAUDE_CONFIG_DIR="$HOME/.claude")
+  # The holder passes a child only an allowlist of the daemon's environment, which has no
+  # CLAUDE_CONFIG_DIR: the wrapper sets it, so the chat runs on the box's sign-in.
+  printf '#!/bin/sh\nCLAUDE_CONFIG_DIR=%q exec %q "$@"\n' "$HOME/.claude" "$(mise which claude)" >"$tmp/bin/claude"
+  chmod +x "$tmp/bin/claude"
 fi
 env "${daemon_env[@]}" PATH="$tmp/bin:$PATH" "$femmed" serve >"$tmp/femmed.log" 2>&1 &
 pids+=($!)
