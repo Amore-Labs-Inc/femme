@@ -21,11 +21,12 @@ use std::time::Duration;
 
 use femme_agents::items::{body, UserMessage};
 use femme_agents::{driver_for, Driver, Out};
+use femme_proto::state::Item;
 use femme_proto::state::{
     Agent, Attention, ItemKind, ItemStatus, Mode, Pane, PaneKind, Session, SessionStatus,
 };
 use femme_proto::{Id, PaneId, Sid};
-use femme_store::sessions;
+use femme_store::{items as store_items, sessions, Store};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -557,6 +558,112 @@ impl Tail {
             puts.extend(f.puts);
         }
     }
+}
+
+// ---- recovering what was lost -----------------------------------------------------------------
+
+/// Messages the user sent while Claude worked, written before this reader read them
+/// (`queued_command`) and so never stored: put back where they were. Runs on the store before it
+/// is shared; returns how many. Every item after one moved, so the caller rotates the epoch when
+/// any were put back.
+pub(crate) fn recover(store: &Store, home: &Path, uploads: &Path) -> anyhow::Result<usize> {
+    let mut n = 0;
+    for s in store.read(|c| sessions::list_sessions(c, true))? {
+        if !s.owner.starts_with(OWNER) {
+            continue;
+        }
+        let Some(path) = s.agent_sid.as_deref().and_then(|u| find(home, u)) else {
+            continue;
+        };
+        let mut held = HashMap::new();
+        let mut before = None;
+        loop {
+            let page = store.read(|c| store_items::page_items(c, s.id, before, 2000))?;
+            let Some(last) = page.last() else { break };
+            before = Some(last.seq);
+            held.extend(page.into_iter().map(|i| (i.item_id, i.seq)));
+        }
+        let end = held.values().max().map_or(1, |s| s + 1);
+        let file = std::io::BufReader::new(std::fs::File::open(&path)?);
+        let mut lost = lost_in(file, &held, end, &uploads.join(s.id.to_string()))?;
+        if lost.is_empty() {
+            continue;
+        }
+        tracing::info!(sid = %s.id, n = lost.len(), "messages sent mid-turn put back");
+        n += lost.len();
+        store.write(|tx| tx.insert_items_before(s.id, &mut lost))?;
+    }
+    Ok(n)
+}
+
+/// The queued messages of a transcript that the store does not hold (`held`: item id to seq), each
+/// with the seq it goes before: that of the first later line the store holds, or `end`. Only
+/// from the first line the store holds on: what is before it was never read at all.
+fn lost_in(
+    file: impl std::io::BufRead,
+    held: &HashMap<String, u64>,
+    end: u64,
+    uploads: &Path,
+) -> std::io::Result<Vec<(u64, Item)>> {
+    let mut started = false;
+    let mut waiting: Vec<Item> = Vec::new();
+    let mut out = Vec::new();
+    for line in file.split(b'\n') {
+        let line = line?;
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if v["isSidechain"] == true {
+            continue;
+        }
+        if let Some(&seq) = ids_of(&v).iter().filter_map(|id| held.get(id)).min() {
+            started = true;
+            out.extend(waiting.drain(..).map(|i| (seq, i)));
+            continue;
+        }
+        if !started || v["attachment"]["type"] != "queued_command" {
+            continue;
+        }
+        let Some(Disk::Feed {
+            typed: Some((id, text)),
+            ..
+        }) = disk_line(&line, uploads)
+        else {
+            continue;
+        };
+        let ts = v["timestamp"]
+            .as_str()
+            .and_then(crate::scheduler::rfc3339_ms)
+            .unwrap_or_else(now_ms);
+        let b = body(&UserMessage { text });
+        waiting.push(super::new_item(
+            Id(0),
+            id,
+            ItemKind::UserMessage,
+            ItemStatus::Completed,
+            Some(&b),
+            ts,
+        ));
+    }
+    out.extend(waiting.into_iter().map(|i| (end, i)));
+    Ok(out)
+}
+
+/// The ids of the items a transcript line is stored as: its own `uuid` (a message, an event), its
+/// tool calls and their results, and its text blocks (`<message id>:<index>`).
+fn ids_of(v: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = v["uuid"].as_str().map(str::to_owned).into_iter().collect();
+    let msg = &v["message"];
+    for (i, b) in msg["content"].as_array().into_iter().flatten().enumerate() {
+        match b["type"].as_str() {
+            Some("tool_use") => ids.extend(b["id"].as_str().map(str::to_owned)),
+            Some("tool_result") => {
+                ids.extend(b["tool_use_id"].as_str().map(|t| format!("{t}:result")));
+            }
+            _ => ids.extend(msg["id"].as_str().map(|m| format!("{m}:{i}"))),
+        }
+    }
+    ids
 }
 
 /// A message the user sent (`typed`: its id and text) that the driver's writes `puts` do not
@@ -1163,6 +1270,39 @@ mod tests {
         ] {
             assert!(read(known).is_none());
         }
+    }
+
+    #[test]
+    fn a_lost_message_goes_back_before_the_next_line_held() {
+        let file = [
+            r#"{"type":"user","uuid":"old","message":{"content":"never read"}}"#,
+            r#"{"type":"attachment","uuid":"q0","timestamp":"2026-11-09T10:00:00Z","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"before the start"}}"#,
+            r#"{"type":"user","uuid":"m1","message":{"content":"go"}}"#,
+            r#"{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"t1"}]}}"#,
+            r#"{"type":"attachment","uuid":"q1","timestamp":"2026-11-09T10:00:01Z","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"one"}}"#,
+            r#"{"type":"attachment","uuid":"q2","attachment":{"type":"queued_command","origin":{"kind":"peer"},"prompt":"not typed"}}"#,
+            r#"{"type":"attachment","uuid":"q3","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"two"}}"#,
+            r#"{"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#,
+            r#"{"type":"attachment","uuid":"q4","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"held already"}}"#,
+            r#"{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"ok"}]}}"#,
+            r#"{"type":"attachment","uuid":"q5","attachment":{"type":"queued_command","origin":{"kind":"human"},"prompt":"last"}}"#,
+        ]
+        .join("\n");
+        let held: HashMap<String, u64> = [
+            ("m1", 1),
+            ("t1", 2),
+            ("t1:result", 3),
+            ("q4", 4),
+            ("a2:0", 5),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        let lost = lost_in(file.as_bytes(), &held, 6, Path::new("/nonexistent")).unwrap();
+        let got: Vec<(u64, &str)> = lost.iter().map(|(b, i)| (*b, i.item_id.as_str())).collect();
+        assert_eq!(got, [(3, "q1"), (3, "q3"), (6, "q5")]);
+        assert_eq!(lost[0].1.ts, 1_794_218_401_000, "when Claude took it in");
+        assert!(lost[0].1.preview.contains("one"));
     }
 
     #[test]

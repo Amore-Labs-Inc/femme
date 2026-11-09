@@ -314,6 +314,53 @@ impl Tx<'_> {
         })
     }
 
+    /// Inserts items into a session's transcript where they belong: each `(before, item)` goes
+    /// right before the item now at seq `before` (several before one seq keep their order), and
+    /// every item from there on moves down to make room. Moved items get a fresh rev.
+    ///
+    /// A client that holds the session keys its items by seq, so after this it has to drop what
+    /// it holds: call it while the store is not shared and rotate the epoch
+    /// ([`crate::Store::rotate_epoch`]) after the commit.
+    pub fn insert_items_before(&mut self, sid: Sid, items: &mut [(u64, Item)]) -> Result<()> {
+        items.sort_by_key(|(before, _)| *before);
+        let Some(&(first, _)) = items.first() else {
+            return Ok(());
+        };
+        let moved = all(
+            self,
+            "SELECT seq FROM items WHERE session_id = ?1 AND seq >= ?2 ORDER BY seq",
+            params![id_blob(sid), first],
+            |r| Ok(r.get::<_, u64>(0)?),
+        )?;
+        // two steps: the seqs are unique, so the moved rows step aside (negative) first
+        self.execute(
+            "UPDATE items SET seq = -seq WHERE session_id = ?1 AND seq >= ?2",
+            params![id_blob(sid), first],
+        )?;
+        let rev = self.next_rev();
+        let mut ahead = 0;
+        for seq in moved {
+            while items.get(ahead).is_some_and(|(before, _)| *before <= seq) {
+                ahead += 1;
+            }
+            self.prepare_cached(
+                "UPDATE items SET seq = ?1, rev = ?2 WHERE session_id = ?3 AND seq = ?4",
+            )?
+            .execute(params![
+                seq + ahead as u64,
+                rev,
+                id_blob(sid),
+                -i64::try_from(seq).unwrap_or(i64::MAX)
+            ])?;
+        }
+        for (k, (before, item)) in items.iter_mut().enumerate() {
+            item.sid = sid;
+            item.seq = *before + k as u64;
+            self.put_item(item)?;
+        }
+        Ok(())
+    }
+
     /// Deletes one item and leaves a tombstone. `NotFound` if it does not exist.
     pub fn delete_item(&mut self, sid: Sid, item_id: &str) -> Result<()> {
         let n = self.execute(
