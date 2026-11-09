@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on the VPS from femme-claude-update.timer (03:00). Only when mise has a newer Claude Code:
+# Runs on the VPS from femme-claude-update.timer (00:45). Only when mise has a newer Claude Code:
 # upgrades it, then a scout (Opus, effort max) reads what changed, and which older features FEMME
 # still lacks, and hands off each one useful to this user; one implementer per feature (Fable,
 # effort medium) builds it in a fresh clone and opens a pull request with a demo video of FEMME.
@@ -9,6 +9,9 @@
 #                                        whose PR is already open)
 #   claude-update.sh --force             run even with no pending update (testing)
 #   DRY=1 claude-update.sh ...           everything but claude: prints its commands and prompts
+# The whole run fits in BUDGET_MIN minutes (default 495: 00:45 to 09:00). The last 45 are kept for a
+# pass that merges main into every pull request the night opened that conflicts with it, so each is
+# mergeable in the morning; a feature is not started with under 45 minutes of its own left.
 # Progress: <state>/reports/claude-updates/<version>.log; claude's own output beside it in <version>/.
 set -uo pipefail
 # Braces: bash reads the whole block before running it, so deploy.sh resetting ~/femme during the
@@ -23,6 +26,10 @@ work=${FEMME_UPDATES_DIR:-$HOME/femme-updates}
 dry=${DRY:-0}
 scout_model=${SCOUT_MODEL:-opus} impl_model=${IMPL_MODEL:-fable}
 min_free_gb=${MIN_FREE_GB:-25}  # a feature needs a fresh target/ (several GB): stop below this
+started=$(date +%s)
+end=$((started + ${BUDGET_MIN:-495} * 60)) fix_reserve=$((45 * 60))
+# Seconds a stage may take: <cap>, cut to what is left before <end - reserve>.
+budget() { local left=$((end - ${2:-0} - $(date +%s))); [ "$left" -lt "$1" ] && echo "$left" || echo "$1"; }
 mkdir -p "$reports" "$work"
 
 from='' to='' force=0
@@ -139,7 +146,7 @@ python3 -I "$lib/digest.py" >"$run/digest.md" 2>>"$log"; say "digest: exit $?, $
 say "scout start ($scout_model, effort max)"
 prompt=$(render "$lib/scout.md" FROM="$from" TO="$to" REPO="$repo" DIGEST="$run/digest.md" \
   PROJECTS="$HOME/.claude/projects" REPORT="$reports/$to.md" FEATURES="$run/features" LEDGER="$ledger")
-claude_run "$repo" "$run/scout.jsonl" 3h "$prompt" --model "$scout_model" --effort max
+claude_run "$repo" "$run/scout.jsonl" "$(budget 10800 "$fix_reserve")s" "$prompt" --model "$scout_model" --effort max
 say "scout: exit $?"
 if [ "$dry" = 1 ] && ! ls "$run"/features/*.json >/dev/null 2>&1; then
   # A stand-in hand-off, so a dry run walks the feature loop too.
@@ -161,7 +168,9 @@ for f in "${features[@]}"; do
   if grep -q '^https://' "$prfile" 2>/dev/null; then say "feature $i/$n $slug: PR already open $(cat "$prfile")"; continue; fi
   free=$(df --output=avail -BG "$work" | tail -n1 | tr -dc 0-9)
   if [ "$free" -lt "$min_free_gb" ]; then say "stop: ${free}G free on disk, under $min_free_gb G; features $i-$n wait for a rerun"; break; fi
-  say "feature $i/$n $slug start"
+  limit=$(budget 10800 "$fix_reserve")
+  if [ "$limit" -lt 2700 ]; then say "stop: $((limit / 60)) min left before the fix pass; features $i-$n wait for a rerun"; break; fi
+  say "feature $i/$n $slug start ($((limit / 60)) min)"
   wt=$work/$to/$slug
   if [ ! -d "$wt" ]; then
     git -C "$repo" worktree add -q -B "$branch" "$wt" origin/main >>"$log" 2>&1 || { say "feature $i/$n $slug: worktree failed"; continue; }
@@ -173,7 +182,7 @@ for f in "${features[@]}"; do
   # sccache shares compiled dependencies between the features' fresh target/ dirs; no debug info
   # and no incremental cache keep each target/ a few GB.
   RUSTC_WRAPPER=$(mise which sccache 2>/dev/null) CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-    claude_run "$wt" "$run/$slug.jsonl" 3h "$prompt" --model "$impl_model" --effort medium
+    claude_run "$wt" "$run/$slug.jsonl" "${limit}s" "$prompt" --model "$impl_model" --effort medium
   rc=$?
   say "feature $i/$n $slug: implementer exit $rc"
   [ "$dry" = 1 ] && continue
@@ -187,6 +196,36 @@ for f in "${features[@]}"; do
   else say "feature $i/$n $slug: video MISSING (${video##*/})"; fi
   rm -rf "$wt/target" "$wt/desktop/target"  # the branch is pushed; its build output is not needed
 done
-say "done: $n features, $opened PRs opened"
+
+# 5. Main moves during the night (other sessions push): every pull request this run opened that no
+# longer merges into it gets main merged in, its conflicts resolved, tested and pushed.
+fixed=0
+for prfile in "$run"/*.pr; do
+  [ "$dry" = 1 ] && break
+  url=$(cat "$prfile"); num=${url##*/} slug=${prfile##*/}; slug=${slug%.pr}
+  state=UNKNOWN  # GitHub works it out when asked, which can take a few tries
+  for _ in 1 2 3 4 5 6; do
+    state=$(cd "$repo" && gh pr view "$num" --json state,mergeable -q 'if .state != "OPEN" then .state else .mergeable end' 2>/dev/null)
+    [ "$state" = UNKNOWN ] || [ -z "$state" ] || break
+    sleep 10
+  done
+  [ "$state" = CONFLICTING ] || { say "pr #$num $slug: ${state:-unknown}"; continue; }
+  limit=$(budget 3600)
+  if [ "$limit" -lt 600 ]; then say "pr #$num $slug: conflicts, no time left to fix it"; continue; fi
+  branch=claude-update/$to/$slug wt=$work/$to/$slug
+  git -C "$repo" fetch -q origin
+  if [ -d "$wt" ]; then git -C "$wt" checkout -q -B "$branch" "origin/$branch" && git -C "$wt" reset -q --hard "origin/$branch"
+  else git -C "$repo" worktree add -q -B "$branch" "$wt" "origin/$branch"; fi >>"$log" 2>&1 \
+    || { say "pr #$num $slug: worktree for the fix failed"; continue; }
+  say "pr #$num $slug: conflicts with main, fixing ($((limit / 60)) min)"
+  prompt=$(render "$lib/fix.md" NUMBER="$num" BRANCH="$branch" WORKTREE="$wt")
+  RUSTC_WRAPPER=$(mise which sccache 2>/dev/null) CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+    claude_run "$wt" "$run/$slug.fix.jsonl" "${limit}s" "$prompt" --model "$impl_model" --effort medium
+  state=$(cd "$repo" && sleep 20 && gh pr view "$num" --json mergeable -q .mergeable 2>/dev/null)
+  say "pr #$num $slug: fix exit $?, now ${state:-unknown}"
+  [ "$state" = MERGEABLE ] && fixed=$((fixed + 1))
+  rm -rf "$wt/target" "$wt/desktop/target"
+done
+say "done: $n features, $opened PRs opened, $fixed fixed after main moved, $(( ($(date +%s) - started) / 60 )) min"
 exit
 }
