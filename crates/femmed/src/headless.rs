@@ -1039,6 +1039,7 @@ impl Actor {
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
         // ponytail: the desktop's chats think at medium; /effort changes it until the next start
         let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
             .then(|| "medium".to_owned());
@@ -1357,6 +1358,19 @@ fn cut(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Claude Code's Artifact tool (a page on claude.ai) is off in `claude -p` unless the environment
+/// asks for it. A Claude chat gets it; the DeepSeek gateway route cannot use claude.ai, Codex and
+/// Pi have no such tool. The box has no display, so the CLI never opens a browser itself.
+pub(crate) fn artifact_env(agent: Agent, model: Option<&str>) -> Vec<(String, String)> {
+    if agent != Agent::Claude || is_gateway(model) {
+        return Vec::new();
+    }
+    vec![
+        ("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned()),
+        ("CLAUDE_CODE_ARTIFACT_AUTO_OPEN".to_owned(), "0".to_owned()),
+    ]
 }
 
 /// A model of OpenGateway's (`deepseek/...`): another provider than Anthropic's.
@@ -2583,6 +2597,16 @@ mod tests {
         assert_eq!(effort_switch("/effort a b"), None);
         assert_eq!(model_switch("use the opus model"), None);
         assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
+    }
+
+    #[test]
+    fn a_claude_chat_gets_the_artifact_tool_the_others_do_not() {
+        let on = |m| artifact_env(Agent::Claude, m);
+        assert!(on(None).contains(&("CLAUDE_CODE_ARTIFACT".to_owned(), "1".to_owned())));
+        assert!(!on(Some("claude-opus-5-5")).is_empty());
+        assert!(on(Some(DEEPSEEK)).is_empty());
+        assert!(artifact_env(Agent::Codex, None).is_empty());
+        assert!(artifact_env(Agent::Pi, None).is_empty());
         let mut at = None;
         let mut seen = Vec::new();
         for _ in 0..5 {
