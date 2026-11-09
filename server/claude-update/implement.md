@@ -40,7 +40,7 @@ inside it. The feature, as the scout handed it off (@HANDOFF@):
    - `start`: launches the desktop.
    - `click X Y`, `dclick X Y` (double click), `key KEYS` (xdotool key names: `ctrl+k`,
      `Escape`, `Return`), `type TEXT`, `pause SECONDS`.
-   - `shot NAME`: a PNG of the screen, `<video>.shots/NAME.png`, for checking.
+   - `shot NAME`: a PNG of the screen, `/tmp/femme-shots/<video name>/NAME.png`, for checking.
    Draft the scene with `shot`s and Read the PNGs to find where to click; then record the final
    take. Keep it under 60 s; the output stays at most 8 MiB (the script compresses).
    - The video shows FEMME with the feature in use and its effect. Terminal footage may only be a
@@ -70,8 +70,8 @@ inside it. The feature, as the scout handed it off (@HANDOFF@):
 
 - Never merge, never push to main or any branch but @BRANCH@, never force-push, never close or
   edit other pull requests.
-- Never touch files outside @WORKTREE@ except @PLAN@, @PR_FILE@, the video and its
-  `.shots/` dir, and /tmp.
+- Never touch files outside @WORKTREE@ except @PLAN@, @PR_FILE@, the video and
+  /tmp.
 - No secrets or personal data in the diff (CONTRIBUTING.md).
 
 If the feature turns out impossible or wrong: with commits worth keeping, open the PR as a draft
