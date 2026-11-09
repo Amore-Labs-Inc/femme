@@ -16,10 +16,11 @@
 //!   pane is one), and the row it may have been stays waiting: shown twice at worst, never read
 //!   when it was not.
 //!
-//! The agent did not get a message (`Failed`, which a client offers to send again) when Claude
-//! said so (a dropped prompt that is not sent to the next process), when the session moved to the
-//! terminal or failed with it still held, and, for a row without an id, when a turn that began
-//! after the row was saved ended without its echo.
+//! A message the agent did not get is `Failed` (a client offers to send it again) only on a
+//! definite word: the agent refused or discarded it, the session moved to the terminal or failed
+//! with it still held, or the agent went idle with the row waiting and nothing still holding it.
+//! A wrong `Failed` heals: pairing takes `Failed` rows too, so a late echo still reads the row,
+//! and nothing is shown twice. Nothing here deletes a message the agent may have read.
 
 use femme_proto::rpc::PromptHow;
 use femme_proto::rpc::Scope;
@@ -32,10 +33,6 @@ use ulid::Ulid;
 use crate::core::CoreError;
 use crate::daemon::Daemon;
 use crate::session::{agent_label, gone};
-
-/// How long before a turn began a row must have been saved for that turn to have had it. A turn's
-/// start is its end less its duration, both measured a little after the fact.
-const SLACK_MS: i64 = 2000;
 
 /// A row saved by [`Daemon::save_prompt`].
 #[derive(Debug, Clone, PartialEq)]
@@ -106,9 +103,32 @@ fn text_of(b: &Value) -> &str {
     b["text"].as_str().unwrap_or("")
 }
 
-/// Which of the waiting rows (oldest first, with their bodies) the echo `echo_id` saying
-/// `echo_text` is: the row with that `echo` id, else the oldest `Pending` row without an id whose
-/// text is the echo's. `None` when none is sure.
+/// The base names of a text's `Attached:` files, sorted.
+fn attached(text: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("Attached: "))
+        .map(|p| p.trim().rsplit('/').next().unwrap_or(""))
+        .filter(|n| !n.is_empty())
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// Whether two texts are the same message: the same words ([`normalize`]), or, with no words at
+/// all, the same attached files.
+pub(crate) fn same_message(a: &str, b: &str) -> bool {
+    let (na, nb) = (normalize(a), normalize(b));
+    if !na.is_empty() || !nb.is_empty() {
+        return na == nb;
+    }
+    let (fa, fb) = (attached(a), attached(b));
+    !fa.is_empty() && fa == fb
+}
+
+/// Which of the saved rows (oldest first, with their bodies) the echo `echo_id` saying `echo_text`
+/// is: the row with that `echo` id, else the oldest row without an id that is the same message,
+/// a `Pending` one before a `Failed` one. `None` when none is sure.
 pub(crate) fn pick(rows: &[(Item, Value)], echo_id: &str, echo_text: &str) -> Option<usize> {
     if let Some(i) = rows
         .iter()
@@ -116,13 +136,14 @@ pub(crate) fn pick(rows: &[(Item, Value)], echo_id: &str, echo_text: &str) -> Op
     {
         return Some(i);
     }
-    let said = normalize(echo_text);
-    if said.is_empty() {
-        return None;
-    }
-    rows.iter().position(|(i, b)| {
-        i.status == ItemStatus::Pending && b.get("echo").is_none() && normalize(text_of(b)) == said
-    })
+    let like = |status: ItemStatus| {
+        rows.iter().position(|(i, b)| {
+            i.status == status
+                && b.get("echo").is_none()
+                && same_message(text_of(b), echo_text)
+        })
+    };
+    like(ItemStatus::Pending).or_else(|| like(ItemStatus::Failed))
 }
 
 /// A stored item's body as JSON, from the blob when it is one (`Null` when it is gone).
@@ -226,43 +247,61 @@ pub(crate) fn reconcile(
     Ok(true)
 }
 
-/// The agent will not get the messages written under the echo ids `ids`: their rows are `Failed`.
-pub(crate) fn missed(
-    tx: &mut Tx<'_>,
-    sid: Sid,
-    ids: &[String],
-    published: &mut Vec<Item>,
-) -> femme_store::Result<()> {
-    for (row, b) in waiting(tx, sid, &[ItemStatus::Pending])? {
-        if b["echo"]
-            .as_str()
-            .is_some_and(|e| ids.iter().any(|i| i == e))
-        {
-            rewrite(tx, row, ItemStatus::Failed, &b, published)?;
-        }
-    }
-    Ok(())
+/// A prompt as the agent's driver holds it: the echo id it was given, and its text.
+pub(crate) type Held = (Option<String>, String);
+
+/// What the agent said about the messages it was given.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Gone {
+    /// These will not run.
+    Prompts(Vec<Held>),
+    /// The agent is idle and still holds only these: every other waiting row was not got.
+    Idle(Vec<Held>),
+    /// Nothing will run any more.
+    All,
 }
 
-/// A turn ended (`end`, a new `TurnEnd`): a row without an echo id that was saved before the turn
-/// began and is still not read was not got. A turn that says no duration says nothing.
-pub(crate) fn missed_by_turn(
+/// Whether the saved row (body `b`) is the prompt `h`: by the echo id when the row has one.
+fn is_prompt(b: &Value, h: &Held) -> bool {
+    match (b["echo"].as_str(), &h.0) {
+        (Some(e), Some(id)) => e == id,
+        (None, None) => same_message(text_of(b), &h.1),
+        _ => false,
+    }
+}
+
+/// Marks `Failed` the waiting rows `gone` says the agent did not get.
+pub(crate) fn settle(
     tx: &mut Tx<'_>,
     sid: Sid,
-    end: &Item,
+    gone: &Gone,
     published: &mut Vec<Item>,
 ) -> femme_store::Result<()> {
-    let took = end
-        .body
-        .as_deref()
-        .and_then(|b| serde_json::from_str::<Value>(b).ok())
-        .and_then(|b| b["duration_ms"].as_i64());
-    let Some(took) = took else {
-        return Ok(());
-    };
-    let began = end.ts - took;
-    for (row, b) in waiting(tx, sid, &[ItemStatus::Pending])? {
-        if b.get("echo").is_none() && row.ts + SLACK_MS < began {
+    let rows = waiting(tx, sid, &[ItemStatus::Pending])?;
+    let mut failed = vec![false; rows.len()];
+    match gone {
+        Gone::All => failed.fill(true),
+        Gone::Prompts(prompts) => {
+            for h in prompts {
+                let hit = (0..rows.len()).find(|&i| !failed[i] && is_prompt(&rows[i].1, h));
+                if let Some(i) = hit {
+                    failed[i] = true;
+                }
+            }
+        }
+        Gone::Idle(held) => {
+            let mut kept = vec![false; rows.len()];
+            for h in held {
+                let hit = (0..rows.len()).find(|&i| !kept[i] && is_prompt(&rows[i].1, h));
+                if let Some(i) = hit {
+                    kept[i] = true;
+                }
+            }
+            failed = kept.iter().map(|k| !k).collect();
+        }
+    }
+    for ((row, b), f) in rows.into_iter().zip(failed) {
+        if f {
             rewrite(tx, row, ItemStatus::Failed, &b, published)?;
         }
     }
@@ -309,6 +348,17 @@ impl Daemon {
         }
     }
 
+    // ponytail: herdr's sync is to call this when a pane goes from working to idle
+    #[allow(dead_code)]
+    /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
+    /// terminal holds nothing FEMME can see).
+    pub(crate) fn idle_unread(&self, sid: Sid) {
+        let r = self.write_items(|tx, _, published| settle(tx, sid, &Gone::Idle(Vec::new()), published));
+        if let Err(e) = r {
+            tracing::warn!(%sid, %e, "unread messages not marked");
+        }
+    }
+
     /// `Req::Resend`: the message `item_id` the agent did not get waits again and goes to it
     /// again, after the turn that runs. `Conflict` for any other item.
     pub(crate) async fn resend(&self, sid: Sid, item_id: &str) -> Result<(), CoreError> {
@@ -316,7 +366,7 @@ impl Daemon {
         let head = self.sessions.head(sid).ok_or_else(gone)?;
         let echo = echo_for(&s);
         let flip = |status: ItemStatus, echo: Option<&str>| {
-            self.write_items(|tx, _, published| {
+            self.write_items(|tx, now, published| {
                 let Some(item) = store_items::get_item(tx, sid, item_id)? else {
                     return Ok(None);
                 };
@@ -331,6 +381,9 @@ impl Daemon {
                 let text = text_of(&b).to_owned();
                 if let Some(e) = echo {
                     b["echo"] = Value::String(e.to_owned());
+                }
+                if status == ItemStatus::Pending {
+                    b["sent_at"] = json!(now);
                 }
                 rewrite(tx, item, status, &b, published)?;
                 Ok(Some(text))
@@ -410,12 +463,26 @@ mod tests {
     }
 
     #[test]
-    fn a_missed_row_without_an_id_is_not_paired_by_its_text() {
+    fn a_waiting_row_pairs_before_a_missed_one_and_a_late_echo_heals_a_missed_one() {
         let rows = [
             row("old", ItemStatus::Failed, json!({"text": "yes"})),
             row("new", ItemStatus::Pending, json!({"text": "yes"})),
         ];
         assert_eq!(pick(&rows, "e1", "yes"), Some(1));
+        assert_eq!(pick(&rows[..1], "e2", "yes"), Some(0));
+    }
+
+    #[test]
+    fn a_picture_alone_pairs_by_its_file_name() {
+        let sent = "Attached: /home/u/.local/state/femme/uploads/01JC/shot.png";
+        let rows = [
+            row("a", ItemStatus::Pending, json!({ "text": sent })),
+            row("b", ItemStatus::Pending, json!({ "text": "Attached: /x/other.png" })),
+        ];
+        assert_eq!(pick(&rows, "d1", "[Image #1]\n\nAttached: /tmp/shot.png"), Some(0));
+        assert_eq!(pick(&rows, "d2", "Attached: /tmp/third.png"), None);
+        assert_eq!(pick(&rows, "d3", "[Image #1]"), None, "no words, no file: unsure");
+        assert!(!same_message("", ""));
     }
 
     #[test]
@@ -502,36 +569,87 @@ mod tests {
         assert!(!unknown, "an echo nobody saved is a row of its own");
     }
 
-    #[test]
-    fn a_turn_that_began_after_the_save_and_ended_without_the_echo_missed_it() {
-        let (store, sid) = store();
-        let early = saved_item(sid, "one", None, None, 1_000);
-        let late = saved_item(sid, "two", None, None, 9_000);
-        let claude = saved_item(sid, "three", None, Some("u-3"), 1_000);
-        for i in [&early, &late, &claude] {
-            store.write(|tx| tx.put_item(i)).unwrap();
-        }
-        let mut end = echo(sid, "d900-1", "", 20_000);
-        end.kind = ItemKind::TurnEnd;
-        end.body =
-            Some(json!({"stop": "EndTurn", "usage": null, "duration_ms": 12_000}).to_string());
-        store
-            .write(|tx| missed_by_turn(tx, sid, &end, &mut Vec::new()))
-            .unwrap();
-        assert_eq!(get(&store, sid, &early.item_id).status, ItemStatus::Failed);
-        assert_eq!(
-            get(&store, sid, &late.item_id).status,
-            ItemStatus::Pending,
-            "saved while the turn ran: the next one may take it"
-        );
-        assert_eq!(
-            get(&store, sid, &claude.item_id).status,
-            ItemStatus::Pending,
-            "a row with an id waits for Claude's own word"
-        );
-        store
-            .write(|tx| missed(tx, sid, &["u-3".into()], &mut Vec::new()))
-            .unwrap();
-        assert_eq!(get(&store, sid, &claude.item_id).status, ItemStatus::Failed);
+    fn put(store: &Store, i: &Item) {
+        store.write(|tx| tx.put_item(i)).unwrap();
     }
+
+    fn settled(store: &Store, sid: Sid, g: Gone) {
+        store
+            .write(|tx| settle(tx, sid, &g, &mut Vec::new()))
+            .unwrap();
+    }
+
+    fn pair(store: &Store, sid: Sid, e: &Item) -> bool {
+        store
+            .write(|tx| reconcile(tx, sid, e, &mut Vec::new()))
+            .unwrap()
+    }
+
+    /// Codex runs held prompts one turn at a time: going idle in between, the second is still
+    /// held, so it waits; both end read, each once.
+    #[test]
+    fn two_queued_messages_on_an_agent_without_ids_both_end_read() {
+        let (store, sid) = store();
+        let one = saved_item(sid, "run the tests", None, None, 1_000);
+        let two = saved_item(sid, "then the linter", None, None, 1_100);
+        put(&store, &one);
+        put(&store, &two);
+        assert!(pair(&store, sid, &echo(sid, "i-1", "run the tests", 2_000)));
+        settled(&store, sid, Gone::Idle(vec![(None, "then the linter".into())]));
+        assert_eq!(get(&store, sid, &two.item_id).status, ItemStatus::Pending);
+        assert!(pair(&store, sid, &echo(sid, "i-2", "then the linter", 3_000)));
+        settled(&store, sid, Gone::Idle(Vec::new()));
+        for id in [&one.item_id, &two.item_id] {
+            assert_eq!(get(&store, sid, id).status, ItemStatus::Completed);
+        }
+        let all = store
+            .read(|c| store_items::page_items(c, sid, None, 10))
+            .unwrap();
+        assert_eq!(all.len(), 4, "two messages, two read marks: {all:?}");
+    }
+
+    /// Idle with a message nobody holds: not got. Its echo coming later still reads it.
+    #[test]
+    fn idle_without_the_echo_misses_a_message_and_a_late_echo_reads_it() {
+        let (store, sid) = store();
+        let m = saved_item(sid, "deploy", None, Some("u-9"), 1_000);
+        put(&store, &m);
+        settled(&store, sid, Gone::Idle(Vec::new()));
+        assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Failed);
+        assert!(pair(&store, sid, &echo(sid, "u-9", "deploy", 5_000)));
+        assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Completed);
+    }
+
+    /// A resend while the agent is busy is held by the driver: going idle does not miss it.
+    #[test]
+    fn a_resent_message_the_driver_holds_still_waits_when_the_agent_goes_idle() {
+        let (store, sid) = store();
+        let mut m = saved_item(sid, "again", None, Some("u-old"), 1_000);
+        m.status = ItemStatus::Failed;
+        put(&store, &m);
+        // what Daemon::resend writes: waiting, with the new echo id
+        let mut again = get(&store, sid, &m.item_id);
+        again.status = ItemStatus::Pending;
+        again.body = Some(json!({"text": "again", "echo": "u-new", "sent_at": 9_000}).to_string());
+        put(&store, &again);
+        settled(&store, sid, Gone::Idle(vec![(Some("u-new".into()), "again".into())]));
+        assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Pending);
+        settled(&store, sid, Gone::Prompts(vec![(Some("u-new".into()), "again".into())]));
+        assert_eq!(get(&store, sid, &m.item_id).status, ItemStatus::Failed);
+    }
+
+    #[test]
+    fn a_refused_prompt_without_an_id_and_a_failed_session_miss_their_messages() {
+        let (store, sid) = store();
+        let a = saved_item(sid, "one", None, None, 1_000);
+        let b = saved_item(sid, "two", None, None, 1_100);
+        put(&store, &a);
+        put(&store, &b);
+        settled(&store, sid, Gone::Prompts(vec![(None, "two".into())]));
+        assert_eq!(get(&store, sid, &a.item_id).status, ItemStatus::Pending);
+        assert_eq!(get(&store, sid, &b.item_id).status, ItemStatus::Failed);
+        settled(&store, sid, Gone::All);
+        assert_eq!(get(&store, sid, &a.item_id).status, ItemStatus::Failed);
+    }
+
 }

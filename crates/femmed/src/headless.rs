@@ -366,8 +366,8 @@ struct Actor {
     // ponytail: unbounded while the store keeps failing, each batch is only a few KiB; cap it (and
     // fail the session) if a store that stays broken is ever seen.
     pending_puts: Vec<Put>,
-    /// Echo ids of saved messages the agent will not get, for the next commit.
-    missed: Vec<String>,
+    /// What the agent said about the saved messages, for the next commit ([`sent::settle`]).
+    missed: Vec<sent::Gone>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
     resend: Vec<HeldPrompt>,
     restart_at: Option<Instant>,
@@ -944,7 +944,14 @@ impl Actor {
         }
         if !replay {
             self.resend.extend(f.dropped);
-            self.missed.extend(f.missed);
+            if !f.missed.is_empty() {
+                self.missed.push(sent::Gone::Prompts(f.missed));
+            }
+            // idle with a saved message still waiting and nothing holding it: not got
+            if live_line && matches!(f.state, Some((SessionStatus::Idle, _))) {
+                let held = self.driver.held_prompts().into_iter().chain(self.resend.iter().cloned());
+                self.missed.push(sent::Gone::Idle(held_of(held.collect())));
+            }
         }
         if f.turn_started {
             let _ = self.machine.step(Ev::TurnStarted);
@@ -1063,8 +1070,8 @@ impl Actor {
             for p in &puts {
                 put(tx, sid, p, published)?;
             }
-            if !missed.is_empty() {
-                sent::missed(tx, sid, &missed, published)?;
+            for g in &missed {
+                sent::settle(tx, sid, g, published)?;
             }
             if committed != before {
                 tx.set_spool_committed(sid, committed)?;
@@ -1265,11 +1272,9 @@ impl Actor {
     async fn fail(&mut self, d: &Daemon, text: &str) {
         self.failed = true;
         self.restart_at = None;
-        // nothing runs them now: the messages that waited for a process were not got
-        let held = std::mem::take(&mut self.resend)
-            .into_iter()
-            .chain(self.driver.held_prompts());
-        self.missed.extend(held.filter_map(|h| h.id));
+        // nothing runs now: every saved message still waiting was not got
+        self.resend.clear();
+        self.missed.push(sent::Gone::All);
         self.commit(d, Vec::new()).await;
         self.event(d, text);
         self.update(d, None, |s| {
@@ -1323,7 +1328,7 @@ impl Actor {
                     // says they did not run, and the conversation moves to the terminal: none may
                     // come back as a turn nobody asked for after the next restart.
                     let held = std::mem::take(&mut self.resend);
-                    self.missed.extend(held.into_iter().filter_map(|h| h.id));
+                    self.missed.push(sent::Gone::Prompts(held_of(held)));
                     self.commit(d, Vec::new()).await;
                     self.spawn_tui(d).await
                 }
@@ -1603,8 +1608,8 @@ struct Folded {
     compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
     dropped: Vec<HeldPrompt>,
-    /// The echo ids of prompts the agent will not get ([`crate::sent::missed`]).
-    missed: Vec<String>,
+    /// Prompts the agent refused: they will not run ([`crate::sent::settle`]).
+    missed: Vec<sent::Held>,
     turn_started: bool,
     turn_ended: bool,
 }
@@ -1770,7 +1775,7 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.puts
                     .push(Put::Done(event_item(sid, next_id(), &line, now)));
                 if reason != DropReason::Exited {
-                    f.missed.extend(id);
+                    f.missed.push((id, text));
                 } else {
                     f.dropped.push(HeldPrompt {
                         text,
@@ -1826,6 +1831,11 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
     f
 }
 
+/// Held prompts as [`sent`] compares them with saved messages.
+fn held_of(held: Vec<HeldPrompt>) -> Vec<sent::Held> {
+    held.into_iter().map(|h| (h.id, h.text)).collect()
+}
+
 fn is_final(s: ItemStatus) -> bool {
     matches!(
         s,
@@ -1869,9 +1879,6 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
                 None => {
                     if sent::reconcile(tx, sid, &item, published)? {
                         return Ok(());
-                    }
-                    if item.kind == ItemKind::TurnEnd {
-                        sent::missed_by_turn(tx, sid, &item, published)?;
                     }
                 }
             }
