@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{Req, Resp, Scope};
-use femme_proto::state::{ItemStatus, SessionStatus};
+use femme_proto::state::{Goal, GoalState, ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -39,10 +39,13 @@ use super::turns::{self, Key, Layout};
 use super::working;
 use crate::motion::appear;
 use crate::net::{ClientEvent, Net};
-use crate::theme::{accent_deep, bad, done, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL};
+use crate::theme::{
+    accent_deep, bad, done, goal, goal_met, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL,
+};
 use crate::ui::{dot, meta, ruled};
 use crate::video::Clip;
 use gpui::{Image, ImageFormat};
+use gpui_component::tooltip::Tooltip;
 
 /// How many older items one request asks for.
 const PAGE: u16 = 100;
@@ -66,6 +69,10 @@ pub struct Transcript {
     pub(super) view: Option<String>,
     /// The subagents of the turn, for the strip under the list.
     chips: Vec<Chip>,
+    /// The session's `/goal` as the model last said it, for the strip above the composer.
+    goal: Option<Goal>,
+    /// The goal strip was clicked: the whole condition and the last reason show under it.
+    goal_open: bool,
     /// The rows the list was last told about.
     pub(super) layout: Layout,
     /// The `seq`s the user opened: thinking, tool rows, fold lines.
@@ -141,10 +148,17 @@ impl Transcript {
                 this.event(&event.0, cx);
             })
         });
-        // The working line comes and goes with the session's status, which lives in the model.
+        // The working line comes and goes with the session's status, which lives in the model,
+        // as does the goal strip.
         let status = net.as_ref().map(|net| {
             cx.observe(net, |this, net, cx| {
                 let ver = net.read(cx).model.outbox.ver;
+                let goal = this.goal_now(cx);
+                if goal != this.goal {
+                    this.goal = goal;
+                    this.goal_open = false;
+                    cx.notify();
+                }
                 if this.busy(cx) != this.ticker.is_some() || ver != this.sent_ver {
                     this.sent_ver = ver;
                     cx.notify();
@@ -156,6 +170,8 @@ impl Transcript {
             items: Items::new(None),
             view: None,
             chips: Vec::new(),
+            goal: None,
+            goal_open: false,
             layout: Layout::default(),
             open: HashSet::new(),
             list,
@@ -194,6 +210,8 @@ impl Transcript {
         self.items.switch(sid);
         self.view = None;
         self.chips.clear();
+        self.goal = None;
+        self.goal_open = false;
         self.layout = Layout::default();
         self.open.clear();
         self.asks.clear();
@@ -834,6 +852,85 @@ impl Transcript {
         )
     }
 
+    /// The `/goal` of the session shown, as the model has it.
+    fn goal_now(&self, cx: &App) -> Option<Goal> {
+        let (net, sid) = self.net.as_ref().zip(self.items.sid())?;
+        net.read(cx).model.sessions.get(&sid)?.goal.clone()
+    }
+
+    /// The strip above the composer while the session has a `/goal`: `◎ goal · <condition> ·
+    /// working | not met yet`, then `✓ goal · … · achieved` until the next prompt. Hovering shows
+    /// the whole condition and the checker's last reason; a click keeps them under the strip.
+    fn goal_strip(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let g = self.goal.as_ref()?;
+        let (mark, colour, verdict) = match g.state {
+            GoalState::Active => ("◎", goal(), "working"),
+            GoalState::NotMet => ("◎", goal(), "not met yet"),
+            GoalState::Met => ("✓", goal_met(), "achieved"),
+            GoalState::Cleared => return None,
+        };
+        let card = (g.condition.clone(), g.reason.clone());
+        let row = div()
+            .id("goal")
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .h(px(24.))
+            .px(px(6.))
+            .cursor_pointer()
+            .hover(|s| s.bg(panel()))
+            .when(self.goal_open, |d| d.bg(panel()))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.goal_open = !this.goal_open;
+                cx.notify();
+            }))
+            .tooltip(move |window, cx| {
+                let card = card.clone();
+                Tooltip::element(move |_, _| goal_card(&card.0, card.1.as_deref()))
+                    .build(window, cx)
+            })
+            .child(div().flex_none().text_color(colour).child(mark))
+            .child(div().flex_none().child("goal ·"))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(ink())
+                    .child(g.condition.replace('\n', " ")),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(if g.state == GoalState::Met {
+                        colour
+                    } else {
+                        muted()
+                    })
+                    .child(format!("· {verdict}")),
+            );
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(Rgba { a: 0.16, ..ink() })
+                .bg(paper())
+                .font_family(FONT_MONO)
+                .text_size(px(11.))
+                .text_color(muted())
+                .overflow_hidden()
+                .child(row)
+                .when(self.goal_open, |d| {
+                    d.child(
+                        goal_card(&g.condition, g.reason.as_deref())
+                            .px(px(6.))
+                            .pb(px(6.)),
+                    )
+                }),
+        )
+    }
+
     /// The prompts of the session shown that are on their way; a redraw is set for when the next
     /// one runs out, and the list follows the end again when one is added.
     fn sent_now(&mut self, cx: &mut Context<Self>) -> Vec<Sent> {
@@ -892,6 +989,7 @@ impl Render for Transcript {
         self.sent = sent;
         let pill = self.pill(window, cx);
         let strip = self.strip(cx);
+        let goal_strip = self.goal_strip(cx);
         div()
             .size_full()
             .flex()
@@ -953,8 +1051,28 @@ impl Render for Transcript {
                     }),
             )
             .children(strip)
+            .children(goal_strip)
             .child(self.ctx.clone())
     }
+}
+
+/// A goal's whole condition and the checker's last reason: the strip's tooltip, and what a click
+/// on it keeps on show.
+fn goal_card(condition: &str, reason: Option<&str>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .p(px(6.))
+        .max_w(px(520.))
+        .bg(paper())
+        .font_family(FONT_MONO)
+        .text_size(px(11.))
+        .text_color(ink())
+        .child(condition.to_owned())
+        .when_some(reason, |d, r| {
+            d.child(div().text_color(muted()).child(r.to_owned()))
+        })
 }
 
 /// Unix ms now.

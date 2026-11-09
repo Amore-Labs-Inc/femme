@@ -69,6 +69,19 @@ Keep it current: when your module's public API changes, edit your section in the
   chip stays, `●` and counting, until the agent reports it stopped, as Claude Code's own list of
   background tasks does. The Agent row stays in the main thread as the way back in. The composer
   is unchanged: a message sent while a subagent is on show goes to the session as always.
+- **Goal** (Claude's `/goal <condition>`, 2.1.319+): while the session has a goal, a 24 px strip in
+  the subagent strip's dress sits at the foot of the transcript box, above the composer:
+  `◎ goal · <condition, one line, cut with …> · working`, `· not met yet` after the checker said no
+  (Claude goes on by itself), then `✓ goal · … · achieved` (mark and verdict in `goal_met`), which
+  stays until the next prompt; `/goal clear` or `/clear` take it down at once. Hovering the strip
+  shows the whole condition and the checker's last reason; a click keeps them under the strip
+  until the next click or verdict. Each "not yet" is also a muted row in the transcript,
+  `◎ goal not met yet · <the checker's reason, whole>` (a note row shows all its lines now, not the
+  first). The daemon reads the verdicts from the session's transcript on disk
+  (`~/.claude/projects/*/<session>.jsonl`, `goal_status` attachment lines), the only place Claude
+  writes them: a headless chat's actor follows that file while a goal is set, a session mirrored
+  from a herdr pane reads it anyway. `Session::goal` (femme-proto) carries condition, state and
+  reason; the strip's colours are the `goal` and `goal_met` theme tokens.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text
