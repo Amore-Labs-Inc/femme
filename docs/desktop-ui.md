@@ -122,6 +122,19 @@ Keep it current: when your module's public API changes, edit your section in the
   box still runs the old commit. Errors show in the red strip; a daemon without the requests is
   "daemon too old for pull requests". `refresh` in the title bar and every open read the list again.
   `Esc` or `‹` closes it; the deploy watch goes on while it is closed.
+  **Conflicts**: a row whose `Pr::mergeable` is `Some(false)` carries a red `conflicts` pill (`None`:
+  a faint `checking`; `Some(true)`: nothing), and its `Merge & deploy` becomes `Fix with Claude`:
+  `Req::PrFix` → `Resp::Session(sid)`, a real Claude chat labelled `fix #n` that merges main into
+  the branch, resolves, tests and pushes; the card closes and the centre switches to that chat
+  (`Net::set_current`, as a sidebar click) so the user watches and steers it. While `Pr::fixing` is
+  set the row shows a `fixing…` pill and the detail `Open fix chat` (also next to `Merge & deploy`
+  once the push makes it mergeable). While anything is fixing or `checking`, the open card reads
+  the list every 10 s, at most 60 times per opening. A merge refused for conflicts reads
+  `#n conflicts with main — Fix with Claude` (other errors as the daemon says them) and flips the
+  button at once. The footer's `Auto-fix conflicts after a merge` toggle is `Req::PrAutoFix`
+  (`on: None` reads it at open, a click sends `Some(!cur)`; off by default; hidden when the daemon
+  does not know it): with it on, each merge starts a fix chat for every `claude-update/*` pull
+  request it leaves conflicting (uses Claude usage).
 - **At start** (once connected): the newest live Claude session is shown (one that crashed, failed
   or lost its holder does not count); none → a new headless Claude session in the home directory is
   created and shown; `claude` missing on the box (the create fails) → a shell session. The user
