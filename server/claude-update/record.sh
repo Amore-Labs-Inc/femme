@@ -37,6 +37,7 @@ esac
 
 # H.264 + yuv420p plays everywhere; even sizes are an H.264 requirement. Smaller and blurrier until it fits.
 for try in "23 1280" "28 1280" "32 960" "36 720"; do
+  # shellcheck disable=SC2086 # two words: crf and width
   set -- $try
   ffmpeg -v error -y -i "$raw" -an -c:v libx264 -preset veryfast -crf "$1" -pix_fmt yuv420p -movflags +faststart \
     -vf "scale='min($2,iw)':-2:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2" "$t/out.mp4"
