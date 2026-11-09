@@ -60,7 +60,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use femme_proto::rpc::{Answer, PromptHow};
-use femme_proto::state::{Agent, ItemKind, ItemStatus, Question, Usage};
+use femme_proto::state::{Agent, Goal, GoalState, ItemKind, ItemStatus, Question, Usage};
 use serde_json::{json, Value};
 
 use crate::common::{
@@ -829,7 +829,16 @@ impl ClaudeDriver {
                     ev.push(AgentEvent::ModelChanged(m.to_owned()));
                 }
             }
+            if let Some(c) = out.strip_prefix("Goal set:") {
+                ev.push(AgentEvent::Goal(goal(c, GoalState::Active, None)));
+            } else if let Some(c) = out.strip_prefix("Goal cleared:") {
+                ev.push(AgentEvent::Goal(goal(c, GoalState::Cleared, None)));
+            }
             ev.push(event_item(id, out));
+        } else if let Some((c, r)) = goal_feedback(&text) {
+            // the goal's Stop hook said not yet: the verdict, and a row with the reason whole
+            ev.push(AgentEvent::Goal(goal(c, GoalState::NotMet, Some(r))));
+            ev.push(event_item(id, &format!("◎ goal not met yet · {r}")));
         } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
             // a subagent's text is the prompt it was given
             self.activity(offset, ev);
@@ -1365,6 +1374,11 @@ impl Driver for ClaudeDriver {
             return ev;
         };
         let ty = v["type"].as_str().unwrap_or("");
+        if ty == "attachment" {
+            // the transcript on disk (a herdr mirror, the daemon's goal tail): only a goal verdict
+            ev.extend(goal_status(&v["attachment"]).map(AgentEvent::Goal));
+            return ev;
+        }
         if let (true, Some(pid)) = (
             matches!(ty, "stream_event" | "assistant" | "user"),
             v["parent_tool_use_id"].as_str(),
@@ -1588,6 +1602,39 @@ fn done(id: String, kind: ItemKind, status: ItemStatus, body: Value) -> AgentEve
         status,
         body,
         parent: None,
+    }
+}
+
+/// `Stop hook feedback:\n[<condition>]: <reason>`, the goal checker's "not yet" as the stream
+/// says it: `(condition, reason)`.
+fn goal_feedback(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("Stop hook feedback:")?.trim_start();
+    let rest = rest.strip_prefix('[')?;
+    // ponytail: the first "]: " splits; a condition holding one gets cut short, the reason is whole
+    let (c, r) = rest.split_once("]: ")?;
+    Some((c.trim(), r.trim()))
+}
+
+/// The transcript's `goal_status` attachment as a [`Goal`]: the `sentinel` line (the goal was
+/// set) is `Active`, a verdict `NotMet` or `Met` with the checker's reason.
+pub fn goal_status(a: &Value) -> Option<Goal> {
+    if a["type"] != "goal_status" {
+        return None;
+    }
+    let condition = a["condition"].as_str().unwrap_or_default();
+    let state = match (a["sentinel"] == true, a["met"] == true) {
+        (true, _) => GoalState::Active,
+        (false, true) => GoalState::Met,
+        (false, false) => GoalState::NotMet,
+    };
+    Some(goal(condition, state, a["reason"].as_str()))
+}
+
+fn goal(condition: &str, state: GoalState, reason: Option<&str>) -> Goal {
+    Goal {
+        condition: condition.trim().to_owned(),
+        state,
+        reason: reason.map(|r| r.trim().to_owned()),
     }
 }
 
@@ -2075,6 +2122,68 @@ mod tests {
             self.at += text.len() as u64 + 1;
             ev
         }
+    }
+
+    #[test]
+    fn a_goals_stop_hook_feedback_is_a_verdict_row_not_a_note() {
+        let mut f = Feed::new();
+        let ev = f.line(json!({"type":"user","message":{"content":[
+            {"type":"text","text":"Stop hook feedback:\n[c]: not yet"}]}}));
+        assert!(
+            ev.contains(&AgentEvent::Goal(Goal {
+                condition: "c".into(),
+                state: GoalState::NotMet,
+                reason: Some("not yet".into()),
+            })),
+            "{ev:#?}"
+        );
+        let texts: Vec<String> = ev
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ItemCompleted { kind, body, .. } if *kind == ItemKind::Event => {
+                    body["text"].as_str().map(str::to_owned)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["◎ goal not met yet · not yet"]);
+    }
+
+    #[test]
+    fn goal_lines_set_judge_and_clear() {
+        let mut f = Feed::new();
+        let state = |ev: Vec<AgentEvent>| {
+            ev.into_iter().find_map(|e| match e {
+                AgentEvent::Goal(g) => Some((g.state, g.reason)),
+                _ => None,
+            })
+        };
+        let out = |s: &str| {
+            json!({"type":"user","message":{"content":[{"type":"text",
+                "text":format!("<local-command-stdout>{s}</local-command-stdout>")}]}})
+        };
+        assert_eq!(
+            state(f.line(out("Goal set: c"))),
+            Some((GoalState::Active, None))
+        );
+        let att = |a: Value| json!({"type":"attachment","attachment":a});
+        assert_eq!(
+            state(f.line(att(json!({"type":"goal_status","met":false,"sentinel":true,"condition":"c"})))),
+            Some((GoalState::Active, None))
+        );
+        assert_eq!(
+            state(f.line(att(json!({"type":"goal_status","met":false,"condition":"c","reason":"r1"})))),
+            Some((GoalState::NotMet, Some("r1".into())))
+        );
+        assert_eq!(
+            state(f.line(att(json!({"type":"goal_status","met":true,"condition":"c","reason":"r2"})))),
+            Some((GoalState::Met, Some("r2".into())))
+        );
+        assert_eq!(
+            state(f.line(out("Goal cleared: c"))),
+            Some((GoalState::Cleared, None))
+        );
+        assert_eq!(state(f.line(att(json!({"type":"other"})))), None);
     }
 
     fn contexts(ev: Vec<AgentEvent>) -> Vec<AgentEvent> {

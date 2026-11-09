@@ -94,7 +94,7 @@ pub mod items;
 pub mod pi;
 
 use femme_proto::rpc::{Answer, PromptHow};
-use femme_proto::state::{Agent, ItemKind, ItemStatus, Question, Usage};
+use femme_proto::state::{Agent, Goal, ItemKind, ItemStatus, Question, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -358,6 +358,9 @@ pub enum AgentEvent {
     },
     /// Coarse state transition; only emitted when the state actually changes.
     Status(AgentStatus),
+    /// Claude's `/goal` changed: set, judged by its checker, or cleared (see
+    /// [`femme_proto::state::Goal`]).
+    Goal(Goal),
     /// The process exited (from [`Driver::on_exit`]).
     Exited {
         /// Exit code, `None` if it was signalled.
