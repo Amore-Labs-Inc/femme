@@ -230,7 +230,8 @@ pub enum Req {
     PrVideo {
         name: String,
     },
-    /// Squash-merges the pull request into main; the box's deploy timer then ships it.
+    /// Squash-merges the pull request into main; the box's deploy timer then ships it. One that
+    /// conflicts with main is merged once Claude has resolved it (`Pr::merging`): `Resp::Ok` either way.
     PrMerge {
         number: u64,
     },
@@ -268,6 +269,10 @@ pub struct Pr {
     /// The live `fix #<number>` chat working on it (`PrFix`).
     #[serde(default)]
     pub fixing: Option<Sid>,
+    /// A `PrMerge` asked while it conflicted is running: Claude merges main in, resolves, tests and
+    /// pushes, then it is merged (and deployed) without anyone clicking again.
+    #[serde(default)]
+    pub merging: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
