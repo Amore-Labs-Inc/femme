@@ -101,6 +101,13 @@ Keep it current: when your module's public API changes, edit your section in the
   `in background` until the task's end comes as an event (`task_notification`), which starts a turn
   of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
   of the chat on show, as `Ctrl+B` does in Claude's own TUI (a mirrored pane gets that key).
+- **A mirrored pane's permission prompt**: Claude in a herdr pane blocked on a prompt its TUI draws
+  ("Do you want to proceed? 1. Yes 2. No": a Bash command, an edit) never writes it to its transcript,
+  so the daemon reads it off the pane's screen (`herdr agent read`, `headless/herdr.rs`
+  `screen_question`) and shows it as a question row with the options as buttons; an answer is the
+  option's number (Escape for cancel) typed into the pane, one given in the pane itself closes the row
+  as `answered in the pane`. A message sent while it waits is refused with "Claude is waiting for an
+  answer in its terminal", not `agent_not_ready`.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text
