@@ -252,10 +252,9 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
                 continue;
             }
             tails.remove(&s.id);
-            if let Some(h) = d.sessions.head(s.id) {
-                h.close().await;
-                d.sessions.unhead(s.id);
-            }
+            // the head goes, and its task ends with its last sender; the pane is left alone: it
+            // is gone, runs another conversation now, or is a shell the user's Claude exited to
+            d.sessions.unhead(s.id);
             if let Err(e) = d.write(|tx, _| tx.delete_session(s.id)) {
                 tracing::warn!(sid = %s.id, %e, "herdr session not dropped");
             }
@@ -1615,7 +1614,7 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                     let _ = reply.send(HashMap::new());
                 }
                 // Closing from FEMME ends the pane too: a close is a kill, not a hide. A pane
-                // that is already gone (the sync noticed it) makes this a no-op error.
+                // that is already gone makes this a no-op error. The sync never sends it.
                 Cmd::Close { done } => {
                     let _ = herdr(&bin, Some(&hs), &["pane", "close", &pane]).await;
                     let _ = done.send(());
@@ -2312,8 +2311,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
     }
 
     /// A `herdr` stand-in: `agent read` prints `<dir>/screen`, `pane send-keys` logs to
-    /// `<dir>/keys`, `agent prompt` logs to `<dir>/prompts` once `<dir>/unblocked` exists and is
-    /// refused as blocked before.
+    /// `<dir>/keys`, `pane close` to `<dir>/closes`, `agent prompt` logs to `<dir>/prompts` once
+    /// `<dir>/unblocked` exists and is refused as blocked before.
     fn fake_herdr(dir: &Path) -> String {
         let bin = dir.join("herdr");
         let script = format!(
@@ -2321,6 +2320,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
              case \"$1 $2\" in\n\
              \"agent read\") cat {d}/screen ;;\n\
              \"pane send-keys\") echo \"$3 $4\" >> {d}/keys ;;\n\
+             \"pane close\") echo \"$3\" >> {d}/closes ;;\n\
              \"agent prompt\") [ -e {d}/unblocked ] && echo \"$3 $4\" >> {d}/prompts || {{ echo agent_blocked; exit 1; }} ;;\n\
              *) exit 1 ;;\nesac\n",
             d = dir.display()
@@ -2608,6 +2608,33 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             .unwrap()
             .is_empty());
         assert!(tails.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pane_gone_past_the_grace_is_dropped_without_closing_the_pane() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("screen"), "").unwrap();
+        let bin = fake_herdr(dir.path());
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, &bin, &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        // its Claude exited: the pane is a shell now, out of herdr's agent list
+        sync(&d, &bin, &[], &mut tails).await;
+        tails.get_mut(&sid).unwrap().gone_since =
+            Some(Instant::now() - GONE_GRACE - Duration::from_secs(1));
+        sync(&d, &bin, &[], &mut tails).await;
+        assert!(d
+            .store
+            .read(|c| sessions::list_sessions(c, false))
+            .unwrap()
+            .is_empty());
+        assert!(d.sessions.head(sid).is_none());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !dir.path().join("closes").exists(),
+            "the sync sent a pane close"
+        );
     }
 
     #[tokio::test]
