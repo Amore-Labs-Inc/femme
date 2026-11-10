@@ -325,6 +325,7 @@ fn owner(ctx: &Ctx) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one per field of the request
 async fn create(
     ctx: &Ctx,
     cwd: String,
