@@ -22,7 +22,7 @@ const IDS: &[(&str, &str)] = &[
     ("opus", "claude-opus-5-5"),
     ("sonnet", "claude-sonnet-5-5"),
     ("haiku", "claude-haiku-5-5"),
-    ("fable", "claude-fable-5-1"),
+    ("fable", "claude-fable-5-2"),
     ("deepseek", "deepseek/deepseek-v4.1-flash-ultrafast"),
 ];
 
@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(model_and_effort("model opus"), None);
         assert!(!exact("/model", &n), "Enter on /model opens the list");
         assert_eq!(label("model opus"), "model opus 5.5");
-        assert_eq!(label("model fable xhigh"), "model fable 5.1 xhigh");
+        assert_eq!(label("model fable xhigh"), "model fable 5.2 xhigh");
         assert_eq!(
             label("model deepseek"),
             "model deepseek-v4.1-flash-ultrafast"

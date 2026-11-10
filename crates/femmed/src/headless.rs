@@ -1567,7 +1567,7 @@ pub(crate) fn model_switch(text: &str) -> Option<String> {
         "opus" => "claude-opus-5-5".to_owned(),
         "sonnet" => "claude-sonnet-5-5".to_owned(),
         "haiku" => "claude-haiku-5-5".to_owned(),
-        "fable" => "claude-fable-5-1".to_owned(),
+        "fable" => "claude-fable-5-2".to_owned(),
         m if m.contains('/') || m.starts_with("claude-") => m.to_owned(),
         _ => return None,
     })

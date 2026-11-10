@@ -2297,7 +2297,7 @@ fn base_model(m: &str) -> &str {
 // ponytail: the two models seen so far; extend as the result lines report others
 fn known_window(model: Option<&str>) -> Option<u64> {
     match base_model(model?) {
-        "claude-fable-5-1" | "claude-opus-5-5" => Some(1_000_000),
+        "claude-fable-5-1" | "claude-fable-5-2" | "claude-opus-5-5" => Some(1_000_000),
         _ => None,
     }
 }
