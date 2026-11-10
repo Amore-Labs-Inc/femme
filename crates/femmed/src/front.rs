@@ -27,6 +27,7 @@ mod panes;
 mod prs;
 mod req;
 mod term;
+pub(crate) mod ws;
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -136,10 +137,28 @@ pub struct FrontHandle {
     fingerprint: [u8; 32],
     sock: PathBuf,
     hops: Arc<Hops>,
+    gate: Arc<WsGate>,
     tasks: Vec<JoinHandle<()>>,
 }
 
+/// The phone's way to the front: the HTTP layer's `/femme/ws` route ([`ws`]) serves its
+/// connections on the front this points at, for as long as that front runs.
+pub struct WsGate {
+    front: Weak<Front>,
+}
+
+impl WsGate {
+    fn front(&self) -> Option<Arc<Front>> {
+        self.front.upgrade()
+    }
+}
+
 impl FrontHandle {
+    /// What the HTTP layer needs to serve phones on this front.
+    pub fn gate(&self) -> Arc<WsGate> {
+        self.gate.clone()
+    }
+
     /// Where QUIC listens (the port is the real one when the front was asked for port 0).
     pub fn quic_addr(&self) -> SocketAddr {
         self.quic
@@ -235,6 +254,9 @@ pub async fn serve_front_with(
         sock = %sock.display(),
         "desktop front up"
     );
+    let gate = Arc::new(WsGate {
+        front: Arc::downgrade(&front),
+    });
     let tasks = vec![
         tokio::spawn(quic_loop(front.clone(), listener)),
         tokio::spawn(sock_loop(front, unix, uid)),
@@ -245,6 +267,7 @@ pub async fn serve_front_with(
         fingerprint,
         sock,
         hops,
+        gate,
         tasks,
     })
 }

@@ -40,6 +40,7 @@ hdrhistogram.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 sha2 = "0.10"
 base64 = "0.22"
+qrcode.workspace = true
 async-trait = "0.1"
 thiserror.workspace = true
 ulid.workspace = true
@@ -48,5 +49,7 @@ ulid.workspace = true
 # The desktop's side of the wire in tests/front.rs: `RowCache` applies the frames the front relays.
 femme-term.workspace = true
 tower = { version = "0.5", features = ["util"] }
+# The phone's side of the wire in tests/ws.rs (the version axum already builds).
+tokio-tungstenite = "0.29"
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
