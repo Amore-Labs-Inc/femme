@@ -2,10 +2,15 @@ name: mobile
 on:
   push:
     branches: [main]
-    paths: ["mobile/app/**", ".github/workflows/mobile.yml"]
+    paths: ["mobile/app/**", "mobile/ci/**", ".github/workflows/mobile.yml"]
   pull_request:
-    paths: ["mobile/app/**", ".github/workflows/mobile.yml"]
+    paths: ["mobile/app/**", "mobile/ci/**", ".github/workflows/mobile.yml"]
   workflow_dispatch:
+
+# A new push to the same branch cancels the run in flight: the macOS jobs are the expensive part.
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FLUTTER_VERSION: 3.47.7
