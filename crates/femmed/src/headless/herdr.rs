@@ -339,7 +339,10 @@ async fn screen_asks(d: &Daemon, bin: &str, p: &HPane, t: &mut Tail) {
     let Ok(screen) = herdr(bin, Some(&p.hs), &["agent", "read", &p.pane]).await else {
         return;
     };
-    let Some((prompt, options)) = screen_question(&screen) else {
+    let Some(ScreenPrompt {
+        prompt, options, ..
+    }) = screen_prompt(&screen)
+    else {
         return;
     };
     let now = now_ms();
@@ -404,65 +407,180 @@ fn close_screen_asks(d: &Daemon, sid: Sid, reason: &str) {
     }
 }
 
-/// The prompt the TUI draws at the bottom of the pane's screen: the lines of its box (the call,
-/// what it wants, "Do you want to proceed?") and its numbered options. `None` when the screen ends
-/// in something else.
-fn screen_question(screen: &str) -> Option<(String, Vec<String>)> {
+/// What the TUI draws at the bottom of the pane's screen and waits on: its box (the call, what it
+/// wants, "Do you want to proceed?") and its options, numbered ("1. Yes", wrapped over lines when
+/// long) or a list under a cursor (the folder trust dialog's "❯ No, exit").
+#[derive(Debug, PartialEq)]
+struct ScreenPrompt {
+    prompt: String,
+    options: Vec<String>,
+    /// the options are numbered: a digit picks one
+    numbered: bool,
+    /// the option the cursor is on
+    cursor: usize,
+    /// the footer says "Enter to …": a pick is confirmed with Enter (an AskUserQuestion)
+    confirm: bool,
+}
+
+impl ScreenPrompt {
+    /// The keys that pick option `i`.
+    fn keys(&self, i: usize) -> Vec<String> {
+        let mut keys = Vec::new();
+        if self.numbered {
+            keys.push((i + 1).to_string());
+        } else {
+            let (key, n) = match i.cmp(&self.cursor) {
+                std::cmp::Ordering::Less => ("up", self.cursor - i),
+                _ => ("down", i - self.cursor),
+            };
+            keys.extend(std::iter::repeat_n(key.to_owned(), n));
+        }
+        if self.confirm || !self.numbered {
+            keys.push("enter".into());
+        }
+        keys
+    }
+}
+
+/// The prompt at the end of `screen`; `None` when the screen ends in something else (output, the
+/// input box, a numbered list in prose).
+fn screen_prompt(screen: &str) -> Option<ScreenPrompt> {
     let lines: Vec<&str> = screen.lines().collect();
-    // "1. Yes" / "❯ 2. No": the number and the label
-    let option = |l: &str| -> Option<(usize, String)> {
-        let l = l.trim().trim_start_matches('❯').trim_start();
-        let (n, rest) = l.split_once(". ")?;
-        Some((n.parse().ok()?, rest.trim().to_owned()))
-    };
-    // the last run of options numbered from 1
-    let mut end = lines.len();
-    while end > 0 && lines[end - 1].trim().is_empty() {
-        end -= 1;
-    }
-    let mut last = None;
-    for (i, l) in lines[..end].iter().enumerate().rev() {
-        if option(l).is_some() {
-            last = Some(i);
-            break;
-        }
-        if !l.trim().is_empty() && last.is_none() && i + 3 < end {
-            return None; // the options are not near the bottom (a hint line may follow them)
-        }
-    }
-    let last = last?;
-    let mut first = last;
-    while first > 0 && option(lines[first - 1]).is_some() {
-        first -= 1;
-    }
-    let options: Vec<String> = lines[first..=last]
-        .iter()
-        .enumerate()
-        .map(|(i, l)| option(l).filter(|(n, _)| *n == i + 1).map(|(_, s)| s))
-        .collect::<Option<_>>()?;
-    // the question line, right above the options; then its box, back to the rule that opens it
-    // (a solid line; the dashed ones inside it part the call from what the TUI says about it)
-    let rule = |l: &str, open: bool| {
+    let blank = |l: &str| l.trim().is_empty();
+    let col = |l: &str| l.chars().take_while(|c| c.is_whitespace()).count();
+    // a solid rule opens the box; dashed ones inside it part the call from what the TUI says about it
+    let rule = |l: &str, solid: bool| {
         let t = l.trim();
         t.chars().count() >= 8
             && t.chars()
-                .all(|c| matches!(c, '─' | '━' | '═') || (!open && c == '╌'))
+                .all(|c| matches!(c, '─' | '━' | '═') || (!solid && c == '╌'))
     };
-    let ask = lines[..first]
+    let hint = |l: &str| {
+        ["Esc", "Enter", "ctrl+", "shift+", "Tab", "↑"]
+            .iter()
+            .any(|k| l.contains(k))
+    };
+    // "1. Yes" / "❯ 2. No": the number, its column and the label
+    fn numbered(l: &str) -> Option<(usize, usize, &str)> {
+        let t = l.trim_start().trim_start_matches('❯').trim_start();
+        let (n, rest) = t.split_once(". ")?;
+        let at = l.chars().position(|c| c.is_ascii_digit())?;
+        Some((n.parse().ok()?, at, rest.trim()))
+    }
+    let cursor_on = |l: &str| l.trim_start().starts_with('❯');
+    // below the options: hints, blanks and the odd line (a status line); more is output after an
+    // answered prompt
+    let mut end = lines.len();
+    let (mut odd, mut hinted) = (0, false);
+    loop {
+        let l = *lines.get(end.checked_sub(1)?)?;
+        if numbered(l).is_some() || cursor_on(l) {
+            break;
+        }
+        if hint(l) {
+            hinted = true;
+        } else if !blank(l) {
+            odd += 1;
+            if odd > 2 {
+                return None;
+            }
+        }
+        end -= 1;
+    }
+    let mut last = end - 1;
+    let is_numbered = numbered(lines[last]).is_some();
+    // the label column: a number's, or the text after "❯ "
+    let at = match numbered(lines[last]) {
+        Some((_, at, _)) => at,
+        None => col(lines[last]) + 2,
+    };
+    // the cursor's list goes on below it: the options at the label column
+    if !is_numbered {
+        while lines
+            .get(last + 1)
+            .is_some_and(|l| !blank(l) && !hint(l) && col(l) >= at)
+        {
+            last += 1;
+        }
+        end = last + 1;
+    }
+    // up over the block: option lines, continuations indented past the label, rules between them
+    // (number, the cursor is on it, label)
+    let mut groups: Vec<(Option<usize>, bool, String)> = vec![];
+    let mut cont: Vec<&str> = vec![];
+    let mut first = last;
+    for i in (0..=last).rev() {
+        let l = lines[i];
+        if blank(l) {
+            break;
+        }
+        if rule(l, false) {
+            continue;
+        }
+        let option = if is_numbered {
+            numbered(l)
+                .filter(|(_, c, _)| *c == at)
+                .map(|(n, _, s)| (Some(n), s))
+        } else if cursor_on(l) {
+            Some((None, l.trim_start().trim_start_matches('❯').trim()))
+        } else if col(l) == at {
+            Some((None, l.trim()))
+        } else {
+            None
+        };
+        match option {
+            Some((n, label)) => {
+                let mut text = label.to_owned();
+                for c in cont.drain(..).rev() {
+                    // an AskUserQuestion's description under its label: the same again, often
+                    if c != label {
+                        text.push(' ');
+                        text.push_str(c);
+                    }
+                }
+                groups.push((n, cursor_on(l), text));
+                first = i;
+            }
+            None if col(l) > at => cont.push(l.trim()),
+            None => break,
+        }
+    }
+    groups.reverse();
+    if groups.is_empty() {
+        return None;
+    }
+    if is_numbered
+        && groups
+            .iter()
+            .enumerate()
+            .any(|(i, (n, ..))| *n != Some(i + 1))
+    {
+        return None;
+    }
+    // what asks: a question line right above the options, or the footer's hints
+    let asks = lines[first.saturating_sub(3)..first]
         .iter()
-        .rposition(|l| l.trim().ends_with('?'))
-        .filter(|&i| first - i <= 3)?;
-    let top = lines[..ask]
+        .any(|l| l.trim().ends_with('?'));
+    if !asks && !hinted {
+        return None;
+    }
+    let top = lines[..first]
         .iter()
         .rposition(|l| rule(l, true))
         .map_or(0, |i| i + 1);
-    let prompt: Vec<String> = lines[top.max(ask.saturating_sub(40))..=ask]
+    let prompt: Vec<String> = lines[top.max(first.saturating_sub(40))..first]
         .iter()
         .filter(|l| !rule(l, false))
         .map(|l| l.trim().trim_start_matches('│').trim().to_owned())
         .filter(|l| !l.is_empty())
         .collect();
-    Some((prompt.join("\n"), options))
+    Some(ScreenPrompt {
+        prompt: prompt.join("\n"),
+        cursor: groups.iter().position(|(_, on, _)| *on).unwrap_or(0),
+        options: groups.into_iter().map(|(_, _, s)| s).collect(),
+        numbered: is_numbered,
+        confirm: lines[end..].iter().any(|l| l.contains("Enter to")),
+    })
 }
 
 /// A new conversation's session and its main pane (no attach state: `reconcile` leaves it to us).
@@ -1355,23 +1473,45 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                     }
                     let _ = reply.send(r.map(drop));
                 }
+                // The pane's prompt takes the answer as keys, whether FEMME asked it from the
+                // screen or the transcript did (an AskUserQuestion): the screen as it is now says
+                // which keys pick the option.
                 Cmd::Answer {
                     request_id,
                     answer,
                     reply,
-                } if request_id.starts_with(SCREEN_ASK) => {
-                    let key = match &answer {
-                        Answer::Option(i) => (i + 1).to_string(),
-                        Answer::Cancel => "esc".to_owned(),
-                        _ => {
-                            let why = "the pane's prompt takes one option, or Escape";
-                            let _ = reply.send(Err(CoreError::Bad(why.into())));
-                            continue;
+                } => {
+                    let keys = match &answer {
+                        Answer::Cancel => Ok(vec!["esc".to_owned()]),
+                        Answer::Option(i) => {
+                            let i = usize::from(*i);
+                            match herdr(&bin, Some(&hs), &["agent", "read", &pane]).await {
+                                Err(e) => Err(e),
+                                Ok(screen) => match screen_prompt(&screen) {
+                                    Some(p) if i < p.options.len() => Ok(p.keys(i)),
+                                    Some(p) => Err(CoreError::Bad(format!(
+                                        "the pane's prompt has {} options",
+                                        p.options.len()
+                                    ))),
+                                    None => Err(CoreError::Conflict(
+                                        "the pane shows no prompt now: it was answered there"
+                                            .into(),
+                                    )),
+                                },
+                            }
                         }
+                        _ => Err(CoreError::Bad(
+                            "the pane's prompt takes one option, or Escape".into(),
+                        )),
                     };
-                    let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, &key])
-                        .await
-                        .map(drop);
+                    let r = match keys {
+                        Ok(keys) => {
+                            let mut args = vec!["pane", "send-keys", pane.as_str()];
+                            args.extend(keys.iter().map(String::as_str));
+                            herdr(&bin, Some(&hs), &args).await.map(drop)
+                        }
+                        Err(e) => Err(e),
+                    };
                     if r.is_ok() {
                         if let Some(d) = d.upgrade() {
                             if let Some(p) = d.answered_part(sid, &request_id, &answer) {
@@ -1400,9 +1540,7 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                         herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "shift+tab"]).await;
                     let _ = reply.send(r.map(drop));
                 }
-                Cmd::Answer { reply, .. }
-                | Cmd::SetModel { reply, .. }
-                | Cmd::Takeover { reply, .. } => {
+                Cmd::SetModel { reply, .. } | Cmd::Takeover { reply, .. } => {
                     let _ = reply.send(not_here());
                 }
                 Cmd::Hook(_) => {}
@@ -1924,28 +2062,186 @@ mod tests {
 
     #[test]
     fn the_permission_prompt_on_the_screen_is_a_question_with_its_options() {
-        let (prompt, options) = screen_question(SCREEN).unwrap();
-        assert_eq!(options, ["Yes", "No"]);
-        let lines: Vec<&str> = prompt.lines().collect();
+        let p = screen_prompt(SCREEN).unwrap();
+        assert_eq!(p.options, ["Yes", "No"]);
+        assert!(p.numbered && !p.confirm);
+        assert_eq!(p.keys(1), ["2"]);
+        let lines: Vec<&str> = p.prompt.lines().collect();
         assert_eq!(lines[0], "Bash command · from the general-purpose agent");
         assert_eq!(lines[1], "Build contact sheets from recording");
         assert!(lines[2].starts_with("cd /tmp/claude-1000/"));
         assert_eq!(lines[lines.len() - 1], "Do you want to proceed?");
-        assert!(prompt.contains("approval required to prevent path resolution bypass"));
-        assert!(!prompt.contains("╌"), "{prompt}");
+        assert!(p
+            .prompt
+            .contains("approval required to prevent path resolution bypass"));
+        assert!(!p.prompt.contains("╌"), "{}", p.prompt);
+    }
+
+    /// The Write prompt: an option wrapped over three lines is one option.
+    const EDIT: &str = r#"● Write(notes.txt)
+
+─────────────────────────────────────────────────────────
+ Create file
+ notes.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hello
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create notes.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file
+      edits and common file commands) for this session
+      (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend"#;
+
+    #[test]
+    fn a_wrapped_option_is_one_option() {
+        let p = screen_prompt(EDIT).unwrap();
+        assert_eq!(p.options.len(), 3, "{:?}", p.options);
+        assert_eq!(p.options[0], "Yes");
+        assert_eq!(
+            p.options[1],
+            "Yes, and switch to accept edits (auto-approve file edits and common file commands) \
+             for this session (shift+tab)"
+        );
+        assert_eq!(p.options[2], "No");
+        assert_eq!(
+            p.prompt,
+            "Create file\nnotes.txt\n1 hello\nDo you want to create notes.txt?"
+        );
+    }
+
+    /// An AskUserQuestion: a description under each label, "Type something." and, past a rule,
+    /// "Chat about this"; a digit moves the cursor and Enter picks.
+    const ASK: &str = r#"  which colour do you prefer, with the options red,
+  green and blue. Then reply with my answer.
+─────────────────────────────────────────────────────────
+ ☐ Colour
+
+Which colour do you prefer?
+
+❯ 1. Red
+     Red
+  2. Green
+     Green
+  3. Blue
+     Blue
+  4. Type something.
+─────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"#;
+
+    #[test]
+    fn an_ask_user_question_on_the_screen_picks_with_a_digit_and_enter() {
+        let p = screen_prompt(ASK).unwrap();
+        assert_eq!(
+            p.options,
+            ["Red", "Green", "Blue", "Type something.", "Chat about this"]
+        );
+        assert!(p.numbered && p.confirm);
+        assert_eq!(p.keys(1), ["2", "enter"]);
+        assert_eq!(p.prompt, "☐ Colour\nWhich colour do you prefer?");
+    }
+
+    /// The plan dialog: the first option wraps, a hint sits under the last one and more below.
+    const PLAN: &str = r#"
+   Plan
+
+   1. Write /tmp/femme-prompts/README.md with the
+      Write tool. Content: a # femme-prompts heading
+      and one short paragraph saying the folder holds
+      small test files (hello.txt, notes.txt) created
+      in a Claude Code session.
+
+   Verification                                        ↓
+  ─────────────────────────────────────────────────────
+   Claude has written up a plan and is ready to
+   execute. Would you like to proceed?
+
+   ❯ 1. Yes, and switch to BYPASS PERMISSIONS (no
+        further prompts) for this session
+     2. Yes, manually approve edits
+     3. Tell Claude what to change
+        shift+tab to approve with this feedback
+
+   ctrl+g to edit in Vim ·
+   ~/.claude/plans/plan-how-to-add-polished-charm.md"#;
+
+    #[test]
+    fn the_plan_dialog_is_a_question_despite_its_footer() {
+        let p = screen_prompt(PLAN).unwrap();
+        assert_eq!(p.options.len(), 3, "{:?}", p.options);
+        assert!(p.options[0].starts_with("Yes, and switch to BYPASS PERMISSIONS (no further"));
+        assert_eq!(p.options[1], "Yes, manually approve edits");
+        assert_eq!(p.options[2], "Tell Claude what to change");
+        assert!(
+            p.prompt.ends_with("Would you like to proceed?"),
+            "{}",
+            p.prompt
+        );
+        assert!(!p.prompt.contains("Verification"), "{}", p.prompt);
+    }
+
+    /// The folder trust dialog: no numbers, a cursor; the answer moves it and presses Enter.
+    const TRUST: &str = r#"darkwarro@agentbox:/tmp/femme-prompts$ claude
+
+─────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/femme-prompts
+
+ Quick safety check: Is this a project you created or
+ one you trust? (Like your own code, a well-known open
+ source project, or work from your team). If not, take a
+ moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files
+ here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel"#;
+
+    #[test]
+    fn an_unnumbered_prompt_is_answered_by_moving_the_cursor() {
+        let p = screen_prompt(TRUST).unwrap();
+        assert_eq!(p.options, ["No, exit", "Yes, I trust this folder"]);
+        assert!(!p.numbered && p.confirm && p.cursor == 0);
+        assert_eq!(p.keys(1), ["down", "enter"]);
+        assert_eq!(p.keys(0), ["enter"]);
+        assert!(p
+            .prompt
+            .starts_with("Accessing workspace:\n/tmp/femme-prompts\nQuick safety"));
+        assert!(p.prompt.ends_with("Security guide"));
+        // the cursor further down: up to the first
+        let moved = TRUST
+            .replace(" ❯ No, exit", "   No, exit")
+            .replace("   Yes, I trust", " ❯ Yes, I trust");
+        let p = screen_prompt(&moved).unwrap();
+        assert_eq!(
+            (p.cursor, p.keys(0)),
+            (1, vec!["up".to_owned(), "enter".to_owned()])
+        );
     }
 
     #[test]
     fn a_screen_with_no_prompt_at_its_end_is_no_question() {
         // a numbered list in prose, no question above it
         let prose = "The plan:\n  1. The nut shakes\n  2. The nuts fly up\n\n> \n";
-        assert_eq!(screen_question(prose), None);
+        assert_eq!(screen_prompt(prose), None);
         // an answered prompt: the options scrolled up, output follows
         let answered = format!("{SCREEN}\n fr/sheet1.png\n fr/sheet2.png\n 61.2\n\n> ");
-        assert_eq!(screen_question(&answered), None);
-        assert_eq!(screen_question(""), None);
+        assert_eq!(screen_prompt(&answered), None);
+        assert_eq!(screen_prompt(""), None);
         // options not numbered from 1 are prose
-        assert_eq!(screen_question(" Ready?\n 2. No\n 3. Maybe\n"), None);
+        assert_eq!(screen_prompt(" Ready?\n 2. No\n 3. Maybe\n"), None);
+        // a user's message echoed with the cursor glyph, then output
+        assert_eq!(screen_prompt("❯ what is 2+2?\n\n⏺ 4\n"), None);
     }
 
     /// A `herdr` stand-in: `agent read` prints `<dir>/screen`, `pane send-keys` logs to
@@ -2013,7 +2309,7 @@ mod tests {
             .await;
         assert_eq!(r, Err(CoreError::Conflict(WAITING.into())));
 
-        // the answer: its number into the pane, the item answered
+        // the answer: its number into the pane (no Enter: a permission prompt), the item answered
         d.answer_question(sid, &q.request_id, Answer::Option(0))
             .await
             .unwrap();
