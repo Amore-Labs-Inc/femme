@@ -271,7 +271,8 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
             );
             e.insert(Tail::new(s.id, p.uuid.clone(), from));
         }
-        let state = status_of(&p.status);
+        let on_plan = tails.get(&s.id).is_some_and(|t| t.plan_open.is_some());
+        let state = status_of(if on_plan { "blocked" } else { &p.status });
         let title = (!p.title.is_empty()).then(|| p.title.clone());
         if let (Some((now, _)), Some(t)) = (state, tails.get_mut(&s.id)) {
             match (s.status, now) {
@@ -311,7 +312,7 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
 /// answered in the pane; an answer from FEMME closed it as it went). A transcript's own question
 /// (an AskUserQuestion) open at the time is left alone: the pane's prompt is that one.
 async fn screen_asks(d: &Daemon, bin: &str, p: &HPane, t: &mut Tail) {
-    if p.status != "blocked" {
+    if p.status != "blocked" && t.plan_open.is_none() {
         // the first look after a start closes what a run before left open
         if t.asked.take().is_some() || !t.asks_checked {
             close_screen_asks(d, t.sid, "answered in the pane");
@@ -670,6 +671,9 @@ struct Tail {
     asks_checked: bool,
     /// When the blocked pane's screen was last read and showed no question.
     screen_tried: Option<Instant>,
+    /// The ExitPlanMode call the transcript has no result for yet: the pane is on the plan
+    /// dialog, which herdr's detection reads as idle (its question wraps on a wide pane).
+    plan_open: Option<String>,
 }
 
 /// A subagent's transcript, read on from where it was read.
@@ -712,6 +716,7 @@ impl Tail {
             asked: None,
             asks_checked: false,
             screen_tried: None,
+            plan_open: None,
         }
     }
 
@@ -734,6 +739,30 @@ impl Tail {
             &text,
             now_ms(),
         ))
+    }
+
+    /// Keeps `plan_open` in step with the line: an ExitPlanMode call opens it, its result closes it.
+    fn note_plan(&mut self, line: &[u8]) {
+        let (call, result) = (b"\"ExitPlanMode\"", b"\"tool_result\"");
+        let has = |needle: &[u8]| line.windows(needle.len()).any(|w| w == needle);
+        if !has(call) && !(self.plan_open.is_some() && has(result)) {
+            return;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            return;
+        };
+        let Some(blocks) = v["message"]["content"].as_array() else {
+            return;
+        };
+        for b in blocks {
+            if b["type"] == "tool_use" && b["name"] == "ExitPlanMode" {
+                self.plan_open = b["id"].as_str().map(str::to_owned);
+            } else if b["type"] == "tool_result"
+                && b["tool_use_id"].as_str() == self.plan_open.as_deref()
+            {
+                self.plan_open = None;
+            }
+        }
     }
 
     async fn tail(&mut self, d: &Daemon) {
@@ -792,6 +821,7 @@ impl Tail {
                 }
                 Some(Disk::Feed { line, typed }) => (line, typed),
             };
+            self.note_plan(&line);
             let events = self.driver.on_line(at, &line, &mut out);
             out.stdin.clear(); // nobody listens: the pane's Claude reads its own terminal
             let f = fold(
@@ -2374,6 +2404,50 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let mut later = HashMap::new();
         sync(&d, &bin, &idle, &mut later).await;
         assert!(d.pending_question(sid).unwrap().is_none());
+    }
+
+    /// herdr reads the plan dialog as idle (its question wraps on a wide pane): the transcript's
+    /// ExitPlanMode call with no result yet says the pane is on it.
+    #[tokio::test]
+    async fn an_idle_pane_on_the_plan_dialog_asks_it_until_the_call_has_its_result() {
+        let (d, dir) = daemon();
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let call = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"plan it"}}
+{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"tp","name":"ExitPlanMode","input":{"plan":"write README"}}]}}
+"#;
+        std::fs::write(proj.join("u-1.jsonl"), call).unwrap();
+        std::fs::write(dir.path().join("screen"), PLAN).unwrap();
+        let bin = fake_herdr(dir.path());
+        let mut idle = parse_panes("default", BLOCKED);
+        idle[0].status = "idle".into();
+        let mut tails = HashMap::new();
+        sync(&d, &bin, &idle, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        assert!(
+            d.pending_question(sid).unwrap().is_none(),
+            "nothing read yet"
+        );
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        sync(&d, &bin, &idle, &mut tails).await;
+        let q = d.pending_question(sid).unwrap().expect("the plan dialog");
+        assert!(q.request_id.starts_with(SCREEN_ASK));
+        assert_eq!(q.options[1], "Yes, manually approve edits");
+        let s = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(s[0].status, SessionStatus::Blocked);
+        // answered in the pane: the result line arrives, the question closes, the row goes idle
+        let result = r#"{"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"tp","content":"approved"}]}}
+"#;
+        std::fs::write(proj.join("u-1.jsonl"), format!("{call}{result}")).unwrap();
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        sync(&d, &bin, &idle, &mut tails).await;
+        assert!(d.pending_question(sid).unwrap().is_none());
+        let s = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(s[0].status, SessionStatus::Idle);
     }
 
     #[tokio::test]
