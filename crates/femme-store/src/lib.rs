@@ -276,7 +276,9 @@ impl Store {
     /// Random id of this database, fixed at creation. Clients that present another epoch
     /// (`Cursors::epoch`) must discard what they cached and resync from scratch.
     pub fn epoch(&self) -> u64 {
-        self.epoch
+        // Masked here too, for a database made before epochs were kept JSON-safe: what is
+        // compared with a client's cursor is what `Welcome` said, on either carrier.
+        (self.epoch & schema::EPOCH_BITS).max(1)
     }
 
     /// Gives the database a new random epoch and returns it. Call this after a backup was
