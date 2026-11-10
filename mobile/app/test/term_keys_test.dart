@@ -71,6 +71,31 @@ void main() {
     expect(m.take(), isEmpty);
   });
 
+  test('StickyMods: Shift, and every armed mod in bitflags order', () {
+    final m = StickyMods()
+      ..tapCtrl()
+      ..tapShift()
+      ..tapAlt();
+    expect(m.mods.toList(), [Mods.shift, Mods.alt, Mods.ctrl]);
+    expect(TermUp.key(1, KeyCode.tab, mods: m.take()), {
+      'Key': {
+        'seq': 1,
+        'key': {'code': 'Tab', 'mods': 'SHIFT | ALT | CTRL'},
+      },
+    });
+    expect(m.mods, isEmpty);
+    expect(ExtraKey.shift.mod, Mods.shift);
+    expect(ExtraKey.shift.code, isNull);
+    expect(ExtraKey.esc.mod, isNull);
+  });
+
+  test('a sticky Shift types the capital letter', () {
+    final k = charKey('a', mods: {Mods.shift});
+    expect(k.code, {'Char': 'A'});
+    expect(k.mods, {Mods.shift});
+    expect(charKey('A', mods: {Mods.ctrl, Mods.shift}).code, {'Char': 'A'});
+  });
+
   test('extra keys send their codes', () {
     expect(ExtraKey.esc.code, KeyCode.escape);
     expect(ExtraKey.pgUp.code, KeyCode.pageUp);

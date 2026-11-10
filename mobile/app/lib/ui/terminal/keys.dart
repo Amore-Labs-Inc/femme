@@ -1,5 +1,5 @@
 /// Keys from the phone to the terminal: the soft keyboard's text turned into key presses, the
-/// extra-keys row, and the sticky Ctrl/Alt modifiers. The holder encodes keys into bytes with the
+/// extra-keys row, and the sticky Ctrl/Alt/Shift modifiers. The holder encodes keys into bytes with the
 /// live terminal modes, so here a key is only its code and mods.
 library;
 
@@ -10,45 +10,51 @@ import '../../net/term_models.dart';
 /// One key press: a `KeyCode` value and its modifier names.
 typedef TermKey = ({Object code, Set<String> mods});
 
-/// Ctrl and Alt as the extra-keys row holds them: a tap arms one for the next key, a second tap
-/// (or a long press) locks it until tapped again.
+/// Ctrl, Alt and Shift as the extra-keys row holds them: a tap arms one for the next key or
+/// touch, a second tap locks it until tapped again.
 class StickyMods {
-  bool ctrl = false, alt = false;
-  bool ctrlLocked = false, altLocked = false;
+  final _armed = <String>{}, _locked = <String>{};
 
-  Set<String> get mods => {if (ctrl) Mods.ctrl, if (alt) Mods.alt};
+  bool get ctrl => armed(Mods.ctrl);
+  bool get alt => armed(Mods.alt);
+  bool get shift => armed(Mods.shift);
+  bool get ctrlLocked => locked(Mods.ctrl);
+  bool get altLocked => locked(Mods.alt);
+  bool get shiftLocked => locked(Mods.shift);
 
-  void tapCtrl() {
-    if (ctrlLocked) {
-      ctrl = ctrlLocked = false;
-    } else if (ctrl) {
-      ctrlLocked = true;
-    } else {
-      ctrl = true;
+  bool armed(String mod) => _armed.contains(mod);
+  bool locked(String mod) => _locked.contains(mod);
+
+  /// The armed mods in `Mods`' bit order (SHIFT, ALT, CTRL), as bitflags writes them.
+  Set<String> get mods => {
+    for (final m in const [Mods.shift, Mods.alt, Mods.ctrl])
+      if (_armed.contains(m)) m,
+  };
+
+  /// Off → armed → locked → off.
+  void tap(String mod) {
+    if (_locked.remove(mod)) {
+      _armed.remove(mod);
+    } else if (!_armed.add(mod)) {
+      _locked.add(mod);
     }
   }
 
-  void tapAlt() {
-    if (altLocked) {
-      alt = altLocked = false;
-    } else if (alt) {
-      altLocked = true;
-    } else {
-      alt = true;
-    }
-  }
+  void tapCtrl() => tap(Mods.ctrl);
+  void tapAlt() => tap(Mods.alt);
+  void tapShift() => tap(Mods.shift);
 
-  /// The mods for one key press; armed (not locked) ones are used up.
+  /// The mods for one key press or touch; armed (not locked) ones are used up.
   Set<String> take() {
     final m = mods;
-    if (!ctrlLocked) ctrl = false;
-    if (!altLocked) alt = false;
+    _armed.retainAll(_locked);
     return m;
   }
 }
 
 /// A typed character as a key: `\n` is Enter, `\t` Tab, the rest `Char`. With Ctrl a letter is
-/// sent lower-case (`Ctrl+C` → `Char('c')` + `CTRL`), as a keyboard sends it.
+/// sent lower-case (`Ctrl+C` → `Char('c')` + `CTRL`) and with Shift upper-case (`Char('A')` +
+/// `SHIFT`), as a keyboard sends it.
 TermKey charKey(String ch, {Set<String> mods = const {}}) {
   final m = {...mods};
   switch (ch) {
@@ -63,6 +69,7 @@ TermKey charKey(String ch, {Set<String> mods = const {}}) {
   }
   var c = ch;
   if (m.contains(Mods.ctrl) && c.length == 1) c = c.toLowerCase();
+  if (m.contains(Mods.shift) && c.length == 1) c = c.toUpperCase();
   return (code: KeyCode.char(c), mods: m);
 }
 
@@ -151,6 +158,7 @@ enum ExtraKey {
   tab('Tab'),
   ctrl('Ctrl'),
   alt('Alt'),
+  shift('Shift'),
   left('←'),
   up('↑'),
   down('↓'),
@@ -167,6 +175,14 @@ enum ExtraKey {
   const ExtraKey(this.label);
   final String label;
 
+  /// The sticky modifier it toggles (`Mods` name), or null.
+  String? get mod => switch (this) {
+    ctrl => Mods.ctrl,
+    alt => Mods.alt,
+    shift => Mods.shift,
+    _ => null,
+  };
+
   /// The key code it sends, or null for the modifiers and paste.
   Object? get code => switch (this) {
     esc => KeyCode.escape,
@@ -182,6 +198,6 @@ enum ExtraKey {
     dash => KeyCode.char('-'),
     slash => KeyCode.char('/'),
     pipe => KeyCode.char('|'),
-    ctrl || alt || paste => null,
+    ctrl || alt || shift || paste => null,
   };
 }

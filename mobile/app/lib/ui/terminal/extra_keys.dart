@@ -1,4 +1,4 @@
-/// The row of keys a phone keyboard lacks, above the keyboard: Esc, Tab, sticky Ctrl/Alt, arrows,
+/// The row of keys a phone keyboard lacks, above the keyboard: Esc, Tab, sticky Ctrl/Alt/Shift, arrows,
 /// Home/End, PgUp/PgDn, `-` `/` `|` and paste. Flat, ink-bordered, 44 px targets.
 library;
 
@@ -30,12 +30,8 @@ class ExtraKeysRow extends StatelessWidget {
           for (final k in ExtraKey.values)
             _KeyButton(
               label: k.label,
-              armed:
-                  (k == ExtraKey.ctrl && mods.ctrl) ||
-                  (k == ExtraKey.alt && mods.alt),
-              locked:
-                  (k == ExtraKey.ctrl && mods.ctrlLocked) ||
-                  (k == ExtraKey.alt && mods.altLocked),
+              armed: k.mod != null && mods.armed(k.mod!),
+              locked: k.mod != null && mods.locked(k.mod!),
               onTap: () {
                 HapticFeedback.lightImpact();
                 onKey(k);

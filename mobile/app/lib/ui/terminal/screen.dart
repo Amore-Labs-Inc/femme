@@ -106,10 +106,8 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
 
   Future<void> _extra(ExtraKey k) async {
     switch (k) {
-      case ExtraKey.ctrl:
-        setState(_mods.tapCtrl);
-      case ExtraKey.alt:
-        setState(_mods.tapAlt);
+      case ExtraKey(:final mod?):
+        setState(() => _mods.tap(mod));
       case ExtraKey.paste:
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         final t = data?.text;
@@ -222,6 +220,8 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
                             },
                             onCopied: (n) =>
                                 _flash('copied $n line${n == 1 ? '' : 's'}'),
+                            mods: _mods,
+                            onModsUsed: () => setState(() {}),
                           ),
                         ),
                         Positioned(

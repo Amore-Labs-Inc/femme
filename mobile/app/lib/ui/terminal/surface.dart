@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import '../../net/term_models.dart';
 import '../../state/term.dart';
 import '../theme.dart';
+import 'keys.dart';
 import 'mouse.dart';
 import 'painter.dart';
 import 'palette.dart';
@@ -24,6 +25,8 @@ class TermSurface extends StatefulWidget {
     required this.view,
     required this.onTap,
     this.onCopied,
+    this.mods,
+    this.onModsUsed,
   });
 
   final TermView view;
@@ -33,6 +36,11 @@ class TermSurface extends StatefulWidget {
 
   /// Rows were copied to the clipboard.
   final void Function(int lines)? onCopied;
+
+  /// The extra-keys row's sticky modifiers: mouse events carry them, as keys do, and a gesture
+  /// that sent any uses up the armed ones (then [onModsUsed]).
+  final StickyMods? mods;
+  final VoidCallback? onModsUsed;
 
   @override
   State<TermSurface> createState() => _TermSurfaceState();
@@ -67,6 +75,12 @@ class _TermSurfaceState extends State<TermSurface>
   /// that stopped it should do nothing else (iOS: a tap on a moving list only stops it).
   late final Ticker _flingTicker = createTicker(_flingTick);
   Simulation? _fling;
+
+  /// The modifiers held when the fling started (the gesture that flung has used them up).
+  Set<String> _flingMods = const {};
+
+  /// A mouse event went out during the current gesture.
+  bool _sentMouse = false;
   double _flungTo = 0;
   bool _swallowTap = false;
 
@@ -173,7 +187,20 @@ class _TermSurfaceState extends State<TermSurface>
 
   void _mouseCell(MouseKind kind, (int, int) cell) {
     if (_anchor != null) setState(() => _anchor = null);
-    _view.mouse(kind, col: cell.$1, row: cell.$2);
+    _sentMouse = true;
+    final mods = _fling != null ? _flingMods : widget.mods?.mods ?? const {};
+    _view.mouse(kind, col: cell.$1, row: cell.$2, mods: mods);
+  }
+
+  /// The gesture is over: if it sent mouse events, its one-shot modifiers are used up, as a key
+  /// press uses them.
+  void _useMods() {
+    if (!_sentMouse) return;
+    _sentMouse = false;
+    final m = widget.mods;
+    if (m == null || m.mods.isEmpty) return;
+    m.take();
+    widget.onModsUsed?.call();
   }
 
   int _rowAt(double y) => _top + (y / _m.height).floor();
@@ -222,6 +249,7 @@ class _TermSurfaceState extends State<TermSurface>
               if (_selection == null && _mouse) {
                 _mouseAt(MouseKind.press, d.localPosition);
                 _mouseAt(MouseKind.release, d.localPosition);
+                _useMods();
               }
             },
             onTap: () {
@@ -259,10 +287,12 @@ class _TermSurfaceState extends State<TermSurface>
             onScaleEnd: (d) {
               final vy = d.velocity.pixelsPerSecond.dy;
               if (_scrolled && !_pinched && vy.abs() >= kMinFlingVelocity) {
+                _flingMods = widget.mods?.mods ?? const {};
                 _startFling(vy);
               } else {
                 _stopFling();
               }
+              _useMods();
             },
             onLongPressStart: (d) {
               HapticFeedback.selectionClick();
@@ -290,6 +320,7 @@ class _TermSurfaceState extends State<TermSurface>
               if (held != null) {
                 _held = null;
                 _mouseCell(MouseKind.release, held);
+                _useMods();
                 return;
               }
               _copySelection();
