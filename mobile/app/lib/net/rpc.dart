@@ -143,6 +143,18 @@ abstract final class Req {
   static Object paneOpen(String sid) => {
     'PaneOpen': {'sid': sid},
   };
+
+  /// Push through ntfy: the box posts to [topic] per [rules] (`PushRules.toJson`).
+  static Object pushRegister(String topic, Object rules) => {
+    'PushRegister': {
+      'platform': 'Ntfy',
+      'token': topic,
+      'rules': rules is Map ? rules : (rules as dynamic).toJson(),
+    },
+  };
+  static Object pushUnregister(String topic) => {
+    'PushUnregister': {'token': topic},
+  };
   static Object paneClose(PaneId pane) => {
     'PaneClose': {'pane': pane.toJson()},
   };
