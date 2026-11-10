@@ -268,6 +268,57 @@ pub(crate) fn reconcile(
     Ok(true)
 }
 
+/// Pairs, once more, the saved rows marked not received whose echo was stored as a message of its
+/// own (the match was missed when it came: a shape of echo not known then): the row is read at
+/// the echo's time and the echo becomes the mark that says so. Returns how many. Run at start,
+/// before the store is shared; it is cheap when no row waits.
+pub(crate) fn repair(store: &femme_store::Store) -> femme_store::Result<usize> {
+    let mut n = 0;
+    for s in store.read(|c| sessions::list_sessions(c, true))? {
+        let failed = store.read(|c| {
+            store_items::items_with_status(c, s.id, ItemKind::UserMessage, &[ItemStatus::Failed])
+        })?;
+        if failed.is_empty() {
+            continue;
+        }
+        n += store.write(|tx| {
+            let mut done = 0;
+            let all = waiting(tx, s.id, &[ItemStatus::Failed, ItemStatus::Completed])?;
+            for (row, b) in all.iter().filter(|(i, b)| {
+                i.status == ItemStatus::Failed && b.get("op").is_some() && b.get("echo").is_none()
+            }) {
+                // the echo: the first later message of the agent's own that is this one
+                let echo = all
+                    .iter()
+                    .filter(|(i, eb)| {
+                        i.seq > row.seq
+                            && i.status == ItemStatus::Completed
+                            && eb.get("op").is_none()
+                            && eb.get("read_at").is_none()
+                    })
+                    .take(3)
+                    .find(|(_, eb)| same_message(text_of(b), text_of(eb)));
+                let Some((echo, _)) = echo else { continue };
+                let mut b = b.clone();
+                b["read_at"] = json!(echo.ts);
+                let mut published = Vec::new();
+                rewrite(tx, row.clone(), ItemStatus::Completed, &b, &mut published)?;
+                let who = agent_label(s.agent);
+                let text = format!("{who} read your message");
+                let mut mark = echo.clone();
+                mark.kind = ItemKind::Event;
+                mark.preview = text.clone();
+                mark.body = Some(json!({ "text": text, "read": row.item_id }).to_string());
+                mark.blob_hash = None;
+                tx.put_item(&mark)?;
+                done += 1;
+            }
+            Ok(done)
+        })?;
+    }
+    Ok(n)
+}
+
 /// A prompt as the agent's driver holds it: the echo id it was given, and its text.
 pub(crate) type Held = (Option<String>, String);
 
@@ -528,6 +579,62 @@ mod tests {
             "no words, no file: unsure"
         );
         assert!(!same_message("", ""));
+    }
+
+    #[test]
+    fn a_missed_pair_is_made_at_start() {
+        let (store, sid) = store();
+        let saved = Item {
+            sid,
+            item_id: "01SAVED".into(),
+            seq: 0,
+            rev: 0,
+            kind: ItemKind::UserMessage,
+            status: ItemStatus::Failed,
+            preview: "a".into(),
+            body: Some(json!({"op": "01OP", "text": "o things to decide"}).to_string()),
+            blob_hash: None,
+            parent: None,
+            ts: 10,
+        };
+        let echo = Item {
+            item_id: "uuid-echo".into(),
+            status: ItemStatus::Completed,
+            body: Some(json!({"text": "<pasted_content id=\"1\">\no things to decide\n</pasted_content id=\"1\">"}).to_string()),
+            ts: 11,
+            ..saved.clone()
+        };
+        let other = Item {
+            item_id: "uuid-other".into(),
+            status: ItemStatus::Completed,
+            body: Some(json!({"text": "something else"}).to_string()),
+            ts: 12,
+            ..saved.clone()
+        };
+        store
+            .write(|tx| {
+                tx.put_item(&saved)?;
+                tx.put_item(&other)?;
+                tx.put_item(&echo)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(repair(&store).unwrap(), 1);
+        assert_eq!(repair(&store).unwrap(), 0, "once");
+        let get = |id: &str| {
+            store
+                .read(|c| store_items::get_item(c, sid, id))
+                .unwrap()
+                .unwrap()
+        };
+        let row = get("01SAVED");
+        assert_eq!(row.status, ItemStatus::Completed);
+        let b: Value = serde_json::from_str(row.body.as_deref().unwrap()).unwrap();
+        assert_eq!(b["read_at"], 11);
+        let mark = get("uuid-echo");
+        assert_eq!(mark.kind, ItemKind::Event);
+        assert!(is_read_mark(&mark));
+        assert_eq!(get("uuid-other").kind, ItemKind::UserMessage);
     }
 
     #[test]
