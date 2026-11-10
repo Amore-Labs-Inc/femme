@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FEMME mobile</title>
+<style>
+/* the desktop's tokens, desktop/src/theme.rs */
+@font-face{font-family:VT323;src:url(../../desktop/assets/fonts/vt323/VT323-Regular.ttf)}
+@font-face{font-family:Schibsted;src:url(../../desktop/assets/fonts/schibsted-grotesk/SchibstedGrotesk-Variable.ttf);font-weight:300 800}
+@font-face{font-family:JBMono;src:url(../../desktop/assets/fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf)}
+@font-face{font-family:Kaushan;src:url(../../desktop/assets/fonts/kaushan-script/KaushanScript-Regular.ttf)}
+:root{
+  --desk:#F386A1;--paper:#FEFEFE;--panel:#E5E5E5;--ink:#1E1E1E;--muted:#5C5C5C;--muted2:#858585;
+  --accent:#D45BB6;--neon:#FF4FB4;--soft:#F6CDE6;--deep:#B53094;
+  --work:#03AA5C;--pause:#F2B33D;--queue:#DEDEDE;--done:#858585;--bad:#D93036;--pr:#09AEA1;
+  --dim:rgba(0,0,0,.4);
+  --body:Schibsted,system-ui,sans-serif;--mono:JBMono,ui-monospace,monospace;--title:VT323,monospace;
+  --ease:cubic-bezier(.32,.72,0,1);
+}
+[data-theme=dark]{
+  --desk:#120C10;--paper:#1E1E1E;--panel:#2B2B2B;--ink:#ECECEC;--muted:#A6A6A6;--muted2:#747474;
+  --accent:#B53094;--soft:#4A2640;--deep:#D45BB6;--work:#2FD07A;--pause:#F5C24B;--queue:#4D4D4D;--done:#8C8C8C;--bad:#FF6B70;--pr:#2CD3C4;
+  --dim:rgba(236,236,236,.3);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#777;font-family:var(--body);color:var(--ink);display:flex;gap:28px;flex-wrap:wrap;justify-content:center;align-content:flex-start;padding:24px}
+body.one{background:var(--desk);padding:0;align-content:stretch}
+.phone{width:390px;height:844px;background:var(--desk);background-image:radial-gradient(var(--ink) .8px,transparent .9px);background-size:12px 12px;position:relative;overflow:hidden;border:1.2px solid var(--ink);flex:none}
+body:not(.one) .phone{box-shadow:3px 3px 0 var(--dim)}
+.phone .label{position:absolute;top:-22px;left:0;font:14px var(--mono);color:#fff}
+.screen{position:absolute;inset:6px;bottom:6px;background:var(--paper);border:1.2px solid var(--ink);display:none;flex-direction:column;overflow:hidden}
+.screen.on{display:flex}
+/* chrome */
+.top{height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1.2px solid var(--ink);background:var(--paper);flex:none}
+.top .wordmark{font:24px Kaushan,cursive;color:var(--neon);letter-spacing:.5px}
+.top .link{font:12px var(--mono);color:var(--muted);margin-left:auto}
+.top h1{font:22px var(--title);text-transform:lowercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top .back{font:20px var(--title);padding:0 6px 0 0}
+.top .dot{margin-left:0}
+.tabs{height:56px;border-top:1.2px solid var(--ink);display:flex;background:var(--paper);flex:none}
+.tabs a{flex:1;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:6px;font:20px var(--title);color:var(--muted);text-decoration:none;position:relative}
+.tabs a.on{color:var(--ink)}
+.tabs a.on::after{content:"";position:absolute;top:-1.2px;left:0;right:0;height:3px;background:var(--neon)}
+.tabs a .n{min-width:18px;height:18px;padding:0 5px;background:var(--neon);color:var(--ink);border:1.2px solid var(--ink);font:14px var(--mono);line-height:16px;text-align:center}
+.body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+/* atoms */
+.dot{width:8px;height:8px;border:1.2px solid var(--ink);background:var(--queue);flex:none;display:inline-block}
+.dot.work{background:var(--work)}.dot.pause{background:var(--pause)}.dot.bad{background:var(--bad)}.dot.done{background:var(--done)}
+.meta{font:12px var(--mono);color:var(--muted)}
+.mono{font-family:var(--mono)}
+h2{font:22px var(--title);text-transform:lowercase;display:flex;align-items:center;gap:8px}
+h2 .meta{margin-left:auto}
+.card{border:1.2px solid var(--ink);background:var(--paper);box-shadow:2px 2px 0 var(--ink);padding:12px;display:flex;flex-direction:column;gap:8px}
+.card.need{border-color:var(--ink);background:var(--paper)}
+.card.need::before{content:"needs you";font:12px var(--mono);color:var(--deep);letter-spacing:.5px}
+.row{display:flex;align-items:center;gap:10px}
+.row .t{font-weight:600;font-size:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q{font-size:16px;line-height:1.4}
+.btn{display:block;width:100%;min-height:44px;border:1.2px solid var(--ink);background:var(--paper);box-shadow:2px 2px 0 var(--ink);font:20px var(--title);text-transform:lowercase;color:var(--ink);text-align:left;padding:8px 12px;cursor:pointer}
+.btn:active{box-shadow:none;transform:translate(2px,2px)}
+.btn.primary{background:var(--accent)}
+.btn.dark{background:var(--ink);color:var(--paper)}
+.btn.small{min-height:32px;padding:4px 10px;width:auto;display:inline-block;font-size:18px}
+.opts{display:flex;flex-direction:column;gap:8px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{border:1.2px solid var(--ink);background:var(--panel);font:12px var(--mono);padding:4px 8px;display:inline-flex;gap:6px;align-items:center}
+.chip.on{background:var(--accent)}
+.sess{display:flex;align-items:center;gap:10px;min-height:46px;padding:0 4px;border-bottom:1.2px solid var(--panel)}
+.sess .l{flex:1;min-width:0}
+.sess .l .t{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .l .a{font:12px var(--mono);color:var(--muted)}
+.sess .r{font:12px var(--mono);color:var(--muted);text-align:right;white-space:nowrap}
+.sess.on{background:var(--accent)}
+.group{font:12px var(--mono);color:var(--muted);padding:8px 4px 0;display:flex;gap:6px}
+.pre{font:14px var(--body);color:var(--muted);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pill{position:absolute;left:50%;transform:translateX(-50%);bottom:118px;background:var(--neon);border:1.2px solid var(--ink);box-shadow:2px 2px 0 var(--ink);font:12px var(--mono);padding:4px 10px}
+/* transcript */
+.ctx{height:4px;background:var(--panel);flex:none;position:relative}
+.ctx i{position:absolute;left:0;top:0;bottom:0;background:var(--accent)}
+.ctx i.hot{background:var(--bad)}
+.tr{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:16px;line-height:1.45}
+.me{align-self:flex-end;max-width:85%;border:1.2px solid var(--accent);padding:8px 10px;background:var(--paper)}
+.me .st{font:12px var(--mono);color:var(--muted);text-align:right;margin-top:4px}
+.me .st.bad{color:var(--bad)}
+.thumbs{display:flex;gap:6px;margin-bottom:6px}
+.thumb{width:96px;height:72px;border:1.2px solid var(--ink);background:linear-gradient(135deg,var(--soft),var(--panel))}
+.ai p{margin:0 0 8px}
+.ai code,.tool code{font:13px var(--mono);background:var(--panel);padding:0 3px}
+.ai pre{font:13px var(--mono);background:var(--panel);border:1.2px solid var(--ink);padding:8px;overflow-x:auto;white-space:pre;position:relative}
+.ai pre .copy{position:absolute;right:4px;top:4px;font:12px var(--mono);border:1.2px solid var(--ink);background:var(--paper);padding:0 6px}
+.tool{font:13px var(--mono);color:var(--muted);display:flex;gap:8px;align-items:baseline;padding:2px 0}
+.tool b{color:var(--ink);font-weight:500}
+.tool .d{margin-left:auto;white-space:nowrap}
+.peer{border:1.2px solid var(--accent);padding:8px 10px;align-self:flex-start;max-width:90%}
+.peer .h{font:12px var(--mono);color:var(--deep);margin-bottom:4px}
+.pic{width:100%;aspect-ratio:3/2;border:1.2px solid var(--ink);background:linear-gradient(160deg,var(--panel),var(--soft) 60%,var(--panel));position:relative}
+.pic::after{content:"▶";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:40px;color:var(--ink)}
+.pic.still::after{content:""}
+.qrow{border:1.2px solid var(--ink);padding:10px;display:flex;flex-direction:column;gap:8px;box-shadow:2px 2px 0 var(--ink)}
+.qrow .q{font-size:15px}
+.qrow.ans .btn{opacity:.5}
+.qrow.ans .btn.pick{opacity:1;background:var(--accent)}
+.working{font:13px var(--mono);color:var(--muted)}
+.working b{color:var(--neon);font-weight:400}
+.fold{font:13px var(--mono);color:var(--muted);padding:4px 0;border-top:1.2px dashed var(--panel);border-bottom:1.2px dashed var(--panel)}
+.comp{border-top:1.2px solid var(--ink);padding:8px 10px 10px;display:flex;flex-direction:column;gap:8px;background:var(--paper);box-shadow:0 -3px 0 var(--dim);flex:none}
+.comp .in{display:flex;gap:8px;align-items:flex-end}
+.comp .plus,.comp .send{width:44px;height:44px;border:1.2px solid var(--ink);box-shadow:2px 2px 0 var(--ink);font:22px var(--title);display:flex;align-items:center;justify-content:center;flex:none;background:var(--paper)}
+.comp .send{background:var(--accent)}
+.comp .field{flex:1;min-height:44px;border:1.2px solid var(--ink);padding:10px;font-size:16px;color:var(--muted2);line-height:1.3}
+.comp .field b{color:var(--ink);font-weight:400}
+/* terminal */
+.term{flex:1;background:var(--paper);color:var(--ink);font:13px/1.35 var(--mono);padding:8px;white-space:pre;overflow:hidden}
+.term .p{color:var(--deep)}.term .g{color:var(--work)}.term .y{color:var(--pause)}.term .m{color:var(--muted)}
+.keys{display:flex;gap:6px;padding:8px;border-top:1.2px solid var(--ink);flex:none;overflow-x:auto}
+.keys span{border:1.2px solid var(--ink);box-shadow:2px 2px 0 var(--ink);font:16px var(--mono);padding:8px 10px;min-width:44px;text-align:center;flex:none}
+/* box */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{border:1.2px solid var(--ink);padding:10px;display:flex;flex-direction:column;gap:4px}
+.tile .k{font:12px var(--mono);color:var(--muted)}
+.tile .v{font:26px var(--title);line-height:1}
+.tile .b{height:8px;border:1.2px solid var(--ink);position:relative;background:var(--paper)}
+.tile .b i{position:absolute;left:0;top:0;bottom:0;background:var(--work)}
+.tile .b i.warn{background:var(--pause)}.tile .b i.hot{background:var(--bad)}
+.pr{border:1.2px solid var(--ink);box-shadow:2px 2px 0 var(--ink);padding:10px;display:flex;flex-direction:column;gap:6px}
+.pr .n{font:12px var(--mono);color:var(--pr)}
+.pr .t{font-size:16px;font-weight:600}
+.pr .acts{display:flex;gap:8px}
+.kv{display:flex;justify-content:space-between;align-items:center;min-height:44px;border-bottom:1.2px solid var(--panel);font-size:16px}
+.kv .meta{font-size:12px}
+.sw{width:44px;height:24px;border:1.2px solid var(--ink);position:relative;background:var(--panel);flex:none}
+.sw i{position:absolute;top:2px;left:2px;width:16px;height:16px;background:var(--ink)}
+.sw.on{background:var(--accent)}.sw.on i{left:22px}
+.qr{width:160px;height:160px;border:1.2px solid var(--ink);align-self:center;background:
+ repeating-linear-gradient(90deg,var(--ink) 0 8px,transparent 8px 16px),repeating-linear-gradient(0deg,var(--ink) 0 8px,var(--paper) 8px 16px);background-blend-mode:difference}
+.files .f{display:flex;align-items:center;gap:10px;min-height:44px;border-bottom:1.2px solid var(--panel);font-size:16px}
+.files .f .meta{margin-left:auto}
+.files .f.dir::before{content:"▸";font:14px var(--mono);color:var(--muted)}
+.files .f.file::before{content:"";width:8px}
+.note{font-size:13px;color:var(--muted);line-height:1.4}
+.toggle{position:fixed;right:12px;top:4px;font:14px var(--mono);color:#fff;background:#333;border:1px solid #fff;padding:4px 8px;cursor:pointer;z-index:9}
+body.one .toggle{display:none}
+</style>
+</head>
+<body>
+<button class="toggle" onclick="toggleTheme()">dark/light</button>
+
+<!-- 1 NOW -->
+<div class="phone" id="now"><div class="label">1 · now</div>
+<div class="screen on">
+  <div class="top"><span class="wordmark">femme</span><span class="link">quic 41 ms</span></div>
+  <div class="body">
+    <div class="card need" onclick="go('chat')">
+      <div class="row"><span class="dot pause"></span><span class="t">lovable-family-twist-lesson</span><span class="meta">2 min</span></div>
+      <div class="q">Lesson 84's hero video is 9.4 MB. Should I fold it into the lesson page as a looping GIF, or keep the MP4 and lazy-load it?</div>
+      <div class="opts">
+        <button class="btn primary">loop it as a gif</button>
+        <button class="btn">keep the mp4, lazy-load</button>
+        <button class="btn">other…</button>
+      </div>
+    </div>
+    <div class="card need">
+      <div class="row"><span class="dot pause"></span><span class="t">macos-desktop-lovable-scene</span><span class="meta">8 min</span></div>
+      <div class="q"><span class="meta">Bash · permission</span><br><code class="mono">git push origin main</code></div>
+      <div class="chips"><button class="btn small primary">allow once</button><button class="btn small">always</button><button class="btn small">deny</button></div>
+    </div>
+    <h2>done <span class="meta">2</span></h2>
+    <div class="sess" onclick="go('chat')"><span class="dot done"></span><div class="l"><div class="t">reimagine-lesson-1-hook</div><div class="pre">Pushed c0eb494 to main. The Dock now comes up when the cursor leaves through the bottom edge; Chrome opens full.</div></div><span class="btn small">👍</span></div>
+    <div class="sess"><span class="dot done"></span><div class="l"><div class="t">rcceb-onboarding</div><div class="pre">Readiness report written. No edits, no pushes, no secrets printed.</div></div><span class="btn small">👍</span></div>
+    <h2>working <span class="meta">1</span></h2>
+    <div class="sess"><span class="dot work"></span><div class="l"><div class="t">exposure</div><div class="a">▸ Bash · npm run build · 14 min</div></div><span class="r">✻</span></div>
+  </div>
+  <div class="tabs"><a class="on">now<span class="n">2</span></a><a onclick="go('chats')">chats</a><a onclick="go('box')">box</a><a onclick="go('me')">me</a></div>
+</div></div>
+
+<!-- 2 CHAT -->
+<div class="phone" id="chat"><div class="label">2 · chat</div>
+<div class="screen on">
+  <div class="top"><span class="back" onclick="go('now')">‹</span><span class="dot work"></span><h1>lovable-family-twist-lesson</h1><span class="meta" onclick="go('files')">files</span></div>
+  <div class="ctx"><i style="width:63%"></i></div>
+  <div class="tr">
+    <div class="fold">▸ · conversation compacted · summary</div>
+    <div class="me"><div class="thumbs"><div class="thumb"></div></div>lesson 2 hero section, same style as lesson 1. sketch attached.<div class="st">read · 09:41</div></div>
+    <div class="tool"><b>Read</b> lessons/lesson-1/index.html<span class="d">0.1 s</span></div>
+    <div class="tool"><b>Bash</b> rg -n "hero" lessons/<span class="d">0.3 s</span></div>
+    <div class="ai"><p>Lesson 1's hero is a 2-column grid with the video left and the <code>.hero-copy</code> right; on phones it stacks. I'll reuse the block and swap the copy.</p>
+    <pre><span class="copy">copy</span>.hero { display:grid; grid-template-columns: 3fr 2fr; }
+@media (max-width:640px){ .hero { grid-template-columns:1fr } }</pre></div>
+    <div class="tool"><b>Edit</b> lessons/lesson-2/index.html <span class="meta">+41 −3</span><span class="d">0.1 s</span></div>
+    <div class="peer"><div class="h">✉ from @macos-desktop-lovable-scene</div>Pushed 83479c3 to main: desktop/ui/quiz.js only. Rebase before your next push.</div>
+    <div class="qrow ans"><div class="q">Lesson 84's hero video is 9.4 MB. Fold it as a looping GIF, or keep the MP4?</div><div class="opts"><button class="btn pick">loop it as a gif</button><button class="btn">keep the mp4, lazy-load</button></div></div>
+    <div class="tool"><b>Bash</b> ffmpeg -i hero.mp4 … hero.gif<span class="d">12.8 s</span></div>
+    <div class="pic"></div>
+    <div class="ai"><p>GIF is 1.9 MB, loops, 640 px. Preview above.</p></div>
+    <div class="working"><b>✻</b> Cogitating… (1m 12s · ↓ 8.2k tokens)</div>
+  </div>
+  <div class="pill">↓ new</div>
+  <div class="comp">
+    <div class="chips"><span class="chip on">‹ main</span><span class="chip">● check links 0:42</span><span class="chip">bypass</span></div>
+    <div class="in"><span class="plus">+</span><div class="field">steer… <b>also update the lesson index</b></div><span class="send">↑</span></div>
+  </div>
+</div></div>
+
+<!-- 3 CHATS -->
+<div class="phone" id="chats"><div class="label">3 · chats</div>
+<div class="screen on">
+  <div class="top"><h1>chats</h1><span class="meta">search</span></div>
+  <div class="body" style="gap:0">
+    <div class="group">▾ Platform <span style="margin-left:auto">+</span></div>
+    <div class="sess on"><span class="dot work"></span><div class="l"><div class="t">lovable-family-twist-lesson</div><div class="a">claude · fable 5.2 · 63%</div></div><span class="r">now</span></div>
+    <div class="sess"><span class="dot pause"></span><div class="l"><div class="t">macos-desktop-lovable-scene</div><div class="a">claude · fable 5.2</div></div><span class="r">8 min</span></div>
+    <div class="sess"><span class="dot done"></span><div class="l"><div class="t">reimagine-lesson-1-hook</div><div class="a">claude · opus 5.5</div></div><span class="r">1 h</span></div>
+    <div class="group">▾ femme-work/FEMME-1</div>
+    <div class="sess"><span class="dot"></span><div class="l"><div class="t">add-slash-commands-composer</div><div class="a">claude · fable 5.1</div></div><span class="r">3 h</span></div>
+    <div class="group">▾ ~</div>
+    <div class="sess"><span class="dot work"></span><div class="l"><div class="t">exposure</div><div class="a">claude · opus 5.5</div></div><span class="r">14 min</span></div>
+    <div class="sess"><span class="dot"></span><div class="l"><div class="t">femme</div><div class="a">shell</div></div><span class="r">2 d</span></div>
+    <div style="padding:16px 4px"><button class="btn dark">+ chat</button></div>
+  </div>
+  <div class="tabs"><a onclick="go('now')">now<span class="n">2</span></a><a class="on">chats</a><a onclick="go('box')">box</a><a onclick="go('me')">me</a></div>
+</div></div>
+
+<!-- 4 TERMINAL -->
+<div class="phone" id="term"><div class="label">4 · terminal</div>
+<div class="screen on">
+  <div class="top"><span class="back" onclick="go('chat')">‹</span><h1>terminal · lovable-family-twist-lesson</h1><span class="meta">read-mostly</span></div>
+  <div class="term"><span class="m">● Compacted while idle · turn off with "idleCompaction": false</span>
+
+<span class="g">●</span> Bash(ffmpeg -i hero.mp4 -vf scale=640:-1 -r 12 hero.gif)
+  ⎿  frame= 200 fps= 48 size= 1912kB
+
+<span class="p">✻</span> Cogitating… (1m 12s · ↓ 8.2k tokens)
+
+<span class="y">◐ medium · /effort</span>
+──────────────────────── lovable-family-twist-lesson ─
+❯ <span class="m">▏</span>
+──────────────────────────────────────────────────────
+  <span class="p">⏵⏵ bypass permissions on</span> <span class="m">(shift+tab to cycle)</span></div>
+  <div class="keys"><span>esc</span><span>tab</span><span>↑</span><span>↓</span><span>←</span><span>→</span><span>^c</span><span>⏎</span></div>
+  <div class="comp"><div class="in"><div class="field">type a line…</div><span class="send">⏎</span></div></div>
+</div></div>
+
+<!-- 5 BOX -->
+<div class="phone" id="box"><div class="label">5 · box</div>
+<div class="screen on">
+  <div class="top"><h1>box · agentbox</h1><span class="link">up 4 h 12 m</span></div>
+  <div class="body">
+    <div class="tiles">
+      <div class="tile"><span class="k">disk</span><span class="v">71%</span><div class="b"><i class="warn" style="width:71%"></i></div><span class="k">497 / 700 GB</span></div>
+      <div class="tile"><span class="k">memory</span><span class="v">58%</span><div class="b"><i style="width:58%"></i></div><span class="k">swap 1.2 GB</span></div>
+      <div class="tile"><span class="k">load</span><span class="v">2.4</span><div class="b"><i style="width:30%"></i></div><span class="k">8 cores</span></div>
+      <div class="tile"><span class="k">claude</span><span class="v">2.1.319</span><span class="k">panes current · nightly 01:15</span></div>
+    </div>
+    <div class="kv"><span>deployed <span class="mono">df40bc9</span></span><span class="meta">11 min ago</span></div>
+    <div class="kv"><span>account <span class="mono">#2</span> · 5 h</span><div style="width:120px" class="tile" ><div class="b"><i style="width:62%"></i></div></div><span class="meta">62%</span></div>
+    <div class="kv"><span>weekly</span><div style="width:120px" class="tile"><div class="b"><i class="warn" style="width:88%"></i></div></div><span class="meta">88% · cap 96</span></div>
+    <h2>pull requests <span class="meta">2 open</span></h2>
+    <div class="pr"><span class="n">#49 · pane-gone-grace → main · checks ✓</span><span class="t">femmed: a pane missing for &lt;90 s keeps its chat</span><div class="acts"><button class="btn small primary">merge &amp; deploy</button><button class="btn small">watch demo</button></div></div>
+    <div class="pr"><span class="n">#45 · nightly/2.1.319-slash → main · conflicts</span><span class="t">composer: /model shows the full model name</span><div class="acts"><button class="btn small">fix with claude</button><button class="btn small">close</button></div></div>
+    <h2>issues <span class="meta">1 queued</span></h2>
+    <div class="sess"><span class="dot pause"></span><div class="l"><div class="t">#46 box: swap over 2 GB</div><div class="a">box-health · waits</div></div></div>
+    <button class="btn dark">+ issue</button>
+  </div>
+  <div class="tabs"><a onclick="go('now')">now<span class="n">2</span></a><a onclick="go('chats')">chats</a><a class="on">box</a><a onclick="go('me')">me</a></div>
+</div></div>
+
+<!-- 6 ME -->
+<div class="phone" id="me"><div class="label">6 · me</div>
+<div class="screen on">
+  <div class="top"><h1>me</h1></div>
+  <div class="body">
+    <h2>boxes</h2>
+    <div class="sess on"><span class="dot work"></span><div class="l"><div class="t">agentbox</div><div class="a">13.48.100.212 · quic · paired 2026-11-10</div></div></div>
+    <div class="card" style="align-items:center"><div class="qr"></div><span class="note" style="text-align:center">pair another box: scan the QR the desktop shows under accounts → devices</span></div>
+    <h2>notifications</h2>
+    <div class="kv"><span>needs you</span><span class="meta">always</span></div>
+    <div class="kv"><span>done</span><div class="sw on"><i></i></div></div>
+    <div class="kv"><span>working 30 min with no output</span><div class="sw"><i></i></div></div>
+    <div class="kv"><span>quiet hours</span><span class="meta">23:00 – 08:00</span></div>
+    <div class="kv"><span>muted chats</span><span class="meta">exposure</span></div>
+    <h2>appearance</h2>
+    <div class="kv"><span>theme</span><span class="chips"><span class="chip on">system</span><span class="chip">light</span><span class="chip">dark</span></span></div>
+    <div class="kv"><span>lock with face id</span><div class="sw on"><i></i></div></div>
+    <h2>diagnostics</h2>
+    <div class="kv"><span>link</span><span class="meta">quic 41 ms · 0 queued</span></div>
+    <div class="kv"><span>app</span><span class="meta">0.1.0 · proto 1</span></div>
+    <button class="btn">send logs</button>
+  </div>
+  <div class="tabs"><a onclick="go('now')">now<span class="n">2</span></a><a onclick="go('chats')">chats</a><a onclick="go('box')">box</a><a class="on">me</a></div>
+</div></div>
+
+<!-- 7 FILES -->
+<div class="phone" id="files"><div class="label">7 · files</div>
+<div class="screen on">
+  <div class="top"><span class="back" onclick="go('chat')">‹</span><h1>files · lovable-family-twist-lesson</h1><span class="meta">refresh</span></div>
+  <div class="body files" style="gap:0">
+    <div class="meta" style="padding:4px">~/Documents/Web_Apps/Platform/lessons/lesson-2</div>
+    <div class="f dir">assets</div>
+    <div class="f dir">steps</div>
+    <div class="f file">index.html<span class="meta">12.4 KB</span></div>
+    <div class="f file">hero.gif<span class="meta">1.9 MB</span></div>
+    <div class="f file">hero.mp4<span class="meta">9.4 MB</span></div>
+    <div class="f file">quiz.js<span class="meta">7.8 KB</span></div>
+    <div class="f file">README.md<span class="meta">1.1 KB</span></div>
+    <div class="pic still" style="margin-top:12px"></div>
+    <div class="meta" style="padding:6px 4px">hero.gif · 640×360 · tap: lightbox · long-press: send to chat</div>
+  </div>
+</div></div>
+
+<!-- 8 NEW CHAT -->
+<div class="phone" id="new"><div class="label">8 · new chat</div>
+<div class="screen on">
+  <div class="top"><span class="back" onclick="go('chats')">‹</span><h1>new chat</h1></div>
+  <div class="body">
+    <h2>folder</h2>
+    <div class="chips"><span class="chip on">Platform</span><span class="chip">femme</span><span class="chip">Exposure</span><span class="chip">~</span><span class="chip">pick…</span></div>
+    <h2>agent</h2>
+    <div class="chips"><span class="chip on">claude · opus 5.5</span><span class="chip">codex</span><span class="chip">pi</span><span class="chip">shell</span></div>
+    <h2>first message</h2>
+    <div class="field" style="min-height:120px;border:1.2px solid var(--ink);padding:10px;font-size:16px">lesson 2 hero section, same style as lesson 1. sketch attached.</div>
+    <div class="thumbs"><div class="thumb"></div><div class="thumb" style="width:44px;background:var(--paper);display:flex;align-items:center;justify-content:center;font:22px var(--title)">+</div></div>
+    <div class="note">the folder's trust question is answered yes: you picked it.</div>
+    <button class="btn primary">start</button>
+  </div>
+</div></div>
+
+<script>
+function go(id){document.querySelectorAll('.phone').forEach(p=>p.classList.toggle('hide',p.id!==id));if(document.body.classList.contains('one')){document.querySelectorAll('.phone').forEach(p=>p.style.display=p.id===id?'block':'none')}}
+function toggleTheme(){const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'':'dark'}
+const q=new URLSearchParams(location.search);
+if(q.get('theme')==='dark')document.documentElement.dataset.theme='dark';
+if(q.get('screen')){document.body.classList.add('one');go(q.get('screen'))}
+</script>
+</body>
+</html>
