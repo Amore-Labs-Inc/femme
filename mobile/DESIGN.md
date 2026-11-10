@@ -234,10 +234,11 @@ phone app ──QUIC (same femme-proto as the desktop)──► femmed on the bo
    tokens (ntfy topic per device for the self-hosted path).
 2. A `Scope::Attention` subscription: only the sessions whose attention changed, with the pending
    question (`Item::Question`) inlined, so Now needs one stream and no per-session subscriptions.
-3. A pairing QR: `Req::PairStart` on an enrolled desktop → a one-time code (host, port, server
-   fingerprint, token); the phone connects with a fresh self-signed cert and `PairFinish{token}`
-   enrols it, the same row `femmed enroll` would write.
-4. A WebSocket carrier for the frames behind Caddy (`/femme/ws`), for networks that drop UDP.
+3. ~~A pairing QR via `PairStart/PairFinish`~~ **Shipped simpler** (PR #50): `femmed pair --name phone`
+   on the box prints a `femme://pair?host=…&tls=1&name=…&token=…` QR; the token's SHA-256 is the
+   device row's key, so `femmed devices` lists and revokes the phone like any device.
+4. ~~A WebSocket carrier~~ **Shipped** (PRs #50, #51): `wss://<box>/femme/ws`, JSON frames
+   multiplexing the same Ctrl / Events / Term streams (`PROTOCOL.md` §Carrier).
 
 ## Out of scope (v1)
 
@@ -254,3 +255,16 @@ phone app ──QUIC (same femme-proto as the desktop)──► femmed on the bo
 | M1 | Now + Chat (read + send + answer questions), pairing, push | answer a real question from the lock screen in < 5 s |
 | M2 | Files, Terminal, Box, Me | PR merge from the phone; a photo of a sketch becomes a prompt |
 | M3 | offline-first polish, voice notes, quiet hours, multi-box | 24 h on a phone with flaky signal: no lost message |
+
+### Status (2026-11-10)
+
+M1 and M2 are built in `mobile/app` (Flutter, pure Cupertino; `PARITY.md` is the checklist):
+Now, Chats, Chat (markdown, tools, questions, permission prompts, attachments, slash
+commands, history), Terminal (read + keys), Files (tree, viewer, hex, media), Box (PRs with merge
+and auto-fix, accounts, API keys, issues), Me (pairing, appearance). Verified natively: the Linux
+desktop build against the live box, an Android release APK built on the VPS, iOS built unsigned by
+CI (`.github/workflows/mobile.yml`) on a macOS runner with Xcode 26.
+
+Not yet: push (`PushRegister` and a notifier backend), `Scope::Attention`, outbox persisted to
+disk across app restarts, video poster frames, terminal mouse reporting, a Claude account sign-in
+flow (Box shows accounts, switching is a request away), the GitHub device flow for API keys.
