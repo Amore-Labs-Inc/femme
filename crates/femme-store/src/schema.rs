@@ -204,9 +204,13 @@ fn user_version(conn: &Connection) -> Result<usize> {
     Ok(v.max(0) as usize)
 }
 
+/// The bits of an epoch: 53, what a JSON reader keeps whole (the phone decodes every number as a
+/// double), so a client on the JSON carrier echoes in `Hello` exactly the epoch `Welcome` said.
+pub const EPOCH_BITS: u64 = (1 << 53) - 1;
+
 /// A random non-zero epoch (see [`init_meta`]).
 pub(crate) fn new_epoch() -> u64 {
-    (femme_proto::Id::new().0 as u64).max(1)
+    (femme_proto::Id::new().0 as u64 & EPOCH_BITS).max(1)
 }
 
 /// Inserts the `meta` rows a fresh database starts with (existing rows are left alone) and
@@ -227,4 +231,17 @@ pub(crate) fn init_meta(conn: &Connection) -> Result<(u64, String)> {
     let instance_id = crate::meta_get(conn, "instance_id")?
         .ok_or_else(|| Error::Corrupt("meta.instance_id missing".into()))?;
     Ok((epoch, instance_id))
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    #[test]
+    fn an_epoch_is_a_json_safe_number() {
+        for _ in 0..64 {
+            let e = new_epoch();
+            assert!(e > 0 && e < (1 << 53), "{e}");
+        }
+    }
 }
