@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 
-/// A session's terminal pane. Stub: the terminal screen replaces this file.
+import 'terminal/screen.dart';
+
+/// A session's terminal panes: the grid, the keyboard and the extra-keys row.
 class TerminalScreen extends StatelessWidget {
   const TerminalScreen({super.key, required this.sid, this.pane});
 
@@ -10,8 +12,6 @@ class TerminalScreen extends StatelessWidget {
   final int? pane;
 
   @override
-  Widget build(BuildContext context) => const CupertinoPageScaffold(
-    navigationBar: CupertinoNavigationBar(middle: Text('Terminal')),
-    child: Center(child: Text('terminal: coming')),
-  );
+  Widget build(BuildContext context) =>
+      TerminalScreenBody(sid: sid, pane: pane);
 }

@@ -1,0 +1,423 @@
+/// The Terminal screen: one session's terminal panes (a segmented control when it has several),
+/// the grid, the hidden keyboard field and the extra-keys row; `+` opens a shell pane.
+library;
+
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
+
+import '../../net/models.dart' hide Row;
+import '../../net/rpc.dart';
+import '../../state/store.dart';
+import '../../state/term.dart';
+import '../femme.dart';
+import '../theme.dart';
+import 'extra_keys.dart';
+import 'input.dart';
+import 'keys.dart';
+import 'surface.dart';
+
+/// The terminal panes of [sid], by number. A headless agent's own pane stands for its
+/// transcript and is not one.
+List<Pane> terminalPanes(Store store, String sid) {
+  final s = store.sessions[sid];
+  return store.panes.values
+      .where((p) => p.id.sid == sid)
+      .where((p) => !(s?.mode == Mode.headless && p.kind == PaneKind.agent))
+      .toList()
+    ..sort((a, b) => a.id.no.compareTo(b.id.no));
+}
+
+/// A pane's label: the program's title, else the pane's, else `<session> · <no>`; 28 chars.
+String paneLabel(Store store, PaneId id, String? termTitle) {
+  String? named(String? t) => t == null || t.isEmpty ? null : t;
+  final l =
+      named(termTitle) ??
+      named(store.panes[id.key]?.title) ??
+      '${store.sessions[id.sid]?.title ?? 'terminal'} · ${id.no}';
+  return l.runes.length > 28 ? '${String.fromCharCodes(l.runes.take(28))}…' : l;
+}
+
+/// What closing [pane] asks of the box, or null when it is the agent's own pane.
+Object? closeReq(Store store, PaneId pane) {
+  final p = store.panes[pane.key];
+  final s = store.sessions[pane.sid];
+  if (p == null || s == null || p.kind == PaneKind.agent) return null;
+  final first = terminalPanes(store, pane.sid).firstOrNull;
+  return s.agent == Agent.shell && first?.id == pane
+      ? Req.sessionClose(pane.sid)
+      : Req.paneClose(pane);
+}
+
+class TerminalScreenBody extends StatefulWidget {
+  const TerminalScreenBody({super.key, required this.sid, this.pane});
+  final String sid;
+  final int? pane;
+
+  @override
+  State<TerminalScreenBody> createState() => _TerminalScreenBodyState();
+}
+
+class _TerminalScreenBodyState extends State<TerminalScreenBody> {
+  final _focus = FocusNode();
+  final _mods = StickyMods();
+  int? _no;
+  TermView? _view;
+  int _bells = 0;
+  String? _toast;
+  bool _opening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _no = widget.pane;
+  }
+
+  @override
+  void dispose() {
+    _view?.removeListener(_onView);
+    _view?.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  /// Attaches the pane on screen (only that one: every attached pane is a stream to feed).
+  void _attach(PaneId id) {
+    final f = Femme.of(context);
+    if (_view?.pane == id) return;
+    _view?.removeListener(_onView);
+    _view?.dispose();
+    _bells = 0;
+    _view = TermView.forLink(f.link, id)
+      ..addListener(_onView)
+      ..start();
+  }
+
+  void _onView() {
+    final v = _view;
+    if (v == null || !mounted) return;
+    if (v.bells > _bells) {
+      _bells = v.bells;
+      HapticFeedback.mediumImpact();
+    }
+    setState(() {});
+  }
+
+  void _send(TermKey k) => _view?.key(k.code, mods: k.mods);
+
+  Future<void> _extra(ExtraKey k) async {
+    switch (k) {
+      case ExtraKey.ctrl:
+        setState(_mods.tapCtrl);
+      case ExtraKey.alt:
+        setState(_mods.tapAlt);
+      case ExtraKey.paste:
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final t = data?.text;
+        if (t != null && t.isNotEmpty) _view?.paste(t);
+      default:
+        _send((code: k.code!, mods: _mods.take()));
+        setState(() {});
+    }
+  }
+
+  Future<void> _newPane() async {
+    if (_opening) return;
+    setState(() => _opening = true);
+    final f = Femme.of(context);
+    try {
+      final r = await f.link.req(Req.paneOpen(widget.sid));
+      if (mounted) setState(() => _no = r.pane.no);
+    } catch (e) {
+      _flash('could not open a shell: $e');
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
+  Future<void> _close(PaneId id) async {
+    final f = Femme.of(context);
+    final req = closeReq(f.store, id);
+    final nav = Navigator.of(context);
+    if (req != null) {
+      try {
+        await f.link.req(req);
+      } catch (e) {
+        _flash('could not close: $e');
+        return;
+      }
+    }
+    if (!mounted) return;
+    final rest = terminalPanes(f.store, widget.sid).where((p) => p.id != id);
+    if (rest.isEmpty) {
+      nav.maybePop();
+    } else {
+      setState(() => _no = rest.first.id.no);
+    }
+  }
+
+  void _flash(String text) {
+    if (!mounted) return;
+    setState(() => _toast = text);
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted && _toast == text) setState(() => _toast = null);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final f = Femme.of(context);
+    final panes = terminalPanes(f.store, widget.sid);
+    Pane? shown;
+    for (final p in panes) {
+      if (p.id.no == _no) shown = p;
+    }
+    shown ??= panes.firstOrNull;
+    if (shown != null) _attach(shown.id);
+    final view = shown == null ? null : _view;
+    final title = shown == null
+        ? 'Terminal'
+        : paneLabel(f.store, shown.id, view?.grid.title);
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: Text(title, overflow: TextOverflow.ellipsis),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: _opening ? null : _newPane,
+          child: _opening
+              ? const CupertinoActivityIndicator()
+              : const Icon(CupertinoIcons.add),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            if (panes.length > 1)
+              _PaneTabs(
+                panes: panes,
+                selected: shown!.id.no,
+                label: (p) => paneLabel(
+                  f.store,
+                  p.id,
+                  p.id == view?.pane ? view?.grid.title : null,
+                ),
+                onSelect: (no) => setState(() => _no = no),
+              ),
+            Expanded(
+              child: view == null
+                  ? _Empty(opening: _opening, onOpen: _newPane)
+                  : Stack(
+                      children: [
+                        Positioned.fill(
+                          child: TermSurface(
+                            view: view,
+                            onTap: () {
+                              _focus.hasFocus
+                                  ? SystemChannels.textInput.invokeMethod(
+                                      'TextInput.show',
+                                    )
+                                  : _focus.requestFocus();
+                            },
+                            onCopied: (n) =>
+                                _flash('copied $n line${n == 1 ? '' : 's'}'),
+                          ),
+                        ),
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          child: TermInput(
+                            focus: _focus,
+                            mods: _mods,
+                            onKey: (k) {
+                              _send(k);
+                              setState(() {});
+                            },
+                            onPaste: (t) => view.paste(t),
+                          ),
+                        ),
+                        if (!view.live && view.exited == null)
+                          Positioned(
+                            top: 8,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: Text(
+                                f.link.isOnline
+                                    ? 'attaching…'
+                                    : 'offline, reconnecting…',
+                                style: TextStyle(color: muted, fontSize: 13),
+                              ),
+                            ),
+                          ),
+                        if (view.exited != null)
+                          Positioned.fill(
+                            child: _ExitedCard(
+                              status: view.exited!,
+                              canClose: closeReq(f.store, view.pane) != null,
+                              onClose: () => _close(view.pane),
+                              onBack: () => Navigator.of(context).maybePop(),
+                            ),
+                          ),
+                        if (_toast != null)
+                          Positioned(
+                            bottom: 12,
+                            left: 0,
+                            right: 0,
+                            child: Center(child: _Toast(_toast!)),
+                          ),
+                      ],
+                    ),
+            ),
+            if (view != null && view.exited == null)
+              ExtraKeysRow(mods: _mods, onKey: _extra),
+            // Above the home indicator when the keyboard is down.
+            SizedBox(
+              height: MediaQuery.viewInsetsOf(context).bottom > 0
+                  ? 0
+                  : MediaQuery.paddingOf(context).bottom,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaneTabs extends StatelessWidget {
+  const _PaneTabs({
+    required this.panes,
+    required this.selected,
+    required this.label,
+    required this.onSelect,
+  });
+  final List<Pane> panes;
+  final int selected;
+  final String Function(Pane) label;
+  final void Function(int no) onSelect;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: CupertinoSlidingSegmentedControl<int>(
+        groupValue: selected,
+        onValueChanged: (no) {
+          if (no == null) return;
+          HapticFeedback.selectionClick();
+          onSelect(no);
+        },
+        children: {
+          for (final p in panes)
+            p.id.no: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                label(p),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+        },
+      ),
+    ),
+  );
+}
+
+class _Empty extends StatelessWidget {
+  const _Empty({required this.opening, required this.onOpen});
+  final bool opening;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'No terminal in this session.',
+          style: TextStyle(color: FemmeColors.mutedC.resolveFrom(context)),
+        ),
+        const SizedBox(height: 12),
+        CupertinoButton.filled(
+          onPressed: opening ? null : onOpen,
+          child: const Text('Open a shell'),
+        ),
+      ],
+    ),
+  );
+}
+
+class _ExitedCard extends StatelessWidget {
+  const _ExitedCard({
+    required this.status,
+    required this.canClose,
+    required this.onClose,
+    required this.onBack,
+  });
+  final int status;
+  final bool canClose;
+  final VoidCallback onClose;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = FemmeColors.inkC.resolveFrom(context);
+    return ColoredBox(
+      color: FemmeColors.paperC.resolveFrom(context).withValues(alpha: 0.7),
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: FemmeColors.paperC.resolveFrom(context),
+            border: Border.all(color: ink, width: 1.2),
+            boxShadow: [BoxShadow(color: ink, offset: const Offset(3, 3))],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'process exited ($status)',
+                style: TextStyle(color: ink, fontSize: 17),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CupertinoButton(onPressed: onBack, child: const Text('Back')),
+                  if (canClose)
+                    CupertinoButton.filled(
+                      onPressed: onClose,
+                      child: const Text('Close'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Toast extends StatelessWidget {
+  const _Toast(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = FemmeColors.inkC.resolveFrom(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: FemmeColors.paperC.resolveFrom(context),
+        border: Border.all(color: ink, width: 1.2),
+        boxShadow: [BoxShadow(color: ink, offset: const Offset(2, 2))],
+      ),
+      child: Text(text, style: TextStyle(color: ink, fontSize: 14)),
+    );
+  }
+}
