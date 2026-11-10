@@ -259,12 +259,19 @@ phone app ──QUIC (same femme-proto as the desktop)──► femmed on the bo
 ### Status (2026-11-10)
 
 M1 and M2 are built in `mobile/app` (Flutter, pure Cupertino; `PARITY.md` is the checklist):
-Now, Chats, Chat (markdown, tools, questions, permission prompts, attachments, slash
-commands, history), Terminal (read + keys), Files (tree, viewer, hex, media), Box (PRs with merge
-and auto-fix, accounts, API keys, issues), Me (pairing, appearance). Verified natively: the Linux
-desktop build against the live box, an Android release APK built on the VPS, iOS built unsigned by
-CI (`.github/workflows/mobile.yml`) on a macOS runner with Xcode 26.
+Now (needs-you cards with single and multi-select answers), Chats, Chat (markdown, tools,
+questions, permission prompts, attachments with video posters, slash commands, history), Terminal
+(read, keys, mouse reporting), Files (folder pages with iOS swipe-back, viewer, hex, media), Box
+(link round-trip, PRs with merge and auto-fix, accounts with add-account and the scheduler line,
+API keys with the GitHub device flow, issues, a red dot on the tab when a sign-in ends soon), Me
+(pairing, appearance). The outbox survives app restarts.
 
-Not yet: push (`PushRegister` and a notifier backend), `Scope::Attention`, outbox persisted to
-disk across app restarts, video poster frames, terminal mouse reporting, a Claude account sign-in
-flow (Box shows accounts, switching is a request away), the GitHub device flow for API keys.
+Verified natively: the Linux desktop build against the live box; CI installs the release APK on
+an Android emulator and a simulator build on an iPhone, pairs both with the box and screenshots
+the tabs (`.github/workflows/mobile.yml`, artifacts `femme-android-screens`, `femme-ios-screens`);
+the device ipa is built unsigned on the same macOS runner (Xcode 26).
+
+Not yet: push to the phone itself (`PushRegister` + an APNs/FCM notifier needs the user's Apple
+developer account and a Firebase project; until then the box's ntfy topic is the push),
+`Scope::Attention` (Now subscribes per session today), terminal fling momentum and sticky
+modifiers on mouse events.
