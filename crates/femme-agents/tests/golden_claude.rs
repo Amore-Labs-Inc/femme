@@ -110,6 +110,8 @@ golden_cases!(
     error_resume,
     usage,
     unknown_ctl,
+    elicit_form,
+    elicit_url,
 );
 
 #[test]
@@ -1462,4 +1464,103 @@ fn a_control_request_nobody_answers_is_refused_and_said_once() {
         "{:?}",
         kinds(&ev)
     );
+}
+
+/// The elicitation of a capture: its question and its item's end.
+fn elicit(case: &str) -> (femme_proto::state::Question, ItemStatus, Value, Vec<String>) {
+    let ev = events(case);
+    let q = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::QuestionAsked { item_id, q } if item_id.ends_with(":elicit") => {
+                Some(q.clone())
+            }
+            _ => None,
+        })
+        .expect("an elicitation is a question");
+    let (status, body) = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ItemCompleted {
+                kind: ItemKind::Question,
+                status,
+                body,
+                ..
+            } => Some((*status, body.clone())),
+            _ => None,
+        })
+        .expect("its item ends");
+    (q, status, body, kinds(&ev))
+}
+
+#[test]
+fn an_mcp_form_elicitation_is_a_question_answered_by_its_echo() {
+    let (q, status, body, k) = elicit("elicit_form");
+    assert_eq!(
+        q.prompt,
+        "elicit asks: Which release name should I use?\nAccept leaves the form's fields empty: name, draft"
+    );
+    assert_eq!(q.options, ["Accept", "Decline"]);
+    assert!(!q.free_text && !q.multi);
+    assert_eq!(status, ItemStatus::Answered);
+    assert_eq!(body["answered"], json!({"Option":0}));
+    // Blocked while it waits, working again once answered, the turn ends normally
+    let st: Vec<&str> = k
+        .iter()
+        .filter(|x| x.starts_with("status:") || *x == "asked" || *x == "resolved")
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        st,
+        [
+            "status:Working",
+            "status:Blocked",
+            "asked",
+            "resolved",
+            "status:Working",
+            "status:Idle"
+        ],
+        "{k:?}"
+    );
+    assert!(k.contains(&"turn-:EndTurn".to_owned()), "{k:?}");
+}
+
+#[test]
+fn an_mcp_url_elicitation_shows_its_url_and_its_completion_changes_nothing() {
+    let (q, status, body, _) = elicit("elicit_url");
+    assert_eq!(
+        q.prompt,
+        "elicit asks: Sign in to Example to continue\nhttps://example.com/auth?state=abc"
+    );
+    assert_eq!(status, ItemStatus::Answered);
+    assert_eq!(body["answered"], json!({"Option":0}));
+    assert_eq!(count(&events("elicit_url"), "done:Question:Answered"), 1);
+}
+
+/// What the driver answers is what the captures sent.
+#[test]
+fn elicitation_answers_match_the_capture() {
+    for case in ["elicit_form", "elicit_url"] {
+        let mut d = ClaudeDriver::new();
+        let mut out = Out::default();
+        d.on_start(&launch(), &mut out);
+        out.take();
+        let sent = stdin_lines(case);
+        let want = sent
+            .iter()
+            .find(|l| l["type"] == "control_response")
+            .unwrap()
+            .clone();
+        let rid = want["response"]["request_id"].as_str().unwrap().to_owned();
+        for (off, line) in spool_lines(&read(case)) {
+            let v: Value = serde_json::from_slice(line).unwrap();
+            if v["type"] == "control_response" && v["response"]["request_id"] == rid.as_str() {
+                d.answer(&rid, &Answer::Option(0), &mut out).unwrap();
+                assert_eq!(written(&out), std::slice::from_ref(&want), "{case}");
+                out.take();
+            }
+            d.on_line(off, line, &mut out);
+        }
+        assert!(out.lines().is_empty(), "{case}: nothing else written");
+    }
 }

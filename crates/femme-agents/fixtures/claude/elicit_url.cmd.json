@@ -1,0 +1,20 @@
+{
+ "argv": [
+  "claude",
+  "-p",
+  "--input-format=stream-json",
+  "--output-format=stream-json",
+  "--verbose",
+  "--include-partial-messages",
+  "--replay-user-messages",
+  "--permission-mode=bypassPermissions",
+  "--permission-prompt-tool=stdio",
+  "--model=claude-haiku-5-5",
+  "--strict-mcp-config",
+  "--mcp-config={\"mcpServers\": {\"elicit\": {\"type\": \"stdio\", \"command\": \"python3\", \"args\": [\"/tmp/femme-capture/elicit-mcp.py\"]}}}"
+ ],
+ "env": {
+  "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"
+ },
+ "exit": 0
+}

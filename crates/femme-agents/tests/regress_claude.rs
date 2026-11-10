@@ -1378,3 +1378,139 @@ fn requires_action_blocks_until_the_next_state() {
     s.d.on_exit(Some(0));
     assert_eq!(s.d.status(), AgentStatus::Idle);
 }
+
+// ---- MCP elicitation ----------------------------------------------------------------------------
+
+/// The `control_request` claude 2.1.319 sends for an MCP server's `elicitation/create`.
+fn elicitation(rid: &str, extra: Value) -> Value {
+    let mut req = json!({"subtype":"elicitation","mcp_server_name":"srv","message":"Pick a name","mode":"form",
+        "requested_schema":{"type":"object","properties":{
+            "name":{"type":"string"},"public":{"type":"boolean","default":true}},"required":["name"]},
+        "property_order":["name","public"]});
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        req[k] = v.clone();
+    }
+    json!({"type":"control_request","request_id":rid,"request":req})
+}
+
+fn elicit_turn() -> (S, String) {
+    let mut s = S::ready();
+    let u = s.send("go", PromptHow::Queue).unwrap();
+    s.start(&u);
+    (s, u)
+}
+
+/// Accept, Decline and Cancel go back as the MCP `action`; Accept fills only the schema's
+/// defaults; text is refused (the question has no free text).
+#[test]
+fn an_elicitation_answer_is_its_action() {
+    for (a, want) in [
+        (
+            Answer::Option(0),
+            json!({"action":"accept","content":{"public":true}}),
+        ),
+        (Answer::Option(1), json!({"action":"decline"})),
+        (Answer::Cancel, json!({"action":"cancel"})),
+    ] {
+        let (mut s, _) = elicit_turn();
+        let ev = s.feed(elicitation("re", json!({})));
+        assert_eq!(asked(&ev), ["re"]);
+        assert_eq!(s.d.status(), AgentStatus::Blocked);
+        assert!(matches!(
+            s.d.answer("re", &Answer::Text("bob".into()), &mut s.out),
+            Err(Error::Bad(_))
+        ));
+        s.d.answer("re", &a, &mut s.out).unwrap();
+        let resp = s.wrote().remove(0);
+        assert_eq!(
+            resp,
+            json!({"type":"control_response","response":{"subtype":"success","request_id":"re","response":want}})
+        );
+        // the CLI's echo ends the item, with the answer it carried
+        let ev = s.feed(resp);
+        assert_eq!(resolved(&ev), ["re"]);
+        let (kind, status, body) = completed(&ev, "re:elicit").expect("the item ends on the echo");
+        assert_eq!((*kind, *status), (ItemKind::Question, ItemStatus::Answered));
+        assert_eq!(body["answered"], serde_json::to_value(&a).unwrap());
+        assert_ne!(s.d.status(), AgentStatus::Blocked);
+    }
+}
+
+/// A replay knows the answer from the echo alone.
+#[test]
+fn an_elicitation_replayed_learns_its_answer_from_the_echo() {
+    let (mut s, _) = elicit_turn();
+    let from = s.d.resume_offset();
+    s.feed(elicitation("re", json!({})));
+    s.d.answer("re", &Answer::Option(1), &mut s.out).unwrap();
+    let resp = s.wrote().remove(0);
+    s.feed(resp);
+    let (_, ev, out) = s.replay_bare(from);
+    let (_, status, body) = completed(&ev, "re:elicit").unwrap();
+    assert_eq!(*status, ItemStatus::Answered);
+    assert_eq!(body["answered"], json!({"Option":1}));
+    assert!(out.stdin.is_empty());
+}
+
+/// A URL elicitation the server confirms complete while nobody answered here (the user finished it
+/// in the browser): the CLI still waits, so it is accepted and the item ends.
+#[test]
+fn a_url_elicitation_completed_unanswered_is_accepted() {
+    let (mut s, _) = elicit_turn();
+    let url = json!({"mode":"url","url":"https://example.com/auth","elicitation_id":"el-1",
+        "requested_schema":null,"property_order":null});
+    let ev = s.feed(elicitation("re", url));
+    let ask = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::QuestionAsked { q, .. } => Some(q.prompt.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(ask, "srv asks: Pick a name\nhttps://example.com/auth");
+    // another server's completion is not ours
+    let other = json!({"type":"system","subtype":"elicitation_complete","mcp_server_name":"x","elicitation_id":"el-1"});
+    assert!(completed(&s.feed(other), "re:elicit").is_none());
+    let ev = s.feed(json!({"type":"system","subtype":"elicitation_complete","mcp_server_name":"srv","elicitation_id":"el-1"}));
+    let (_, status, body) = completed(&ev, "re:elicit").expect("closed by the completion");
+    assert_eq!(*status, ItemStatus::Answered);
+    assert_eq!(body["answered"], json!({"Option":0}));
+    assert_eq!(
+        s.wrote(),
+        [
+            json!({"type":"control_response","response":{"subtype":"success","request_id":"re","response":{"action":"accept"}}})
+        ]
+    );
+    assert!(matches!(
+        s.d.answer("re", &Answer::Option(1), &mut s.out),
+        Err(Error::UnknownRequest(_))
+    ));
+}
+
+/// Withdrawn by the CLI it fails at once; answered but never echoed it is still answered when the
+/// turn ends; unanswered it fails then.
+#[test]
+fn an_elicitation_ends_with_the_cancel_or_the_turn() {
+    let (mut s, _) = elicit_turn();
+    s.feed(elicitation("re", json!({})));
+    let ev = s.feed(json!({"type":"control_cancel_request","request_id":"re"}));
+    let (_, status, body) = completed(&ev, "re:elicit").unwrap();
+    assert_eq!(*status, ItemStatus::Failed);
+    assert_eq!(body["reason"], "withdrawn by Claude");
+
+    for answer in [Some(Answer::Option(0)), None] {
+        let (mut s, u) = elicit_turn();
+        s.feed(elicitation("re", json!({})));
+        if let Some(a) = &answer {
+            s.d.answer("re", a, &mut s.out).unwrap();
+        }
+        let ev = s.feed(result_ok(&[&u]));
+        let (_, status, _) = completed(&ev, "re:elicit").unwrap();
+        let want = if answer.is_some() {
+            ItemStatus::Answered
+        } else {
+            ItemStatus::Failed
+        };
+        assert_eq!(*status, want, "{answer:?}");
+    }
+}

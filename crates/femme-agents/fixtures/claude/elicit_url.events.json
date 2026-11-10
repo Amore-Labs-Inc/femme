@@ -1,0 +1,254 @@
+[
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "a5cc6629-1328-46c6-843f-abbda61f52af",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "Commands": [
+      "compact",
+      "context",
+      "help"
+    ]
+  },
+  {
+    "PermissionMode": "bypassPermissions"
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Call the mcp__elicit__ask_url tool once, then reply with exactly what it returned."
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 38770,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+      "kind": "ToolCall",
+      "preview": "ToolSearch"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+      "body": {
+        "call_id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+        "input": {
+          "max_results": 1,
+          "query": "select:mcp__elicit__ask_url"
+        },
+        "name": "ToolSearch"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+        "input": {
+          "max_results": 1,
+          "query": "select:mcp__elicit__ask_url"
+        },
+        "name": "ToolSearch"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01DhD47Rt659hK9YYky3xZL6:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01DhD47Rt659hK9YYky3xZL6",
+        "is_error": false,
+        "output": "[tool_reference]"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 45.0,
+      "resets_at": 1794310800
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "weekly",
+      "percent": 15.0,
+      "resets_at": 1794441600
+    }
+  },
+  {
+    "Context": {
+      "used": 39140,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+      "kind": "ToolCall",
+      "preview": "mcp__elicit__ask_url"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+      "body": {
+        "call_id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+        "input": {},
+        "name": "mcp__elicit__ask_url"
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412:elicit",
+      "q": {
+        "request_id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412",
+        "prompt": "elicit asks: Sign in to Example to continue\nhttps://example.com/auth?state=abc",
+        "options": [
+          "Accept",
+          "Decline"
+        ],
+        "multi": false,
+        "free_text": false
+      }
+    }
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412:elicit",
+      "kind": "Question",
+      "status": "Answered",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": false,
+        "multi": false,
+        "options": [
+          "Accept",
+          "Decline"
+        ],
+        "prompt": "elicit asks: Sign in to Example to continue\nhttps://example.com/auth?state=abc",
+        "request_id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412"
+      }
+    }
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+        "input": {},
+        "name": "mcp__elicit__ask_url"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01NMMZRjXDXxuCotg6DXYJ1w",
+        "is_error": false,
+        "output": "elicitation: {\"action\": \"accept\"}"
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 39218,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011CgtqfPT4HYMyQHvxk8yNz:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgtqfPT4HYMyQHvxk8yNz:0",
+      "text": "elicit"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgtqfPT4HYMyQHvxk8yNz:0",
+      "text": "ation: {\"action\": \"acc"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011CgtqfPT4HYMyQHvxk8yNz:0",
+      "text": "ept\"}"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011CgtqfPT4HYMyQHvxk8yNz:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "elicitation: {\"action\": \"accept\"}"
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 39218,
+      "window": 1000000
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 6,
+        "output": 311,
+        "cache_read": 93694,
+        "cache_write": 23428
+      },
+      "duration_ms": 3966
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

@@ -11,9 +11,9 @@
 //!   the host sent, including our `control_response`s), `result` (end of turn),
 //!   `rate_limit_event`, `command_lifecycle` (per-uuid queued/started/completed/cancelled),
 //!   `control_request{can_use_tool}` (with `--permission-prompt-tool stdio`; under bypass only for
-//!   `AskUserQuestion` and `ExitPlanMode`) and `control_cancel_request`. Any other
-//!   `control_request` gets an error reply at once (the CLI would wait for one forever) and an
-//!   Event item, once per subtype.
+//!   `AskUserQuestion` and `ExitPlanMode`), `control_request{elicitation}` and
+//!   `control_cancel_request`. Any other `control_request` gets an error reply at once (the CLI
+//!   would wait for one forever) and an Event item, once per subtype.
 //!
 //! Mapping decisions worth knowing before reading the code:
 //!
@@ -28,6 +28,11 @@
 //!   a `Question` item `<tool_use_id>:ask` (Approve / Keep planning). Any other `can_use_tool`
 //!   (only after a plan-mode approval returned the session to `default`) is a `Question` item
 //!   `<tool_use_id>:ask` (Allow / Deny): the driver never answers on its own.
+//! * An MCP server's `elicitation` (form or URL mode) is a `Question` item `<request_id>:elicit`
+//!   (Accept / Decline, no free text; Accept sends the form with only its schema's defaults). It
+//!   has no tool call: the CLI's echo of our answer ends it `Answered`. A URL one the server
+//!   reports complete (`system/elicitation_complete`) while still open is accepted then, the one
+//!   time the driver answers on its own: the CLI would wait for us forever.
 //! * Subagent traffic (`parent_tool_use_id` set, the id of the `Agent` call that spawned it) goes
 //!   through the same handlers with its own stream state, and its items carry that id as
 //!   `parent`. It never opens or closes a turn nor changes the status, and its AskUserQuestion or
@@ -150,6 +155,9 @@ enum PendKind {
     Ask,
     /// ExitPlanMode or an ordinary tool permission: option 0 allows, anything else denies.
     Allow,
+    /// An MCP server's `elicitation`: Accept (0), Decline (1) or Cancel go back as its `action`.
+    /// It has no tool call: the item ends when the CLI echoes our answer.
+    Elicit,
 }
 
 /// A user message the CLI has not finished (an entry of [`ClaudeDriver::cmds`]).
@@ -1157,7 +1165,8 @@ impl ClaudeDriver {
                 PendKind::Ask => result["answers"][&part.text]
                     .as_str()
                     .map(|a| parse_answer(a, &part.labels, part.q.multi)),
-                PendKind::Allow => Some(Answer::Option(0)),
+                // an elicitation has no tool call, so no result reaches here
+                PendKind::Allow | PendKind::Elicit => Some(Answer::Option(0)),
             };
             let (status, answered, reason) = match (is_error, part.answer.clone()) {
                 (true, Some(a)) => (ItemStatus::Answered, Some(a), None),
@@ -1364,6 +1373,108 @@ impl ClaudeDriver {
         self.ask(offset, rid, &tid, tool, &req["input"], title, ev);
     }
 
+    /// An MCP server asks the user through the CLI (`elicitation/create`, claude 2.1.319:
+    /// `{subtype:"elicitation", mcp_server_name, message, mode:"form"|"url", url?, elicitation_id?,
+    /// requested_schema?, property_order?}`). One Question item `<rid>:elicit`, Accept / Decline.
+    fn elicitation(&mut self, offset: u64, rid: &str, req: &Value, ev: &mut Vec<AgentEvent>) {
+        self.activity(offset, ev);
+        if self.pending.contains_key(rid) {
+            return; // the request we already show, repeated
+        }
+        let server = req["mcp_server_name"].as_str().unwrap_or("an MCP server");
+        let mut prompt = format!("{server} asks: {}", req["message"].as_str().unwrap_or(""));
+        if req["mode"] == "url" {
+            if let Some(url) = req["url"].as_str() {
+                prompt = format!("{prompt}\n{url}");
+            }
+        } else {
+            // ponytail: no form fields in a Question; Accept answers the form with its fields
+            // empty (only the schema's defaults), so the prompt names what is left empty
+            let fields = form_fields(req);
+            if !fields.is_empty() {
+                prompt = format!(
+                    "{prompt}\nAccept leaves the form's fields empty: {}",
+                    fields.join(", ")
+                );
+            }
+        }
+        let labels: Vec<String> = vec!["Accept".into(), "Decline".into()];
+        let part = Part {
+            request_id: rid.to_owned(),
+            item_id: format!("{rid}:elicit"),
+            q: Question {
+                request_id: rid.to_owned(),
+                prompt,
+                options: labels.clone(),
+                multi: false,
+                free_text: false,
+            },
+            text: String::new(),
+            labels,
+            answer: None,
+        };
+        self.open_pending(
+            offset,
+            rid,
+            rid,
+            PendKind::Elicit,
+            req.clone(),
+            vec![part],
+            ev,
+        );
+    }
+
+    /// An elicitation of ours is over (the CLI read our answer, or the server said it is
+    /// complete): its item is `Answered` with what was sent.
+    fn finish_elicit(&mut self, cid: &str, ev: &mut Vec<AgentEvent>) {
+        self.resolve(cid, ev);
+        if let Some(p) = self.pending.remove(cid) {
+            for part in p.parts {
+                self.off.item_close(&part.item_id);
+                ev.push(done(
+                    part.item_id,
+                    ItemKind::Question,
+                    ItemStatus::Answered,
+                    body(&QuestionItem {
+                        q: part.q,
+                        answered: part.answer,
+                        reason: None,
+                    }),
+                ));
+            }
+        }
+    }
+
+    /// `system/elicitation_complete`: the MCP server confirms a URL-mode elicitation is done.
+    /// Normally after our answer (its item is closed). One still open was finished in the browser
+    /// without an answer here, and the CLI still waits for one: it is accepted.
+    fn elicitation_complete(&mut self, v: &Value, out: &mut Out, ev: &mut Vec<AgentEvent>) {
+        let Some(cid) = self
+            .pending
+            .iter()
+            .find(|(_, p)| {
+                p.kind == PendKind::Elicit
+                    && !p.closed
+                    && p.input["elicitation_id"] == v["elicitation_id"]
+                    && p.input["mcp_server_name"] == v["mcp_server_name"]
+            })
+            .map(|(k, _)| k.clone())
+        else {
+            return;
+        };
+        if let Some(p) = self.pending.get_mut(&cid) {
+            if !p.sent {
+                p.sent = true;
+                for part in &mut p.parts {
+                    part.answer.get_or_insert(Answer::Option(0));
+                }
+                let resp = response_body(p);
+                out.line(&json!({"type":"control_response","response":{"subtype":"success","request_id":cid,"response":resp}}));
+            }
+        }
+        self.finish_elicit(&cid, ev);
+    }
+
     /// The agent waits on the user: the `AskUserQuestion` call `tid` asks its questions, an
     /// `ExitPlanMode` or any other tool `tool` asks for an approval. Opens the `Question` items
     /// and remembers the request `rid` (the tool call's own id for a mirror) until its result.
@@ -1423,6 +1534,21 @@ impl ClaudeDriver {
                 answer: None,
             });
         }
+        self.open_pending(offset, rid, tid, kind, input, parts, ev);
+    }
+
+    /// The request `rid` (of the tool call `tid`) waits for the user: its `parts` are asked.
+    #[allow(clippy::too_many_arguments)]
+    fn open_pending(
+        &mut self,
+        offset: u64,
+        rid: &str,
+        tid: &str,
+        kind: PendKind,
+        input: Value,
+        mut parts: Vec<Part>,
+        ev: &mut Vec<AgentEvent>,
+    ) {
         // Answers the daemon kept from before a restart. A request whose answer is complete (every
         // part answered, or one cancelled, which is sent at once) was already sent: it is not asked
         // again and never makes the session `Blocked`; one part way asks only the parts still open.
@@ -1470,14 +1596,21 @@ impl ClaudeDriver {
                 });
             }
             self.off.item_close(&part.item_id);
+            // an elicitation has no result to wait for: one we answered was answered
+            let (status, answered, reason) = match part.answer {
+                Some(a) if p.kind == PendKind::Elicit && p.sent => {
+                    (ItemStatus::Answered, Some(a), None)
+                }
+                _ => (ItemStatus::Failed, None, Some(why.to_owned())),
+            };
             ev.push(done(
                 part.item_id,
                 ItemKind::Question,
-                ItemStatus::Failed,
+                status,
                 body(&QuestionItem {
                     q: part.q,
-                    answered: None,
-                    reason: Some(why.to_owned()),
+                    answered,
+                    reason,
                 }),
             ));
         }
@@ -1565,7 +1698,11 @@ impl ClaudeDriver {
             // `--replay-user-messages` echoes our answer: a replay (no `answer()` call in this
             // incarnation) learns what the user chose from it, so the outcome is the same one
             echoed_answers(p, &r["response"]);
-            self.resolve(rid, ev);
+            if p.kind == PendKind::Elicit {
+                self.finish_elicit(rid, ev);
+            } else {
+                self.resolve(rid, ev);
+            }
         } else if r["subtype"] == "error" {
             let why = r["error"].as_str().unwrap_or("unknown error");
             ev.push(event_item(
@@ -1693,6 +1830,9 @@ impl Driver for ClaudeDriver {
             return ev;
         }
         match ty {
+            "system" if v["subtype"] == "elicitation_complete" => {
+                self.elicitation_complete(&v, out, &mut ev)
+            }
             "system" => self.system(offset, &v, &mut ev),
             "stream_event" => self.stream_event(offset, &v, &mut ev),
             "assistant" => self.assistant(offset, &v, &mut ev),
@@ -1702,6 +1842,12 @@ impl Driver for ClaudeDriver {
             "command_lifecycle" => self.lifecycle(offset, &v, &mut ev),
             "control_request" => match v["request"]["subtype"].as_str() {
                 Some("can_use_tool") => self.can_use_tool(
+                    offset,
+                    v["request_id"].as_str().unwrap_or(""),
+                    &v["request"],
+                    &mut ev,
+                ),
+                Some("elicitation") => self.elicitation(
                     offset,
                     v["request_id"].as_str().unwrap_or(""),
                     &v["request"],
@@ -2250,6 +2396,9 @@ fn ask_parts(rid: &str, tid: &str, input: &Value) -> Vec<Part> {
 /// Reject answers that cannot be sent, so `answer()` fails instead of the CLI getting nonsense.
 fn check_answer(kind: PendKind, p: &Part, a: &Answer) -> Result<(), Error> {
     match (kind, a) {
+        (PendKind::Elicit, Answer::Text(_)) => Err(Error::Bad(
+            "an MCP server's question takes Accept, Decline or Cancel, no text".into(),
+        )),
         (_, Answer::Cancel | Answer::Text(_)) => Ok(()),
         (_, Answer::Option(i)) if usize::from(*i) < p.labels.len() => Ok(()),
         // an empty pick would go to the CLI as the empty answer text: say "cancel" or give a pick
@@ -2305,7 +2454,49 @@ fn response_body(p: &Pending) -> Value {
             Some(Answer::Text(t)) => deny(t),
             _ => deny("The user said no."),
         },
+        // the CLI hands `{action, content?}` to the MCP server as is (`oDs` in 2.1.319)
+        PendKind::Elicit => match p.parts.first().and_then(|x| x.answer.as_ref()) {
+            Some(Answer::Option(0)) if p.input["mode"] == "url" => json!({"action":"accept"}),
+            Some(Answer::Option(0)) => {
+                json!({"action":"accept","content":form_defaults(&p.input["requested_schema"])})
+            }
+            Some(Answer::Option(1)) => json!({"action":"decline"}),
+            _ => json!({"action":"cancel"}),
+        },
     }
+}
+
+/// The names of an elicitation form's fields, in the order the CLI gives (`property_order`), else
+/// the schema's.
+fn form_fields(req: &Value) -> Vec<String> {
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let ordered = names(&req["property_order"]);
+    if !ordered.is_empty() {
+        return ordered;
+    }
+    req["requested_schema"]["properties"]
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The content of an accepted form: only the defaults its schema gives, every other field empty
+/// (left out).
+fn form_defaults(schema: &Value) -> Value {
+    let o: serde_json::Map<String, Value> = schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, f)| f.get("default").map(|d| (k.clone(), d.clone())))
+        .collect();
+    Value::Object(o)
 }
 
 /// Fill in the parts of `p` nobody answered in this incarnation from the response we wrote to
@@ -2316,6 +2507,11 @@ fn echoed_answers(p: &mut Pending, resp: &Value) {
     let deny = resp["behavior"] == "deny";
     for part in p.parts.iter_mut().filter(|x| x.answer.is_none()) {
         part.answer = match (p.kind, deny) {
+            (PendKind::Elicit, _) => Some(match resp["action"].as_str() {
+                Some("accept") => Answer::Option(0),
+                Some("decline") => Answer::Option(1),
+                _ => Answer::Cancel,
+            }),
             (PendKind::Ask, true) => Some(Answer::Cancel),
             (PendKind::Ask, false) => resp["updatedInput"]["answers"][&part.text]
                 .as_str()
