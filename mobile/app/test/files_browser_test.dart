@@ -132,4 +132,100 @@ void main() {
     expect(b.read, ['mid.txt']);
     expect(find.text('ok'), findsOneWidget);
   });
+
+  group('back', () {
+    // The Files screen pushed over a page, so leaving it shows `under`.
+    Future<FakeBox> open(WidgetTester t) async {
+      final b = box();
+      final tree = FilesTree(requester: b, sid: 's1');
+      await t.pumpWidget(
+        CupertinoApp(
+          home: Builder(
+            builder: (context) => CupertinoPageScaffold(
+              child: Center(
+                child: CupertinoButton(
+                  onPressed: () => Navigator.of(context).push(
+                    CupertinoPageRoute<void>(
+                      title: 'Chat',
+                      builder: (_) => FilesBrowser(
+                        tree: tree,
+                        cwd: '/home/u/proj',
+                        rootName: 'proj',
+                      ),
+                    ),
+                  ),
+                  child: const Text('under'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.text('under'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('src'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('ui'));
+      await t.pumpAndSettle();
+      expect(find.text('Empty folder'), findsOneWidget);
+      return b;
+    }
+
+    testWidgets('system back climbs a folder, then leaves at the root', (
+      t,
+    ) async {
+      await open(t);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.text('main.rs'), findsOneWidget);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.text('README.md'), findsOneWidget);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.text('under'), findsOneWidget);
+      expect(find.byType(FilesBrowser), findsNothing);
+    });
+
+    testWidgets('the bar\'s back chevron climbs a folder', (t) async {
+      await open(t);
+      await t.tap(find.byType(CupertinoNavigationBarBackButton));
+      await t.pumpAndSettle();
+      expect(find.text('main.rs'), findsOneWidget);
+      await t.tap(find.byType(CupertinoNavigationBarBackButton));
+      await t.pumpAndSettle();
+      expect(find.text('README.md'), findsOneWidget);
+      await t.tap(find.byType(CupertinoNavigationBarBackButton));
+      await t.pumpAndSettle();
+      expect(find.text('under'), findsOneWidget);
+    });
+
+    testWidgets('the edge swipe climbs a folder and leaves from the root', (
+      t,
+    ) async {
+      await open(t);
+      Future<void> swipe() async {
+        await t.dragFrom(const Offset(4, 300), const Offset(600, 0));
+        await t.pumpAndSettle();
+      }
+
+      await swipe();
+      expect(find.text('main.rs'), findsOneWidget);
+      await swipe();
+      expect(find.text('README.md'), findsOneWidget);
+      await swipe();
+      expect(find.text('under'), findsOneWidget);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+    testWidgets('a crumb pops back to its folder', (t) async {
+      final b = await open(t);
+      await t.tap(find.text('proj'));
+      await t.pumpAndSettle();
+      expect(find.text('README.md'), findsOneWidget);
+      expect(b.listed, ['', 'src', 'src/ui']);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.text('under'), findsOneWidget);
+    });
+  });
 }
