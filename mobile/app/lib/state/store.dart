@@ -197,6 +197,7 @@ class Store extends ChangeNotifier {
 
   /// The session's items by seq, then its outbox entries as `Pending` user messages.
   List<Item> items(String sid) {
+    _sweepOutbox();
     final t = _transcripts[sid];
     final real = t?.sorted ?? const <Item>[];
     final local = _outbox.values.where((o) => o.sid == sid).toList()
@@ -291,7 +292,13 @@ class Store extends ChangeNotifier {
     try {
       await link.req(o.request, op: o.op, timeout: const Duration(minutes: 2));
       if (_outbox[o.op] == o) {
-        o.state = OutboxState.accepted;
+        // A `/command` leaves no UserMessage behind (the daemon stores none), so nothing would
+        // ever reconcile its bubble: it goes with the answer.
+        if (o.text.trimLeft().startsWith('/')) {
+          _outbox.remove(o.op);
+        } else {
+          o.state = OutboxState.accepted;
+        }
         notifyListeners();
       }
     } catch (e) {
@@ -299,6 +306,15 @@ class Store extends ChangeNotifier {
       _failed(o, e.toString());
       rethrow;
     }
+  }
+
+  /// An accepted entry the box never echoed (a message to a session that was closed meanwhile)
+  /// is not shown forever: ten minutes, as the desktop does.
+  void _sweepOutbox() {
+    final cutoff = DateTime.now().millisecondsSinceEpoch - 10 * 60 * 1000;
+    _outbox.removeWhere(
+      (_, o) => o.state == OutboxState.accepted && o.ts < cutoff,
+    );
   }
 
   void _failed(OutboxEntry o, String why) {

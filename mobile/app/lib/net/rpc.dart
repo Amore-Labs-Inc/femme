@@ -341,7 +341,7 @@ sealed class S2C {
       'Welcome' => Welcome(
         m['proto'] as int,
         m['server_version'] as String,
-        m['epoch'] as int,
+        (m['epoch'] as num).toInt(),
       ),
       'Resp' => RespMsg(m['op'] as String, m['result'] as Object),
       'Changes' => Changes(
