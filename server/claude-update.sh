@@ -24,7 +24,7 @@ state=${FEMME_STATE:-$HOME/.local/state/femme}
 reports=$state/reports/claude-updates
 work=${FEMME_UPDATES_DIR:-$HOME/femme-updates}
 dry=${DRY:-0}
-scout_model=${SCOUT_MODEL:-opus} impl_model=${IMPL_MODEL:-fable}
+scout_model=${SCOUT_MODEL:-opus} impl_model=${IMPL_MODEL:-claude-fable-5-2}
 min_free_gb=${MIN_FREE_GB:-25}  # a feature needs a fresh target/ (several GB): stop below this
 started=$(date +%s)
 end=$((started + ${BUDGET_MIN:-495} * 60)) fix_reserve=$((45 * 60))
