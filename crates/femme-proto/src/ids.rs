@@ -1,9 +1,11 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
-/// A ULID carried as its 128-bit value (16 bytes on the wire, 26 chars as text).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+/// A ULID carried as its 128-bit value (16 bytes on the wire, 26 chars as text). In a
+/// human-readable format (JSON, for the phone's WebSocket carrier) it is the 26-char text: a
+/// 128-bit number is not something a JSON reader keeps whole.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Id(pub u128);
 
 impl Id {
@@ -31,6 +33,27 @@ impl FromStr for Id {
     }
 }
 
+impl Serialize for Id {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if s.is_human_readable() {
+            s.collect_str(self)
+        } else {
+            s.serialize_u128(self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Id {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if d.is_human_readable() {
+            let text = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+            text.parse().map_err(serde::de::Error::custom)
+        } else {
+            u128::deserialize(d).map(Id)
+        }
+    }
+}
+
 /// Session id.
 pub type Sid = Id;
 /// Idempotency id of a client request (deduped in the daemon's `ops` table).
@@ -43,4 +66,21 @@ pub type DeviceId = Id;
 pub struct PaneId {
     pub sid: Sid,
     pub no: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_in_json_and_number_in_postcard() {
+        let id = Id::new();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, format!("\"{id}\""));
+        assert_eq!(serde_json::from_str::<Id>(&json).unwrap(), id);
+        assert!(serde_json::from_str::<Id>("\"not a ulid\"").is_err());
+        let bytes = postcard::to_stdvec(&id).unwrap();
+        assert_eq!(bytes, postcard::to_stdvec(&id.0).unwrap());
+        assert_eq!(postcard::from_bytes::<Id>(&bytes).unwrap(), id);
+    }
 }

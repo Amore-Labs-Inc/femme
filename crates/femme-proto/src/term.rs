@@ -257,3 +257,25 @@ pub enum TermDown {
     },
     Bell,
 }
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+
+    /// What the phone reads: flags as names, a key as `{"code":{"Char":"a"},"mods":"SHIFT | CTRL"}`.
+    #[test]
+    fn flags_are_names_in_json() {
+        let key = Key {
+            code: KeyCode::Char('a'),
+            mods: Mods::SHIFT | Mods::CTRL,
+        };
+        let json = serde_json::to_string(&key).unwrap();
+        assert_eq!(json, r#"{"code":{"Char":"a"},"mods":"SHIFT | CTRL"}"#);
+        assert_eq!(serde_json::from_str::<Key>(&json).unwrap(), key);
+        assert_eq!(serde_json::to_string(&Mods::empty()).unwrap(), r#""""#);
+        assert_eq!(
+            serde_json::from_str::<Mods>(r#""""#).unwrap(),
+            Mods::empty()
+        );
+    }
+}
