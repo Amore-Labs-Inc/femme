@@ -1,0 +1,314 @@
+/// Lays a transcript's items out as rows: a tool call and its result as one row, read marks,
+/// compaction folds, notable turn ends, and the folding of a finished turn's work into one
+/// `worked for 3m · 12 tools` line (BODIES.md §3.11, §4.1). Pure: tests drive it directly.
+library;
+
+import '../../net/models.dart' hide Row;
+import '../../net/wire.dart';
+import '../../state/chat.dart';
+import 'attached.dart';
+import 'tool_summary.dart';
+
+sealed class Entry {
+  const Entry();
+
+  /// Stable per row: the item id, or the first inner row's for a fold.
+  String get key;
+}
+
+/// A user, peer, assistant, plan, question, event or thinking row.
+class ItemEntry extends Entry {
+  const ItemEntry(this.item, {this.ms});
+  final Item item;
+
+  /// For thinking: how long it took (up to the next item), when known.
+  final int? ms;
+  @override
+  String get key => item.itemId;
+}
+
+/// A tool call and its result as one row. [call] is null for a result whose call is not held.
+class ToolEntry extends Entry {
+  const ToolEntry(this.call, this.result);
+  final Item? call;
+  final Item? result;
+  @override
+  String get key => call?.itemId ?? result!.itemId;
+
+  bool get running => result == null && call?.status == ItemStatus.inProgress;
+  bool get failed =>
+      call?.status == ItemStatus.failed || result?.status == ItemStatus.failed;
+}
+
+/// Where the agent read a queued message: a thin line naming it.
+class ReadEntry extends Entry {
+  const ReadEntry(this.event, this.target);
+  final Item event;
+  final String target;
+  @override
+  String get key => event.itemId;
+}
+
+/// Claude's post-compaction summary, folded.
+class CompactionEntry extends Entry {
+  const CompactionEntry(this.item);
+  final Item item;
+  @override
+  String get key => item.itemId;
+}
+
+/// A turn end worth a line: interrupted, output limit, failed (red), other.
+class TurnEndEntry extends Entry {
+  const TurnEndEntry(this.item, this.text, {this.red = false});
+  final Item item;
+  final String text;
+  final bool red;
+  @override
+  String get key => item.itemId;
+}
+
+/// Several work rows behind one line; tap opens them.
+class FoldEntry extends Entry {
+  const FoldEntry(this.inner, this.label, {this.failed = 0});
+  final List<Entry> inner;
+  final String label;
+  final int failed;
+  @override
+  String get key => 'fold:${inner.first.key}';
+}
+
+/// The id of the call a result answers: its body's `call_id`, else the id minus `:result`.
+String? callIdOf(Item result, Json? body) {
+  final c = body?['call_id'];
+  if (c is String) return c;
+  const s = ':result';
+  final id = result.itemId;
+  return id.endsWith(s) ? id.substring(0, id.length - s.length) : null;
+}
+
+/// The text of a notable turn end, or null for a plain `EndTurn`.
+({String text, bool red})? turnEndNote(Json? body) {
+  final stop = body?['stop'];
+  if (stop == null || stop == 'EndTurn') return null;
+  if (stop == 'Interrupted') return (text: '· interrupted', red: false);
+  if (stop == 'MaxTokens') {
+    return (text: '· stopped: output limit reached', red: false);
+  }
+  if (stop is Map && stop['Error'] != null) {
+    return (text: '· turn failed: ${stop['Error']}', red: true);
+  }
+  if (stop is Map && stop['Other'] != null) {
+    return (text: '· turn ended: ${stop['Other']}', red: false);
+  }
+  return null;
+}
+
+/// The rows for [items] (one view: the main thread or one subagent), in order. [body] decodes
+/// an item's body when at hand.
+List<Entry> layout(
+  List<Item> items, {
+  required Json? Function(Item) body,
+  Set<String> endedTasks = const {},
+}) {
+  final calls = <String>{
+    for (final i in items)
+      if (i.kind == ItemKind.toolCall) i.itemId,
+  };
+  final results = <String, Item>{};
+  for (final i in items) {
+    if (i.kind != ItemKind.toolResult) continue;
+    final c = callIdOf(i, body(i));
+    if (c != null) results[c] = i;
+  }
+
+  final out = <Entry>[];
+  var segment = <Entry>[];
+  int? segmentStart;
+
+  void close(Item? end) {
+    if (end == null) {
+      out.addAll(_foldRuns(segment, body, endedTasks));
+    } else {
+      out.addAll(
+        _foldTurn(segment, end, body(end), segmentStart, endedTasks, body),
+      );
+    }
+    segment = <Entry>[];
+    segmentStart = null;
+  }
+
+  for (var n = 0; n < items.length; n++) {
+    final i = items[n];
+    segmentStart ??= i.ts;
+    switch (i.kind) {
+      case ItemKind.turnStart:
+        if (segment.isNotEmpty) close(null);
+      case ItemKind.turnEnd:
+        close(i);
+        final note = turnEndNote(body(i));
+        if (note != null) out.add(TurnEndEntry(i, note.text, red: note.red));
+      case ItemKind.toolCall:
+        segment.add(ToolEntry(i, results[i.itemId]));
+      case ItemKind.toolResult:
+        final c = callIdOf(i, body(i));
+        if (c == null || !calls.contains(c)) segment.add(ToolEntry(null, i));
+      case ItemKind.event:
+        final b = body(i);
+        final read = b?['read'];
+        if (read is String) {
+          final prev = segment.isNotEmpty
+              ? segment.last
+              : (out.isNotEmpty ? out.last : null);
+          final above = prev is ItemEntry && prev.item.itemId == read;
+          if (!above) segment.add(ReadEntry(i, read));
+          continue;
+        }
+        if (n + 1 < items.length &&
+            items[n + 1].kind == ItemKind.userMessage &&
+            items[n + 1].text.startsWith(compactionPrefix)) {
+          continue;
+        }
+        segment.add(ItemEntry(i));
+      case ItemKind.userMessage:
+        if (i.text.startsWith(compactionPrefix)) {
+          segment.add(CompactionEntry(i));
+        } else {
+          segment.add(ItemEntry(i));
+        }
+      case ItemKind.thinking:
+        final next = n + 1 < items.length ? items[n + 1].ts : null;
+        final ms = next != null && i.status != ItemStatus.inProgress
+            ? next - i.ts
+            : null;
+        segment.add(ItemEntry(i, ms: ms));
+      default:
+        segment.add(ItemEntry(i));
+    }
+  }
+  close(null);
+  return out;
+}
+
+bool _isWork(Entry e) =>
+    e is ToolEntry || (e is ItemEntry && e.item.kind == ItemKind.thinking);
+
+bool _keepsOut(Entry e, Json? Function(Item) body, Set<String> ended) {
+  if (e is! ToolEntry) return false;
+  if (e.running) return true;
+  final c = e.call;
+  if (c == null) return false;
+  final b = body(c);
+  return b?['task'] == 'background' && !ended.contains(c.itemId);
+}
+
+/// A finished turn: its thinking and tool rows behind one line at the first one's place.
+List<Entry> _foldTurn(
+  List<Entry> seg,
+  Item end,
+  Json? endBody,
+  int? start,
+  Set<String> ended,
+  Json? Function(Item) body,
+) {
+  final work = [
+    for (final e in seg)
+      if (_isWork(e) && !_keepsOut(e, body, ended)) e,
+  ];
+  if (work.isEmpty) return seg;
+  final tools = work.whereType<ToolEntry>().length;
+  final failed = work.whereType<ToolEntry>().where((t) => t.failed).length;
+  final ms =
+      (endBody?['duration_ms'] as num?)?.toInt() ??
+      (start == null ? null : end.ts - start);
+  final time = ms == null ? '' : ' for ${duration(ms)}';
+  final label = tools == 0
+      ? 'thought$time'
+      : 'worked$time · $tools ${tools == 1 ? 'tool' : 'tools'}'
+            '${failed > 0 ? ' · $failed failed' : ''}';
+  final fold = FoldEntry(work, label, failed: failed);
+  final out = <Entry>[];
+  var placed = false;
+  for (final e in seg) {
+    if (work.contains(e)) {
+      if (!placed) out.add(fold);
+      placed = true;
+    } else {
+      out.add(e);
+    }
+  }
+  return out;
+}
+
+/// The turn still running: each run of consecutive finished tool calls folds all but its last
+/// call into a sentence (`Ran 3 commands, read 2 files`) when that hides two or more.
+List<Entry> _foldRuns(
+  List<Entry> seg,
+  Json? Function(Item) body,
+  Set<String> ended,
+) {
+  final out = <Entry>[];
+  var run = <ToolEntry>[];
+  void flush() {
+    if (run.length >= 3) {
+      final folded = run.sublist(0, run.length - 1);
+      final names = [
+        for (final t in folded)
+          toolLine(
+            call: t.call,
+            callBody: t.call == null ? null : body(t.call!),
+          ).name,
+      ];
+      final failed = folded.where((t) => t.failed).length;
+      out.add(FoldEntry(folded, runSentence(names), failed: failed));
+      out.add(run.last);
+    } else {
+      out.addAll(run);
+    }
+    run = <ToolEntry>[];
+  }
+
+  for (final e in seg) {
+    if (e is ToolEntry && !_keepsOut(e, body, ended)) {
+      run.add(e);
+    } else {
+      flush();
+      out.add(e);
+    }
+  }
+  flush();
+  return out;
+}
+
+/// Call ids whose background task ended (an `Event` with `task.call`).
+Set<String> endedTasksOf(List<Item> items, Json? Function(Item) body) => {
+  for (final i in items)
+    if (i.kind == ItemKind.event)
+      if (body(i)?['task'] case {'call': final String c}) c,
+};
+
+/// The working line's verb from the last item: `Thinking`, `Writing`, `Running a tool`.
+String workingVerb(List<Item> items) {
+  for (final i in items.reversed) {
+    switch (i.kind) {
+      case ItemKind.thinking:
+        return 'Thinking';
+      case ItemKind.assistantMessage:
+        return 'Writing';
+      case ItemKind.toolCall || ItemKind.toolResult:
+        return 'Running a tool';
+      case ItemKind.userMessage:
+        return 'Thinking';
+      default:
+        continue;
+    }
+  }
+  return 'Working';
+}
+
+/// Unix ms of the last user message (the working line counts from it).
+int? lastUserTs(List<Item> items) {
+  for (final i in items.reversed) {
+    if (i.kind == ItemKind.userMessage) return i.ts;
+  }
+  return null;
+}
