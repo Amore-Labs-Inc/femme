@@ -44,8 +44,9 @@ restart() {  # hs pane uuid
   herdr --session "$hs" pane wait-output "$pane" --regex '\$ ?$' --source visible --lines 3 --timeout 30000 >/dev/null \
     || { say "$hs $pane: no shell prompt after /exit"; return 1; }
   herdr --session "$hs" pane run "$pane" "claude --resume $uuid" >/dev/null
-  herdr --session "$hs" agent wait "$pane" --until idle --until done --timeout 120000 >/dev/null \
-    || { say "$hs $pane: not back after resume"; return 1; }
+  # herdr lists the agent again only once it has detected it: poll, `agent wait` errors until then
+  for _ in $(seq 1 24); do sleep 5; case "$(status "$hs" "$pane")" in idle|done|working) return 0 ;; esac; done
+  say "$hs $pane: not back after resume"; return 1
 }
 
 todo=$(panes)
