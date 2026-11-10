@@ -255,7 +255,8 @@ fn ask_user_question_becomes_a_question_not_a_tool_call() {
         q.options
     );
     assert!(!q.multi && q.free_text);
-    // Blocked while the question is open, working again once answered, in that order
+    // Blocked from the CLI's `requires_action` (the line before its request) while the question
+    // is open, working again once answered, in that order
     let st: Vec<&str> = k
         .iter()
         .filter(|x| x.starts_with("status:") || *x == "asked" || *x == "resolved")
@@ -265,8 +266,8 @@ fn ask_user_question_becomes_a_question_not_a_tool_call() {
         st,
         [
             "status:Working",
-            "asked",
             "status:Blocked",
+            "asked",
             "resolved",
             "status:Working",
             "status:Idle"

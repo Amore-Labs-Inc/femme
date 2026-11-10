@@ -203,6 +203,9 @@
     }
   },
   {
+    "Status": "Blocked"
+  },
+  {
     "QuestionAsked": {
       "item_id": "toolu_016h8PFN6VQ4cbAyRzfLGaYg:ask",
       "q": {
@@ -216,9 +219,6 @@
         "free_text": true
       }
     }
-  },
-  {
-    "Status": "Blocked"
   },
   {
     "QuestionResolved": {

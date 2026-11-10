@@ -1342,3 +1342,39 @@ fn a_permission_description_that_asks_is_the_question_itself() {
     let ev = s.feed(can_use_tool("rb", "tb", "Bash", json!({"command":"ls"})));
     assert_eq!(prompt(&ev), "Allow Bash?");
 }
+
+// ---- the CLI's own "requires_action" ----------------------------------------------------------------
+
+fn state(s: &str) -> Value {
+    json!({"type":"system","subtype":"session_state_changed","state":s,"sdk_host_only":true})
+}
+
+/// `requires_action` without a request of ours (a wait FEMME cannot see) still shows the session
+/// waiting, until the CLI's next state; before a request of ours it just comes a line early.
+#[test]
+fn requires_action_blocks_until_the_next_state() {
+    let mut s = S::ready();
+    let u = s.send("go", PromptHow::Queue).unwrap();
+    s.start(&u);
+    assert_eq!(s.d.status(), AgentStatus::Working);
+    let ev = s.feed(state("requires_action"));
+    assert_eq!(statuses(&ev), [AgentStatus::Blocked]);
+    let ev = s.feed(state("running"));
+    assert_eq!(statuses(&ev), [AgentStatus::Working]);
+    // the usual order: requires_action, our request, running once answered, the echo
+    s.feed(state("requires_action"));
+    s.feed(can_use_tool("rb", "tb", "Bash", json!({"command":"ls"})));
+    assert_eq!(s.d.status(), AgentStatus::Blocked);
+    s.d.answer("rb", &Answer::Option(0), &mut s.out).unwrap();
+    let echo = s.wrote().remove(0);
+    assert_eq!(
+        statuses(&s.feed(state("running"))),
+        [],
+        "still ours to clear"
+    );
+    assert_eq!(statuses(&s.feed(echo)), [AgentStatus::Working]);
+    // an exit while it waits is not a wait any more
+    s.feed(state("requires_action"));
+    s.d.on_exit(Some(0));
+    assert_eq!(s.d.status(), AgentStatus::Idle);
+}

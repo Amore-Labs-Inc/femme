@@ -48,7 +48,8 @@
 //!   knows the CLI is busy. `session_state_changed idle` means nothing is running or queued: it
 //!   clears commands the CLI reported and never ended. A message of ours that is lost this way,
 //!   cancelled by the CLI, or still unstarted when the process exits, is announced with
-//!   `PromptDropped`.
+//!   `PromptDropped`. `session_state_changed requires_action` (the CLI waits for someone) is
+//!   `Blocked` until its next state, also when no request of ours says what it waits for.
 //! * Questions after a restart: the answers the daemon persisted ([`Driver::pending_answers`],
 //!   [`crate::Attach::answers`]) are applied to the replayed `can_use_tool`. A request whose answer
 //!   is complete is not asked again (no `QuestionAsked`, never `Blocked`), one that is part way
@@ -227,6 +228,13 @@ pub struct ClaudeDriver {
     subs: BTreeMap<String, Thread>,
     /// Tasks the CLI reported (`task_started`) and has not ended, by task id.
     tasks: BTreeMap<String, Task>,
+    /// The CLI's last `session_state_changed` was `requires_action`: it waits for someone, also
+    /// when no request of ours says what for (`Blocked` until its next state).
+    waits: bool,
+    /// A request of ours was opened since that `requires_action`.
+    waits_ours: bool,
+    /// A wait without a request of ours was logged (once per driver).
+    waits_logged: bool,
 }
 
 /// A running task (a Bash command or a subagent) of a tool call.
@@ -274,6 +282,9 @@ impl ClaudeDriver {
             parent: None,
             subs: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            waits: false,
+            waits_ours: false,
+            waits_logged: false,
         }
     }
 
@@ -512,10 +523,11 @@ impl ClaudeDriver {
         }
     }
 
-    /// Status follows from state: blocked while a question is unanswered, working while a turn
-    /// or a queued message exists, else idle. Called at the end of every line.
+    /// Status follows from state: blocked while a question is unanswered or the CLI says it waits
+    /// for action, working while a turn or a queued message exists, else idle. Called at the end
+    /// of every line.
     fn sync(&mut self, ev: &mut Vec<AgentEvent>) {
-        let want = if self.pending.values().any(|p| !p.resolved) {
+        let want = if self.waits || self.pending.values().any(|p| !p.resolved) {
             AgentStatus::Blocked
         } else if self.turn || !self.cmds.is_empty() {
             AgentStatus::Working
@@ -576,18 +588,41 @@ impl ClaudeDriver {
                         .or_else(|| v["compactMetadata"]["preTokens"].as_u64()),
                 });
             }
-            // nothing is running and nothing is queued: a command the CLI reported and never ended
-            // (it has no terminal frame, or ours was dropped silently) would keep `busy()` true forever
-            "session_state_changed" if v["state"] == "idle" => self.end_cmds(
-                true,
-                Some(DropReason::Refused(
-                    "claude went idle without running it".into(),
-                )),
-                ev,
-            ),
+            "session_state_changed" => {
+                let state = v["state"].as_str().unwrap_or("");
+                self.cli_state(state);
+                // nothing is running and nothing is queued: a command the CLI reported and never
+                // ended (it has no terminal frame, or ours was dropped silently) would keep `busy()`
+                // true forever
+                if state == "idle" {
+                    self.end_cmds(
+                        true,
+                        Some(DropReason::Refused(
+                            "claude went idle without running it".into(),
+                        )),
+                        ev,
+                    );
+                }
+            }
             // hooks, tasks, thinking_tokens, other session states, ...: nothing the transcript needs
             _ => {}
         }
+    }
+
+    /// The CLI's session state. `requires_action` comes just before each request it sends us
+    /// (`can_use_tool`, `elicitation`), and also for a wait no request of ours shows (a dialog kind
+    /// we never declared): `Blocked` either way, until the next state. A wait that ended without a
+    /// request of ours is logged, once.
+    fn cli_state(&mut self, state: &str) {
+        if self.waits && !self.waits_ours && !self.waits_logged {
+            self.waits_logged = true;
+            tracing::warn!(
+                session = self.sid.as_deref().unwrap_or(""),
+                "claude waited for action without asking FEMME anything"
+            );
+        }
+        self.waits = state == "requires_action";
+        self.waits_ours = false;
     }
 
     fn init(&mut self, v: &Value, ev: &mut Vec<AgentEvent>) {
@@ -1391,6 +1426,7 @@ impl ClaudeDriver {
         }
         let sent = parts.iter().any(|p| p.answer == Some(Answer::Cancel))
             || parts.iter().all(|p| p.answer.is_some());
+        self.waits_ours = true;
         for p in &parts {
             self.off.item_open(&p.item_id, offset);
             if p.answer.is_none() {
@@ -1807,6 +1843,7 @@ impl Driver for ClaudeDriver {
         self.end_cmds(false, Some(DropReason::Exited), &mut ev);
         drop_held(&mut self.queue, &DropReason::Exited, &mut ev);
         self.awaiting_init = false;
+        self.waits = false;
         set_status(&mut self.status, AgentStatus::Idle, &mut ev);
         ev.push(AgentEvent::Exited { code });
         ev
