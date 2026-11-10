@@ -5,19 +5,19 @@ import 'femme.dart';
 import 'theme.dart';
 
 void openChat(BuildContext context, String sid) => Navigator.of(context)
-    .push(CupertinoPageRoute<void>(builder: (_) => ChatPlaceholder(sid: sid)));
+    .push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
 
 /// Placeholder chat screen: the session's items as plain lines and a one-line composer. Holds
 /// the session's subscription while it is shown.
-class ChatPlaceholder extends StatefulWidget {
-  const ChatPlaceholder({super.key, required this.sid});
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key, required this.sid});
   final String sid;
 
   @override
-  State<ChatPlaceholder> createState() => _ChatPlaceholderState();
+  State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatPlaceholderState extends State<ChatPlaceholder> {
+class _ChatScreenState extends State<ChatScreen> {
   final _text = TextEditingController();
   late final _store = Femme.of(context).store;
   bool _subscribed = false;

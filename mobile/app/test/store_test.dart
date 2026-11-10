@@ -188,8 +188,8 @@ void main() {
     expect(store.textOf(item()), 'Hello');
     store.apply(const Delta(sid, 'm', 5, ' wörld'));
     expect(store.textOf(item()), 'Hello wörld');
-    // Offsets count characters: "Hello wörld" is 11.
-    store.apply(const Delta(sid, 'm', 11, '!'));
+    // Offsets count UTF-8 bytes: "Hello wörld" is 12 (ö is two).
+    store.apply(const Delta(sid, 'm', 12, '!'));
     expect(store.textOf(item()), 'Hello wörld!');
     // A resend from an earlier offset replaces the tail.
     store.apply(const Delta(sid, 'm', 5, ', you'));

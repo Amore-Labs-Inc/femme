@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../net/models.dart';
 
 /// One session's transcript as the store holds it: items by id, the rev cursor, streaming text
@@ -17,9 +19,10 @@ class Transcript {
   bool olderUnknown = true;
   bool loadingOlder = false;
 
-  /// Streaming text per in-progress item id, and its length in characters (runes).
-  final _deltas = <String, StringBuffer>{};
-  final _deltaLen = <String, int>{};
+  /// Streaming text per in-progress item id, as UTF-8 bytes: `Delta.offset` counts bytes of
+  /// the daemon's accumulated text (headless.rs: `acc.len()`), and its decoded text.
+  final _deltas = <String, List<int>>{};
+  final _deltaText = <String, String>{};
 
   List<Item>? _sorted;
 
@@ -40,14 +43,14 @@ class Transcript {
     if (old != null && old.rev > item.rev) return false;
     byId[item.itemId] = item;
     _deltas.remove(item.itemId);
-    _deltaLen.remove(item.itemId);
+    _deltaText.remove(item.itemId);
     _sorted = null;
     return true;
   }
 
   bool remove(String itemId) {
     _deltas.remove(itemId);
-    _deltaLen.remove(itemId);
+    _deltaText.remove(itemId);
     _sorted = null;
     return byId.remove(itemId) != null;
   }
@@ -55,39 +58,38 @@ class Transcript {
   void clear() {
     byId.clear();
     _deltas.clear();
-    _deltaLen.clear();
+    _deltaText.clear();
     _sorted = null;
     rev = null;
     nextBefore = null;
     olderUnknown = true;
   }
 
-  /// Applies a `Delta`: [offset] is the number of characters already applied. A resent delta
-  /// (offset inside the buffer) cuts the buffer back first; one past its end (a gap) is dropped
-  /// and the item's next row fills it in. Returns whether the text changed.
+  /// Applies a `Delta`: [offset] is the UTF-8 byte offset the daemon appended at. A resent
+  /// delta (offset inside the buffer) cuts the buffer back first; one past its end (a gap) is
+  /// dropped and the item's next row fills it in; one inside a character is ignored. Returns
+  /// whether the text changed.
   bool applyDelta(String itemId, int offset, String text) {
     var buf = _deltas[itemId];
-    var len = _deltaLen[itemId] ?? 0;
     if (buf == null) {
       // The body's text, not the preview: offsets count from the start of the full text.
       final seed = byId[itemId]?.bodyJson?['text'] as String? ?? '';
-      buf = StringBuffer(seed);
-      len = seed.runes.length;
+      buf = utf8.encode(seed).toList();
     }
-    if (offset > len) return false;
-    if (offset < len) {
-      final kept = String.fromCharCodes(buf.toString().runes.take(offset));
-      buf = StringBuffer(kept);
-      len = offset;
+    if (offset > buf.length) return false;
+    if (offset < buf.length) {
+      // a continuation byte at the cut: the offset is inside a character
+      if (buf[offset] & 0xC0 == 0x80) return false;
+      buf.length = offset;
     }
-    buf.write(text);
+    buf.addAll(utf8.encode(text));
     _deltas[itemId] = buf;
-    _deltaLen[itemId] = len + text.runes.length;
+    _deltaText[itemId] = utf8.decode(buf, allowMalformed: true);
     return true;
   }
 
   /// The text to show for [item]: its streaming buffer while one is open, else its body's text.
-  String textOf(Item item) => _deltas[item.itemId]?.toString() ?? item.text;
+  String textOf(Item item) => _deltaText[item.itemId] ?? item.text;
 
   bool streaming(String itemId) => _deltas.containsKey(itemId);
 }
