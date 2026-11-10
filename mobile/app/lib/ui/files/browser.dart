@@ -1,0 +1,336 @@
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
+
+import '../../net/rpc.dart';
+import '../../state/files.dart';
+import '../theme.dart';
+import 'share.dart';
+import 'viewer.dart';
+
+/// The session folder, one folder at a time: a breadcrumb, the folder's rows, pull to refresh.
+/// Back (the bar's `‹` or the swipe) climbs a folder before it leaves the screen.
+class FilesBrowser extends StatefulWidget {
+  const FilesBrowser({
+    super.key,
+    required this.tree,
+    required this.cwd,
+    required this.rootName,
+    this.initialDir = '',
+  });
+
+  final FilesTree tree;
+
+  /// The session's folder on the box (for "Copy path").
+  final String cwd;
+
+  /// The first crumb: the session folder's name.
+  final String rootName;
+
+  final String initialDir;
+
+  @override
+  State<FilesBrowser> createState() => _FilesBrowserState();
+}
+
+class _FilesBrowserState extends State<FilesBrowser> {
+  late String _dir = widget.initialDir;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.tree.ensure(_dir);
+  }
+
+  void _go(String dir) {
+    if (dir == _dir) return;
+    HapticFeedback.selectionClick();
+    setState(() => _dir = dir);
+    widget.tree.ensure(dir);
+  }
+
+  void _open(FsEntry e) {
+    final path = joinPath(_dir, e.name);
+    if (path == null) return;
+    if (e.dir) return _go(path);
+    HapticFeedback.selectionClick();
+    Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        builder: (_) =>
+            FileViewerPage(tree: widget.tree, path: path, len: e.len),
+      ),
+    );
+  }
+
+  void _actions(BuildContext rowContext, FsEntry e) {
+    final path = joinPath(_dir, e.name);
+    if (path == null) return;
+    HapticFeedback.selectionClick();
+    showCupertinoModalPopup<void>(
+      context: context,
+      builder: (c) => CupertinoActionSheet(
+        title: Text(e.name),
+        message: Text(e.dir ? 'Folder' : humanSize(e.len)),
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.pop(c);
+              _open(e);
+            },
+            child: const Text('Open'),
+          ),
+          if (!e.dir)
+            CupertinoActionSheetAction(
+              onPressed: () {
+                Navigator.pop(c);
+                shareFile(rowContext, widget.tree, path, e.len);
+              },
+              child: const Text('Share'),
+            ),
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.pop(c);
+              copyPath(widget.cwd, path);
+            },
+            child: const Text('Copy path'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          isDefaultAction: true,
+          onPressed: () => Navigator.pop(c),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _refresh() async {
+    HapticFeedback.selectionClick();
+    await widget.tree.refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: _dir.isEmpty,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) _go(parentPath(_dir));
+    },
+    child: CupertinoPageScaffold(
+      child: ListenableBuilder(
+        listenable: widget.tree,
+        builder: (context, _) => CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
+          ),
+          slivers: [
+            CupertinoSliverNavigationBar(
+              largeTitle: const Text('Files'),
+              trailing: CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(44, 44),
+                onPressed: _refresh,
+                child: const Icon(CupertinoIcons.arrow_clockwise),
+              ),
+            ),
+            CupertinoSliverRefreshControl(onRefresh: _refresh),
+            SliverToBoxAdapter(
+              child: Crumbs(rootName: widget.rootName, dir: _dir, onTap: _go),
+            ),
+            ..._rows(context),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  List<Widget> _rows(BuildContext context) {
+    final d = widget.tree.dir(_dir);
+    final entries = d?.entries;
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    Widget fill(Widget child) => SliverFillRemaining(
+      hasScrollBody: false,
+      child: Center(
+        child: Padding(padding: const EdgeInsets.all(24), child: child),
+      ),
+    );
+    if (d?.error != null && entries == null) {
+      return [
+        fill(
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Could not list this folder.\n${d!.error}',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: muted),
+              ),
+              CupertinoButton(
+                onPressed: () => widget.tree.load(_dir),
+                child: const Text('Try again'),
+              ),
+            ],
+          ),
+        ),
+      ];
+    }
+    if (entries == null) {
+      return [fill(const CupertinoActivityIndicator())];
+    }
+    if (entries.isEmpty) {
+      return [fill(Text('Empty folder', style: TextStyle(color: muted)))];
+    }
+    return [
+      if (d?.error != null)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'Refresh failed: ${d!.error}',
+              style: const TextStyle(color: FemmeColors.bad, fontSize: 13),
+            ),
+          ),
+        ),
+      SliverSafeArea(
+        top: false,
+        sliver: SliverList.builder(
+          itemCount: entries.length,
+          itemBuilder: (context, i) => FileRow(
+            entry: entries[i],
+            onTap: () => _open(entries[i]),
+            onMore: (rowContext) => _actions(rowContext, entries[i]),
+          ),
+        ),
+      ),
+    ];
+  }
+}
+
+/// The session folder's name, then each folder down to the one shown; a crumb makes its folder
+/// the one shown.
+class Crumbs extends StatelessWidget {
+  const Crumbs({
+    super.key,
+    required this.rootName,
+    required this.dir,
+    required this.onTap,
+  });
+
+  final String rootName;
+  final String dir;
+  final ValueChanged<String> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final segs = dir.isEmpty ? const <String>[] : dir.split('/');
+    final crumbs = <(String, String)>[('', rootName)];
+    for (var i = 0; i < segs.length; i++) {
+      crumbs.add((segs.sublist(0, i + 1).join('/'), segs[i]));
+    }
+    final ink = FemmeColors.inkC.resolveFrom(context);
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    return Container(
+      height: 40,
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: ink, width: 1.2)),
+      ),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        reverse: true, // the deepest crumb stays in sight
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        itemCount: crumbs.length,
+        separatorBuilder: (_, _) =>
+            Icon(CupertinoIcons.chevron_right, size: 12, color: muted),
+        itemBuilder: (context, j) {
+          final i = crumbs.length - 1 - j;
+          final (path, label) = crumbs[i];
+          final last = i == crumbs.length - 1;
+          return CupertinoButton(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: const Size(44, 40),
+            onPressed: last ? null : () => onTap(path),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 15,
+                color: last ? ink : FemmeColors.accent,
+                fontWeight: last ? FontWeight.w600 : FontWeight.w400,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// One entry: icon, name (dot-files muted), size or chevron, and a `…` for the actions.
+class FileRow extends StatelessWidget {
+  const FileRow({
+    super.key,
+    required this.entry,
+    required this.onTap,
+    required this.onMore,
+  });
+
+  final FsEntry entry;
+  final VoidCallback onTap;
+  final void Function(BuildContext rowContext) onMore;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = FemmeColors.inkC.resolveFrom(context);
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    final hidden = isHidden(entry.name);
+    return GestureDetector(
+      onLongPress: () => onMore(context),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: FemmeColors.panelC.resolveFrom(context),
+              width: 1,
+            ),
+          ),
+        ),
+        child: CupertinoListTile(
+          onTap: onTap,
+          leading: Icon(
+            entry.dir ? CupertinoIcons.folder : CupertinoIcons.doc,
+            color: hidden ? muted : ink,
+          ),
+          title: Text(
+            entry.name,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: hidden ? muted : ink),
+          ),
+          additionalInfo: entry.dir
+              ? null
+              : Text(
+                  humanSize(entry.len),
+                  style: TextStyle(color: muted, fontSize: 13),
+                ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(36, 44),
+                onPressed: () => onMore(context),
+                child: Icon(CupertinoIcons.ellipsis, size: 20, color: muted),
+              ),
+              SizedBox(
+                width: 14,
+                child: entry.dir
+                    ? Icon(
+                        CupertinoIcons.chevron_forward,
+                        size: 14,
+                        color: muted,
+                      )
+                    : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
