@@ -78,11 +78,11 @@ payload carries `sid`, `item_id` of the pending question, the question text and 
 options, so the OS notification shows them as actions and the notification extension can send
 `AnswerQuestion` without the app in the foreground. Rate: one push per session per 10 s, as now.
 
-### 2. `Scope::Attention`
+### 2. `Scope::Attention` (not built)
 
-A subscription whose rows are only sessions whose attention changed, each with the pending
-`Item::Question` (or permission item) inlined. One stream for the Now screen instead of
-`Subscribe{Session}` per blocked session; the desktop could use it for its badge too.
+Now subscribes to `Global` plus `Session(sid)` for each blocked session, which is one small
+stream per open question. A merged scope saves nothing a phone can feel at that size; build it
+when a box has hundreds of blocked sessions at once.
 
 ### 3. Pairing, 4. WebSocket carrier
 
