@@ -73,7 +73,11 @@ class _KeysSectionState extends State<KeysSection> with Polling {
               const SizedBox(height: 8),
               Text(
                 secret,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                style: const TextStyle(
+                  fontFamily: monoFamily,
+                  fontFamilyFallback: monoFallback,
+                  fontSize: 13,
+                ),
               ),
             ],
           ),

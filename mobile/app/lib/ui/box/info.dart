@@ -83,7 +83,10 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
           title: const Text('Deployed'),
           additionalInfo: Text(
             info == null ? '—' : (info.deployed ?? 'no marker'),
-            style: const TextStyle(fontFamily: 'monospace'),
+            style: const TextStyle(
+              fontFamily: monoFamily,
+              fontFamilyFallback: monoFallback,
+            ),
           ),
         ),
         const CupertinoListTile(

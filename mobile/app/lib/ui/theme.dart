@@ -1,5 +1,12 @@
 import 'package:flutter/cupertino.dart';
 
+/// The desktop's faces, bundled (pubspec `fonts`). Body text is the platform's own font, as the
+/// HIG asks; these are for code, terminals, counters and the wordmark.
+const monoFamily = 'JetBrains Mono NL';
+const monoFallback = ['Menlo', 'Roboto Mono', 'monospace'];
+const pixelFamily = 'VT323';
+const scriptFamily = 'Kaushan Script';
+
 /// The desktop's tokens (`mobile/DESIGN.md`, visual language).
 abstract final class FemmeColors {
   static const paper = Color(0xFFFEFEFE);

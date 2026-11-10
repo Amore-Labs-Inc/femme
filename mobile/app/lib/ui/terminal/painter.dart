@@ -6,20 +6,13 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
+import '../theme.dart';
+
 import '../../net/term_models.dart';
 import 'model.dart';
 import 'palette.dart';
 
 /// `JetBrains Mono NL` when the app bundles it, else the platform's monospace.
-const monoFamily = 'JetBrains Mono NL';
-const monoFallback = [
-  'Menlo',
-  'SF Mono',
-  'Roboto Mono',
-  'Droid Sans Mono',
-  'monospace',
-  'Courier New',
-];
 const _lineHeight = 1.18;
 
 TextStyle monoStyle(double size) => TextStyle(
