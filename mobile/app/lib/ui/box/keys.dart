@@ -3,12 +3,14 @@ import 'package:flutter/services.dart';
 
 import '../../net/rpc.dart';
 import '../../state/box.dart';
+import '../../state/box_flows.dart';
 import '../femme.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'github.dart';
 import 'poll.dart';
 
-/// The board's API keys: list, add (the secret shown once), revoke.
+/// The board's API keys: list, add (the secret shown once), connect GitHub, revoke.
 class KeysSection extends StatefulWidget {
   const KeysSection({super.key});
 
@@ -19,6 +21,9 @@ class KeysSection extends StatefulWidget {
 class _KeysSectionState extends State<KeysSection> with Polling {
   List<ApiKey>? _keys;
   String? _error;
+
+  /// Each key's GitHub side (a sign-in in progress shows its code), by name.
+  Map<String, KeyGithub> _github = const {};
 
   @override
   Duration get every => const Duration(minutes: 1);
@@ -32,6 +37,7 @@ class _KeysSectionState extends State<KeysSection> with Polling {
       if (mounted) {
         setState(() {
           _keys = parseKeys(body);
+          _github = parseKeysGithub(body);
           _error = null;
         });
       }
@@ -98,6 +104,47 @@ class _KeysSectionState extends State<KeysSection> with Polling {
         ),
       );
 
+  /// A key's actions: connect GitHub (or go back to its code), revoke.
+  Future<void> _actions(ApiKey k) async {
+    final waiting = _github[k.name]?.device != null;
+    final pick = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (c) => CupertinoActionSheet(
+        title: Text(k.name),
+        message: Text('pushes as ${k.account}'),
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(c, 'github'),
+            child: Text(waiting ? 'GitHub code' : 'Connect GitHub'),
+          ),
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(c, 'revoke'),
+            child: const Text('Revoke'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(c),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (pick) {
+      case 'github':
+        await _connect(k);
+      case 'revoke':
+        await _revoke(k);
+    }
+  }
+
+  /// "connect GitHub": the device-code sheet, then the list as it is now.
+  Future<void> _connect(ApiKey k) async {
+    final key = _github[k.name] ?? KeyGithub(k.name, k.account, null, k.error);
+    await showConnectGithub(context, _req, key);
+    if (mounted) await poll();
+  }
+
   Future<void> _revoke(ApiKey k) async {
     final ok = await confirmAction(
       context,
@@ -137,11 +184,13 @@ class _KeysSectionState extends State<KeysSection> with Polling {
           CupertinoListTile(
             leading: const Icon(CupertinoIcons.lock),
             title: Text(k.name),
+            onTap: () => _actions(k),
             subtitle: Text(
               [
                 '…${k.hint}',
                 'pushes as ${k.account}',
                 if (k.created != null) '${ago(k.created!)} ago',
+                if (_github[k.name]?.device != null) 'GitHub code waiting',
                 ?k.error,
               ].join(' · '),
               maxLines: 2,

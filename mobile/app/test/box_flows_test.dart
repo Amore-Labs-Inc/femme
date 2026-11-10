@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:femme_mobile/net/rpc.dart';
 import 'package:femme_mobile/state/box_flows.dart';
 import 'package:femme_mobile/ui/box/add_account.dart';
+import 'package:femme_mobile/ui/box/github.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -56,6 +57,13 @@ Map<String, Object?> key({
 };
 
 void main() {
+  test('path segments keep a name inside its segment', () {
+    expect(pathSegment('ci-bot'), 'ci-bot');
+    expect(pathSegment('../accounts/x y'), '..%2Faccounts%2Fx%20y');
+    expect(pathSegment('é'), '%C3%A9');
+    expect(pathSegment('a?b#c'), 'a%3Fb%23c');
+  });
+
   test('login link: login.claude, or none', () {
     expect(parseLoginLink(jsonEncode(accounts(login: link))), link);
     expect(parseLoginLink(jsonEncode(accounts())), isNull);
@@ -146,6 +154,111 @@ void main() {
     });
   });
 
+  test('keys: each one\'s GitHub side', () {
+    final g = parseKeysGithub(
+      jsonEncode({
+        'keys': [
+          key(code: 'ABCD-1234'),
+          {'name': 'x', 'error': 'gh: denied'},
+          {'nameless': 1},
+        ],
+      }),
+    );
+    expect(g.keys, ['ci', 'x']);
+    expect(g['ci']!.device!.code, 'ABCD-1234');
+    expect(g['ci']!.device!.url, 'https://github.com/login/device');
+    expect(g['x']!.device, isNull);
+    expect(g['x']!.account, 'the box');
+    expect(g['x']!.error, 'gh: denied');
+    expect(parseKeysGithub('[]'), isEmpty);
+    expect(parseKeysGithub('oops'), isEmpty);
+  });
+
+  group('GithubFlow', () {
+    test('code, then connected once the box settles it', () async {
+      final b = FakeBoard()
+        ..on('POST /api/keys/ci/github', 200, [key(code: 'ABCD-1234')])
+        ..on('GET /api/keys', 200, [key(code: 'ABCD-1234')])
+        ..on('GET /api/keys', 200, [key(account: 'Ada (ada)')]);
+      final f = GithubFlow(b.req, 'ci');
+      await f.start(accountBefore: 'the box');
+      expect(f.phase, GithubPhase.code);
+      expect(f.device!.code, 'ABCD-1234');
+      expect(f.polling, isTrue);
+      await f.poll();
+      expect(f.phase, GithubPhase.code);
+      await f.poll();
+      expect(f.phase, GithubPhase.connected);
+      expect(f.account, 'Ada (ada)');
+      expect(f.polling, isFalse);
+      await f.poll(); // no more reads
+      expect(b.sent.map((s) => s.$2), [
+        '/api/keys/ci/github',
+        '/api/keys',
+        '/api/keys',
+      ]);
+      expect(b.sent.first.$3, '{}');
+    });
+
+    test('no code yet: waits, then shows it', () async {
+      final b = FakeBoard()
+        ..on('POST /api/keys/ci/github', 200, [key()])
+        ..on('GET /api/keys', 200, [key(code: 'WXYZ-9876')]);
+      final f = GithubFlow(b.req, 'ci');
+      await f.start(accountBefore: 'the box');
+      expect(f.phase, GithubPhase.waiting);
+      await f.poll();
+      expect(f.phase, GithubPhase.code);
+    });
+
+    test('a failed sign-in, a revoked key, a refused start', () async {
+      final b = FakeBoard()
+        ..on('POST /api/keys/ci/github', 200, [key(code: 'ABCD-1234')])
+        ..on('GET /api/keys', 200, [key(error: 'gh: expired')]);
+      final f = GithubFlow(b.req, 'ci');
+      await f.start();
+      await f.poll();
+      expect(f.phase, GithubPhase.failed);
+      expect(f.error, 'gh: expired');
+
+      final c = FakeBoard()
+        ..on('POST /api/keys/ci/github', 200, [key(code: 'ABCD-1234')])
+        ..on('GET /api/keys', 200, []);
+      final g = GithubFlow(c.req, 'ci');
+      await g.start();
+      await g.poll();
+      expect(g.phase, GithubPhase.failed);
+      expect(g.error, 'the key is gone');
+
+      final d = FakeBoard()
+        ..on('POST /api/keys/ci/github', 404, {'error': 'not found'});
+      final h = GithubFlow(d.req, 'ci');
+      await h.start();
+      expect(h.phase, GithubPhase.failed);
+      expect(h.error, 'not found');
+    });
+
+    test(
+      'cancel deletes the sign-in, and a late read changes nothing',
+      () async {
+        final b = FakeBoard()
+          ..on('DELETE /api/keys/a%20b/github', 200, [])
+          ..on('GET /api/keys', 200, []);
+        final f = GithubFlow(b.req, 'a b')
+          ..resume(
+            const GithubDevice('ABCD-1234', 'https://github.com/login/device'),
+            'the box',
+          );
+        expect(f.phase, GithubPhase.code);
+        await f.cancel();
+        expect(f.phase, GithubPhase.cancelled);
+        expect(b.sent.single, ('DELETE', '/api/keys/a%20b/github', null));
+        await f.poll();
+        expect(f.phase, GithubPhase.cancelled);
+      },
+    );
+  });
+
   testWidgets('add account sheet: link, code, Add account', (t) async {
     final b = FakeBoard()
       ..on('POST /api/accounts/claude/login', 200, accounts(login: link))
@@ -162,5 +275,29 @@ void main() {
       '/api/accounts/claude/code',
       '{"code":"abc#def"}',
     ));
+  });
+
+  testWidgets('GitHub sheet shows the code and cancels', (t) async {
+    final b = FakeBoard()
+      ..on('POST /api/keys/ci/github', 200, [key(code: 'ABCD-1234')])
+      ..on('GET /api/keys', 200, [key(code: 'ABCD-1234')])
+      ..on('DELETE /api/keys/ci/github', 200, [key()]);
+    await t.pumpWidget(
+      CupertinoApp(
+        home: GithubSheet(
+          req: b.req,
+          keyGithub: const KeyGithub('ci', 'the box', null, null),
+        ),
+      ),
+    );
+    await t.pump();
+    expect(find.text('ABCD-1234'), findsOneWidget);
+    expect(find.text('Open github.com'), findsOneWidget);
+    await t.pump(const Duration(seconds: 3));
+    expect(b.sent.last.$2, '/api/keys');
+    await t.tap(find.text('Cancel'));
+    await t.pump();
+    expect(b.sent.last, ('DELETE', '/api/keys/ci/github', null));
+    await t.pumpWidget(const SizedBox());
   });
 }
