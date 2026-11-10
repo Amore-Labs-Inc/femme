@@ -1485,12 +1485,18 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::Prompt { text, reply, .. } => {
-                    if super::model_switch(&text).is_some_and(|m| super::is_gateway(Some(&m))) {
-                        let why =
-                            "a herdr pane's Claude cannot move to DeepSeek: start a FEMME chat";
-                        let _ = reply.send(Err(CoreError::Bad(why.into())));
-                        continue;
-                    }
+                    // the TUI's own `/model fable` may name an older Fable than the daemon's
+                    // table: the pane gets the full id, which every CLI takes as typed
+                    let text = match super::model_switch(&text) {
+                        Some(m) if super::is_gateway(Some(&m)) => {
+                            let why =
+                                "a herdr pane's Claude cannot move to DeepSeek: start a FEMME chat";
+                            let _ = reply.send(Err(CoreError::Bad(why.into())));
+                            continue;
+                        }
+                        Some(m) => format!("/model {m}"),
+                        None => text,
+                    };
                     let r = herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &text])
                         .await
                         .map_err(|e| match e {
@@ -2275,7 +2281,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
     }
 
     /// A `herdr` stand-in: `agent read` prints `<dir>/screen`, `pane send-keys` logs to
-    /// `<dir>/keys`, `agent prompt` is refused as blocked.
+    /// `<dir>/keys`, `agent prompt` logs to `<dir>/prompts` once `<dir>/unblocked` exists and is
+    /// refused as blocked before.
     fn fake_herdr(dir: &Path) -> String {
         let bin = dir.join("herdr");
         let script = format!(
@@ -2283,7 +2290,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
              case \"$1 $2\" in\n\
              \"agent read\") cat {d}/screen ;;\n\
              \"pane send-keys\") echo \"$3 $4\" >> {d}/keys ;;\n\
-             \"agent prompt\") echo agent_blocked; exit 1 ;;\n\
+             \"agent prompt\") [ -e {d}/unblocked ] && echo \"$3 $4\" >> {d}/prompts || {{ echo agent_blocked; exit 1; }} ;;\n\
              *) exit 1 ;;\nesac\n",
             d = dir.display()
         );
@@ -2369,6 +2376,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(std::fs::read_to_string(dir.path().join("keys"))
             .unwrap()
             .ends_with("wA:p1 esc\n"));
+    }
+
+    /// The TUI's own `fable` alias may lag the daemon's table: the pane gets the full id.
+    #[tokio::test]
+    async fn a_model_alias_reaches_the_pane_as_the_full_id() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("unblocked"), "").unwrap();
+        let bin = fake_herdr(dir.path());
+        let mut tails = HashMap::new();
+        let mut working = parse_panes("default", BLOCKED);
+        working[0].status = "working".into();
+        sync(&d, &bin, &working, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        let head = d.sessions.head(sid).unwrap();
+        head.prompt("/model fable", PromptHow::Queue).await.unwrap();
+        head.prompt("hello", PromptHow::Queue).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompts")).unwrap(),
+            "wA:p1 /model claude-fable-5-2\nwA:p1 hello\n"
+        );
     }
 
     #[tokio::test]
