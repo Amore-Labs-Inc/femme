@@ -1,0 +1,9 @@
+[Unit]
+Description=FEMME: restart every herdr pane's Claude that runs an older binary than the current one (after the 00:45 upgrade)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/femme/server/pane-restart.sh
+Nice=10
+TimeoutStartSec=5h

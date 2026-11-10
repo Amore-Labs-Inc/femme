@@ -167,6 +167,10 @@ for u in $units; do cp "server/systemd/$u.service" ~/.config/systemd/user/; done
 # labelled box-health) when disk, load or swap run high or a recording leaks its desktop (server/box-health.sh).
 cp server/systemd/femme-box-health.service server/systemd/femme-box-health.timer ~/.config/systemd/user/
 units="$units femme-box-health.timer"
+# 01:15: every herdr pane's Claude that still runs an older binary than the night's upgrade is restarted
+# in place (`/exit`, `claude --resume`) once it has sat idle (server/pane-restart.sh).
+cp server/systemd/femme-pane-restart.service server/systemd/femme-pane-restart.timer ~/.config/systemd/user/
+units="$units femme-pane-restart.timer"
 systemctl --user daemon-reload
 # femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
 [ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
