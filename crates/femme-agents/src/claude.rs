@@ -1356,8 +1356,7 @@ impl ClaudeDriver {
                     ["Approve", "Keep planning"],
                 )
             } else {
-                let what = title.unwrap_or(tool);
-                (format!("Allow {what}?"), ["Allow", "Deny"])
+                (allow_prompt(title.unwrap_or(tool)), ["Allow", "Deny"])
             };
             let labels: Vec<String> = options.iter().map(|s| (*s).to_owned()).collect();
             parts.push(Part {
@@ -1825,6 +1824,17 @@ fn artifact_link(input: &Value, output: &str, data: &Value) -> Option<ArtifactLi
         version: data["seq"].as_u64(),
         updated: data["updated"].as_bool() == Some(true),
     })
+}
+
+/// The question of a permission ask about `what` (its title, description or tool name). A text
+/// that already asks (the sandbox's "Allow network connection to example.com?") is the question.
+fn allow_prompt(what: &str) -> String {
+    let what = what.trim();
+    if what.ends_with('?') {
+        what.to_owned()
+    } else {
+        format!("Allow {what}?")
+    }
 }
 
 fn hidden(name: &str) -> bool {

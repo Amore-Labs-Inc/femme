@@ -1309,3 +1309,30 @@ fn a_prompt_with_an_id_is_written_held_and_dropped_under_it() {
         "{ev:?}"
     );
 }
+
+// ---- permission prompts read as one question ------------------------------------------------------
+
+/// The sandbox asks for a host with a description that is already the question (claude 2.1.319's
+/// `createSandboxAskCallback`); a tool without one is asked about by name.
+#[test]
+fn a_permission_description_that_asks_is_the_question_itself() {
+    let mut s = S::ready();
+    let u = s.send("fetch", PromptHow::Queue).unwrap();
+    s.start(&u);
+    let sandbox = json!({"type":"control_request","request_id":"rn","request":{
+        "subtype":"can_use_tool","tool_name":"SandboxNetworkAccess","display_name":"SandboxNetworkAccess",
+        "input":{"host":"example.com"},"tool_use_id":"tn",
+        "description":"Allow network connection to example.com?"}});
+    let ev = s.feed(sandbox);
+    let prompt = |ev: &[AgentEvent]| {
+        ev.iter()
+            .find_map(|e| match e {
+                AgentEvent::QuestionAsked { q, .. } => Some(q.prompt.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(prompt(&ev), "Allow network connection to example.com?");
+    let ev = s.feed(can_use_tool("rb", "tb", "Bash", json!({"command":"ls"})));
+    assert_eq!(prompt(&ev), "Allow Bash?");
+}
