@@ -82,6 +82,7 @@ class _FemmeAppState extends State<FemmeApp> {
       boxWatch: _boxWatch,
       child: CupertinoApp(
         title: 'FEMME',
+        debugShowCheckedModeBanner: false,
         theme: femmeTheme(brightness),
         home: widget.prefs.paired
             ? const Shell()
