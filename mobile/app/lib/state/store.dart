@@ -358,7 +358,12 @@ class Store extends ChangeNotifier {
         s.status != SessionStatus.closed,
   );
 
+  /// The sessions the lists show: live ones, as the desktop's sidebar (a closed row stays until
+  /// retention tombstones it).
+  Iterable<Session> get live => sessions.values.where(
+    (s) => s.closed == null && s.status != SessionStatus.closed,
+  );
+
   List<Session> _sorted(bool Function(Session) where) =>
-      sessions.values.where(where).toList()
-        ..sort((a, b) => b.rev.compareTo(a.rev));
+      live.where(where).toList()..sort((a, b) => b.rev.compareTo(a.rev));
 }
