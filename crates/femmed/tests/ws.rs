@@ -227,3 +227,86 @@ async fn a_revoked_phone_is_cut_off() {
     r.d.store.write(|tx| tx.revoke_device(phone.id)).unwrap();
     assert!(r.connect(Some(TOKEN)).await.is_err(), "revoked: refused");
 }
+
+/// Sends `req` on the ctrl stream and gives back its `result`.
+async fn ask(ws: &mut Socket, req: Value) -> Value {
+    let op = Id::new().to_string();
+    let msg = json!({"s": 1, "m": {"Req": {"op": op, "req": req}}});
+    ws.send(text(msg)).await.unwrap();
+    loop {
+        let m = next(ws).await;
+        if m["s"] == 1 && m["m"]["Resp"]["op"] == op {
+            return m["m"]["Resp"]["result"].clone();
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_phone_registers_for_pushes() {
+    let r = rig().await;
+    let mut ws = r.connect(Some(TOKEN)).await.expect("connects");
+    hello(&mut ws).await;
+    let phone =
+        r.d.store
+            .read(femme_store::auth::list_devices)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.name == "phone")
+            .unwrap();
+    let rows = || r.d.store.read(femme_store::push::push_list).unwrap();
+    let muted = Id::new();
+    let register = |token: &str| {
+        json!({"PushRegister": {"platform": "Ntfy", "token": token, "rules": {
+            "blocked": true, "done": false, "muted": [muted.to_string()], "quiet": [23, 7]}}})
+    };
+
+    assert_eq!(
+        ask(&mut ws, register("femme-phone-1")).await,
+        json!({"Ok": "Ok"})
+    );
+    let got = rows();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].device, phone.id);
+    assert_eq!(got[0].platform, femme_proto::rpc::PushPlatform::Ntfy);
+    assert_eq!(got[0].token, "femme-phone-1");
+    assert_eq!(
+        got[0].rules,
+        femme_proto::rpc::PushRules {
+            blocked: true,
+            done: false,
+            muted: vec![muted],
+            quiet: Some((23, 7)),
+        }
+    );
+
+    // the phone's new topic replaces its old one
+    assert_eq!(
+        ask(&mut ws, register("femme-phone-2")).await,
+        json!({"Ok": "Ok"})
+    );
+    let tokens: Vec<String> = rows().into_iter().map(|p| p.token).collect();
+    assert_eq!(tokens, ["femme-phone-2"]);
+
+    // unregistering: gone, and again is still fine
+    let unregister = json!({"PushUnregister": {"token": "femme-phone-2"}});
+    assert_eq!(ask(&mut ws, unregister.clone()).await, json!({"Ok": "Ok"}));
+    assert!(rows().is_empty());
+    assert_eq!(ask(&mut ws, unregister).await, json!({"Ok": "Ok"}));
+
+    // APNs has no relay yet; a topic ntfy would not take is refused
+    let apns = json!({"PushRegister": {"platform": "Apns", "token": "abc",
+        "rules": {"blocked": true, "done": true, "muted": [], "quiet": null}}});
+    let res = ask(&mut ws, apns).await;
+    assert_eq!(res["Err"]["code"], "Unsupported", "{res}");
+    let res = ask(&mut ws, register("no/slashes")).await;
+    assert_eq!(res["Err"]["code"], "Bad", "{res}");
+    assert!(rows().is_empty());
+
+    // a revoked phone loses its registration
+    assert_eq!(
+        ask(&mut ws, register("femme-phone-3")).await,
+        json!({"Ok": "Ok"})
+    );
+    r.d.store.write(|tx| tx.revoke_device(phone.id)).unwrap();
+    assert!(rows().is_empty());
+}
