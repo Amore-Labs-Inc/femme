@@ -137,6 +137,38 @@ context bar, permission mode, cwd, agent sid, close/end).
 - Appearance: system / light / dark; text size follows the OS.
 - Diagnostics: link, round-trip, last error, "send logs".
 
+## What the neighbours do (and what FEMME takes from them)
+
+Looked at on 2026-11-10: the herdr app (herdr.dev/app, plus the third-party herdrup / Herdr
+Mobile / Sherpr / Heeler clients), T3 Code's phone client, and the Claude app's Code tab
+(Remote Control) with the companions around it (Happy Coder, Omnara, VibeTunnel).
+
+| | herdr app | T3 Code | Claude Code (Code tab) | Happy Coder |
+|---|---|---|---|---|
+| home | inbox: needs you → done → working → idle | unified inbox across environments | sessions list | sessions list |
+| pairing | SSH / Tailscale profiles, no account | `npx t3 pair` → one-time token + QR; or a managed relay | `claude remote-control` prints a QR | QR → shared secret, E2E relay |
+| answering | in the real terminal (type, paste a screenshot, speak) | chat + diff review (Approve / Request changes) | permission prompt in the chat; Bypass never offered | Allow / Deny with details, "remember for this session" |
+| push | needs input, stopped, finished | lock-screen summary of what needs attention | done or needs a decision; two toggles | status, done, permission, question; deep links |
+| terminal | the agent's own, with a keys row | Esc + Ctrl keys | — | — |
+| complaints | — | — | prompts not rendering on iOS, no pushes, no Approve/Deny on the push itself | — |
+
+Taken into FEMME mobile:
+
+- **Now = inbox in that order**: needs you, done, working, idle (herdr, T3). A question's options
+  sit on the card; one tap answers (nobody else does this on the home screen).
+- **Push only for what changes what you do next** (needs input, stopped, finished), Time Sensitive,
+  deep-linked, with **Allow / Deny as notification actions**, the thing Claude users ask for and
+  nobody ships (M2, `PushRegister` in PROTOCOL.md).
+- **Permission prompt as a sheet**: the command in monospace, the cwd, the agent's real options.
+- **One-time QR pairing from a CLI command** (`femmed pair`), an environment screen with the box's
+  state, a revoke on the box (T3, Claude, Happy).
+- **Permission mode in the chat header**, switchable per chat; `bypassPermissions` is shown but
+  never *offered* from the phone (Claude).
+- **Terminal with a keys row** (Esc, Tab, Ctrl, arrows) above the keyboard (herdr, T3).
+- **New chat = three fields** first (folder, agent, task), the rest folded (herdrup).
+- **Diff review** stays out of v1: FEMME's unit of review is the PR card with Merge & deploy,
+  not per-file approval (T3's model is for a different workflow).
+
 ## Visual language
 
 The desktop's, one-to-one (`desktop/src/theme.rs`; the tokens are copied into
