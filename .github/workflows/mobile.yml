@@ -136,9 +136,14 @@ jobs:
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl install "$udid" mobile/app/build/ios/iphonesimulator/Runner.app
-          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.host -string femme.exposureai.org
-          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.token -string "$FEMME_CI_TOKEN"
-          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.client_instance -int 222222222222
+          # The app's defaults live in its container (created on first launch), not in the
+          # simulator's global domain: launch once, quit, then write the container's plist.
+          xcrun simctl launch "$udid" "$bundle" && sleep 20 && xcrun simctl terminate "$udid" "$bundle"
+          plist="$(xcrun simctl get_app_container "$udid" "$bundle" data)/Library/Preferences/$bundle.plist"
+          xcrun simctl spawn "$udid" defaults write "$plist" flutter.host -string femme.exposureai.org
+          xcrun simctl spawn "$udid" defaults write "$plist" flutter.token -string "$FEMME_CI_TOKEN"
+          xcrun simctl spawn "$udid" defaults write "$plist" flutter.client_instance -int 222222222222
+          xcrun simctl spawn "$udid" defaults read "$plist" flutter.host
           mkdir -p screens
           xcrun simctl launch "$udid" "$bundle"
           # a debug build on a software-rendered simulator takes a while to compile its shaders
