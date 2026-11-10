@@ -43,6 +43,15 @@ void main() {
     expect(p[1].sessions.map((x) => x.id), ['C', 'A']);
   });
 
+  test('two folders with the same name show their whole path', () {
+    final p = groupByProject([
+      s('A', cwd: '/home/cem/femme', created: 2),
+      s('B', cwd: '/home/cem/work/femme', created: 1),
+      s('C', cwd: '/home/cem/Platform', created: 3),
+    ]);
+    expect(p.map((x) => x.header), ['Platform', '~/femme', '~/work/femme']);
+  });
+
   test('equal created times sort by id, newest id first', () {
     final p = groupByProject([
       s('A1', cwd: '/x', created: 1),

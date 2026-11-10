@@ -10,7 +10,7 @@ import 'widgets.dart';
 
 /// One project folder of the Chats list.
 class Project {
-  const Project(this.dir, this.sessions);
+  const Project(this.dir, this.sessions, {this.label});
 
   /// `cwd` without a trailing `/`.
   final String dir;
@@ -18,8 +18,13 @@ class Project {
   /// Newest first.
   final List<Session> sessions;
 
-  /// The folder's last part, `~` for home.
-  String get header {
+  /// Set when another project has the same last part: then the whole `~/...` path is shown.
+  final String? label;
+
+  /// The folder's last part, `~` for home; the whole path when two folders share a name.
+  String get header => label ?? lastPart(dir);
+
+  static String lastPart(String dir) {
     final short = homeShort(dir);
     if (short == '~') return '~';
     final parts = short.split('/').where((p) => p.isNotEmpty);
@@ -54,7 +59,18 @@ List<Project> groupByProject(Iterable<Session> all, {String query = ''}) {
         : s.cwd;
     groups.putIfAbsent(dir, () => []).add(s);
   }
-  return [for (final e in groups.entries) Project(e.key, e.value)];
+  final names = <String, int>{};
+  for (final dir in groups.keys) {
+    names.update(Project.lastPart(dir), (n) => n + 1, ifAbsent: () => 1);
+  }
+  return [
+    for (final e in groups.entries)
+      Project(
+        e.key,
+        e.value,
+        label: names[Project.lastPart(e.key)]! > 1 ? homeShort(e.key) : null,
+      ),
+  ];
 }
 
 /// The row's second line: the agent (or a gateway model's provider) and how long ago it started.
