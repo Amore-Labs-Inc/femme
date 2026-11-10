@@ -5,6 +5,7 @@ import 'package:flutter/cupertino.dart';
 
 import '../../state/chat.dart';
 import '../media/lightbox.dart';
+import '../media/poster.dart';
 import '../theme.dart';
 import 'attached.dart';
 import 'look.dart';
@@ -137,6 +138,8 @@ class _Thumb extends StatelessWidget {
   );
 }
 
+/// A video: its first frame with a ▶ (fetched like a picture, see [VideoPoster]), or a plain
+/// ▶ tile with its name while it loads, where the platform has no player, or when it can't open.
 class _VideoTile extends StatelessWidget {
   const _VideoTile({
     required this.path,
@@ -148,36 +151,55 @@ class _VideoTile extends StatelessWidget {
   final bool wide;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: () => openAttached(context, path),
-    child: Container(
-      width: wide ? double.infinity : size,
-      height: wide ? 200 : size,
-      constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
-      decoration: BoxDecoration(
-        color: FemmeColors.ink,
-        border: Border.all(color: ink(context), width: 1.2),
+  Widget build(BuildContext context) {
+    final plain = _plain(context);
+    Widget child = plain;
+    if (PosterCache.shared.supported) {
+      final c = ChatScope.of(context);
+      final bytes = c.picture(path);
+      if (bytes != null) {
+        child = VideoPoster(
+          blobKey: '${c.sid}\n$path',
+          bytes: bytes,
+          name: fileName(path),
+          fallback: plain,
+        );
+      }
+    }
+    return GestureDetector(
+      onTap: () => openAttached(context, path),
+      child: Container(
+        width: wide ? double.infinity : size,
+        height: wide ? 200 : size,
+        constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
+        clipBehavior: Clip.hardEdge,
+        decoration: BoxDecoration(
+          color: FemmeColors.ink,
+          border: Border.all(color: ink(context), width: 1.2),
+        ),
+        child: child,
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(
-            CupertinoIcons.play_circle_fill,
-            color: FemmeColors.paper,
-            size: 36,
-          ),
-          Padding(
-            padding: const EdgeInsets.all(4),
-            child: Text(
-              fileName(path),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: mono(context, size: 11, color: FemmeColors.paper),
-            ),
-          ),
-        ],
+    );
+  }
+
+  Widget _plain(BuildContext context) => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(
+        CupertinoIcons.play_circle_fill,
+        color: FemmeColors.paper,
+        size: 36,
       ),
-    ),
+      Padding(
+        padding: const EdgeInsets.all(4),
+        child: Text(
+          fileName(path),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: mono(context, size: 11, color: FemmeColors.paper),
+        ),
+      ),
+    ],
   );
 }
 
