@@ -271,52 +271,57 @@ pub(crate) fn reconcile(
 /// Pairs, once more, the saved rows marked not received whose echo was stored as a message of its
 /// own (the match was missed when it came: a shape of echo not known then): the row is read at
 /// the echo's time and the echo becomes the mark that says so. Returns how many. Run at start,
-/// before the store is shared; it is cheap when no row waits.
+/// before the store is shared, over every session; it is cheap when no row waits.
 pub(crate) fn repair(store: &femme_store::Store) -> femme_store::Result<usize> {
     let mut n = 0;
     for s in store.read(|c| sessions::list_sessions(c, true))? {
-        let failed = store.read(|c| {
-            store_items::items_with_status(c, s.id, ItemKind::UserMessage, &[ItemStatus::Failed])
-        })?;
-        if failed.is_empty() {
-            continue;
-        }
-        n += store.write(|tx| {
-            let mut done = 0;
-            let all = waiting(tx, s.id, &[ItemStatus::Failed, ItemStatus::Completed])?;
-            for (row, b) in all.iter().filter(|(i, b)| {
-                i.status == ItemStatus::Failed && b.get("op").is_some() && b.get("echo").is_none()
-            }) {
-                // the echo: the first later message of the agent's own that is this one
-                let echo = all
-                    .iter()
-                    .filter(|(i, eb)| {
-                        i.seq > row.seq
-                            && i.status == ItemStatus::Completed
-                            && eb.get("op").is_none()
-                            && eb.get("read_at").is_none()
-                    })
-                    .take(3)
-                    .find(|(_, eb)| same_message(text_of(b), text_of(eb)));
-                let Some((echo, _)) = echo else { continue };
-                let mut b = b.clone();
-                b["read_at"] = json!(echo.ts);
-                let mut published = Vec::new();
-                rewrite(tx, row.clone(), ItemStatus::Completed, &b, &mut published)?;
-                let who = agent_label(s.agent);
-                let text = format!("{who} read your message");
-                let mut mark = echo.clone();
-                mark.kind = ItemKind::Event;
-                mark.preview = text.clone();
-                mark.body = Some(json!({ "text": text, "read": row.item_id }).to_string());
-                mark.blob_hash = None;
-                tx.put_item(&mark)?;
-                done += 1;
-            }
-            Ok(done)
-        })?;
+        n += store.write(|tx| repair_in(tx, s.id, s.agent, &mut Vec::new()))?;
     }
     Ok(n)
+}
+
+/// [`repair`] for one session, inside a write; what it stores goes into `published`.
+pub(crate) fn repair_in(
+    tx: &mut Tx<'_>,
+    sid: Sid,
+    agent: Agent,
+    published: &mut Vec<Item>,
+) -> femme_store::Result<usize> {
+    if store_items::items_with_status(tx, sid, ItemKind::UserMessage, &[ItemStatus::Failed])?
+        .is_empty()
+    {
+        return Ok(0);
+    }
+    let mut done = 0;
+    let all = waiting(tx, sid, &[ItemStatus::Failed, ItemStatus::Completed])?;
+    for (row, b) in all.iter().filter(|(i, b)| {
+        i.status == ItemStatus::Failed && b.get("op").is_some() && b.get("echo").is_none()
+    }) {
+        // the echo: the first later message of the agent's own that is this one
+        let echo = all
+            .iter()
+            .filter(|(i, eb)| {
+                i.seq > row.seq
+                    && i.status == ItemStatus::Completed
+                    && eb.get("op").is_none()
+                    && eb.get("read_at").is_none()
+            })
+            .take(3)
+            .find(|(_, eb)| same_message(text_of(b), text_of(eb)));
+        let Some((echo, _)) = echo else { continue };
+        let mut b = b.clone();
+        b["read_at"] = json!(echo.ts);
+        rewrite(tx, row.clone(), ItemStatus::Completed, &b, published)?;
+        let text = format!("{} read your message", agent_label(agent));
+        let mut mark = echo.clone();
+        mark.kind = ItemKind::Event;
+        mark.preview = text.clone();
+        mark.body = Some(json!({ "text": text, "read": row.item_id }).to_string());
+        mark.blob_hash = None;
+        published.push(tx.put_item(&mark)?);
+        done += 1;
+    }
+    Ok(done)
 }
 
 /// A prompt as the agent's driver holds it: the echo id it was given, and its text.
@@ -435,12 +440,18 @@ impl Daemon {
     }
 
     /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
-    /// terminal holds nothing FEMME can see).
+    /// terminal holds nothing FEMME can see). One marked so earlier whose echo is there after
+    /// all (a shape not matched when it came) is paired now ([`repair_in`]).
     pub(crate) fn idle_unread(&self, sid: Sid) {
-        let r = self
-            .write_items(|tx, _, published| settle(tx, sid, &Gone::Idle(Vec::new()), published));
-        if let Err(e) = r {
-            tracing::warn!(%sid, %e, "unread messages not marked");
+        let agent = self.session(sid).map(|s| s.agent).unwrap_or(Agent::Claude);
+        let r = self.write_items(|tx, _, published| {
+            settle(tx, sid, &Gone::Idle(Vec::new()), published)?;
+            repair_in(tx, sid, agent, published)
+        });
+        match r {
+            Ok(n) if n > 0 => tracing::info!(%sid, n, "saved messages paired with their echo"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%sid, %e, "unread messages not marked"),
         }
     }
 
