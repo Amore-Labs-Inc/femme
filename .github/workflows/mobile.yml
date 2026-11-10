@@ -73,3 +73,99 @@ jobs:
         with:
           name: femme-ios-unsigned
           path: mobile/app/build/ios/iphoneos/femme-ios-unsigned.ipa
+
+  # Proof that the APK runs on Android: boot an emulator (KVM on the Linux runner), install the
+  # release APK, seed the pairing (host + the `ci-emulator` device token from the repo secret),
+  # launch, screenshot every tab. Screens land in the `femme-android-screens` artifact.
+  android-emulator:
+    runs-on: ubuntu-24.04
+    needs: android
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: femme-android
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          FEMME_CI_TOKEN: ${{ secrets.FEMME_CI_TOKEN }}
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -eux
+            pkg=org.exposureai.femme_mobile
+            adb root && sleep 3 && adb wait-for-device
+            adb install -r app-release.apk
+            adb shell monkey -p $pkg 1 && sleep 8
+            adb shell am force-stop $pkg
+            cat > prefs.xml <<EOF
+            <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+            <map>
+              <string name="flutter.host">femme.exposureai.org</string>
+              <string name="flutter.token">$FEMME_CI_TOKEN</string>
+              <long name="flutter.client_instance" value="111111111111" />
+            </map>
+            EOF
+            adb push prefs.xml /sdcard/prefs.xml
+            adb shell "mkdir -p /data/data/$pkg/shared_prefs && cp /sdcard/prefs.xml /data/data/$pkg/shared_prefs/FlutterSharedPreferences.xml && uid=\$(stat -c %u /data/data/$pkg) && chown -R \$uid:\$uid /data/data/$pkg/shared_prefs && chmod 660 /data/data/$pkg/shared_prefs/FlutterSharedPreferences.xml && restorecon -R /data/data/$pkg"
+            rm prefs.xml
+            mkdir -p screens
+            adb shell monkey -p $pkg 1 && sleep 15
+            adb exec-out screencap -p > screens/01-now.png
+            # pixel_6 is 1080x2400: the tab bar sits at y≈2330, tabs at x 135 / 405 / 675 / 945
+            adb shell input tap 405 2330 && sleep 4 && adb exec-out screencap -p > screens/02-chats.png
+            adb shell input tap 675 2330 && sleep 6 && adb exec-out screencap -p > screens/03-box.png
+            adb shell input tap 945 2330 && sleep 3 && adb exec-out screencap -p > screens/04-me.png
+            adb shell input tap 135 2330 && sleep 2
+            adb shell input tap 540 760 && sleep 8 && adb exec-out screencap -p > screens/05-chat.png
+            adb logcat -d | grep -iE 'flutter|AndroidRuntime' | tail -80 > screens/logcat.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: femme-android-screens
+          path: screens/
+
+  # Same proof on an iPhone simulator (a simulator build is separate from the device ipa).
+  ios-simulator:
+    runs-on: macos-15
+    needs: test
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)" && xcodebuild -version
+      - run: flutter build ios --simulator
+        working-directory: mobile/app
+      - name: boot, install, pair, screenshot
+        env:
+          FEMME_CI_TOKEN: ${{ secrets.FEMME_CI_TOKEN }}
+        run: |
+          set -eux
+          bundle=org.exposureai.femmeMobile
+          udid=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d, reverse=True) for x in d[k] if "iPhone" in x["name"]))')
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl install "$udid" mobile/app/build/ios/iphonesimulator/Runner.app
+          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.host -string femme.exposureai.org
+          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.token -string "$FEMME_CI_TOKEN"
+          xcrun simctl spawn "$udid" defaults write "$bundle" flutter.client_instance -int 222222222222
+          mkdir -p screens
+          xcrun simctl launch "$udid" "$bundle"
+          sleep 20
+          xcrun simctl io "$udid" screenshot screens/01-now.png
+          xcrun simctl spawn "$udid" log show --last 2m --predicate 'process == "Runner"' --style compact > screens/runner.log || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: femme-ios-screens
+          path: screens/
