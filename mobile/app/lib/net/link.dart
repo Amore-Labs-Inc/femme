@@ -21,7 +21,13 @@ enum LinkPhase { connecting, online, offline }
 
 @immutable
 class LinkState {
-  const LinkState(this.phase, {this.reason, this.serverVersion, this.retryAt});
+  const LinkState(
+    this.phase, {
+    this.reason,
+    this.serverVersion,
+    this.retryAt,
+    this.rtt,
+  });
   final LinkPhase phase;
 
   /// Why the link is offline (the last error), or null.
@@ -32,6 +38,9 @@ class LinkState {
 
   /// When the next attempt starts, while offline and waiting.
   final DateTime? retryAt;
+
+  /// Smoothed round-trip time of a `ServerInfo` request, once one was measured.
+  final Duration? rtt;
 
   bool get online => phase == LinkPhase.online;
   @override
@@ -84,6 +93,7 @@ class Link implements Requester {
     this.minBackoff = const Duration(seconds: 1),
     this.maxBackoff = const Duration(seconds: 30),
     this.pingInterval = const Duration(seconds: 20),
+    this.rttInterval = const Duration(seconds: 5),
   });
 
   final int clientInstance;
@@ -92,6 +102,9 @@ class Link implements Requester {
   final Duration minBackoff;
   final Duration maxBackoff;
   final Duration pingInterval;
+
+  /// How often the round-trip time is sampled while online.
+  final Duration rttInterval;
 
   /// The cursors to put in `Hello`; the store sets it.
   Cursors Function() cursors = () => const Cursors(epoch: 0);
@@ -122,6 +135,8 @@ class Link implements Requester {
   Completer<void>? _eventsOpen;
   Completer<void>? _socketDone;
   String? _closeReason;
+  Timer? _rttTimer;
+  bool _rttBusy = false;
 
   /// Server pushes from the Events stream (`Changes`, `Delta`, `SnapshotOnBulk`), across reconnects.
   Stream<S2C> get events => _events.stream;
@@ -325,6 +340,7 @@ class Link implements Requester {
       if (!p.sent) _sendReq(p);
     }
     onOnline?.call();
+    _startRtt(gen);
     await done.future;
     return _closeReason ?? 'connection closed';
   }
@@ -407,8 +423,43 @@ class Link implements Requester {
     unawaited(_ws?.close());
   }
 
+  // ---- round-trip time ----
+
+  /// Times a `ServerInfo` every [rttInterval] while this connection is online, smoothing
+  /// the samples like the desktop's QUIC RTT. Errors are ignored; [_drop] stops it.
+  void _startRtt(int gen) {
+    _rttTimer?.cancel();
+    _rttTimer = Timer.periodic(rttInterval, (_) => _sampleRtt(gen));
+  }
+
+  Future<void> _sampleRtt(int gen) async {
+    if (_rttBusy || gen != _gen || !isOnline) return;
+    _rttBusy = true;
+    final sw = Stopwatch()..start();
+    try {
+      await req(Req.serverInfo, resend: false, timeout: helloTimeout);
+      if (gen != _gen || !isOnline) return;
+      final sample = sw.elapsed;
+      final prev = state.value.rtt;
+      final rtt = prev == null ? sample : prev * 0.7 + sample * 0.3;
+      state.value = LinkState(
+        state.value.phase,
+        reason: state.value.reason,
+        retryAt: state.value.retryAt,
+        serverVersion: state.value.serverVersion,
+        rtt: rtt,
+      );
+    } catch (_) {
+      // A lost link or a slow answer: the reconnect loop deals with it.
+    } finally {
+      _rttBusy = false;
+    }
+  }
+
   /// Closes the socket and settles what hung on it.
   void _drop(String reason) {
+    _rttTimer?.cancel();
+    _rttTimer = null;
     final ws = _ws;
     _ws = null;
     _eventsStream = null;
@@ -456,6 +507,7 @@ class Link implements Requester {
       reason: reason,
       retryAt: retryAt,
       serverVersion: serverVersion ?? state.value.serverVersion,
+      rtt: state.value.rtt,
     );
   }
 

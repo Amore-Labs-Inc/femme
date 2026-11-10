@@ -62,14 +62,19 @@ class SessionTile extends StatelessWidget {
 
 String wireStatus(Session s) => s.needsYou ? 'needs you' : s.status.name;
 
-/// `online · femmed 0.9.1` / `connecting…` / `offline: <why>`.
+/// `ws 41 ms · femmed 0.9.1` (`online · …` before the first round-trip sample) / `connecting…` /
+/// `offline: <why>`.
 String linkLine(LinkState s) => switch (s.phase) {
   LinkPhase.online =>
-    'online${s.serverVersion == null ? '' : ' · femmed ${s.serverVersion}'}',
+    '${s.rtt == null ? 'online' : 'ws ${rttText(s.rtt!)}'}'
+        '${s.serverVersion == null ? '' : ' · femmed ${s.serverVersion}'}',
   LinkPhase.connecting => 'connecting…',
   LinkPhase.offline =>
     'offline${s.reason == null ? '' : ': ${s.reason}'}${_retry(s.retryAt)}',
 };
+
+/// A round-trip time in whole milliseconds: `41 ms`.
+String rttText(Duration d) => '${(d.inMicroseconds / 1000).round()} ms';
 
 String _retry(DateTime? at) {
   if (at == null) return '';
