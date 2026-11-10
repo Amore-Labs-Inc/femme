@@ -4,9 +4,11 @@ import 'package:flutter/cupertino.dart';
 
 import '../../net/rpc.dart';
 import '../../state/box.dart';
+import '../../state/box_flows.dart';
 import '../femme.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'add_account.dart';
 import 'poll.dart';
 import 'prs.dart';
 
@@ -25,6 +27,9 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   bool _capsKnown = true;
   int? _defaultCap;
   int? _switching;
+
+  /// The link of a Claude sign-in in progress on the box.
+  String? _loginLink;
 
   /// Caps typed but not sent yet (sent 500 ms after the last change).
   final _pending = <int, (int?, int?)>{};
@@ -51,6 +56,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
         setState(() {
           _accounts = parsed.accounts ?? _accounts;
           _error = parsed.error;
+          _loginLink = parseLoginLink(body);
         });
       }
     } catch (e) {
@@ -70,6 +76,18 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
         // the placeholder just says "default"
       }
     }
+  }
+
+  /// "+ add": a Claude sign-in, or the one already in progress.
+  Future<void> _add() async {
+    final link = Femme.of(context).link;
+    final added = await showAddAccount(
+      context,
+      (r) => link.req(r),
+      link: _loginLink,
+    );
+    if (mounted) await poll();
+    if (added && mounted) actionHaptic();
   }
 
   Future<void> _switch(Account a) async {
@@ -151,6 +169,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
             caps: _capsKnown ? _capOf(a.number) : null,
             defaultCap: _defaultCap,
             onCap: (v) => _setCap(a.number, v),
+          ),
+        if (accounts != null)
+          CupertinoListTile(
+            leading: const Icon(CupertinoIcons.add_circled),
+            title: Text(
+              _loginLink == null
+                  ? 'Add Claude account'
+                  : 'Finish adding the account',
+            ),
+            onTap: _switching == null ? _add : null,
           ),
       ],
     );
