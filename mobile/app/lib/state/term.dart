@@ -231,6 +231,19 @@ class TermView extends ChangeNotifier {
   void key(Object code, {Set<String> mods = const {}}) =>
       _input((seq) => TermUp.key(seq, code, mods: mods));
 
+  /// Sends a mouse event at a cell of the visible screen (0-based); [button] 0 left, 1 middle,
+  /// 2 right, ignored for the wheel.
+  void mouse(
+    MouseKind kind, {
+    required int col,
+    required int row,
+    int button = 0,
+    Set<String> mods = const {},
+  }) => _input(
+    (seq) =>
+        TermUp.mouse(seq, kind, button: button, col: col, row: row, mods: mods),
+  );
+
   void paste(String text) {
     if (text.isEmpty) return;
     _input((seq) => TermUp.paste(seq, text));
