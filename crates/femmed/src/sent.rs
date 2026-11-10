@@ -80,16 +80,25 @@ fn saved_item(sid: Sid, text: &str, op: Option<OpId>, echo: Option<&str>, now: i
     }
 }
 
-/// A message's text for comparing: without the `Attached:` lines the daemon adds, and the
-/// `[Image #N]` marks and `<pasted_content id="..">` wrapping Claude's terminal adds to what is
-/// pasted into it, every run of spaces and newlines one space.
+/// A message's text for comparing: without the `Attached:` lines the daemon adds (and the bare
+/// `Attached:` Claude's terminal leaves when it takes the file as a picture), and the `[Image #N]`
+/// marks and `<pasted_content id="..">` wrapping it adds to what is pasted into it, every run of
+/// spaces and newlines one space.
 pub(crate) fn normalize(text: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
-        .filter(|l| !l.trim_start().starts_with("Attached: "))
+        .filter(|l| {
+            let l = l.trim();
+            !l.starts_with("Attached: ") && l != "Attached:"
+        })
         .collect();
-    let mut s = kept.join("\n").replace("</pasted_content>", " ");
-    while let Some(i) = s.find("<pasted_content") {
+    let mut s = kept.join("\n");
+    // the closing tag carries the id too: `</pasted_content id="23c2">`
+    while let Some(i) = [s.find("<pasted_content"), s.find("</pasted_content")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
         let Some(end) = s[i..].find('>') else { break };
         s.replace_range(i..i + end + 1, " ");
     }
@@ -120,12 +129,21 @@ fn attached(text: &str) -> Vec<&str> {
     names
 }
 
-/// Whether two texts are the same message: the same words ([`normalize`]), or, with no words at
-/// all, the same attached files.
+/// How much the user may have typed into a pane's input ahead of a message FEMME typed after it,
+/// and the least a message must be to be known by that end alone.
+const LEFTOVER_MAX: usize = 32;
+const KNOWN_MIN: usize = 12;
+
+/// Whether the saved text `a` is the echo `b`: the same words ([`normalize`]); the echo may start
+/// with a little the user had typed into the pane's input before FEMME typed the message after
+/// it (`th` + `i talked…`). With no words at all, the same attached files.
 pub(crate) fn same_message(a: &str, b: &str) -> bool {
     let (na, nb) = (normalize(a), normalize(b));
     if !na.is_empty() || !nb.is_empty() {
-        return na == nb;
+        return na == nb
+            || (na.len() >= KNOWN_MIN
+                && nb.len() - na.len().min(nb.len()) <= LEFTOVER_MAX
+                && nb.ends_with(&na));
     }
     let (fa, fb) = (attached(a), attached(b));
     !fa.is_empty() && fa == fb
@@ -528,6 +546,34 @@ mod tests {
             normalize(pasted),
             normalize("lets restart with a blue squirrel\nMerhaba x!")
         );
+        // the three shapes that did not pair on the box (2026-11-10)
+        let closed = "\n\n<pasted_content id=\"23c2\">\no things to decide\n\nWhere the kid lands\n</pasted_content id=\"23c2\">";
+        assert!(same_message(
+            "o things to decide\n\nWhere the kid lands",
+            closed
+        ));
+        let saved = "where is it? did you use femmed cli?\n\nAttached: /u/paste-3-4.png";
+        let echo =
+            "where is it? did you use femmed cli?\nAttached:\n\nAttached: /u/paste-304d7f.jpg";
+        assert!(
+            same_message(saved, echo),
+            "the terminal took the file as a picture"
+        );
+        let saved = "i talked with someone about onboarding data\n\nAttached: /u/p.png";
+        let echo = "thi talked with someone about onboarding data\nAttached:\n\nAttached: /u/q.jpg";
+        assert!(same_message(saved, echo), "`th` typed into the pane before");
+        assert!(
+            !same_message("ok", "ok great, what now"),
+            "short: only the same"
+        );
+        assert!(!same_message(
+            "fix the squirrel head",
+            "fix the squirrel head too"
+        ));
+        assert!(!same_message(
+            "x".repeat(40).as_str(),
+            &format!("{}{}", "y".repeat(40), "x".repeat(40))
+        ));
     }
 
     use femme_store::Store;
