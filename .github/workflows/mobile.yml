@@ -1,0 +1,72 @@
+name: mobile
+on:
+  push:
+    branches: [main]
+    paths: ["mobile/app/**", ".github/workflows/mobile.yml"]
+  pull_request:
+    paths: ["mobile/app/**", ".github/workflows/mobile.yml"]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: 3.47.7
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get
+        working-directory: mobile/app
+      - run: dart format --output=none --set-exit-if-changed lib test
+        working-directory: mobile/app
+      - run: flutter analyze
+        working-directory: mobile/app
+      - run: flutter test
+        working-directory: mobile/app
+
+  android:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter build apk --release
+        working-directory: mobile/app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: femme-android
+          path: mobile/app/build/app/outputs/flutter-apk/app-release.apk
+
+  ios:
+    # No Mac in the FEMME fleet: this runner is the iOS build. Unsigned: sign with your own
+    # certificate (Xcode, AltStore, Sideloadly) or point `flutter build ipa` at a team.
+    runs-on: macos-15
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter build ios --release --no-codesign
+        working-directory: mobile/app
+      - name: package the unsigned app
+        run: |
+          cd mobile/app/build/ios/iphoneos
+          mkdir Payload && cp -r Runner.app Payload/
+          zip -qr femme-ios-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: femme-ios-unsigned
+          path: mobile/app/build/ios/iphoneos/femme-ios-unsigned.ipa
