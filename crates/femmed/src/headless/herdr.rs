@@ -210,8 +210,13 @@ fn status_of(s: &str) -> Option<(SessionStatus, Attention)> {
     })
 }
 
+/// How long a mirrored conversation may be missing from herdr before its session is dropped:
+/// longer than a Claude restarted in its pane takes to be detected again (10-20 s).
+const GONE_GRACE: Duration = Duration::from_secs(90);
+
 /// Makes the mirrored sessions match the panes: new conversations get a session, ones whose pane
-/// is gone (or runs another conversation now) are closed, statuses and titles follow herdr.
+/// is gone (or runs another conversation now) for `GONE_GRACE` are closed, statuses and titles
+/// follow herdr.
 async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, Tail>) {
     let rows: Vec<Session> = d
         .store
@@ -224,12 +229,28 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
         rows.iter()
             .find(|s| s.owner == p.owner() && s.agent_sid.as_deref() == Some(&p.uuid))
     };
+    // the rows gone for less than GONE_GRACE, whose tails stay
+    let mut waiting = HashSet::new();
     for s in rows.iter().filter(|s| s.closed.is_none()) {
         if !panes
             .iter()
             .any(|p| row_of(p).is_some_and(|r| r.id == s.id))
         {
-            // gone, not closed: a closed row is one the user hid, and stays hidden
+            // gone, not closed: a closed row is one the user hid, and stays hidden. Gone only
+            // after GONE_GRACE: a Claude restarted in place (`/exit`, then `claude --resume` of
+            // the same uuid) is missing from herdr for a while, and keeps its session.
+            let t = tails.entry(s.id).or_insert_with(|| {
+                // not tailed yet (the daemon just started): the grace counts from here too
+                let from = d
+                    .store
+                    .read(|c| sessions::spool_committed(c, s.id))
+                    .unwrap_or(0);
+                Tail::new(s.id, s.agent_sid.clone().unwrap_or_default(), from)
+            });
+            if t.gone_since.get_or_insert_with(Instant::now).elapsed() < GONE_GRACE {
+                waiting.insert(s.id);
+                continue;
+            }
             tails.remove(&s.id);
             if let Some(h) = d.sessions.head(s.id) {
                 h.close().await;
@@ -254,11 +275,12 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
             },
         };
         open.insert(s.id);
-        if let std::collections::hash_map::Entry::Vacant(e) = tails.entry(s.id) {
-            let from = d
-                .store
-                .read(|c| sessions::spool_committed(c, s.id))
-                .unwrap_or(0);
+        if let Some(t) = tails.get_mut(&s.id) {
+            t.gone_since = None;
+        }
+        // a tail the gone check made (the pane was missing when the daemon started) has no head
+        let fresh = !tails.contains_key(&s.id);
+        if fresh || d.sessions.head(s.id).is_none() {
             d.sessions.set_head(
                 s.id,
                 head(
@@ -269,7 +291,13 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
                     Arc::downgrade(d),
                 ),
             );
-            e.insert(Tail::new(s.id, p.uuid.clone(), from));
+        }
+        if fresh {
+            let from = d
+                .store
+                .read(|c| sessions::spool_committed(c, s.id))
+                .unwrap_or(0);
+            tails.insert(s.id, Tail::new(s.id, p.uuid.clone(), from));
         }
         let on_plan = tails.get(&s.id).is_some_and(|t| t.plan_open.is_some());
         let state = status_of(if on_plan { "blocked" } else { &p.status });
@@ -304,7 +332,7 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
         }
     }
     // closed in FEMME since the last round: nothing more is written to it
-    tails.retain(|sid, _| open.contains(sid));
+    tails.retain(|sid, _| open.contains(sid) || waiting.contains(sid));
 }
 
 /// Keeps the pane's screen question in step with its status: a pane blocked on a prompt the TUI
@@ -674,6 +702,8 @@ struct Tail {
     /// The ExitPlanMode call the transcript has no result for yet: the pane is on the plan
     /// dialog, which herdr's detection reads as idle (its question wraps on a wide pane).
     plan_open: Option<String>,
+    /// Since when herdr lists no pane running this conversation; dropped after `GONE_GRACE`.
+    gone_since: Option<Instant>,
 }
 
 /// A subagent's transcript, read on from where it was read.
@@ -717,6 +747,7 @@ impl Tail {
             asks_checked: false,
             screen_tried: None,
             plan_open: None,
+            gone_since: None,
         }
     }
 
@@ -2566,11 +2597,46 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             1
         );
         sync(&d, "/bin/false", &[], &mut tails).await;
+        let left = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(left.len(), 1, "gone for less than GONE_GRACE: kept");
+        tails.get_mut(&left[0].id).unwrap().gone_since =
+            Some(Instant::now() - GONE_GRACE - Duration::from_secs(1));
+        sync(&d, "/bin/false", &[], &mut tails).await;
         assert!(d
             .store
             .read(|c| sessions::list_sessions(c, false))
             .unwrap()
             .is_empty());
+        assert!(tails.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pane_missing_for_a_sync_keeps_its_session() {
+        let (d, _dir) = daemon();
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        // Claude restarted in its pane: herdr lists no agent there for a while
+        sync(&d, "/bin/false", &[], &mut tails).await;
+        assert!(tails[&sid].gone_since.is_some());
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let rows = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(rows.iter().map(|s| s.id).collect::<Vec<_>>(), [sid]);
+        assert!(tails[&sid].gone_since.is_none());
+        assert!(d.sessions.head(sid).is_some());
+
+        // the daemon restarted with the pane missing: its grace counts from there, and the pane
+        // back gets its head
+        let mut tails = HashMap::new();
+        d.sessions.unhead(sid);
+        sync(&d, "/bin/false", &[], &mut tails).await;
+        assert!(tails[&sid].gone_since.is_some());
+        assert!(d.sessions.head(sid).is_none());
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let rows = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(rows.iter().map(|s| s.id).collect::<Vec<_>>(), [sid]);
+        assert!(d.sessions.head(sid).is_some());
     }
 
     const AGENT_TURN: &str = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"look"}}
