@@ -1,5 +1,6 @@
 import 'package:femme_mobile/net/rpc.dart';
 import 'package:femme_mobile/state/box.dart';
+import 'package:femme_mobile/ui/box/info.dart' show shortCommit;
 import 'package:flutter_test/flutter_test.dart';
 
 Pr pr({bool? mergeable = true, String? fixing, bool merging = false}) =>
@@ -83,5 +84,11 @@ void main() {
     expect(parseMetaCap('{"cap":60}'), 60);
     expect(validKeyName('ci-bot'), isTrue);
     expect(validKeyName('CI bot'), isFalse);
+  });
+
+  test('deploy marker: commit hashes shortened, other text kept', () {
+    expect(shortCommit('a3ca0990930de7192a2208e649313454a6674c12'), 'a3ca099');
+    expect(shortCommit('v0.1.0'), 'v0.1.0');
+    expect(shortCommit(null), 'no marker');
   });
 }

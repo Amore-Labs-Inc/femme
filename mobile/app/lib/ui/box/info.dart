@@ -8,6 +8,14 @@ import '../theme.dart';
 import '../widgets.dart';
 import 'poll.dart';
 
+/// A deploy marker as the list shows it: a commit hash down to its first 7 characters, anything
+/// else as is, `no marker` when the box has none.
+String shortCommit(String? deployed) {
+  if (deployed == null) return 'no marker';
+  final hex = RegExp(r'^[0-9a-f]{12,64}$');
+  return hex.hasMatch(deployed) ? deployed.substring(0, 7) : deployed;
+}
+
 /// The Box section: which box, what femmed runs, what is deployed.
 class BoxInfoSection extends StatefulWidget {
   const BoxInfoSection({super.key});
@@ -82,7 +90,7 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
         CupertinoListTile(
           title: const Text('Deployed'),
           additionalInfo: Text(
-            info == null ? '—' : (info.deployed ?? 'no marker'),
+            info == null ? '—' : shortCommit(info.deployed),
             style: const TextStyle(
               fontFamily: monoFamily,
               fontFamilyFallback: monoFallback,
