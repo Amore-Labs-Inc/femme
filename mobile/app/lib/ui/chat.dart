@@ -1,14 +1,27 @@
+/// The chat screen of one session: header, transcript, the strips and the composer. Holds the
+/// session's subscription while shown.
+library;
+
 import 'package:flutter/cupertino.dart';
 
-import '../net/models.dart';
+import '../net/models.dart' hide Row;
+import '../state/chat.dart';
+import '../state/store.dart';
+import 'chat/composer.dart';
+import 'chat/header.dart';
+import 'chat/media.dart';
+import 'chat/question.dart';
+import 'chat/strips.dart';
+import 'chat/transcript.dart';
+import 'chat/turns.dart';
 import 'femme.dart';
-import 'theme.dart';
 
-void openChat(BuildContext context, String sid) => Navigator.of(context)
-    .push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
+export 'chat/header.dart' show showChatMenu;
 
-/// Placeholder chat screen: the session's items as plain lines and a one-line composer. Holds
-/// the session's subscription while it is shown.
+void openChat(BuildContext context, String sid) =>
+    Navigator.of(context)
+        .push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.sid});
   final String sid;
@@ -18,101 +31,87 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final _text = TextEditingController();
-  late final _store = Femme.of(context).store;
-  bool _subscribed = false;
+  ChatController? _c;
+  Store? _store;
+  late final DateTime _openedAt = DateTime.now();
+  bool _sheetChecked = false;
+
+  ChatController get _ctrl => _c!;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_subscribed) {
-      _subscribed = true;
-      _store.subscribe(widget.sid);
+    if (_c == null) {
+      final f = Femme.of(context);
+      _c = ChatController(widget.sid, f.link);
+      _store = f.store..subscribe(widget.sid);
     }
   }
 
   @override
   void dispose() {
-    _store.unsubscribe(widget.sid);
-    _text.dispose();
+    _store?.unsubscribe(widget.sid);
+    _c?.dispose();
     super.dispose();
   }
 
-  void _send() {
-    final t = _text.text.trim();
-    if (t.isEmpty) return;
-    _text.clear();
-    // A failure shows on the bubble (the outbox entry turns failed); nothing to do here.
-    _store.send(widget.sid, t).ignore();
+  /// When the chat opens on a pending question, it comes up as a sheet (once, within the
+  /// first seconds while the transcript arrives).
+  void _maybeShowSheet(Item? pending) {
+    if (_sheetChecked) return;
+    if (DateTime.now().difference(_openedAt) > const Duration(seconds: 4)) {
+      _sheetChecked = true;
+      return;
+    }
+    if (pending == null) return;
+    _sheetChecked = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) showQuestionSheet(context, _ctrl, pending.itemId);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final f = Femme.of(context);
-    final session = f.store.sessions[widget.sid];
-    final items = f.store
-        .items(widget.sid)
-        .where((i) => i.parent == null)
-        .toList();
+    final s = f.store.sessions[widget.sid];
+    final items = f.store.items(widget.sid);
+    final main = [
+      for (final i in items)
+        if (i.parent == null) i,
+    ];
+    final pending = pendingQuestion(_ctrl, main, s);
+    _maybeShowSheet(pending);
+    final working = s?.status == SessionStatus.working;
+
     return CupertinoPageScaffold(
-      navigationBar: CupertinoNavigationBar(
-        middle: Text(session?.title ?? widget.sid),
-      ),
+      navigationBar: chatNavBar(context, widget.sid),
       child: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: ListView.builder(
-                reverse: true,
-                itemCount: items.length,
-                itemBuilder: (context, i) =>
-                    _line(context, items[items.length - 1 - i]),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: CupertinoTextField(
-                controller: _text,
-                placeholder: 'Message',
-                onSubmitted: (_) => _send(),
-                suffix: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  onPressed: _send,
-                  child: const Icon(CupertinoIcons.arrow_up_circle_fill),
+        bottom: false,
+        child: ChatScope(
+          controller: _ctrl,
+          child: Column(
+            children: [
+              SubtitleStrip(sid: widget.sid),
+              Expanded(
+                child: TranscriptView(
+                  sid: widget.sid,
+                  footer: [
+                    if (s != null && s.needsYou && pending == null)
+                      BlockedCard(sid: widget.sid),
+                    if (working)
+                      WorkingLine(
+                        verb: workingVerb(main),
+                        since: lastUserTs(main),
+                      ),
+                  ],
                 ),
               ),
-            ),
-          ],
+              GoalStrip(s?.goal),
+              if (s != null && s.agent != Agent.shell) XpBar(s.context),
+              SafeArea(top: false, child: Composer(sid: widget.sid)),
+            ],
+          ),
         ),
-      ),
-    );
-  }
-
-  Widget _line(BuildContext context, Item item) {
-    final store = Femme.of(context).store;
-    final mine = item.kind == ItemKind.userMessage;
-    final muted = FemmeColors.mutedC.resolveFrom(context);
-    final text = item.kind == ItemKind.question
-        ? '? ${item.question?.prompt ?? item.preview}'
-        : store.textOf(item);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Column(
-        crossAxisAlignment: mine
-            ? CrossAxisAlignment.end
-            : CrossAxisAlignment.start,
-        children: [
-          Text(
-            text,
-            maxLines: 12,
-            overflow: TextOverflow.ellipsis,
-            textAlign: mine ? TextAlign.right : TextAlign.left,
-          ),
-          Text(
-            '${item.kind.name} · ${item.status.name}',
-            style: TextStyle(fontSize: 11, color: muted),
-          ),
-        ],
       ),
     );
   }
