@@ -1,0 +1,193 @@
+/// The chat's controller handed down the rows, and the `Attached:` thumbnails and chips.
+library;
+
+import 'package:flutter/cupertino.dart';
+
+import '../../state/chat.dart';
+import '../media/lightbox.dart';
+import '../theme.dart';
+import 'attached.dart';
+import 'look.dart';
+
+/// Gives rows the [ChatController]; they rebuild when it changes.
+class ChatScope extends InheritedNotifier<ChatController> {
+  const ChatScope({
+    super.key,
+    required ChatController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static ChatController of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ChatScope>()!.notifier!;
+}
+
+/// Opens a file from the box in the lightbox (fetched with `FsRead` if not cached).
+Future<void> openAttached(BuildContext context, String path) async {
+  final c = ChatScope.of(context);
+  try {
+    final bytes = await c.readFile(path);
+    if (!context.mounted) return;
+    await showLightbox(
+      context,
+      bytes: bytes,
+      name: fileName(path),
+      video: isVideo(path),
+    );
+  } catch (e) {
+    if (context.mounted) {
+      toast(context, "can't open ${fileName(path)}: ${errorText(e)}");
+    }
+  }
+}
+
+/// The files of a message: pictures as thumbnails ([size] square, or [wide] boxes), videos as
+/// ▶ tiles, anything else as a name chip.
+class AttachedFiles extends StatelessWidget {
+  const AttachedFiles({
+    super.key,
+    required this.paths,
+    this.size = 96,
+    this.wide = false,
+    this.alignEnd = false,
+  });
+  final List<String> paths;
+  final double size;
+  final bool wide;
+  final bool alignEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    if (paths.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        alignment: alignEnd ? WrapAlignment.end : WrapAlignment.start,
+        children: [
+          for (final p in paths)
+            if (isPicture(p) && !isSvg(p))
+              _Thumb(path: p, size: size, wide: wide)
+            else if (isVideo(p))
+              _VideoTile(path: p, size: size, wide: wide)
+            else
+              _FileChip(path: p),
+        ],
+      ),
+    );
+  }
+}
+
+class _Thumb extends StatelessWidget {
+  const _Thumb({required this.path, required this.size, required this.wide});
+  final String path;
+  final double size;
+  final bool wide;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ChatScope.of(context);
+    final bytes = c.picture(path);
+    final err = c.pictureError(path);
+    final w = wide ? double.infinity : size;
+    final h = wide ? 240.0 : size;
+    Widget child;
+    if (bytes != null) {
+      child = Image.memory(
+        bytes,
+        fit: wide ? BoxFit.contain : BoxFit.cover,
+        width: w,
+        height: h,
+        errorBuilder: (_, _, _) => _broken(context, fileName(path)),
+      );
+    } else if (err != null) {
+      child = GestureDetector(
+        onTap: () => c.retryPicture(path),
+        child: _broken(context, '${fileName(path)}\n$err · retry'),
+      );
+    } else {
+      child = const Center(child: CupertinoActivityIndicator());
+    }
+    return GestureDetector(
+      onTap: bytes == null ? null : () => openAttached(context, path),
+      child: Container(
+        width: w,
+        height: h,
+        constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
+        decoration: BoxDecoration(
+          color: panel(context),
+          border: Border.all(color: ink(context), width: 1.2),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _broken(BuildContext context, String text) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(4),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        maxLines: 4,
+        overflow: TextOverflow.ellipsis,
+        style: mono(context, size: 11, color: muted(context)),
+      ),
+    ),
+  );
+}
+
+class _VideoTile extends StatelessWidget {
+  const _VideoTile({
+    required this.path,
+    required this.size,
+    required this.wide,
+  });
+  final String path;
+  final double size;
+  final bool wide;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () => openAttached(context, path),
+    child: Container(
+      width: wide ? double.infinity : size,
+      height: wide ? 200 : size,
+      constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
+      decoration: BoxDecoration(
+        color: FemmeColors.ink,
+        border: Border.all(color: ink(context), width: 1.2),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            CupertinoIcons.play_circle_fill,
+            color: FemmeColors.paper,
+            size: 36,
+          ),
+          Padding(
+            padding: const EdgeInsets.all(4),
+            child: Text(
+              fileName(path),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: mono(context, size: 11, color: FemmeColors.paper),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _FileChip extends StatelessWidget {
+  const _FileChip({required this.path});
+  final String path;
+
+  @override
+  Widget build(BuildContext context) => Chip(
+    label: '📎 ${fileName(path)}',
+    onTap: () => openAttached(context, path),
+  );
+}

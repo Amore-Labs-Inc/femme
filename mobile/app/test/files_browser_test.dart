@@ -1,0 +1,135 @@
+import 'package:femme_mobile/net/rpc.dart';
+import 'package:femme_mobile/state/files.dart';
+import 'package:femme_mobile/ui/files/browser.dart';
+import 'package:femme_mobile/ui/files/text_view.dart';
+import 'package:femme_mobile/ui/files/hex.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'files_fake.dart';
+
+FakeBox box() => FakeBox(
+  dirs: {
+    '': const [
+      FsEntry('README.md', false, 12),
+      FsEntry('src', true, 0),
+      FsEntry('.env', false, 4),
+      FsEntry('huge.bin', false, 20 << 20),
+      FsEntry('blob', false, 3),
+      FsEntry('mid.txt', false, 3 << 20),
+    ],
+    'src': const [FsEntry('ui', true, 0), FsEntry('main.rs', false, 2048)],
+    'src/ui': const [],
+  },
+  files: {
+    'README.md': 'hello\nworld\n'.codeUnits,
+    'blob': [0, 1, 2],
+  },
+);
+
+Widget app(FilesTree tree) => CupertinoApp(
+  home: FilesBrowser(tree: tree, cwd: '/home/u/proj', rootName: 'proj'),
+);
+
+void main() {
+  testWidgets('lists the root, opens folders, crumbs climb back', (t) async {
+    final b = box();
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+
+    expect(find.text('Files'), findsWidgets);
+    expect(find.text('proj'), findsOneWidget);
+    expect(find.text('src'), findsOneWidget);
+    expect(find.text('12 B'), findsOneWidget);
+    expect(find.text('20.0 MiB'), findsOneWidget);
+    expect(b.listed, ['']);
+
+    await t.tap(find.text('src'));
+    await t.pumpAndSettle();
+    expect(b.listed, ['', 'src']);
+    expect(find.text('main.rs'), findsOneWidget);
+    expect(find.text('2.0 KiB'), findsOneWidget);
+
+    await t.tap(find.text('ui'));
+    await t.pumpAndSettle();
+    expect(b.listed, ['', 'src', 'src/ui']);
+    expect(find.text('Empty folder'), findsOneWidget);
+
+    await t.tap(find.text('proj'));
+    await t.pumpAndSettle();
+    expect(find.text('README.md'), findsOneWidget);
+    expect(b.listed, ['', 'src', 'src/ui'], reason: 'root already listed');
+  });
+
+  testWidgets('a text file opens in the lines view', (t) async {
+    final b = box();
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('README.md'));
+    await t.pumpAndSettle();
+    expect(b.read, ['README.md']);
+    expect(find.byType(LinesView), findsOneWidget);
+    expect(find.text('hello'), findsOneWidget);
+    expect(find.text('world'), findsOneWidget);
+  });
+
+  testWidgets('a binary file opens as hex', (t) async {
+    final tree = FilesTree(requester: box(), sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('blob'));
+    await t.pumpAndSettle();
+    expect(find.byType(HexView), findsOneWidget);
+    expect(find.textContaining('00000000  00 01 02'), findsOneWidget);
+  });
+
+  testWidgets('a file over the read limit is refused, not read', (t) async {
+    final b = box();
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('huge.bin'));
+    await t.pumpAndSettle();
+    expect(find.textContaining('the box sends at most'), findsOneWidget);
+    expect(b.read, isEmpty);
+  });
+
+  testWidgets('the … button opens the actions', (t) async {
+    final tree = FilesTree(requester: box(), sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    Finder more(String name) => find.descendant(
+      of: find.ancestor(of: find.text(name), matching: find.byType(FileRow)),
+      matching: find.byIcon(CupertinoIcons.ellipsis),
+    );
+    await t.tap(more('src'));
+    await t.pumpAndSettle();
+    expect(find.text('Share'), findsNothing, reason: 'folders are not shared');
+    expect(find.text('Copy path'), findsOneWidget);
+    await t.tap(find.text('Cancel'));
+    await t.pumpAndSettle();
+    await t.tap(more('README.md'));
+    await t.pumpAndSettle();
+    expect(find.text('Share'), findsOneWidget);
+    expect(find.text('Copy path'), findsOneWidget);
+    await t.tap(find.text('Cancel'));
+    await t.pumpAndSettle();
+  });
+
+  testWidgets('a file over 2 MiB asks first', (t) async {
+    final b = box()..files = {...box().files, 'mid.txt': 'ok'.codeUnits};
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('mid.txt'));
+    await t.pumpAndSettle();
+    expect(find.text('This file is 3.0 MiB.'), findsWidgets);
+    expect(b.read, isEmpty);
+    await t.tap(find.text('Open').last);
+    await t.pumpAndSettle();
+    expect(b.read, ['mid.txt']);
+    expect(find.text('ok'), findsOneWidget);
+  });
+}

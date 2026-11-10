@@ -1,9 +1,43 @@
 # FEMME mobile — what the app speaks
 
-The app is one more `femme-client`: QUIC (quinn, TLS 1.3, ALPN `femme/1`, UDP 7788), mutual
-TLS with an enrolled device cert, `PROTO_VERSION` 1, the frames of `crates/femme-proto`
-(`varint len | flags | postcard`, zstd outside Term streams). Everything below exists today
-unless marked **new**.
+The app is one more client of `femmed`, on the **WebSocket carrier** (`crates/femme-transport/src/ws.rs`,
+served at `/femme/ws` by `crates/femmed/src/front/ws.rs`): the same streams, requests and events as
+the desktop's QUIC, carried as JSON text messages over one `wss://` socket behind the board's HTTPS
+(Caddy), so it works on every network a browser does and needs no UDP and no client certificate.
+The types are those of `crates/femme-proto` (`rpc.rs`, `state.rs`, `term.rs`) as serde_json writes
+them. Everything below exists today unless marked **new**.
+
+## The carrier
+
+- URL `wss://<board host>/femme/ws` (`ws://127.0.0.1:8787/femme/ws` on the box itself), header
+  `Authorization: Bearer <token>`, or `?token=` when a client cannot set headers.
+- One text message = one JSON object, multiplexing streams:
+  `{"s":N,"open":KIND}` opens stream `N` (phone ids odd, daemon ids even);
+  `{"s":N,"m":MSG}` carries one message of stream `N`; `{"s":N,"fin":true}` finishes the sender's
+  direction; `{"s":N,"rst":true}` resets it.
+  `KIND` = `"Ctrl"` | `"Events"` | `{"Term":{"sid":"<ULID>","no":0}}` | `{"Bulk":7}`.
+- JSON shapes: serde's externally tagged enums (`"Idle"`, `{"Session":"01J…"}`,
+  `{"Subscribe":{"scope":"Global","after":null}}`), `Result` as `{"Ok":…}` / `{"Err":{"code":"NotFound","msg":"…"}}`,
+  ids (`Sid`, `OpId`, `DeviceId`) as 26-char ULID text, `[u8;32]` and `Vec<u8>` as arrays of
+  numbers, bit flags (`Mods`, `Attrs`, `Modes`) as `"SHIFT | CTRL"`, `char` as a one-char string.
+  `Item.body` is a JSON string (decode it again). `client_instance` is any number below 2^53.
+- Flow: open `Ctrl` as stream 1 → `{"Hello":{"proto":1,"client_instance":N,"cursors":{…}}}` →
+  `{"Welcome":…}` back on stream 1 → the daemon opens `Events` (stream 2) and pushes `Changes` /
+  `Delta` there → requests go as `{"Req":{"op":"<ULID>","req":…}}` on stream 1, answered with
+  `{"Resp":{"op":…,"result":…}}` on stream 1. A terminal is a stream the phone opens with
+  `{"Term":pane}` and starts with `TermUp::Open`.
+- One socket, one FIFO: a blob in flight delays a keystroke behind it (QUIC's per-stream
+  priorities do not exist here). Fine for a phone; the terminal is read-mostly there.
+
+## Pairing
+
+`femmed pair --name <phone>` on the box enrolls the phone under a fresh 256-bit token (the device
+row's key is the token's SHA-256, so `femmed devices` lists it and `femmed devices revoke <name>`
+cuts it off like a desktop) and prints a QR code of
+
+    femme://pair?host=<board host>&tls=1&name=<box name>&token=<token>
+
+The app scans it (or takes the link pasted) and keeps the token in the Keychain / Keystore.
 
 ## Per screen
 
@@ -21,14 +55,14 @@ unless marked **new**.
 | new chat | `Folders{path}` for the picker, `SessionCreate{cwd, agent, mode: Headless, label, prompt, model}` | Ctrl |
 | Box | `ServerInfo` (version, deployed), `Caps` / `SetCap`, `BoardApi{GET /api/accounts, /api/meta}`, `Prs`, `PrMerge`, `PrFix` (→ a session), `PrVideo` (→ lightbox), issues via `IssueCreate/Patch/Delete` + `Row::Issue` | Ctrl, Bulk |
 | session info | `SessionLabel`, `SessionClose`, `Takeover{sid, to}` (not offered on the phone, read-only) | Ctrl |
-| Me | `PairStart`/`PairFinish` (**new**), `PushRegister` (**new**) | Ctrl |
+| Me | pairing is the QR above (no request); `PushRegister` (**new**) | Ctrl |
 
 Reconnect: `Hello{proto, client_instance, cursors{epoch, global_rev, sessions}}` resumes every
 subscription from the last rev; requests carry an `OpId` and are deduped, so the app resends
 anything unanswered. Nothing in the app depends on the connection being up to *save* a
 message: the draft and the outbox are on disk first, the `Pending` row on the box second.
 
-## The four additions to `femmed`
+## Additions to `femmed`
 
 ### 1. Push registration
 
@@ -50,27 +84,9 @@ A subscription whose rows are only sessions whose attention changed, each with t
 `Item::Question` (or permission item) inlined. One stream for the Now screen instead of
 `Subscribe{Session}` per blocked session; the desktop could use it for its badge too.
 
-### 3. Pairing
+### 3. Pairing, 4. WebSocket carrier
 
-```
-Req::PairStart            → Resp::Pair { code, expires }      (an enrolled device asks; the desktop shows it as a QR)
-   QR = femme://pair?host=<h>&port=7788&fp=<server spki sha256>&code=<one-time>
-Req::PairFinish { code, name, spki }  → Resp::Ok              (sent by the phone over a connection that is
-                                                              not yet trusted: TLS up, client cert presented but unknown;
-                                                              the server allows exactly this request on such a connection)
-```
-
-`PairFinish` writes the same device row `femmed enroll --name <name> --spki <sha256>` writes, then
-the phone reconnects as a trusted device. Codes are one-time and live 2 minutes. `femmed devices`
-lists and revokes phones like any device.
-
-### 4. WebSocket carrier
-
-Caddy already fronts `femmed`'s HTTP. A `/femme/ws` route carries the same frames (one binary
-message per frame, stream kind as the first frame per socket, one socket per stream) for
-networks that drop UDP. Auth on this path: the device cert as a TLS client cert is not available
-through Caddy, so the first frame is a signed challenge (the device signs the server nonce with
-its cert key). Same `Hello` after that.
+Done: see *The carrier* and *Pairing* above.
 
 ## Not needed
 

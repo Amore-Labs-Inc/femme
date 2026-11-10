@@ -137,6 +137,38 @@ context bar, permission mode, cwd, agent sid, close/end).
 - Appearance: system / light / dark; text size follows the OS.
 - Diagnostics: link, round-trip, last error, "send logs".
 
+## What the neighbours do (and what FEMME takes from them)
+
+Looked at on 2026-11-10: the herdr app (herdr.dev/app, plus the third-party herdrup / Herdr
+Mobile / Sherpr / Heeler clients), T3 Code's phone client, and the Claude app's Code tab
+(Remote Control) with the companions around it (Happy Coder, Omnara, VibeTunnel).
+
+| | herdr app | T3 Code | Claude Code (Code tab) | Happy Coder |
+|---|---|---|---|---|
+| home | inbox: needs you → done → working → idle | unified inbox across environments | sessions list | sessions list |
+| pairing | SSH / Tailscale profiles, no account | `npx t3 pair` → one-time token + QR; or a managed relay | `claude remote-control` prints a QR | QR → shared secret, E2E relay |
+| answering | in the real terminal (type, paste a screenshot, speak) | chat + diff review (Approve / Request changes) | permission prompt in the chat; Bypass never offered | Allow / Deny with details, "remember for this session" |
+| push | needs input, stopped, finished | lock-screen summary of what needs attention | done or needs a decision; two toggles | status, done, permission, question; deep links |
+| terminal | the agent's own, with a keys row | Esc + Ctrl keys | — | — |
+| complaints | — | — | prompts not rendering on iOS, no pushes, no Approve/Deny on the push itself | — |
+
+Taken into FEMME mobile:
+
+- **Now = inbox in that order**: needs you, done, working, idle (herdr, T3). A question's options
+  sit on the card; one tap answers (nobody else does this on the home screen).
+- **Push only for what changes what you do next** (needs input, stopped, finished), Time Sensitive,
+  deep-linked, with **Allow / Deny as notification actions**, the thing Claude users ask for and
+  nobody ships (M2, `PushRegister` in PROTOCOL.md).
+- **Permission prompt as a sheet**: the command in monospace, the cwd, the agent's real options.
+- **One-time QR pairing from a CLI command** (`femmed pair`), an environment screen with the box's
+  state, a revoke on the box (T3, Claude, Happy).
+- **Permission mode in the chat header**, switchable per chat; `bypassPermissions` is shown but
+  never *offered* from the phone (Claude).
+- **Terminal with a keys row** (Esc, Tab, Ctrl, arrows) above the keyboard (herdr, T3).
+- **New chat = three fields** first (folder, agent, task), the rest folded (herdrup).
+- **Diff review** stays out of v1: FEMME's unit of review is the PR card with Merge & deploy,
+  not per-file approval (T3's model is for a different workflow).
+
 ## Visual language
 
 The desktop's, one-to-one (`desktop/src/theme.rs`; the tokens are copied into
@@ -202,10 +234,11 @@ phone app ──QUIC (same femme-proto as the desktop)──► femmed on the bo
    tokens (ntfy topic per device for the self-hosted path).
 2. A `Scope::Attention` subscription: only the sessions whose attention changed, with the pending
    question (`Item::Question`) inlined, so Now needs one stream and no per-session subscriptions.
-3. A pairing QR: `Req::PairStart` on an enrolled desktop → a one-time code (host, port, server
-   fingerprint, token); the phone connects with a fresh self-signed cert and `PairFinish{token}`
-   enrols it, the same row `femmed enroll` would write.
-4. A WebSocket carrier for the frames behind Caddy (`/femme/ws`), for networks that drop UDP.
+3. ~~A pairing QR via `PairStart/PairFinish`~~ **Shipped simpler** (PR #50): `femmed pair --name phone`
+   on the box prints a `femme://pair?host=…&tls=1&name=…&token=…` QR; the token's SHA-256 is the
+   device row's key, so `femmed devices` lists and revokes the phone like any device.
+4. ~~A WebSocket carrier~~ **Shipped** (PRs #50, #51): `wss://<box>/femme/ws`, JSON frames
+   multiplexing the same Ctrl / Events / Term streams (`PROTOCOL.md` §Carrier).
 
 ## Out of scope (v1)
 
@@ -222,3 +255,16 @@ phone app ──QUIC (same femme-proto as the desktop)──► femmed on the bo
 | M1 | Now + Chat (read + send + answer questions), pairing, push | answer a real question from the lock screen in < 5 s |
 | M2 | Files, Terminal, Box, Me | PR merge from the phone; a photo of a sketch becomes a prompt |
 | M3 | offline-first polish, voice notes, quiet hours, multi-box | 24 h on a phone with flaky signal: no lost message |
+
+### Status (2026-11-10)
+
+M1 and M2 are built in `mobile/app` (Flutter, pure Cupertino; `PARITY.md` is the checklist):
+Now, Chats, Chat (markdown, tools, questions, permission prompts, attachments, slash
+commands, history), Terminal (read + keys), Files (tree, viewer, hex, media), Box (PRs with merge
+and auto-fix, accounts, API keys, issues), Me (pairing, appearance). Verified natively: the Linux
+desktop build against the live box, an Android release APK built on the VPS, iOS built unsigned by
+CI (`.github/workflows/mobile.yml`) on a macOS runner with Xcode 26.
+
+Not yet: push (`PushRegister` and a notifier backend), `Scope::Attention`, outbox persisted to
+disk across app restarts, video poster frames, terminal mouse reporting, a Claude account sign-in
+flow (Box shows accounts, switching is a request away), the GitHub device flow for API keys.
