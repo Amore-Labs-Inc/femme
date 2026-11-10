@@ -11,7 +11,9 @@
 //!   the host sent, including our `control_response`s), `result` (end of turn),
 //!   `rate_limit_event`, `command_lifecycle` (per-uuid queued/started/completed/cancelled),
 //!   `control_request{can_use_tool}` (with `--permission-prompt-tool stdio`; under bypass only for
-//!   `AskUserQuestion` and `ExitPlanMode`) and `control_cancel_request`.
+//!   `AskUserQuestion` and `ExitPlanMode`) and `control_cancel_request`. Any other
+//!   `control_request` gets an error reply at once (the CLI would wait for one forever) and an
+//!   Event item, once per subtype.
 //!
 //! Mapping decisions worth knowing before reading the code:
 //!
@@ -235,6 +237,8 @@ pub struct ClaudeDriver {
     waits_ours: bool,
     /// A wait without a request of ours was logged (once per driver).
     waits_logged: bool,
+    /// `control_request` subtypes we refused, each said once as an Event item.
+    refused: BTreeSet<String>,
 }
 
 /// A running task (a Bash command or a subagent) of a tool call.
@@ -285,6 +289,7 @@ impl ClaudeDriver {
             waits: false,
             waits_ours: false,
             waits_logged: false,
+            refused: BTreeSet::new(),
         }
     }
 
@@ -1478,6 +1483,34 @@ impl ClaudeDriver {
         }
     }
 
+    /// A `control_request` we have no answer for (`hook_callback`, `mcp_message`: we registered
+    /// none; whatever a later CLI adds). The CLI would wait for our reply forever, so it gets an
+    /// error reply now (which it takes as "no answer" and carries on, checked on 2.1.319 with a
+    /// hook callback), and the user hears of it once per kind.
+    fn refuse(
+        &mut self,
+        offset: u64,
+        rid: &str,
+        subtype: &str,
+        out: &mut Out,
+        ev: &mut Vec<AgentEvent>,
+    ) {
+        tracing::warn!(
+            session = self.sid.as_deref().unwrap_or(""),
+            subtype,
+            request_id = rid,
+            "claude sent a control request FEMME does not handle"
+        );
+        out.line(&json!({"type":"control_response","response":{
+            "subtype":"error","request_id":rid,"error":format!("FEMME does not handle {subtype}")}}));
+        if self.refused.insert(subtype.to_owned()) {
+            ev.push(event_item(
+                format!("o{offset}"),
+                &format!("Claude asked something FEMME cannot answer: {subtype}"),
+            ));
+        }
+    }
+
     /// The CLI read our answer to `cid` (its echo).
     fn resolve(&mut self, cid: &str, ev: &mut Vec<AgentEvent>) {
         if let Some(p) = self.pending.get_mut(cid) {
@@ -1674,7 +1707,13 @@ impl Driver for ClaudeDriver {
                     &v["request"],
                     &mut ev,
                 ),
-                _ => ev.push(AgentEvent::Raw(v)), // hook_callback, mcp_message: we registered none
+                other => self.refuse(
+                    offset,
+                    v["request_id"].as_str().unwrap_or(""),
+                    other.unwrap_or(""),
+                    out,
+                    &mut ev,
+                ),
             },
             "control_cancel_request" => {
                 self.withdraw(v["request_id"].as_str().unwrap_or(""), &mut ev)

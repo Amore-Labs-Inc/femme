@@ -71,7 +71,15 @@ macro_rules! golden_cases {
                 let name = stringify!($case);
                 let mut d = ClaudeDriver::new();
                 let (ev, stdin) = replay(&mut d, &read(name));
-                assert!(stdin.is_empty(), "{name}: a replaying driver must not write to stdin, wrote {:?}", String::from_utf8_lossy(&stdin));
+                if name == "unknown_ctl" {
+                    // a request nobody can answer is refused even on a replay: the CLI ignores a
+                    // second reply, and one that never came would leave it waiting
+                    let want: Vec<Value> = stdin_lines(name).into_iter().filter(|l| l["response"]["subtype"] == "error").collect();
+                    let got: Vec<Value> = String::from_utf8_lossy(&stdin).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+                    assert_eq!(got, want, "{name}: the refusal the capture sent");
+                } else {
+                    assert!(stdin.is_empty(), "{name}: a replaying driver must not write to stdin, wrote {:?}", String::from_utf8_lossy(&stdin));
+                }
                 golden(&dir().join(format!("{name}.events.json")), &ev);
             }
         )*
@@ -101,6 +109,7 @@ golden_cases!(
     error_model,
     error_resume,
     usage,
+    unknown_ctl,
 );
 
 #[test]
@@ -1423,5 +1432,34 @@ fn a_subagent_left_open_fails_with_the_turn_and_never_opens_one() {
         items.last().unwrap().0,
         "sm2:0",
         "a late subagent line is still an item"
+    );
+}
+
+#[test]
+fn a_control_request_nobody_answers_is_refused_and_said_once() {
+    let ev = events("unknown_ctl");
+    let said: Vec<&Value> = ev
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ItemCompleted {
+                kind: ItemKind::Event,
+                body,
+                ..
+            } => Some(body),
+            _ => None,
+        })
+        .filter(|b| b["text"].as_str().unwrap().contains("FEMME cannot answer"))
+        .collect();
+    assert_eq!(said.len(), 1, "{ev:?}");
+    assert_eq!(
+        said[0]["text"],
+        "Claude asked something FEMME cannot answer: hook_callback"
+    );
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Raw(_))));
+    // the CLI carried on: the turn ends normally
+    assert!(
+        kinds(&ev).contains(&"turn-:EndTurn".to_owned()),
+        "{:?}",
+        kinds(&ev)
     );
 }
