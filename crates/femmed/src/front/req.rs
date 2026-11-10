@@ -217,6 +217,9 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::Resend { sid, item_id } => done(d.resend(sid, &item_id).await),
         Req::PrAutoFix { on } => super::prs::set_auto_fix(&d.cfg, on).await,
         Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
+        Req::PushRegister { .. } | Req::PushUnregister { .. } => {
+            Err(unsupported("push registration is not served yet"))
+        }
     }
 }
 
