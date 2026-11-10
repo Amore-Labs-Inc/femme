@@ -88,7 +88,7 @@ impl Box_ {
         self.dir.path().join("home")
     }
 
-    fn config(&self, http_bind: String) -> Config {
+    pub fn config(&self, http_bind: String) -> Config {
         let mut cfg = Config::from_vars([("HOME".to_string(), self.home().display().to_string())]);
         cfg.state_dir = self.dir.path().join("state");
         cfg.runtime_dir = self.dir.path().join("rt");

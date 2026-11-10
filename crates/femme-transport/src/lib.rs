@@ -47,6 +47,7 @@ use serde::Serialize;
 pub mod mux;
 pub mod quic;
 pub mod race;
+pub mod ws;
 
 pub use femme_proto::rpc::StreamKind;
 pub use mux::{command_connect, ssh_connect};
@@ -54,6 +55,7 @@ pub use mux::{mux_client, mux_server};
 pub use quic::{connect, DeviceIdentity, QuicClient};
 pub use quic::{listen, Listener, ServerIdentity};
 pub use race::{connect_best, Best};
+pub use ws::WsConn;
 
 /// Stream priorities (higher goes first). Keystrokes beat everything; bulk yields to everything.
 pub mod prio {
@@ -218,11 +220,15 @@ pub struct Tx {
     framer: Framer,
     out: Vec<u8>,
     io: TxIo,
+    /// Messages go as JSON text, one per carrier message, not postcard frames (the WebSocket
+    /// carrier, [`ws`]).
+    json: bool,
 }
 
 pub(crate) enum TxIo {
     Quic(quinn::SendStream),
     Mux(mux::MuxSend),
+    Ws(ws::WsSend),
 }
 
 /// Whether frames on a stream of this kind may be zstd-compressed: keystroke streams never are
@@ -233,10 +239,12 @@ pub(crate) fn compress_for(kind: &StreamKind) -> bool {
 
 impl Tx {
     pub(crate) fn new(io: TxIo, kind: &StreamKind) -> Tx {
+        let json = matches!(io, TxIo::Ws(_));
         Tx {
             framer: Framer::new(compress_for(kind)),
             out: Vec::new(),
             io,
+            json,
         }
     }
 
@@ -245,14 +253,23 @@ impl Tx {
     /// the peer has it.
     pub async fn send<T: Serialize + ?Sized>(&mut self, msg: &T) -> Result<(), Error> {
         self.out.clear();
-        self.framer.frame(msg, &mut self.out)?;
+        if self.json {
+            serde_json::to_writer(&mut self.out, msg).map_err(|e| Error::Proto(e.to_string()))?;
+        } else {
+            self.framer.frame(msg, &mut self.out)?;
+        }
         self.write_out().await
     }
 
-    /// Like [`send`](Tx::send) for a payload that is already encoded. Not cancel-safe.
+    /// Like [`send`](Tx::send) for a payload that is already encoded (postcard; JSON on a JSON
+    /// stream). Not cancel-safe.
     pub async fn send_bytes(&mut self, payload: &[u8]) -> Result<(), Error> {
         self.out.clear();
-        self.framer.frame_bytes(payload, &mut self.out)?;
+        if self.json {
+            self.out.extend_from_slice(payload);
+        } else {
+            self.framer.frame_bytes(payload, &mut self.out)?;
+        }
         self.write_out().await
     }
 
@@ -260,6 +277,7 @@ impl Tx {
         match &mut self.io {
             TxIo::Quic(s) => s.write_all(&self.out).await.map_err(quic::write_err),
             TxIo::Mux(m) => m.write(&self.out).await,
+            TxIo::Ws(w) => w.write(&self.out).await,
         }
     }
 
@@ -273,6 +291,7 @@ impl Tx {
                 Ok(())
             }
             TxIo::Mux(m) => m.finish(),
+            TxIo::Ws(w) => w.finish().await,
         }
     }
 
@@ -284,6 +303,7 @@ impl Tx {
                 let _ = s.reset(quinn::VarInt::from_u32(0));
             }
             TxIo::Mux(m) => m.reset(),
+            TxIo::Ws(w) => w.reset(),
         }
     }
 
@@ -294,6 +314,9 @@ impl Tx {
                 let _ = s.set_priority(prio);
             }
             TxIo::Mux(m) => m.set_priority(prio),
+            // ponytail: one FIFO per socket; keystrokes wait behind a blob in flight. Per-stream
+            // queues with a priority pick in the writer if the phone's terminal ever feels it.
+            TxIo::Ws(_) => {}
         }
     }
 }
@@ -310,6 +333,8 @@ pub struct Rx {
 pub(crate) enum RxIo {
     Quic(quinn::RecvStream),
     Mux(mux::MuxRecv),
+    /// JSON text per carrier message: no framing to undo.
+    Ws(ws::WsRecv),
 }
 
 impl RxIo {
@@ -336,6 +361,7 @@ impl RxIo {
                 }
                 None => Ok(false),
             },
+            RxIo::Ws(_) => unreachable!("a JSON stream is read whole messages at a time"),
         }
     }
 }
@@ -351,6 +377,9 @@ impl Rx {
     /// The next frame's payload (decompressed), or `None` when the peer finished the stream.
     /// Cancel-safe.
     pub async fn recv(&mut self) -> Result<Option<Bytes>, Error> {
+        if let RxIo::Ws(w) = &mut self.io {
+            return w.next().await;
+        }
         loop {
             if let Some(b) = self.de.next()? {
                 return Ok(Some(b));
@@ -365,9 +394,14 @@ impl Rx {
         }
     }
 
-    /// [`recv`](Rx::recv) and decode the payload as a postcard message. Cancel-safe.
+    /// [`recv`](Rx::recv) and decode the payload as a postcard message (JSON on a JSON stream).
+    /// Cancel-safe.
     pub async fn recv_msg<T: DeserializeOwned>(&mut self) -> Result<Option<T>, Error> {
+        let json = matches!(self.io, RxIo::Ws(_));
         match self.recv().await? {
+            Some(b) if json => serde_json::from_slice(&b)
+                .map(Some)
+                .map_err(|e| Error::Proto(format!("json: {e}"))),
             Some(b) => Ok(Some(femme_proto::codec::decode(&b)?)),
             None => Ok(None),
         }

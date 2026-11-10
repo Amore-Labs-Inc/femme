@@ -20,7 +20,8 @@ femme-store = { path = "crates/femme-store" }
 femme-agents = { path = "crates/femme-agents" }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+qrcode = { version = "0.14", default-features = false }
 postcard = { version = "1.1", features = ["use-std"] }
 bytes = "1"
 ulid = "3"

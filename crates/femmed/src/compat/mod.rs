@@ -86,6 +86,18 @@ pub fn router(core: Arc<dyn Core>) -> Router {
     build(core, true).0
 }
 
+/// [`router`] plus the phone's `/femme/ws` route on `gate`'s front (`front::ws`).
+pub fn router_with(core: Arc<dyn Core>, gate: Option<Arc<crate::front::WsGate>>) -> Router {
+    let router = build(core, true).0;
+    match gate {
+        Some(gate) => router.route(
+            "/femme/ws",
+            axum::routing::get(crate::front::ws::upgrade).with_state(gate),
+        ),
+        None => router,
+    }
+}
+
 /// [`router`] plus its state. `background`: start the task that keeps the accounts window fresh
 /// (it shells out to cswap and aws, which tests never want).
 pub(crate) fn build(core: Arc<dyn Core>, background: bool) -> (Router, Arc<App>) {
