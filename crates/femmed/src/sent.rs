@@ -80,16 +80,25 @@ fn saved_item(sid: Sid, text: &str, op: Option<OpId>, echo: Option<&str>, now: i
     }
 }
 
-/// A message's text for comparing: without the `Attached:` lines the daemon adds, and the
-/// `[Image #N]` marks and `<pasted_content id="..">` wrapping Claude's terminal adds to what is
-/// pasted into it, every run of spaces and newlines one space.
+/// A message's text for comparing: without the `Attached:` lines the daemon adds (and the bare
+/// `Attached:` Claude's terminal leaves when it takes the file as a picture), and the `[Image #N]`
+/// marks and `<pasted_content id="..">` wrapping it adds to what is pasted into it, every run of
+/// spaces and newlines one space.
 pub(crate) fn normalize(text: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
-        .filter(|l| !l.trim_start().starts_with("Attached: "))
+        .filter(|l| {
+            let l = l.trim();
+            !l.starts_with("Attached: ") && l != "Attached:"
+        })
         .collect();
-    let mut s = kept.join("\n").replace("</pasted_content>", " ");
-    while let Some(i) = s.find("<pasted_content") {
+    let mut s = kept.join("\n");
+    // the closing tag carries the id too: `</pasted_content id="23c2">`
+    while let Some(i) = [s.find("<pasted_content"), s.find("</pasted_content")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
         let Some(end) = s[i..].find('>') else { break };
         s.replace_range(i..i + end + 1, " ");
     }
@@ -120,12 +129,21 @@ fn attached(text: &str) -> Vec<&str> {
     names
 }
 
-/// Whether two texts are the same message: the same words ([`normalize`]), or, with no words at
-/// all, the same attached files.
+/// How much the user may have typed into a pane's input ahead of a message FEMME typed after it,
+/// and the least a message must be to be known by that end alone.
+const LEFTOVER_MAX: usize = 32;
+const KNOWN_MIN: usize = 12;
+
+/// Whether the saved text `a` is the echo `b`: the same words ([`normalize`]); the echo may start
+/// with a little the user had typed into the pane's input before FEMME typed the message after
+/// it (`th` + `i talked…`). With no words at all, the same attached files.
 pub(crate) fn same_message(a: &str, b: &str) -> bool {
     let (na, nb) = (normalize(a), normalize(b));
     if !na.is_empty() || !nb.is_empty() {
-        return na == nb;
+        return na == nb
+            || (na.len() >= KNOWN_MIN
+                && nb.len() - na.len().min(nb.len()) <= LEFTOVER_MAX
+                && nb.ends_with(&na));
     }
     let (fa, fb) = (attached(a), attached(b));
     !fa.is_empty() && fa == fb
@@ -250,6 +268,62 @@ pub(crate) fn reconcile(
     Ok(true)
 }
 
+/// Pairs, once more, the saved rows marked not received whose echo was stored as a message of its
+/// own (the match was missed when it came: a shape of echo not known then): the row is read at
+/// the echo's time and the echo becomes the mark that says so. Returns how many. Run at start,
+/// before the store is shared, over every session; it is cheap when no row waits.
+pub(crate) fn repair(store: &femme_store::Store) -> femme_store::Result<usize> {
+    let mut n = 0;
+    for s in store.read(|c| sessions::list_sessions(c, true))? {
+        n += store.write(|tx| repair_in(tx, s.id, s.agent, &mut Vec::new()))?;
+    }
+    Ok(n)
+}
+
+/// [`repair`] for one session, inside a write; what it stores goes into `published`.
+pub(crate) fn repair_in(
+    tx: &mut Tx<'_>,
+    sid: Sid,
+    agent: Agent,
+    published: &mut Vec<Item>,
+) -> femme_store::Result<usize> {
+    if store_items::items_with_status(tx, sid, ItemKind::UserMessage, &[ItemStatus::Failed])?
+        .is_empty()
+    {
+        return Ok(0);
+    }
+    let mut done = 0;
+    let all = waiting(tx, sid, &[ItemStatus::Failed, ItemStatus::Completed])?;
+    for (row, b) in all.iter().filter(|(i, b)| {
+        i.status == ItemStatus::Failed && b.get("op").is_some() && b.get("echo").is_none()
+    }) {
+        // the echo: the first later message of the agent's own that is this one
+        let echo = all
+            .iter()
+            .filter(|(i, eb)| {
+                i.seq > row.seq
+                    && i.status == ItemStatus::Completed
+                    && eb.get("op").is_none()
+                    && eb.get("read_at").is_none()
+            })
+            .take(3)
+            .find(|(_, eb)| same_message(text_of(b), text_of(eb)));
+        let Some((echo, _)) = echo else { continue };
+        let mut b = b.clone();
+        b["read_at"] = json!(echo.ts);
+        rewrite(tx, row.clone(), ItemStatus::Completed, &b, published)?;
+        let text = format!("{} read your message", agent_label(agent));
+        let mut mark = echo.clone();
+        mark.kind = ItemKind::Event;
+        mark.preview = text.clone();
+        mark.body = Some(json!({ "text": text, "read": row.item_id }).to_string());
+        mark.blob_hash = None;
+        published.push(tx.put_item(&mark)?);
+        done += 1;
+    }
+    Ok(done)
+}
+
 /// A prompt as the agent's driver holds it: the echo id it was given, and its text.
 pub(crate) type Held = (Option<String>, String);
 
@@ -366,12 +440,18 @@ impl Daemon {
     }
 
     /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
-    /// terminal holds nothing FEMME can see).
+    /// terminal holds nothing FEMME can see). One marked so earlier whose echo is there after
+    /// all (a shape not matched when it came) is paired now ([`repair_in`]).
     pub(crate) fn idle_unread(&self, sid: Sid) {
-        let r = self
-            .write_items(|tx, _, published| settle(tx, sid, &Gone::Idle(Vec::new()), published));
-        if let Err(e) = r {
-            tracing::warn!(%sid, %e, "unread messages not marked");
+        let agent = self.session(sid).map(|s| s.agent).unwrap_or(Agent::Claude);
+        let r = self.write_items(|tx, _, published| {
+            settle(tx, sid, &Gone::Idle(Vec::new()), published)?;
+            repair_in(tx, sid, agent, published)
+        });
+        match r {
+            Ok(n) if n > 0 => tracing::info!(%sid, n, "saved messages paired with their echo"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%sid, %e, "unread messages not marked"),
         }
     }
 
@@ -513,6 +593,62 @@ mod tests {
     }
 
     #[test]
+    fn a_missed_pair_is_made_at_start() {
+        let (store, sid) = store();
+        let saved = Item {
+            sid,
+            item_id: "01SAVED".into(),
+            seq: 0,
+            rev: 0,
+            kind: ItemKind::UserMessage,
+            status: ItemStatus::Failed,
+            preview: "a".into(),
+            body: Some(json!({"op": "01OP", "text": "o things to decide"}).to_string()),
+            blob_hash: None,
+            parent: None,
+            ts: 10,
+        };
+        let echo = Item {
+            item_id: "uuid-echo".into(),
+            status: ItemStatus::Completed,
+            body: Some(json!({"text": "<pasted_content id=\"1\">\no things to decide\n</pasted_content id=\"1\">"}).to_string()),
+            ts: 11,
+            ..saved.clone()
+        };
+        let other = Item {
+            item_id: "uuid-other".into(),
+            status: ItemStatus::Completed,
+            body: Some(json!({"text": "something else"}).to_string()),
+            ts: 12,
+            ..saved.clone()
+        };
+        store
+            .write(|tx| {
+                tx.put_item(&saved)?;
+                tx.put_item(&other)?;
+                tx.put_item(&echo)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(repair(&store).unwrap(), 1);
+        assert_eq!(repair(&store).unwrap(), 0, "once");
+        let get = |id: &str| {
+            store
+                .read(|c| store_items::get_item(c, sid, id))
+                .unwrap()
+                .unwrap()
+        };
+        let row = get("01SAVED");
+        assert_eq!(row.status, ItemStatus::Completed);
+        let b: Value = serde_json::from_str(row.body.as_deref().unwrap()).unwrap();
+        assert_eq!(b["read_at"], 11);
+        let mark = get("uuid-echo");
+        assert_eq!(mark.kind, ItemKind::Event);
+        assert!(is_read_mark(&mark));
+        assert_eq!(get("uuid-other").kind, ItemKind::UserMessage);
+    }
+
+    #[test]
     fn attachment_lines_and_image_marks_do_not_count() {
         let sent = "look at this\n\nAttached: /home/u/.local/state/femme/uploads/01JC/shot.png";
         let echo = "[Image #1] look at this\n\nAttached: /home/u/.local/state/femme/uploads/01JC/paste-3fa2c1.png";
@@ -528,6 +664,34 @@ mod tests {
             normalize(pasted),
             normalize("lets restart with a blue squirrel\nMerhaba x!")
         );
+        // the three shapes that did not pair on the box (2026-11-10)
+        let closed = "\n\n<pasted_content id=\"23c2\">\no things to decide\n\nWhere the kid lands\n</pasted_content id=\"23c2\">";
+        assert!(same_message(
+            "o things to decide\n\nWhere the kid lands",
+            closed
+        ));
+        let saved = "where is it? did you use femmed cli?\n\nAttached: /u/paste-3-4.png";
+        let echo =
+            "where is it? did you use femmed cli?\nAttached:\n\nAttached: /u/paste-304d7f.jpg";
+        assert!(
+            same_message(saved, echo),
+            "the terminal took the file as a picture"
+        );
+        let saved = "i talked with someone about onboarding data\n\nAttached: /u/p.png";
+        let echo = "thi talked with someone about onboarding data\nAttached:\n\nAttached: /u/q.jpg";
+        assert!(same_message(saved, echo), "`th` typed into the pane before");
+        assert!(
+            !same_message("ok", "ok great, what now"),
+            "short: only the same"
+        );
+        assert!(!same_message(
+            "fix the squirrel head",
+            "fix the squirrel head too"
+        ));
+        assert!(!same_message(
+            "x".repeat(40).as_str(),
+            &format!("{}{}", "y".repeat(40), "x".repeat(40))
+        ));
     }
 
     use femme_store::Store;

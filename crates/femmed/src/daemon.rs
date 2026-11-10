@@ -53,6 +53,11 @@ impl Daemon {
         std::fs::create_dir_all(&cfg.state_dir)?;
         let mut store = Store::open(&cfg.state_dir.join("femme.db"))?;
         recover_messages(&mut store, &cfg);
+        match crate::sent::repair(&store) {
+            Ok(n) if n > 0 => tracing::info!(n, "saved messages paired with their echo"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%e, "saved messages not paired again"),
+        }
         let store = Arc::new(store);
         let hub = Hub::new(Arc::new({
             let store = store.clone();
