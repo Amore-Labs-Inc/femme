@@ -12,19 +12,25 @@
 //! conversation's uuid as `agent_sid`, so clients show it like any headless chat. Its status is
 //! herdr's. Closing it in FEMME only hides it: the pane runs on, and the same conversation in the
 //! same pane does not come back (a new conversation there does).
+//!
+//! A pane blocked on a prompt the TUI draws (a permission: "Do you want to proceed? 1. Yes 2. No")
+//! shows it as an open question, read off the pane's screen (`herdr agent read`); its answer is the
+//! option's number, or Escape, typed into the pane. While it waits, a prompt from FEMME is refused
+//! with a line that says so.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Weak;
-use std::time::Duration;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
-use femme_agents::items::{body, UserMessage};
+use femme_agents::items::{body, QuestionItem, UserMessage};
 use femme_agents::{Driver, Out};
+use femme_proto::rpc::Answer;
 use femme_proto::state::Item;
 use femme_proto::state::{
-    Agent, Attention, Goal, GoalState, ItemKind, ItemStatus, Mode, Pane, PaneKind, Session,
-    SessionStatus,
+    Agent, Attention, Goal, GoalState, ItemKind, ItemStatus, Mode, Pane, PaneKind, Question,
+    Session, SessionStatus,
 };
 use femme_proto::{Id, PaneId, Sid};
 use femme_store::{items as store_items, sessions, Store};
@@ -44,6 +50,14 @@ pub(crate) const OWNER: &str = "herdr:";
 const BACKFILL: u64 = 4 << 20;
 /// The most read from one transcript per tick.
 const READ_MAX: u64 = 8 << 20;
+/// The request id prefix of a question read off the pane's screen: its answer is keys typed into
+/// the pane, where a transcript's question (AskUserQuestion) is the pane's own to answer.
+const SCREEN_ASK: &str = "herdr:";
+/// A blocked pane whose screen shows no question is looked at again after this long.
+const SCREEN_RETRY: Duration = Duration::from_secs(10);
+/// What a prompt gets while the pane waits on its question.
+const WAITING: &str =
+    "Claude is waiting for an answer in its terminal: answer the question above, or in the terminal tab";
 
 /// A herdr pane that runs Claude.
 #[derive(Debug, Clone, PartialEq)]
@@ -198,7 +212,7 @@ fn status_of(s: &str) -> Option<(SessionStatus, Attention)> {
 
 /// Makes the mirrored sessions match the panes: new conversations get a session, ones whose pane
 /// is gone (or runs another conversation now) are closed, statuses and titles follow herdr.
-async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, Tail>) {
+async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, Tail>) {
     let rows: Vec<Session> = d
         .store
         .read(|c| sessions::list_sessions(c, true))
@@ -245,8 +259,16 @@ async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, T
                 .store
                 .read(|c| sessions::spool_committed(c, s.id))
                 .unwrap_or(0);
-            d.sessions
-                .set_head(s.id, head(bin.into(), p.hs.clone(), p.pane.clone(), s.id));
+            d.sessions.set_head(
+                s.id,
+                head(
+                    bin.into(),
+                    p.hs.clone(),
+                    p.pane.clone(),
+                    s.id,
+                    Arc::downgrade(d),
+                ),
+            );
             e.insert(Tail::new(s.id, p.uuid.clone(), from));
         }
         let state = status_of(&p.status);
@@ -259,6 +281,9 @@ async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, T
                 (_, SessionStatus::Working) => t.idle_since = None,
                 _ => {}
             }
+        }
+        if let Some(t) = tails.get_mut(&s.id) {
+            screen_asks(d, bin, p, t).await;
         }
         let stale = state.is_some_and(|st| st != (s.status, s.attention)) || title != s.label;
         if stale {
@@ -279,6 +304,165 @@ async fn sync(d: &Daemon, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, T
     }
     // closed in FEMME since the last round: nothing more is written to it
     tails.retain(|sid, _| open.contains(sid));
+}
+
+/// Keeps the pane's screen question in step with its status: a pane blocked on a prompt the TUI
+/// draws gets it as an open question, and one no longer blocked closes what is still open (the user
+/// answered in the pane; an answer from FEMME closed it as it went). A transcript's own question
+/// (an AskUserQuestion) open at the time is left alone: the pane's prompt is that one.
+async fn screen_asks(d: &Daemon, bin: &str, p: &HPane, t: &mut Tail) {
+    if p.status != "blocked" {
+        // the first look after a start closes what a run before left open
+        if t.asked.take().is_some() || !t.asks_checked {
+            close_screen_asks(d, t.sid, "answered in the pane");
+        }
+        t.asks_checked = true;
+        t.screen_tried = None; // the next block is a new prompt
+        return;
+    }
+    t.asks_checked = true;
+    if t.asked.is_some() || t.screen_tried.is_some_and(|at| at.elapsed() < SCREEN_RETRY) {
+        return;
+    }
+    match d.pending_questions(t.sid) {
+        Ok(open) if !open.is_empty() => {
+            t.asked = open
+                .iter()
+                .map(|(_, q)| q.q.request_id.clone())
+                .find(|id| id.starts_with(SCREEN_ASK));
+            return;
+        }
+        Ok(_) => {}
+        Err(_) => return,
+    }
+    t.screen_tried = Some(Instant::now());
+    let Ok(screen) = herdr(bin, Some(&p.hs), &["agent", "read", &p.pane]).await else {
+        return;
+    };
+    let Some((prompt, options)) = screen_question(&screen) else {
+        return;
+    };
+    let now = now_ms();
+    let id = format!("{SCREEN_ASK}{}:{now}", p.pane);
+    let q = QuestionItem {
+        q: Question {
+            request_id: id.clone(),
+            prompt,
+            options,
+            multi: false,
+            free_text: false,
+        },
+        answered: None,
+        reason: None,
+    };
+    let item = super::new_item(
+        t.sid,
+        id.clone(),
+        ItemKind::Question,
+        ItemStatus::Pending,
+        Some(&body(&q)),
+        now,
+    );
+    let sid = t.sid;
+    match d.write_items(|tx, _, published| put(tx, sid, &Put::Done(item), published)) {
+        Ok(()) => t.asked = Some(id),
+        Err(e) => tracing::warn!(%sid, %e, "the pane's question was not stored"),
+    }
+}
+
+/// Ends the open screen questions of `sid` as `Failed` with `reason`: nobody answered them here.
+fn close_screen_asks(d: &Daemon, sid: Sid, reason: &str) {
+    let Ok(open) = d.pending_questions(sid) else {
+        return;
+    };
+    let puts: Vec<Put> = open
+        .into_iter()
+        .filter(|(_, q)| q.q.request_id.starts_with(SCREEN_ASK))
+        .map(|(item, mut q)| {
+            q.reason = Some(reason.into());
+            Put::Done(super::new_item(
+                sid,
+                item.item_id,
+                ItemKind::Question,
+                ItemStatus::Failed,
+                Some(&body(&q)),
+                item.ts,
+            ))
+        })
+        .collect();
+    if puts.is_empty() {
+        return;
+    }
+    let r = d.write_items(|tx, _, published| {
+        for p in &puts {
+            put(tx, sid, p, published)?;
+        }
+        Ok(())
+    });
+    if let Err(e) = r {
+        tracing::warn!(%sid, %e, "the pane's question was not closed");
+    }
+}
+
+/// The prompt the TUI draws at the bottom of the pane's screen: the lines of its box (the call,
+/// what it wants, "Do you want to proceed?") and its numbered options. `None` when the screen ends
+/// in something else.
+fn screen_question(screen: &str) -> Option<(String, Vec<String>)> {
+    let lines: Vec<&str> = screen.lines().collect();
+    // "1. Yes" / "❯ 2. No": the number and the label
+    let option = |l: &str| -> Option<(usize, String)> {
+        let l = l.trim().trim_start_matches('❯').trim_start();
+        let (n, rest) = l.split_once(". ")?;
+        Some((n.parse().ok()?, rest.trim().to_owned()))
+    };
+    // the last run of options numbered from 1
+    let mut end = lines.len();
+    while end > 0 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let mut last = None;
+    for (i, l) in lines[..end].iter().enumerate().rev() {
+        if option(l).is_some() {
+            last = Some(i);
+            break;
+        }
+        if !l.trim().is_empty() && last.is_none() && i + 3 < end {
+            return None; // the options are not near the bottom (a hint line may follow them)
+        }
+    }
+    let last = last?;
+    let mut first = last;
+    while first > 0 && option(lines[first - 1]).is_some() {
+        first -= 1;
+    }
+    let options: Vec<String> = lines[first..=last]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| option(l).filter(|(n, _)| *n == i + 1).map(|(_, s)| s))
+        .collect::<Option<_>>()?;
+    // the question line, right above the options; then its box, back to the rule that opens it
+    // (a solid line; the dashed ones inside it part the call from what the TUI says about it)
+    let rule = |l: &str, open: bool| {
+        let t = l.trim();
+        t.chars().count() >= 8
+            && t.chars()
+                .all(|c| matches!(c, '─' | '━' | '═') || (!open && c == '╌'))
+    };
+    let ask = lines[..first]
+        .iter()
+        .rposition(|l| l.trim().ends_with('?'))
+        .filter(|&i| first - i <= 3)?;
+    let top = lines[..ask]
+        .iter()
+        .rposition(|l| rule(l, true))
+        .map_or(0, |i| i + 1);
+    let prompt: Vec<String> = lines[top.max(ask.saturating_sub(40))..=ask]
+        .iter()
+        .filter(|l| !rule(l, false))
+        .map(|l| l.trim().trim_start_matches('│').trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Some((prompt.join("\n"), options))
 }
 
 /// A new conversation's session and its main pane (no attach state: `reconcile` leaves it to us).
@@ -362,6 +546,12 @@ struct Tail {
     /// Lines of kinds this reader does not know, by kind: each kind is one note, its count kept.
     // ponytail: counted from where this run started reading, so a restart counts again from there
     unknown: HashMap<String, u32>,
+    /// The open question read off the pane's screen (`screen_asks`), by request id.
+    asked: Option<String>,
+    /// Whether the store was looked at once for a screen question a run before left open.
+    asks_checked: bool,
+    /// When the blocked pane's screen was last read and showed no question.
+    screen_tried: Option<Instant>,
 }
 
 /// A subagent's transcript, read on from where it was read.
@@ -401,6 +591,9 @@ impl Tail {
             subs_from_end: committed > 0,
             idle_since: None,
             unknown: HashMap::new(),
+            asked: None,
+            asks_checked: false,
+            screen_tried: None,
         }
     }
 
@@ -1134,9 +1327,10 @@ fn disk_value(mut v: Value) -> Option<Value> {
 
 // ---- the way in ---------------------------------------------------------------------------------
 
-/// The session's head: a prompt is typed into the pane, an interrupt is its Escape. Answering,
-/// models and takeovers are the pane's.
-fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
+/// The session's head: a prompt is typed into the pane, an interrupt is its Escape, a screen
+/// question's answer is its option's number (or Escape). Transcript questions, models and
+/// takeovers are the pane's.
+fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Head {
     let (tx, mut rx) = mpsc::channel(16);
     tokio::spawn(async move {
         let not_here = || Err(CoreError::Bad("a herdr pane: do that in the pane".into()));
@@ -1149,11 +1343,47 @@ fn head(bin: String, hs: String, pane: String, sid: Sid) -> Head {
                         let _ = reply.send(Err(CoreError::Bad(why.into())));
                         continue;
                     }
-                    let r = herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &text]).await;
+                    let r = herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &text])
+                        .await
+                        .map_err(|e| match e {
+                            // blocked on its prompt: say so, "agent_not_ready" says nothing
+                            CoreError::Busy => CoreError::Conflict(WAITING.into()),
+                            e => e,
+                        });
                     if let Err(e) = &r {
                         tracing::debug!(%sid, %e, "prompt not typed into the herdr pane");
                     }
                     let _ = reply.send(r.map(drop));
+                }
+                Cmd::Answer {
+                    request_id,
+                    answer,
+                    reply,
+                } if request_id.starts_with(SCREEN_ASK) => {
+                    let key = match &answer {
+                        Answer::Option(i) => (i + 1).to_string(),
+                        Answer::Cancel => "esc".to_owned(),
+                        _ => {
+                            let why = "the pane's prompt takes one option, or Escape";
+                            let _ = reply.send(Err(CoreError::Bad(why.into())));
+                            continue;
+                        }
+                    };
+                    let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, &key])
+                        .await
+                        .map(drop);
+                    if r.is_ok() {
+                        if let Some(d) = d.upgrade() {
+                            if let Some(p) = d.answered_part(sid, &request_id, &answer) {
+                                let w =
+                                    d.write_items(|tx, _, published| put(tx, sid, &p, published));
+                                if let Err(e) = w {
+                                    tracing::warn!(%sid, %e, "the pane's answer was not stored");
+                                }
+                            }
+                        }
+                    }
+                    let _ = reply.send(r);
                 }
                 Cmd::Interrupt { reply } => {
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
@@ -1226,6 +1456,7 @@ mod tests {
     use femme_proto::rpc::PromptHow;
     use femme_proto::state::{ItemKind, ItemStatus};
     use femme_store::items as store_items;
+    use std::os::unix::fs::PermissionsExt as _;
 
     use crate::config::Config;
 
@@ -1662,6 +1893,192 @@ mod tests {
 {"type":"assistant","message":{"id":"a2","model":"claude-fable-5-1","content":[{"type":"text","text":"one file"}],"usage":{"input_tokens":2,"cache_read_input_tokens":40000,"cache_creation_input_tokens":500,"output_tokens":6}}}
 {"type":"system","subtype":"turn_duration","durationMs":12}
 "#;
+
+    /// What `herdr agent read` showed for a pane blocked on a Bash permission (2026-11-10).
+    const SCREEN: &str = r#"    progress.
+
+  Version 2, the real map, is still being built.
+
+✻ Waiting for 1 background agent to finish
+
+───────────────────────────────────────────────────────────────
+ Bash command · from the general-purpose agent
+ Build contact sheets from recording
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cd /tmp/claude-1000/-home-darkwarro-Documents-Web-Apps-Plat
+ │ form/766de32b-275e-4bda-aa13-1aba430a617d/scratchpad/v2 &&
+ │ mkdir -p fr && rm -f fr/* && ffmpeg -loglevel error -i
+ │ r1.webm -vf "fps=2,scale=640:-1,tile=6x5" -frames:v 2
+ │ fr/sheet%d.png && rtk ls fr; ffprobe -v error -show_entries
+ │ format=duration -of csv=p=0 r1.webm
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Compound command contains cd with write operation - manual
+ │ approval required to prevent path resolution bypass
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop b…
+"#;
+
+    #[test]
+    fn the_permission_prompt_on_the_screen_is_a_question_with_its_options() {
+        let (prompt, options) = screen_question(SCREEN).unwrap();
+        assert_eq!(options, ["Yes", "No"]);
+        let lines: Vec<&str> = prompt.lines().collect();
+        assert_eq!(lines[0], "Bash command · from the general-purpose agent");
+        assert_eq!(lines[1], "Build contact sheets from recording");
+        assert!(lines[2].starts_with("cd /tmp/claude-1000/"));
+        assert_eq!(lines[lines.len() - 1], "Do you want to proceed?");
+        assert!(prompt.contains("approval required to prevent path resolution bypass"));
+        assert!(!prompt.contains("╌"), "{prompt}");
+    }
+
+    #[test]
+    fn a_screen_with_no_prompt_at_its_end_is_no_question() {
+        // a numbered list in prose, no question above it
+        let prose = "The plan:\n  1. The nut shakes\n  2. The nuts fly up\n\n> \n";
+        assert_eq!(screen_question(prose), None);
+        // an answered prompt: the options scrolled up, output follows
+        let answered = format!("{SCREEN}\n fr/sheet1.png\n fr/sheet2.png\n 61.2\n\n> ");
+        assert_eq!(screen_question(&answered), None);
+        assert_eq!(screen_question(""), None);
+        // options not numbered from 1 are prose
+        assert_eq!(screen_question(" Ready?\n 2. No\n 3. Maybe\n"), None);
+    }
+
+    /// A `herdr` stand-in: `agent read` prints `<dir>/screen`, `pane send-keys` logs to
+    /// `<dir>/keys`, `agent prompt` is refused as blocked.
+    fn fake_herdr(dir: &Path) -> String {
+        let bin = dir.join("herdr");
+        let script = format!(
+            "#!/bin/sh\nwhile [ \"$1\" = --session ]; do shift 2; done\n\
+             case \"$1 $2\" in\n\
+             \"agent read\") cat {d}/screen ;;\n\
+             \"pane send-keys\") echo \"$3 $4\" >> {d}/keys ;;\n\
+             \"agent prompt\") echo agent_blocked; exit 1 ;;\n\
+             *) exit 1 ;;\nesac\n",
+            d = dir.display()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin.display().to_string()
+    }
+
+    const BLOCKED: &str = r#"{"id":"cli:pane:list","result":{"type":"pane_list","panes":[
+        {"agent":"claude","agent_session":{"agent":"claude","kind":"id","value":"u-1"},
+         "agent_status":"blocked","cwd":"/w","pane_id":"wA:p1","terminal_title_stripped":"fix it"}]}}"#;
+
+    fn question_items(d: &Daemon, sid: Sid) -> Vec<(ItemStatus, QuestionItem)> {
+        d.store
+            .read(|c| store_items::page_items(c, sid, None, 100))
+            .unwrap()
+            .into_iter()
+            .rev()
+            .filter(|i| i.kind == ItemKind::Question)
+            .map(|i| {
+                let q = serde_json::from_str(i.body.as_deref().unwrap()).unwrap();
+                (i.status, q)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_blocked_pane_asks_its_screen_prompt_and_an_answer_is_keys_into_the_pane() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("screen"), SCREEN).unwrap();
+        let bin = fake_herdr(dir.path());
+        let mut tails = HashMap::new();
+        let blocked = parse_panes("default", BLOCKED);
+        sync(&d, &bin, &blocked, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        let q = d
+            .pending_question(sid)
+            .unwrap()
+            .expect("the prompt is a question");
+        assert!(q.request_id.starts_with("herdr:wA:p1:"), "{}", q.request_id);
+        assert_eq!(q.options, ["Yes", "No"]);
+        assert!(q.prompt.starts_with("Bash command"));
+        // asked once: another look adds nothing
+        sync(&d, &bin, &blocked, &mut tails).await;
+        assert_eq!(question_items(&d, sid).len(), 1);
+
+        // a prompt meanwhile says what Claude waits on
+        let r = d
+            .sessions
+            .head(sid)
+            .unwrap()
+            .prompt("go", PromptHow::Queue)
+            .await;
+        assert_eq!(r, Err(CoreError::Conflict(WAITING.into())));
+
+        // the answer: its number into the pane, the item answered
+        d.answer_question(sid, &q.request_id, Answer::Option(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("keys")).unwrap(),
+            "wA:p1 1\n"
+        );
+        let items = question_items(&d, sid);
+        assert_eq!(items[0].0, ItemStatus::Answered);
+        assert_eq!(items[0].1.answered, Some(Answer::Option(0)));
+        // the pane goes on: nothing to close, the answer stands
+        let mut working = blocked.clone();
+        working[0].status = "working".into();
+        sync(&d, &bin, &working, &mut tails).await;
+        assert_eq!(question_items(&d, sid)[0].0, ItemStatus::Answered);
+
+        // escape cancels; text is not what the prompt takes
+        sync(&d, &bin, &blocked, &mut tails).await;
+        let q = d.pending_question(sid).unwrap().unwrap();
+        let r = d
+            .answer_question(sid, &q.request_id, Answer::Text("why".into()))
+            .await;
+        assert!(matches!(r, Err(CoreError::Bad(_))), "{r:?}");
+        d.answer_question(sid, &q.request_id, Answer::Cancel)
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(dir.path().join("keys"))
+            .unwrap()
+            .ends_with("wA:p1 esc\n"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_answered_in_the_pane_closes_the_question_here() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("screen"), SCREEN).unwrap();
+        let bin = fake_herdr(dir.path());
+        let mut tails = HashMap::new();
+        let blocked = parse_panes("default", BLOCKED);
+        sync(&d, &bin, &blocked, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        assert!(d.pending_question(sid).unwrap().is_some());
+        let mut idle = blocked.clone();
+        idle[0].status = "idle".into();
+        sync(&d, &bin, &idle, &mut tails).await;
+        let items = question_items(&d, sid);
+        assert_eq!(items[0].0, ItemStatus::Failed);
+        assert_eq!(items[0].1.reason.as_deref(), Some("answered in the pane"));
+        assert!(d.pending_question(sid).unwrap().is_none());
+
+        // a daemon that starts while the pane is blocked adopts the open question, no second one
+        sync(&d, &bin, &blocked, &mut tails).await;
+        let mut fresh = HashMap::new();
+        sync(&d, &bin, &blocked, &mut fresh).await;
+        assert_eq!(
+            question_items(&d, sid)
+                .iter()
+                .filter(|(s, _)| *s == ItemStatus::Pending)
+                .count(),
+            1
+        );
+        // and one that starts after the pane moved on closes what was left open
+        let mut later = HashMap::new();
+        sync(&d, &bin, &idle, &mut later).await;
+        assert!(d.pending_question(sid).unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn a_pane_becomes_a_session_with_its_transcript_and_goes_when_the_pane_does() {
