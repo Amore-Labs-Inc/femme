@@ -120,7 +120,10 @@ impl Browse {
     // that keeps no per-entry edits; the draft from before browsing is what is kept.
     pub fn up(&mut self, list: &[String], current: &str) -> Option<String> {
         let next = self.at.map_or(0, |i| i + 1);
-        let text = list.len().checked_sub(next + 1).map(|ix| list[ix].clone())?;
+        let text = list
+            .len()
+            .checked_sub(next + 1)
+            .map(|ix| list[ix].clone())?;
         if self.at.is_none() {
             self.draft = current.to_owned();
         }
@@ -139,10 +142,13 @@ impl Browse {
             i => {
                 let i = (i - 1).min(list.len().saturating_sub(1));
                 self.at = Some(i);
-                list.len().checked_sub(i + 1).map(|ix| list[ix].clone()).or_else(|| {
-                    self.at = None;
-                    Some(std::mem::take(&mut self.draft))
-                })
+                list.len()
+                    .checked_sub(i + 1)
+                    .map(|ix| list[ix].clone())
+                    .or_else(|| {
+                        self.at = None;
+                        Some(std::mem::take(&mut self.draft))
+                    })
             }
         }
     }
@@ -212,7 +218,11 @@ mod tests {
         b.end();
         assert!(!b.active());
         assert_eq!(b.up(&l, "b").as_deref(), Some("b"));
-        assert_eq!(b.down(&l).as_deref(), Some("b"), "the new draft is what was shown");
+        assert_eq!(
+            b.down(&l).as_deref(),
+            Some("b"),
+            "the new draft is what was shown"
+        );
     }
 
     #[test]
@@ -283,7 +293,11 @@ mod tests {
     #[test]
     fn handoffs_and_subagent_prompts_are_not_history() {
         let mut h = History::default();
-        h.echo(1, "This session is being continued from a previous conversation...", true);
+        h.echo(
+            1,
+            "This session is being continued from a previous conversation...",
+            true,
+        );
         let item = Item {
             sid: femme_proto::Id(1),
             item_id: "u".into(),

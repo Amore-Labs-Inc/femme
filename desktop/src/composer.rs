@@ -144,28 +144,30 @@ impl Composer {
                 }
             }));
             // The session's own `UserMessage` rows, which the transcript's subscription brings in.
-            subs.push(cx.subscribe(net, |this, _, ev: &ClientEvent, _| match &ev.0 {
-                Event::Changes {
-                    scope: Scope::Session(sid),
-                    rows,
-                    ..
-                } => {
-                    let h = this.history.entry(*sid).or_default();
-                    for row in rows {
-                        if let Row::Item(item) = row {
-                            h.item(item);
+            subs.push(
+                cx.subscribe(net, |this, _, ev: &ClientEvent, _| match &ev.0 {
+                    Event::Changes {
+                        scope: Scope::Session(sid),
+                        rows,
+                        ..
+                    } => {
+                        let h = this.history.entry(*sid).or_default();
+                        for row in rows {
+                            if let Row::Item(item) = row {
+                                h.item(item);
+                            }
                         }
                     }
-                }
-                Event::Reset {
-                    scope: Scope::Session(sid),
-                } => {
-                    if let Some(h) = this.history.get_mut(sid) {
-                        h.reset();
+                    Event::Reset {
+                        scope: Scope::Session(sid),
+                    } => {
+                        if let Some(h) = this.history.get_mut(sid) {
+                            h.reset();
+                        }
                     }
-                }
-                _ => {}
-            }));
+                    _ => {}
+                }),
+            );
         }
         Composer {
             net,
@@ -592,7 +594,7 @@ impl Composer {
                     .min_h(px(26.))
                     .font_family(FONT_MONO)
                     .text_size(BODY_SIZE)
-                    .child(div().truncate().child(format!("/{name}")))
+                    .child(div().truncate().child(format!("/{}", slash::label(&name))))
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.complete(&name, window, cx)),
                     )
