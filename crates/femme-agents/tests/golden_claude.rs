@@ -408,7 +408,7 @@ fn interrupt_while_a_question_is_pending_resolves_it() {
         .expect("control_cancel_request resolves the question");
     assert!(asked < resolved);
     assert!(k.contains(&"turn-:Interrupted".to_owned()), "{k:?}");
-    // nobody answered it (the user interrupted): the item fails, with the CLI's words as the reason
+    // nobody answered it (the user interrupted): the CLI's cancel fails the item at once
     assert_eq!(count(&ev, "done:Question:Answered"), 0, "{k:?}");
     let done = ev
         .iter()
@@ -424,11 +424,7 @@ fn interrupt_while_a_question_is_pending_resolves_it() {
         .unwrap();
     assert_eq!(*done.0, ItemStatus::Failed);
     assert!(done.1["answered"].is_null());
-    assert!(
-        done.1["reason"].as_str().unwrap().contains("rejected"),
-        "{}",
-        done.1
-    );
+    assert_eq!(done.1["reason"], "withdrawn by Claude", "{}", done.1);
 }
 
 #[test]

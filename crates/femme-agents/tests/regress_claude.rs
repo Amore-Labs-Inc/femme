@@ -570,8 +570,9 @@ fn rejected_plan_records_the_users_choice() {
     assert!(body.get("reason").is_none(), "{body}");
 }
 
-/// A question nobody answered because the CLI withdrew it (interrupt) ends `Failed` with the CLI's
-/// words, and never as an answered one.
+/// A question the CLI withdrew (`control_cancel_request`, e.g. an interrupt) ends `Failed` at once,
+/// never as an answered one; answering it afterwards is refused, and the call's late result
+/// changes nothing.
 #[test]
 fn question_withdrawn_by_the_agent_fails_with_its_reason() {
     let mut s = S::ready();
@@ -587,16 +588,21 @@ fn question_withdrawn_by_the_agent_fails_with_its_reason() {
     assert_eq!(s.d.status(), AgentStatus::Blocked);
     let ev = s.feed(json!({"type":"control_cancel_request","request_id":"rq"}));
     assert_eq!(resolved(&ev), ["rq"]);
-    let why = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
-    let ev = s.feed(tool_result("tq", why, true, Value::Null));
-    let (kind, status, body) = completed(&ev, "tq").expect("the question item ends");
+    let (kind, status, body) = completed(&ev, "tq").expect("the question item ends now");
     assert_eq!((*kind, *status), (ItemKind::Question, ItemStatus::Failed));
     assert_eq!(body["answered"], Value::Null);
-    assert_eq!(body["reason"], why);
-    assert!(
-        resolved(&ev).is_empty(),
-        "already resolved by the cancel: {ev:?}"
-    );
+    assert_eq!(body["reason"], "withdrawn by Claude");
+    assert_ne!(s.d.status(), AgentStatus::Blocked);
+    assert!(matches!(
+        s.d.answer("rq", &Answer::Option(0), &mut s.out),
+        Err(Error::UnknownRequest(_))
+    ));
+    assert!(s.wrote().is_empty());
+    let why = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
+    let ev = s.feed(tool_result("tq", why, true, Value::Null));
+    assert!(ev.is_empty(), "the late result adds nothing: {ev:?}");
+    let ev = s.feed(result_ok(&[&u]));
+    assert!(completed(&ev, "tq").is_none(), "{ev:?}");
 }
 
 /// A question that never gets a result at all (the turn ends, the process dies) ends `Failed` too,

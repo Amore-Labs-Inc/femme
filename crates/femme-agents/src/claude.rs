@@ -55,7 +55,9 @@
 //!   (several questions, some answered) asks only the rest.
 //! * Outcomes of a question item: `Answered` with the user's own answer (also a deliberate
 //!   Cancel, Deny or "Keep planning"), or `Failed` with a `reason` when it was never answered
-//!   because the turn was interrupted, the process exited or the CLI withdrew the request.
+//!   because the turn was interrupted, the process exited or the CLI withdrew the request. A
+//!   `control_cancel_request` fails the request's items at once ("withdrawn by Claude"), not when
+//!   the call's result or the turn's end comes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -171,6 +173,9 @@ struct Pending {
     sent: bool,
     /// `QuestionResolved` was emitted.
     resolved: bool,
+    /// The CLI withdrew it (`control_cancel_request`): its items already failed, the entry only
+    /// swallows the call's late result.
+    closed: bool,
 }
 
 /// Driver for `claude` in stream-json mode. One instance per agent process; after a daemon
@@ -1099,6 +1104,9 @@ impl ClaudeDriver {
         let Some(p) = self.pending.remove(&cid) else {
             return false;
         };
+        if p.closed {
+            return true;
+        }
         for part in p.parts {
             if !p.resolved {
                 ev.push(AgentEvent::QuestionResolved {
@@ -1401,6 +1409,7 @@ impl ClaudeDriver {
                 parts,
                 sent,
                 resolved: sent,
+                closed: false,
             },
         );
     }
@@ -1410,6 +1419,9 @@ impl ClaudeDriver {
         let Some(p) = self.pending.remove(cid) else {
             return;
         };
+        if p.closed {
+            return;
+        }
         for part in p.parts {
             if !p.resolved {
                 ev.push(AgentEvent::QuestionResolved {
@@ -1430,7 +1442,7 @@ impl ClaudeDriver {
         }
     }
 
-    /// The CLI no longer waits for `cid` (cancelled, or our answer was echoed).
+    /// The CLI read our answer to `cid` (its echo).
     fn resolve(&mut self, cid: &str, ev: &mut Vec<AgentEvent>) {
         if let Some(p) = self.pending.get_mut(cid) {
             if !p.resolved {
@@ -1439,6 +1451,39 @@ impl ClaudeDriver {
                     request_id: x.request_id.clone(),
                 }));
             }
+        }
+    }
+
+    /// The CLI withdrew the request `cid` (`control_cancel_request`, e.g. the turn was
+    /// interrupted): its questions fail now, so nobody is offered one the CLI no longer reads.
+    /// The entry stays, `closed`, until the call's result (or the turn's end) removes it.
+    fn withdraw(&mut self, cid: &str, ev: &mut Vec<AgentEvent>) {
+        let Some(p) = self.pending.get_mut(cid).filter(|p| !p.closed) else {
+            return;
+        };
+        p.closed = true;
+        p.sent = true;
+        let resolved = std::mem::replace(&mut p.resolved, true);
+        let parts: Vec<(String, String, Question)> = p
+            .parts
+            .iter()
+            .map(|x| (x.request_id.clone(), x.item_id.clone(), x.q.clone()))
+            .collect();
+        for (request_id, item_id, q) in parts {
+            if !resolved {
+                ev.push(AgentEvent::QuestionResolved { request_id });
+            }
+            self.off.item_close(&item_id);
+            ev.push(done(
+                item_id,
+                ItemKind::Question,
+                ItemStatus::Failed,
+                body(&QuestionItem {
+                    q,
+                    answered: None,
+                    reason: Some("withdrawn by Claude".to_owned()),
+                }),
+            ));
         }
     }
 
@@ -1596,7 +1641,7 @@ impl Driver for ClaudeDriver {
                 _ => ev.push(AgentEvent::Raw(v)), // hook_callback, mcp_message: we registered none
             },
             "control_cancel_request" => {
-                self.resolve(v["request_id"].as_str().unwrap_or(""), &mut ev)
+                self.withdraw(v["request_id"].as_str().unwrap_or(""), &mut ev)
             }
             "control_response" => self.control_response(offset, &v, &mut ev),
             "keep_alive"

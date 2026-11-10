@@ -66,9 +66,6 @@
     }
   },
   {
-    "Status": "Working"
-  },
-  {
     "ItemCompleted": {
       "id": "toolu_01DrRvd98DbGjurDMoPaJpsx",
       "kind": "Question",
@@ -82,10 +79,13 @@
           "B — Choose option B"
         ],
         "prompt": "Do you prefer A or B?",
-        "reason": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+        "reason": "withdrawn by Claude",
         "request_id": "8bf442a2-935a-4d3d-9006-19732f351a71"
       }
     }
+  },
+  {
+    "Status": "Working"
   },
   {
     "ItemCompleted": {
