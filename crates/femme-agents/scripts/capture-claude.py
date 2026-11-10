@@ -232,6 +232,9 @@ def scrub_line(line):
             m["memory_paths"] = {"auto": "/home/user/.claude/projects/-work-repo/memory/"}
         if "messaging_socket_path" in m:
             m["messaging_socket_path"] = "/run/user/1000/cc-socks/1.sock"
+    elif t == "system" and sub == "commands_changed":
+        # the user's own skills and commands
+        m["commands"] = scrub_init_response({"commands": []})["commands"]
     elif t == "system" and sub in ("hook_started", "hook_response", "hook_progress"):
         for k in ("output", "stdout", "stderr", "command"):
             if k in m:
@@ -470,6 +473,91 @@ def case_reinit(out):
     s.wait_ctl("femme-init-2")
     s.send(allow(req["request_id"], pick(0)(req["request"])))
     s.wait_result(40)
+    return s.close()
+
+
+# A stdio MCP server whose tools ask the user through `elicitation/create`: `ask_form` a form
+# (one optional text field), `ask_url` a URL-mode request it confirms with
+# `notifications/elicitation/complete` once answered.
+ELICIT_MCP = r'''
+import json, sys
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+def wait_reply(rid):
+    for line in sys.stdin:
+        m = json.loads(line)
+        if m.get("id") == rid and "method" not in m:
+            return m
+        if m.get("method") == "ping":
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+FORM = {"message": "Which release name should I use?",
+        "requestedSchema": {"type": "object", "properties": {"name": {"type": "string", "title": "Release name"},
+                                                               "draft": {"type": "boolean", "title": "Draft"}}}}
+URL = {"mode": "url", "message": "Sign in to Example to continue", "url": "https://example.com/auth?state=abc",
+       "elicitationId": "el-1"}
+TOOLS = [{"name": "ask_form", "description": "Asks the user for a release name", "inputSchema": {"type": "object", "properties": {}}},
+         {"name": "ask_url", "description": "Asks the user to sign in", "inputSchema": {"type": "object", "properties": {}}}]
+for line in sys.stdin:
+    m = json.loads(line)
+    meth, mid = m.get("method"), m.get("id")
+    if meth == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": m["params"]["protocolVersion"],
+              "capabilities": {"tools": {}}, "serverInfo": {"name": "elicit", "version": "1"}}})
+    elif meth == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
+    elif meth == "tools/call":
+        url = m["params"]["name"] == "ask_url"
+        send({"jsonrpc": "2.0", "id": "elicit-1", "method": "elicitation/create", "params": URL if url else FORM})
+        r = wait_reply("elicit-1")
+        if url and r.get("result", {}).get("action") == "accept":
+            send({"jsonrpc": "2.0", "method": "notifications/elicitation/complete", "params": {"elicitationId": "el-1"}})
+        send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "elicitation: " + json.dumps(r.get("result", r.get("error")))}]}})
+    elif meth == "ping":
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+'''
+
+
+def elicit_session(name, out):
+    path = os.path.join(os.path.dirname(SCRATCH), "elicit-mcp.py")
+    with open(path, "w") as f:
+        f.write(ELICIT_MCP)
+    cfg = json.dumps({"mcpServers": {"elicit": {"type": "stdio", "command": "python3", "args": [path]}}})
+    return Session(name, out, extra=["--strict-mcp-config", "--mcp-config=" + cfg])
+
+
+@case
+def case_elicit_form(out):
+    """An MCP server's form elicitation, accepted with the form's fields left empty."""
+    s = elicit_session("elicit_form", out)
+    first_prompt(s, "Call the mcp__elicit__ask_form tool once, then reply with exactly what it returned.")
+    drive(s, lambda req: {"action": "accept", "content": {}})
+    return s.close()
+
+
+@case
+def case_elicit_url(out):
+    """A URL-mode elicitation, accepted; the server then confirms it complete."""
+    s = elicit_session("elicit_url", out)
+    first_prompt(s, "Call the mcp__elicit__ask_url tool once, then reply with exactly what it returned.")
+    drive(s, lambda req: {"action": "accept"})
+    return s.close()
+
+
+@case
+def case_unknown_ctl(out):
+    """A control request FEMME has no answer for (a hook callback we register here only to provoke
+    one), refused with an error response: the CLI carries on."""
+    s = Session("unknown_ctl", out)
+    s.send(control("initialize", "femme-init", hooks={"PreToolUse": [{"matcher": "Bash", "hookCallbackIds": ["h1"]}]}))
+    s.send(user_msg("Run `echo hi` with your Bash tool and then reply with the single word done.", uid(1)))
+    end = time.time() + 100
+    while time.time() < end:
+        m = s.wait(lambda m: m.get("type") in ("control_request", "result"), max(1, end - time.time()))
+        if m is None or m["type"] == "result":
+            break
+        time.sleep(0.4)
+        s.send({"type": "control_response", "response": {"subtype": "error", "request_id": m["request_id"],
+                                                          "error": "FEMME does not handle %s" % m["request"]["subtype"]}})
     return s.close()
 
 
