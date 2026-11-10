@@ -191,8 +191,9 @@ pub struct ClaudeDriver {
     /// `on_exit` ran: nothing more is written.
     exited: bool,
     /// Reads a TUI's transcript file (a herdr pane), not a stream-json process: nobody sends
-    /// `control_request`s, so `AskUserQuestion` and `ExitPlanMode` tool calls on the main thread
-    /// are the questions, and the file's `tool_use_result` says how the user answered in the TUI.
+    /// `control_request`s, so an `AskUserQuestion` tool call on the main thread is the question,
+    /// and the file's `tool_use_result` says how the user answered in the TUI. `ExitPlanMode` is
+    /// only its Plan item: the pane's approval dialog is asked from the screen.
     mirror: bool,
     seq: u64,
     off: Offsets,
@@ -823,10 +824,8 @@ impl ClaudeDriver {
                     ItemStatus::Completed,
                     body(&Plan { text }),
                 ));
-                if self.mirror {
-                    let at = self.off.open_at(&id);
-                    self.ask(at, &id, &id, PLAN, &input, None, ev);
-                }
+                // a mirror asks nothing here: the pane's own "Would you like to proceed?" dialog is
+                // read from its screen (femmed's herdr side), with the TUI's real options
             }
             ASK => {
                 if self.mirror {
@@ -1025,8 +1024,10 @@ impl ClaudeDriver {
         let call = self.calls.remove(id);
         self.off.item_close(id);
         let asked = self.take_pending(id, is_error, &output, &line["tool_use_result"], ev);
-        if asked && call.as_ref().is_none_or(|c| self.hides(&c.name)) {
-            return; // the Question/Plan items are the record of this call
+        // the Question/Plan items are the record of this call; a hidden call nobody asked about (a
+        // mirror's ExitPlanMode) has no ToolCall item, and one would overwrite its Plan item
+        if (asked && call.is_none()) || call.as_ref().is_some_and(|c| self.hides(&c.name)) {
+            return;
         }
         let status = if is_error {
             ItemStatus::Failed
@@ -2851,22 +2852,48 @@ mod tests {
         assert!(f.d.tasks.is_empty());
     }
 
-    /// A pane's transcript never carries a `control_request`: the mirror asks on the tool call.
+    /// A pane's transcript never carries a `control_request`: the mirror asks on the
+    /// AskUserQuestion call. ExitPlanMode is its Plan item only, the pane's own dialog is asked
+    /// from the screen.
     #[test]
     fn a_mirror_asks_on_the_ask_user_question_call_itself() {
-        let text = std::fs::read_to_string("fixtures/claude/question.jsonl").unwrap();
-        let asked = |mut d: ClaudeDriver| {
-            let mut n = 0;
-            for (i, l) in text.lines().enumerate().take(42) {
-                let ev = d.on_line(i as u64, l.as_bytes(), &mut Out::default());
-                n += ev
-                    .iter()
-                    .filter(|e| matches!(e, AgentEvent::QuestionAsked { .. }))
-                    .count();
+        let run = |case: &str, mut d: ClaudeDriver, take: usize| {
+            let text = std::fs::read_to_string(format!("fixtures/claude/{case}.jsonl")).unwrap();
+            let mut ev = Vec::new();
+            for (i, l) in text.lines().enumerate().take(take) {
+                ev.extend(d.on_line(i as u64, l.as_bytes(), &mut Out::default()));
             }
-            n
+            ev
         };
-        assert_eq!(asked(ClaudeDriver::new()), 0);
-        assert_eq!(asked(ClaudeDriver::mirror()), 1);
+        let asked = |ev: &[AgentEvent]| {
+            ev.iter()
+                .filter(|e| matches!(e, AgentEvent::QuestionAsked { .. }))
+                .count()
+        };
+        assert_eq!(asked(&run("question", ClaudeDriver::new(), 42)), 0);
+        assert_eq!(asked(&run("question", ClaudeDriver::mirror(), 42)), 1);
+        // the plan capture without its control_request lines, as a pane's transcript has it
+        let text = std::fs::read_to_string("fixtures/claude/plan.jsonl").unwrap();
+        let mut d = ClaudeDriver::mirror();
+        let mut ev = Vec::new();
+        for (i, l) in text.lines().enumerate() {
+            if !l.contains("\"control_request\"") {
+                ev.extend(d.on_line(i as u64, l.as_bytes(), &mut Out::default()));
+            }
+        }
+        assert_eq!(asked(&ev), 0, "ExitPlanMode asks nothing in a mirror");
+        let plans: Vec<_> = ev
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ItemCompleted { id, kind, .. } => Some((id.clone(), *kind)),
+                _ => None,
+            })
+            .filter(|(_, k)| *k == ItemKind::Plan)
+            .collect();
+        assert_eq!(plans.len(), 1, "{ev:?}");
+        // and its result does not turn the Plan item into a tool call
+        assert!(!ev.iter().any(|e| matches!(e,
+            AgentEvent::ItemCompleted { id, kind: ItemKind::ToolCall | ItemKind::ToolResult, .. }
+            if id.starts_with(plans[0].0.as_str()))));
     }
 }
