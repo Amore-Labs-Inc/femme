@@ -44,6 +44,40 @@ String pathSegment(String s) {
   return out.toString();
 }
 
+// ---- /api/meta ---------------------------------------------------------------------------------
+
+/// What `/api/meta` says that the Accounts section uses.
+class BoxMeta {
+  const BoxMeta({this.cap, this.state});
+
+  /// The box's default rotation cap, in percent.
+  final int? cap;
+
+  /// The scheduler's word, `working (31% used, pause at 60%)`.
+  final String? state;
+}
+
+/// `GET /api/meta`; what is not there is null.
+BoxMeta parseMeta(String body) {
+  final v = _json(body);
+  final cap = v is Map ? v['cap'] : null;
+  return BoxMeta(
+    cap: cap is int && cap >= 0 && cap <= 255 ? cap : null,
+    state: _text(v, 'state'),
+  );
+}
+
+/// The footer: where the box moves off an account, and what its scheduler says (desktop
+/// `accounts/view.rs` `usage_line`, word for word).
+String schedulerLine(BoxMeta meta) {
+  final cap = meta.cap;
+  return [
+    cap == null ? 'switches account at its cap' : 'switches account at $cap%',
+    'agents pause when every account is past it',
+    ?meta.state,
+  ].join(' · ');
+}
+
 // ---- Claude sign-in ----------------------------------------------------------------------------
 
 /// The link of the Claude sign-in in progress (`login.claude` of `/api/accounts` and of every

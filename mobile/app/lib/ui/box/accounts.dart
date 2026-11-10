@@ -28,6 +28,9 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   int? _defaultCap;
   int? _switching;
 
+  /// What `/api/meta` says: the default cap and the scheduler's word (the footer).
+  BoxMeta? _meta;
+
   /// The link of a Claude sign-in in progress on the box.
   String? _loginLink;
 
@@ -36,7 +39,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   Timer? _send;
 
   @override
-  Duration get every => const Duration(seconds: 30);
+  Duration get every => const Duration(seconds: 10);
 
   @override
   void dispose() {
@@ -68,13 +71,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
     } catch (e) {
       if (mounted) setState(() => _capsKnown = !isUnsupported(e));
     }
-    if (_defaultCap == null) {
-      try {
-        final meta = await boardCall(req, 'GET', '/api/meta');
-        if (mounted) setState(() => _defaultCap = parseMetaCap(meta));
-      } catch (_) {
-        // the placeholder just says "default"
+    try {
+      final meta = parseMeta(await boardCall(req, 'GET', '/api/meta'));
+      if (mounted) {
+        setState(() {
+          _meta = meta;
+          _defaultCap = meta.cap ?? _defaultCap;
+        });
       }
+    } catch (_) {
+      // the footer says less without it; the cap placeholder just says "default"
     }
   }
 
@@ -146,13 +152,17 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
     final now = DateTime.now();
     return CupertinoListSection.insetGrouped(
       header: const Text('Accounts'),
-      footer: _capsKnown
-          ? Text(
-              'Caps: the box moves on when an account reaches them '
-              '($capMin–$capMax %, empty = box default'
-              '${_defaultCap == null ? '' : ' $_defaultCap %'}).',
-            )
-          : null,
+      footer: _meta == null && !_capsKnown
+          ? null
+          : Text(
+              [
+                if (_meta != null) '${schedulerLine(_meta!)}.',
+                if (_capsKnown)
+                  'Caps: the box moves on when an account reaches them '
+                      '($capMin–$capMax %, empty = box default'
+                      '${_defaultCap == null ? '' : ' $_defaultCap %'}).',
+              ].join('\n'),
+            ),
       children: [
         if (accounts == null && _error == null)
           const CupertinoListTile(title: CupertinoActivityIndicator()),

@@ -64,6 +64,24 @@ void main() {
     expect(pathSegment('a?b#c'), 'a%3Fb%23c');
   });
 
+  test('meta: the scheduler line says where the box moves on', () {
+    expect(
+      schedulerLine(parseMeta('{}')),
+      'switches account at its cap · agents pause when every account is past it',
+    );
+    final m = parseMeta(
+      '{"cap":60,"state":"working (31% used, pause at 60%)","deploy":null}',
+    );
+    expect(m.cap, 60);
+    expect(
+      schedulerLine(m),
+      'switches account at 60% · agents pause when every account is past it'
+      ' · working (31% used, pause at 60%)',
+    );
+    expect(parseMeta('not json').cap, isNull);
+    expect(parseMeta('{"cap":"60","state":""}').state, isNull);
+  });
+
   test('login link: login.claude, or none', () {
     expect(parseLoginLink(jsonEncode(accounts(login: link))), link);
     expect(parseLoginLink(jsonEncode(accounts())), isNull);
