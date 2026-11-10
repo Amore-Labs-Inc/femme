@@ -48,12 +48,15 @@ usage() {
   printf '}'
 }
 
-# account NUMBER STATE USAGE: one account of `cswap list --json`; STATE is idle, active, disabled or
-# active-disabled
+# account NUMBER STATE USAGE [LOGIN]: one account of `cswap list --json`; STATE is idle, active,
+# disabled or active-disabled; LOGIN, a JSON value, is its loginExpiresAt (absent when not given)
 account() {
   case $2 in *active*) active=true ;; *) active=false ;; esac
   case $2 in *disabled*) disabled=',"disabled":true' ;; *) disabled='' ;; esac
-  printf '{"number":%s,"email":"user%s@example.com","active":%s%s,"usage":%s}' "$1" "$1" "$active" "$disabled" "$3"
+  login=''
+  [ $# -lt 4 ] || login=",\"loginExpiresAt\":$4"
+  printf '{"number":%s,"email":"user%s@example.com","active":%s%s,"usage":%s%s}' \
+    "$1" "$1" "$active" "$disabled" "$3" "$login"
 }
 
 # accounts ACCOUNT...: what the fake `cswap list --json` prints from now on
@@ -252,6 +255,43 @@ bad_fable_cap() {  # a FABLE_CAP that is not a whole percent stops the script be
   ! run && no_calls && logged "FABLE_CAP is not a whole percent"
 }
 
+signin_ended_active() {  # 2's sign-in ends far ahead: left alone
+  fresh
+  accounts "$(account 1 active "$(usage 10 10 10)" '"2026-11-01T00:00:00Z"')" \
+    "$(account 2 idle "$(usage 10 10 10)" '"2099-01-01T00:00:00.123Z"')"
+  run && calls_are "disable 1" "switch --strategy best" && held_are 1 \
+    && logged "account 1 held: sign-in ended 2026-11-01T00:00:00Z"
+}
+
+signin_ended_and_cap() {  # both rules trip: listed together; a fraction in the date is kept as given
+  fresh
+  accounts "$(account 1 active "$(usage 10 10 10)")" \
+    "$(account 2 idle "$(usage 85 10 10)" '"2026-11-01T00:00:00.5Z"')"
+  caps '{"2": {"five_hour": 80}}'
+  run && calls_are "disable 2" && held_are 2 \
+    && logged "account 2 held: 5-hour at 85% (cap 80%), sign-in ended 2026-11-01T00:00:00.5Z"
+}
+
+signin_renewed() {  # a new sign-in moved 2's date ahead: back; 3's has still ended: still held
+  fresh
+  held 3 2
+  accounts "$(account 1 active "$(usage 10 10 10)")" \
+    "$(account 2 disabled "$(usage 10 10 10)" '"2099-01-01T00:00:00Z"')" \
+    "$(account 3 disabled "$(usage 10 10 10)" '"2026-11-01T00:00:00Z"')"
+  run && calls_are "enable 2" && held_are 3 \
+    && logged "account 2 back: Fable weekly at 10% (cap 96%), sign-in ends 2099-01-01T00:00:00Z"
+}
+
+signin_unknown() {  # no date, null, garbled: no sign-in rule, so nothing held; held ones still come back
+  fresh
+  accounts "$(account 1 active "$(usage 10 10 10)")" "$(account 2 idle "$(usage 10 10 10)" null)" \
+    "$(account 3 idle "$(usage 10 10 10)" '"yesterday"')" "$(account 4 idle "$(usage 10 10 10)" 1700000000)"
+  run && no_calls && none_held \
+    && held 2 && accounts "$(account 1 active "$(usage 10 10 10)")" \
+      "$(account 2 disabled "$(usage 10 10 10)" null)" \
+    && run && calls_are "enable 2" && none_held
+}
+
 # ---- run every case under each shell ----
 
 total=0 failed=0
@@ -290,6 +330,10 @@ for sh in sh dash bash; do
   check "h: out-of-range, fractional, string, boolean caps are ignored and logged" bad_cap_values
   check "i: caps.json is re-read every pass of the loop" caps_reread
   check "j: no duplicate lines in the held file over three passes" no_duplicates
+  check "l: an active account whose sign-in ended is held, the box moves without --model" signin_ended_active
+  check "l: a sign-in that ended and a cap both trip: both named in the log line" signin_ended_and_cap
+  check "l: a new sign-in moves the date ahead: enabled again; still ended: still held" signin_renewed
+  check "l: no, null or garbled loginExpiresAt: no sign-in rule, neither holds nor blocks a release" signin_unknown
   check "cswap list failing or without accounts changes nothing" list_fails
   check ".env is optional and still read when present" env_file
   check "a bad FABLE_CAP stops the script before any change" bad_fable_cap

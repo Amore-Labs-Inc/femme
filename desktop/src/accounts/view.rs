@@ -12,14 +12,14 @@ use gpui::{
 use gpui_component::input::{Input, InputState};
 use gpui_component::Sizable as _;
 
-use super::model::{Account, AccountList, Key, Meta, Usage};
+use super::model::{Account, AccountList, Key, Level, Meta, Usage};
 use super::{clock, AccountsOverlay, CapStatus, Load};
 use crate::motion::Appear;
 use crate::theme::{
     self, bad, bar, hover, ink, muted, on_bar, panel, paper, pause, work, BODY_SIZE, FONT_MONO,
     FONT_PIXEL, FONT_UI, RULE, TB_SIZE,
 };
-use crate::ui::{button, button_dark, card, dialog, meta, ruled, ruled_sides, st};
+use crate::ui::{button, button_dark, card, dialog, dot, meta, ruled, ruled_sides, st};
 
 /// The footer: where the box moves off an account, and what its scheduler says.
 pub(super) fn usage_line(meta: &Meta) -> String {
@@ -268,10 +268,11 @@ impl AccountsOverlay {
     }
 
     /// One account: its title line with the tags and `switch`, a bar per window, a note when the
-    /// reading is old or missing, and its two caps.
+    /// reading is old or missing, the sign-in line when its end is near, and its two caps.
     fn account_card(&self, a: &Account, now: i64, offset: i64, cx: &mut Context<Self>) -> Div {
         let caps = self.caps_of(a.number);
         let five_cap = caps.five_hour.or(self.meta.cap);
+        let sign_in = a.sign_in(now).map(|(line, level)| self.sign_in_row(a.number, line, level, cx));
         let switch = (!a.active).then(|| {
             let n = a.number;
             div().ml_auto().child(
@@ -303,7 +304,34 @@ impl AccountsOverlay {
             .child(head)
             .children(bars)
             .children(a.note(now).map(meta))
+            .children(sign_in)
             .children(self.caps_row(a.number))
+    }
+
+    /// `● sign-in ends in 7 d`: an amber dot within 10 days, a red one (and red words) under two
+    /// days or once ended, with `sign in again`, which runs the `+ add` flow: `cswap add` refreshes
+    /// the stored account in place, so no second slot appears.
+    fn sign_in_row(&self, n: u32, line: String, level: Level, cx: &mut Context<Self>) -> Div {
+        let bad_level = level == Level::Bad;
+        let signing_in = matches!(&self.accounts, Load::Ready(d) if d.login.is_some());
+        let can_add = !self.busy && !signing_in;
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(dot(if bad_level { bad() } else { pause() }))
+            .child(meta(line).when(bad_level, |m| m.text_color(bad())))
+            .when(bad_level, |row| {
+                row.child(
+                    small(("sign-in", n), "sign in again", !can_add).on_click(cx.listener(
+                        move |t, _, _, cx| {
+                            if can_add {
+                                t.login_start(cx);
+                            }
+                        },
+                    )),
+                )
+            })
     }
 
     /// `rotate at  5h [__] %  7d [__] %`: the two caps of an account, empty for the box's default.

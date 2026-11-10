@@ -191,6 +191,8 @@ pub struct AccountsOverlay {
     rows: HashMap<u32, CapRow>,
     reload: Option<Task<()>>,
     ticker: Option<Task<()>>,
+    /// The closed card's slow re-read of the accounts, for the menu's sign-in dot.
+    watcher: Option<Task<()>>,
     ticks: u32,
 }
 
@@ -206,7 +208,7 @@ impl AccountsOverlay {
     /// A closed card over the daemon `net` talks to (or over the fixture file
     /// `FEMME_ACCOUNTS_FIXTURE` names, which wins; with neither it says there is no daemon).
     pub fn new(net: Option<Entity<Net>>, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut this = Self {
             source: Source::pick(net),
             open: false,
             focus: cx.focus_handle(),
@@ -224,7 +226,22 @@ impl AccountsOverlay {
             rows: HashMap::new(),
             reload: None,
             ticker: None,
+            watcher: None,
             ticks: 0,
+        };
+        this.watch_sign_ins(cx);
+        this
+    }
+
+    /// Whether an account's sign-in has ended or ends within two days: the menu's red dot.
+    pub fn sign_in_bad(&self) -> bool {
+        let now = clock::now();
+        match &self.accounts {
+            Load::Ready(doc) => match &doc.list {
+                AccountList::Rows(rows) => rows.iter().any(|a| a.sign_in_bad(now)),
+                _ => false,
+            },
+            _ => false,
         }
     }
 

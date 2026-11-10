@@ -20,7 +20,8 @@
             ]
           },
           "usageFetchedAt": "2026-11-03T09:59:30Z",
-          "usageAgeSeconds": 30.0
+          "usageAgeSeconds": 30.0,
+          "loginExpiresAt": "2026-11-16T10:00:00Z"
         },
         {
           "number": 2,
@@ -39,7 +40,8 @@
             ]
           },
           "usageFetchedAt": "2026-11-03T09:59:30Z",
-          "usageAgeSeconds": 30.0
+          "usageAgeSeconds": 30.0,
+          "loginExpiresAt": "2027-05-01T00:00:00Z"
         },
         {
           "number": 3,
@@ -55,7 +57,8 @@
             "sevenDay": {"pct": 99.0, "resetsAt": "2026-11-04T01:00:00+00:00", "countdown": "15h 0m", "clock": "Nov 4 01:00"}
           },
           "usageFetchedAt": "2026-11-03T09:59:30Z",
-          "usageAgeSeconds": 30.0
+          "usageAgeSeconds": 30.0,
+          "loginExpiresAt": "2026-11-02T08:00:00Z"
         },
         {
           "number": 4,

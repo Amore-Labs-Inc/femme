@@ -20,6 +20,8 @@ const REFRESH: u32 = 10;
 const POLL_GITHUB: u32 = 3;
 /// How long a cap box rests after a keystroke before its value is sent.
 const CAP_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How often the closed card re-reads the accounts for the menu's sign-in dot.
+const WATCH: Duration = Duration::from_secs(10 * 60);
 
 /// One thing the card reads from the box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +50,7 @@ impl Step {
 /// Everything the card shows, in the order it needs it.
 pub(super) const ALL: [Step; 4] = [Step::Accounts, Step::Keys, Step::Caps, Step::Meta];
 const KEYS: [Step; 1] = [Step::Keys];
+const ACCOUNTS: [Step; 1] = [Step::Accounts];
 const CAPS: [Step; 1] = [Step::Caps];
 
 /// The body of a board call that went through, else why it did not: the board's own words for an
@@ -113,6 +116,24 @@ impl AccountsOverlay {
                     return;
                 }
             }
+        }));
+    }
+
+    /// Reads the accounts now and every [`WATCH`] while the card is closed, so the menu can show a
+    /// sign-in that has ended without the card ever having been opened.
+    pub(super) fn watch_sign_ins(&mut self, cx: &mut Context<Self>) {
+        self.watcher = Some(cx.spawn(async move |this, cx| loop {
+            if this
+                .update(cx, |t, cx| {
+                    if !t.open && !t.busy && !t.reading() {
+                        t.read(&ACCOUNTS, cx);
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+            cx.background_executor().timer(WATCH).await;
         }));
     }
 
