@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -7,12 +8,20 @@ import '../net/link.dart';
 import '../net/models.dart';
 import '../net/rpc.dart';
 import 'outbox.dart';
+import 'prefs.dart';
 import 'transcript.dart';
 
 /// The app's copy of the box: sessions, panes, issues, the transcripts of open sessions and the
 /// outbox. Fed by a [Link]'s events; screens listen to it.
 class Store extends ChangeNotifier {
-  Store();
+  /// [keeper] holds the outbox across restarts (default: the loaded [Prefs]); the entries it
+  /// held come back at once and are sent on the next connection.
+  Store({OutboxKeeper? keeper}) : _keeper = keeper ?? Prefs.current {
+    _restoreOutbox();
+  }
+
+  final OutboxKeeper? _keeper;
+  String? _savedOutbox;
 
   Requester? _link;
   StreamSubscription<S2C>? _sub;
@@ -86,7 +95,9 @@ class Store extends ChangeNotifier {
       }
     }
     for (final o in _outbox.values) {
-      if (o.state == OutboxState.failed && o.retryable) retry(o.op).ignore();
+      if ((o.state == OutboxState.failed && o.retryable) || o.unsent) {
+        retry(o.op).ignore();
+      }
     }
   }
 
@@ -284,6 +295,7 @@ class Store extends ChangeNotifier {
   }
 
   Future<void> _deliver(OutboxEntry o) async {
+    o.unsent = false;
     final link = _link;
     if (link == null) {
       _failed(o, 'not connected');
@@ -315,6 +327,40 @@ class Store extends ChangeNotifier {
     _outbox.removeWhere(
       (_, o) => o.state == OutboxState.accepted && o.ts < cutoff,
     );
+  }
+
+  /// Every change goes through here, so the outbox on disk follows it: the entries still on
+  /// their way or failed (an accepted one has reached the box and needs no resend).
+  @override
+  void notifyListeners() {
+    _saveOutbox();
+    super.notifyListeners();
+  }
+
+  void _saveOutbox() {
+    final keeper = _keeper;
+    if (keeper == null) return;
+    final keep = [
+      for (final o in _outbox.values)
+        if (o.state != OutboxState.accepted) o.toJson(),
+    ];
+    final json = keep.isEmpty ? null : jsonEncode(keep);
+    if (json == _savedOutbox) return;
+    _savedOutbox = json;
+    keeper.saveOutbox(json);
+  }
+
+  void _restoreOutbox() {
+    final json = _savedOutbox = _keeper?.outboxJson;
+    if (json == null) return;
+    try {
+      for (final j in jsonDecode(json) as List) {
+        final o = OutboxEntry.fromJson(j);
+        if (o != null) _outbox[o.op] = o;
+      }
+    } catch (_) {
+      // A bad write is dropped, not crashed on.
+    }
   }
 
   void _failed(OutboxEntry o, String why) {

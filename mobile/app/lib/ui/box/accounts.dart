@@ -4,9 +4,11 @@ import 'package:flutter/cupertino.dart';
 
 import '../../net/rpc.dart';
 import '../../state/box.dart';
+import '../../state/box_flows.dart';
 import '../femme.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'add_account.dart';
 import 'poll.dart';
 import 'prs.dart';
 
@@ -26,12 +28,18 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   int? _defaultCap;
   int? _switching;
 
+  /// What `/api/meta` says: the default cap and the scheduler's word (the footer).
+  BoxMeta? _meta;
+
+  /// The link of a Claude sign-in in progress on the box.
+  String? _loginLink;
+
   /// Caps typed but not sent yet (sent 500 ms after the last change).
   final _pending = <int, (int?, int?)>{};
   Timer? _send;
 
   @override
-  Duration get every => const Duration(seconds: 30);
+  Duration get every => const Duration(seconds: 10);
 
   @override
   void dispose() {
@@ -51,6 +59,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
         setState(() {
           _accounts = parsed.accounts ?? _accounts;
           _error = parsed.error;
+          _loginLink = parseLoginLink(body);
         });
       }
     } catch (e) {
@@ -62,14 +71,29 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
     } catch (e) {
       if (mounted) setState(() => _capsKnown = !isUnsupported(e));
     }
-    if (_defaultCap == null) {
-      try {
-        final meta = await boardCall(req, 'GET', '/api/meta');
-        if (mounted) setState(() => _defaultCap = parseMetaCap(meta));
-      } catch (_) {
-        // the placeholder just says "default"
+    try {
+      final meta = parseMeta(await boardCall(req, 'GET', '/api/meta'));
+      if (mounted) {
+        setState(() {
+          _meta = meta;
+          _defaultCap = meta.cap ?? _defaultCap;
+        });
       }
+    } catch (_) {
+      // the footer says less without it; the cap placeholder just says "default"
     }
+  }
+
+  /// "+ add": a Claude sign-in, or the one already in progress.
+  Future<void> _add() async {
+    final link = Femme.of(context).link;
+    final added = await showAddAccount(
+      context,
+      (r) => link.req(r),
+      link: _loginLink,
+    );
+    if (mounted) await poll();
+    if (added && mounted) actionHaptic();
   }
 
   Future<void> _switch(Account a) async {
@@ -128,13 +152,17 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
     final now = DateTime.now();
     return CupertinoListSection.insetGrouped(
       header: const Text('Accounts'),
-      footer: _capsKnown
-          ? Text(
-              'Caps: the box moves on when an account reaches them '
-              '($capMin–$capMax %, empty = box default'
-              '${_defaultCap == null ? '' : ' $_defaultCap %'}).',
-            )
-          : null,
+      footer: _meta == null && !_capsKnown
+          ? null
+          : Text(
+              [
+                if (_meta != null) '${schedulerLine(_meta!)}.',
+                if (_capsKnown)
+                  'Caps: the box moves on when an account reaches them '
+                      '($capMin–$capMax %, empty = box default'
+                      '${_defaultCap == null ? '' : ' $_defaultCap %'}).',
+              ].join('\n'),
+            ),
       children: [
         if (accounts == null && _error == null)
           const CupertinoListTile(title: CupertinoActivityIndicator()),
@@ -151,6 +179,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
             caps: _capsKnown ? _capOf(a.number) : null,
             defaultCap: _defaultCap,
             onCap: (v) => _setCap(a.number, v),
+          ),
+        if (accounts != null)
+          CupertinoListTile(
+            leading: const Icon(CupertinoIcons.add_circled),
+            title: Text(
+              _loginLink == null
+                  ? 'Add Claude account'
+                  : 'Finish adding the account',
+            ),
+            onTap: _switching == null ? _add : null,
           ),
       ],
     );

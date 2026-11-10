@@ -97,9 +97,12 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
             ),
           ),
         ),
-        const CupertinoListTile(
-          title: Text('Link round-trip'),
-          additionalInfo: Text('n/a'),
+        CupertinoListTile(
+          title: const Text('Link round-trip'),
+          additionalInfo: Text(switch (f.link.state.value.rtt) {
+            null => 'n/a',
+            final rtt => rttText(rtt),
+          }),
         ),
         if (_error != null)
           CupertinoListTile(

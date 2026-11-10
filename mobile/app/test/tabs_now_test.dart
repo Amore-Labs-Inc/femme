@@ -191,4 +191,126 @@ void main() {
     expect(find.text('Platform'), findsNothing); // Chats is offstage now
     await t.pumpWidget(const SizedBox());
   });
+
+  testWidgets('a multi-select question on Now ticks options and sends them', (
+    t,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await Prefs.load();
+    final store = fakeStore();
+    store.apply(
+      msg(
+        changes(
+          {'Session': sid},
+          30,
+          [
+            {
+              'Item': itemJson(
+                id: 'q1',
+                seq: 5,
+                kind: 'Question',
+                status: 'Pending',
+                body: questionBody
+                    .replaceFirst('"multi":false', '"multi":true')
+                    .replaceFirst(
+                      '"no, keep two"',
+                      '"no, keep two","split in three"',
+                    ),
+              ),
+            },
+          ],
+        ),
+      ),
+    );
+    final link = _RecordingLink();
+    await t.pumpWidget(
+      Femme(
+        store: store,
+        link: link,
+        prefs: prefs,
+        child: const CupertinoApp(home: NowTab()),
+      ),
+    );
+    expect(find.text('Fold it into one lesson?'), findsOneWidget);
+    expect(find.text('☐  yes, fold it'), findsOneWidget);
+    expect(find.text('☐  split in three'), findsOneWidget);
+    expect(find.text('Other…'), findsNothing);
+
+    final send = find.widgetWithText(CupertinoButton, 'Send');
+    expect(t.widget<CupertinoButton>(send).onPressed, isNull);
+    await t.tap(find.text('☐  yes, fold it'));
+    await t.pump();
+    await t.tap(find.text('☐  split in three'));
+    await t.pump();
+    expect(find.text('☑  yes, fold it'), findsOneWidget);
+    expect(find.text('☑  split in three'), findsOneWidget);
+    expect(link.sent, isEmpty, reason: 'ticking sends nothing');
+
+    await t.tap(send);
+    await t.pump();
+    expect(
+      link.sent.single,
+      Req.answerQuestion(sid, 'toolu_01ABC', Answer.options([0, 2])),
+    );
+    await t.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a single-select question keeps the one-tap buttons', (t) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await Prefs.load();
+    final store = fakeStore();
+    store.apply(
+      msg(
+        changes(
+          {'Session': sid},
+          30,
+          [
+            {
+              'Item': itemJson(
+                id: 'q1',
+                seq: 5,
+                kind: 'Question',
+                status: 'Pending',
+                body: questionBody,
+              ),
+            },
+          ],
+        ),
+      ),
+    );
+    final link = _RecordingLink();
+    await t.pumpWidget(
+      Femme(
+        store: store,
+        link: link,
+        prefs: prefs,
+        child: const CupertinoApp(home: NowTab()),
+      ),
+    );
+    expect(find.textContaining('☐'), findsNothing);
+    await t.tap(find.text('no, keep two'));
+    await t.pump();
+    expect(
+      link.sent.single,
+      Req.answerQuestion(sid, 'toolu_01ABC', Answer.option(1)),
+    );
+    await t.pumpWidget(const SizedBox());
+  });
+}
+
+/// A link that answers every request `Ok` at once and keeps what was asked.
+class _RecordingLink extends Link {
+  _RecordingLink() : super(clientInstance: 1);
+  final sent = <Object>[];
+
+  @override
+  Future<Resp> req(
+    Object req, {
+    String? op,
+    Duration? timeout,
+    bool resend = true,
+  }) {
+    if (req is Map && req.containsKey('AnswerQuestion')) sent.add(req);
+    return Future.value(const Resp('Ok', 'Ok'));
+  }
 }

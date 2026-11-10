@@ -38,6 +38,59 @@ class OutboxEntry {
   /// sends it again on the next connection.
   bool retryable = false;
 
+  /// Restored from disk after a restart and not sent on this run yet: the next connection
+  /// sends it (the box dedups on [op], so a prompt that did arrive before is not doubled).
+  bool unsent = false;
+
+  /// What is kept across app restarts: everything needed to send it again. Attachments are
+  /// already blobs on the box (`BlobPut` ran before the send), so name + hash is enough.
+  Map<String, Object?> toJson() => {
+    'op': op,
+    'sid': sid,
+    'text': text,
+    'how': how.name,
+    'attachments': [
+      for (final a in attachments)
+        {'name': a.name, 'blob': base64Encode(a.blob)},
+    ],
+    'ts': ts,
+    'state': state.name,
+    'error': error,
+    'retryable': retryable,
+  };
+
+  /// The inverse of [toJson]; null for anything malformed (a newer app's format, a bad write).
+  /// A restored entry that was still on its way comes back as [unsent].
+  static OutboxEntry? fromJson(Object? j) {
+    try {
+      final m = j as Map<String, Object?>;
+      final o = OutboxEntry(
+        op: m['op'] as String,
+        sid: m['sid'] as String,
+        text: m['text'] as String,
+        how: PromptHow.values.byName(m['how'] as String),
+        attachments: [
+          for (final a in m['attachments'] as List)
+            Attachment(
+              (a as Map)['name'] as String,
+              base64Decode(a['blob'] as String),
+            ),
+        ],
+        ts: m['ts'] as int,
+      );
+      if (m['state'] == OutboxState.failed.name) {
+        o.state = OutboxState.failed;
+        o.error = m['error'] as String?;
+        o.retryable = m['retryable'] == true;
+      } else {
+        o.unsent = true;
+      }
+      return o;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Object get request =>
       Req.prompt(sid, text, attachments: attachments, how: how);
 

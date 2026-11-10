@@ -4,7 +4,10 @@ import 'package:flutter/cupertino.dart';
 
 import '../net/models.dart' hide Row;
 import '../net/rpc.dart';
+import '../state/chat.dart' show ChatController;
 import '../state/store.dart';
+import 'chat/media.dart' show ChatScope;
+import 'chat/question.dart' show QuestionBody;
 import 'femme.dart';
 import 'new_chat.dart';
 import 'theme.dart';
@@ -19,11 +22,15 @@ List<(String, List<Session>)> nowSections(Store s) => [
 ];
 
 /// The open question of a transcript: the newest `Question` item still `Pending`, unanswered.
-Question? pendingQuestion(List<Item> items) {
+Question? pendingQuestion(List<Item> items) =>
+    pendingQuestionItem(items)?.question;
+
+/// The item holding [pendingQuestion].
+Item? pendingQuestionItem(List<Item> items) {
   for (final i in items.reversed) {
     if (i.kind != ItemKind.question || i.status != ItemStatus.pending) continue;
     final q = i.question;
-    if (q != null && q.answered == null && q.reason == null) return q;
+    if (q != null && q.answered == null && q.reason == null) return i;
   }
   return null;
 }
@@ -65,6 +72,9 @@ class NowTab extends StatefulWidget {
 class _NowTabState extends State<NowTab> {
   final _held = <String>{};
   final _answering = <String>{};
+
+  /// Per waiting session, the chat's question state, for the multi-select card.
+  final _chats = <String, ChatController>{};
   Timer? _tick;
   Store? _store;
 
@@ -97,6 +107,12 @@ class _NowTabState extends State<NowTab> {
     _held
       ..clear()
       ..addAll(want);
+    final waiting = {for (final s in f.store.needsYou) s.id};
+    _chats.removeWhere((sid, c) {
+      if (waiting.contains(sid)) return false;
+      c.dispose();
+      return true;
+    });
 
     final working = f.store.working;
     final now = DateTime.now();
@@ -118,6 +134,9 @@ class _NowTabState extends State<NowTab> {
   @override
   void dispose() {
     _tick?.cancel();
+    for (final c in _chats.values) {
+      c.dispose();
+    }
     for (final sid in _held) {
       _store?.unsubscribe(sid);
     }
@@ -139,13 +158,7 @@ class _NowTabState extends State<NowTab> {
     setState(() => _answering.add(s.id));
     actionHaptic();
     try {
-      await link.req(
-        Req.answerQuestion(
-          s.id,
-          q.requestId,
-          q.multi ? Answer.options([i]) : Answer.option(i),
-        ),
-      );
+      await link.req(Req.answerQuestion(s.id, q.requestId, Answer.option(i)));
     } catch (e) {
       if (mounted) await showProblem(context, 'Answer not sent', e);
     } finally {
@@ -227,8 +240,27 @@ class _NowTabState extends State<NowTab> {
           );
 
     Widget needsCard(Session s) {
-      final q = pendingQuestion(store.items(s.id));
+      final items = store.items(s.id);
+      final qi = pendingQuestionItem(items);
+      final q = qi?.question;
       final busy = _answering.contains(s.id);
+      // Several options to tick: the chat's own question card (checkmarks, Send, free text).
+      if (qi != null && q != null && q.multi) {
+        final c = _chats.putIfAbsent(s.id, () => ChatController(s.id, f.link));
+        return row(
+          s,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              head(s, 'needs you'),
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 18),
+                child: ChatScope(controller: c, child: QuestionBody(qi, items)),
+              ),
+            ],
+          ),
+        );
+      }
       return row(
         s,
         Column(

@@ -8,14 +8,22 @@ import 'share.dart';
 import 'viewer.dart';
 
 /// The session folder, one folder at a time: a breadcrumb, the folder's rows, pull to refresh.
-/// Back (the bar's `‹` or the swipe) climbs a folder before it leaves the screen.
+/// Each folder is its own page, so back (the bar's `‹`, the iOS edge swipe, Android's back)
+/// climbs one folder, and from the session folder leaves the screen; a crumb pops back to its
+/// folder.
 class FilesBrowser extends StatefulWidget {
   const FilesBrowser({
     super.key,
     required this.tree,
     required this.cwd,
     required this.rootName,
-    this.initialDir = '',
+  }) : dir = '';
+
+  const FilesBrowser._folder({
+    required this.tree,
+    required this.cwd,
+    required this.rootName,
+    required this.dir,
   });
 
   final FilesTree tree;
@@ -26,14 +34,17 @@ class FilesBrowser extends StatefulWidget {
   /// The first crumb: the session folder's name.
   final String rootName;
 
-  final String initialDir;
+  /// The folder this page shows, relative to the session folder (`''` is the session folder).
+  final String dir;
 
   @override
   State<FilesBrowser> createState() => _FilesBrowserState();
 }
 
+int _depth(String dir) => dir.isEmpty ? 0 : dir.split('/').length;
+
 class _FilesBrowserState extends State<FilesBrowser> {
-  late String _dir = widget.initialDir;
+  String get _dir => widget.dir;
 
   @override
   void initState() {
@@ -41,11 +52,30 @@ class _FilesBrowserState extends State<FilesBrowser> {
     widget.tree.ensure(_dir);
   }
 
+  /// A crumb pops back to its folder's page (one page per level below the session folder); a
+  /// sub-folder gets a page of its own.
   void _go(String dir) {
     if (dir == _dir) return;
     HapticFeedback.selectionClick();
-    setState(() => _dir = dir);
+    final up = _depth(_dir) - _depth(dir);
+    if (up > 0) {
+      var left = up;
+      Navigator.of(context).popUntil((_) => left-- == 0);
+      return;
+    }
+    // Listed before the page builds: a load notifies the tree, which the page below listens to.
     widget.tree.ensure(dir);
+    Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        title: dir.split('/').last,
+        builder: (_) => FilesBrowser._folder(
+          tree: widget.tree,
+          cwd: widget.cwd,
+          rootName: widget.rootName,
+          dir: dir,
+        ),
+      ),
+    );
   }
 
   void _open(FsEntry e) {
@@ -109,35 +139,29 @@ class _FilesBrowserState extends State<FilesBrowser> {
   }
 
   @override
-  Widget build(BuildContext context) => PopScope(
-    canPop: _dir.isEmpty,
-    onPopInvokedWithResult: (didPop, _) {
-      if (!didPop) _go(parentPath(_dir));
-    },
-    child: CupertinoPageScaffold(
-      child: ListenableBuilder(
-        listenable: widget.tree,
-        builder: (context, _) => CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(
-            parent: BouncingScrollPhysics(),
-          ),
-          slivers: [
-            CupertinoSliverNavigationBar(
-              largeTitle: const Text('Files'),
-              trailing: CupertinoButton(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(44, 44),
-                onPressed: _refresh,
-                child: const Icon(CupertinoIcons.arrow_clockwise),
-              ),
-            ),
-            CupertinoSliverRefreshControl(onRefresh: _refresh),
-            SliverToBoxAdapter(
-              child: Crumbs(rootName: widget.rootName, dir: _dir, onTap: _go),
-            ),
-            ..._rows(context),
-          ],
+  Widget build(BuildContext context) => CupertinoPageScaffold(
+    child: ListenableBuilder(
+      listenable: widget.tree,
+      builder: (context, _) => CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: BouncingScrollPhysics(),
         ),
+        slivers: [
+          CupertinoSliverNavigationBar(
+            largeTitle: Text(_dir.isEmpty ? 'Files' : _dir.split('/').last),
+            trailing: CupertinoButton(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(44, 44),
+              onPressed: _refresh,
+              child: const Icon(CupertinoIcons.arrow_clockwise),
+            ),
+          ),
+          CupertinoSliverRefreshControl(onRefresh: _refresh),
+          SliverToBoxAdapter(
+            child: Crumbs(rootName: widget.rootName, dir: _dir, onTap: _go),
+          ),
+          ..._rows(context),
+        ],
       ),
     ),
   );

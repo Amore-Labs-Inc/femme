@@ -1,6 +1,7 @@
 /// The terminal's drawing surface: sizes the holder's screen to the room it has, scrolls into
 /// scrollback (asking for rows as it goes), pans when the screen is wider than the phone, pinches
-/// to zoom, and selects rows by long press to copy them.
+/// to zoom, and selects rows by long press to copy them. A program that reports the mouse gets
+/// taps, the wheel and drags instead (`mouse.dart`).
 library;
 
 import 'package:flutter/cupertino.dart';
@@ -9,6 +10,7 @@ import 'package:flutter/services.dart';
 import '../../net/term_models.dart';
 import '../../state/term.dart';
 import '../theme.dart';
+import 'mouse.dart';
 import 'painter.dart';
 import 'palette.dart';
 
@@ -45,6 +47,10 @@ class _TermSurfaceState extends State<TermSurface> {
   int _pointers = 0;
   (int, int)? _selection;
   int _rowsFit = 24;
+  final _wheel = WheelSteps();
+
+  /// A long press holds the program's left button down (drag mode); the last cell it was on.
+  (int, int)? _held;
 
   TermView get _view => widget.view;
 
@@ -78,6 +84,26 @@ class _TermSurfaceState extends State<TermSurface> {
   }
 
   void backToLive() => setState(() => _anchor = null);
+
+  bool get _mouse => reportsMouse(_view.grid.modes);
+
+  (int, int) _cell(Offset p) => touchCell(
+    p,
+    cellW: _m.width,
+    cellH: _m.height,
+    cols: _view.grid.cols,
+    rows: _view.grid.rows,
+    dx: _dx,
+  );
+
+  /// Sends [kind] at the cell under [p]; mouse events are about the live screen, so a view
+  /// scrolled into scrollback goes back to it.
+  void _mouseAt(MouseKind kind, Offset p) => _mouseCell(kind, _cell(p));
+
+  void _mouseCell(MouseKind kind, (int, int) cell) {
+    if (_anchor != null) setState(() => _anchor = null);
+    _view.mouse(kind, col: cell.$1, row: cell.$2);
+  }
 
   int _rowAt(double y) => _top + (y / _m.height).floor();
 
@@ -116,6 +142,12 @@ class _TermSurfaceState extends State<TermSurface> {
           onPointerCancel: (_) => _pointers--,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
+            onTapUp: (d) {
+              if (_selection == null && _mouse) {
+                _mouseAt(MouseKind.press, d.localPosition);
+                _mouseAt(MouseKind.release, d.localPosition);
+              }
+            },
             onTap: () {
               if (_selection != null) {
                 setState(() => _selection = null);
@@ -137,6 +169,13 @@ class _TermSurfaceState extends State<TermSurface> {
                 setState(() => _dx = (_dx - delta.dx).clamp(0.0, maxDx));
                 return;
               }
+              if (_mouse) {
+                final n = _wheel.take(delta.dy, m.height);
+                for (var i = 0; i < n.abs(); i++) {
+                  _mouseAt(wheelKind(n), d.localFocalPoint);
+                }
+                return;
+              }
               _dyRest += delta.dy;
               final rows = (_dyRest / m.height).truncate();
               if (rows != 0) {
@@ -144,18 +183,40 @@ class _TermSurfaceState extends State<TermSurface> {
                 _scrollRows(-rows);
               }
             },
-            onScaleEnd: (_) => _dyRest = 0,
+            onScaleEnd: (_) {
+              _dyRest = 0;
+              _wheel.reset();
+            },
             onLongPressStart: (d) {
               HapticFeedback.selectionClick();
+              if (reportsDrag(g.modes)) {
+                final c = _held = _cell(d.localPosition);
+                _mouseCell(MouseKind.press, c);
+                return;
+              }
               final r = _rowAt(d.localPosition.dy);
               setState(() => _selection = (r, r));
             },
             onLongPressMoveUpdate: (d) {
+              final held = _held;
+              if (held != null) {
+                final c = _cell(d.localPosition);
+                if (c != held) _mouseCell(MouseKind.move, _held = c);
+                return;
+              }
               final s = _selection;
               if (s == null) return;
               setState(() => _selection = (s.$1, _rowAt(d.localPosition.dy)));
             },
-            onLongPressEnd: (_) => _copySelection(),
+            onLongPressEnd: (_) {
+              final held = _held;
+              if (held != null) {
+                _held = null;
+                _mouseCell(MouseKind.release, held);
+                return;
+              }
+              _copySelection();
+            },
             child: Stack(
               children: [
                 Positioned.fill(
