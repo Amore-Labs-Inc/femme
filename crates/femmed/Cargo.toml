@@ -39,6 +39,8 @@ sd-notify.workspace = true
 hdrhistogram.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 sha2 = "0.10"
+# Quiet hours of push registrations are the box's local time.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 qrcode.workspace = true
 async-trait = "0.1"
