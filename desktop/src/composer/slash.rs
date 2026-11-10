@@ -15,6 +15,31 @@ pub const MODELS: &[&str] = &[
     "model deepseek",
 ];
 
+/// The id each `/model` name stands for, as the daemon's `model_switch` maps it: the menu names
+/// the model in full.
+// ponytail: a copy of model_switch's table; move it to femme-proto if they ever drift
+const IDS: &[(&str, &str)] = &[
+    ("opus", "claude-opus-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
+    ("fable", "claude-fable-5-1"),
+    ("deepseek", "deepseek/deepseek-v4.1-flash-ultrafast"),
+];
+
+/// A menu row as shown: `model opus xhigh` is `model opus 5.5 xhigh`; any other row as it is.
+pub fn label(row: &str) -> String {
+    let Some(rest) = row.strip_prefix("model ") else {
+        return row.to_owned();
+    };
+    let (m, effort) = rest.split_once(' ').unwrap_or((rest, ""));
+    match IDS.iter().find(|(name, _)| *name == m) {
+        Some((_, id)) => format!("model {} {effort}", super::draft::model_name(id))
+            .trim_end()
+            .to_owned(),
+        None => row.to_owned(),
+    }
+}
+
 /// How hard a Claude model thinks (`/effort`), offered once its model is picked.
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
@@ -184,6 +209,13 @@ mod tests {
         );
         assert_eq!(model_and_effort("model opus"), None);
         assert!(!exact("/model", &n), "Enter on /model opens the list");
+        assert_eq!(label("model opus"), "model opus 5.5");
+        assert_eq!(label("model fable xhigh"), "model fable 5.1 xhigh");
+        assert_eq!(
+            label("model deepseek"),
+            "model deepseek-v4.1-flash-ultrafast"
+        );
+        assert_eq!(label("compact"), "compact");
     }
 
     #[test]
