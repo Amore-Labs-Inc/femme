@@ -708,6 +708,9 @@ struct Tail {
 /// What Claude Code keeps free below its auto-compact window (2.1.321: a window of 534,643
 /// compacts at 501,643).
 const COMPACT_BUFFER: u64 = 33_000;
+/// The smallest auto-compact window Claude Code takes (2.1.321): a smaller one in a settings file
+/// is ignored, a smaller `CLAUDE_CODE_AUTO_COMPACT_WINDOW` counts as this.
+const COMPACT_WINDOW_MIN: u64 = 100_000;
 
 /// The settings files Claude Code reads in `cwd`, the one that wins first; a missing or broken
 /// file is skipped.
@@ -726,21 +729,25 @@ fn claude_settings(home: &Path, cwd: &Path) -> Vec<Value> {
 /// wins first): `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`env`), then the model's
 /// `modelSettings.<model>.autoCompactWindow`, then `autoCompactWindow`, capped at the model's
 /// `window` (0: unknown), minus the buffer. `None` when nothing sets it or auto-compaction is off.
+// ponytail: with nothing set the CLI compacts at the window minus the buffer; the bar then fills
+// against the window as before, 3% off on a 1M model
 fn compact_at(env: Option<&str>, files: &[Value], model: Option<&str>, window: u64) -> Option<u64> {
     if files.iter().find_map(|f| f["autoCompactEnabled"].as_bool()) == Some(false) {
         return None;
     }
     // the row's model may carry the size suffix (`opus[1m]`), the settings key may not
     let names = model.map(|m| [m, m.split('[').next().unwrap_or(m)]);
+    let valid = |v: &Value| v.as_u64().filter(|w| *w >= COMPACT_WINDOW_MIN);
     let of_model = |f: &Value| {
         names?
             .iter()
-            .find_map(|m| f["modelSettings"][m]["autoCompactWindow"].as_u64())
+            .find_map(|m| valid(&f["modelSettings"][m]["autoCompactWindow"]))
     };
     let set = env
-        .and_then(|e| e.trim().parse().ok())
+        .and_then(|e| e.trim().parse::<u64>().ok())
+        .map(|w| w.max(COMPACT_WINDOW_MIN))
         .or_else(|| files.iter().find_map(of_model))
-        .or_else(|| files.iter().find_map(|f| f["autoCompactWindow"].as_u64()))?;
+        .or_else(|| files.iter().find_map(|f| valid(&f["autoCompactWindow"])))?;
     let capped = if window > 0 { set.min(window) } else { set };
     Some(capped.saturating_sub(COMPACT_BUFFER)).filter(|n| *n > 0)
 }
@@ -2541,11 +2548,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             Some(167_000)
         );
         // the project's file is listed before the user's
-        let project = json!({"autoCompactWindow":80_000});
+        let project = json!({"autoCompactWindow":120_000});
         assert_eq!(
             compact_at(None, &[project, user.clone()], m, 1_000_000),
-            Some(47_000)
+            Some(87_000)
         );
+        // a window under the CLI's minimum is ignored in a file and raised in the env var
+        let small = json!({"autoCompactWindow":80_000});
+        assert_eq!(
+            compact_at(None, &[small, user.clone()], m, 1_000_000),
+            Some(501_643)
+        );
+        assert_eq!(compact_at(Some("80000"), &[], m, 1_000_000), Some(67_000));
         // never past the model's window; an unknown window caps nothing
         assert_eq!(
             compact_at(None, std::slice::from_ref(&user), m, 200_000),
