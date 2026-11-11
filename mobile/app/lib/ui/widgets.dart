@@ -177,10 +177,23 @@ Widget emptyLine(String text) => SliverFillRemaining(
 
 // ---- small helpers ----
 
-/// Opens a session's chat on the current tab's navigator.
-Future<void> pushChat(BuildContext context, String sid) =>
-    Navigator.of(context)
-        .push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
+/// A shell, or an agent run in its TUI: its centre is the terminal, not the chat
+/// (`desktop/src/app.rs` shows a `TerminalView` for these).
+bool opensTerminal(Session? s) =>
+    s != null && (s.agent == Agent.shell || s.mode == Mode.tui);
+
+/// What tapping a session opens: [TerminalScreen] for a shell or TUI session, else [ChatScreen]
+/// (also while the store has not seen the session yet).
+Widget sessionScreen(Session? s, String sid) =>
+    opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid);
+
+/// Opens a session on the current tab's navigator: the terminal for a shell or TUI session, the
+/// chat otherwise.
+Future<void> pushChat(BuildContext context, String sid) {
+  final s = Femme.of(context).store.session(sid);
+  return Navigator.of(context)
+      .push(CupertinoPageRoute<void>(builder: (_) => sessionScreen(s, sid)));
+}
 
 void tapHaptic() => HapticFeedback.selectionClick();
 void actionHaptic() => HapticFeedback.mediumImpact();
@@ -374,8 +387,8 @@ Future<bool> closeSession(BuildContext context, Session s) async {
   }
 }
 
-/// A session row: tap opens the chat, swipe left closes (confirmed), long-press opens a menu
-/// (Rename, Terminal, Files, Close).
+/// A session row: tap opens the chat (the terminal for a shell / TUI session), swipe left closes
+/// (confirmed), long-press opens a menu (Rename, Terminal or Chat, Files, Close).
 class SessionActions extends StatelessWidget {
   const SessionActions({super.key, required this.session, required this.child});
   final Session session;
@@ -417,11 +430,19 @@ class SessionActions extends StatelessWidget {
             },
             child: const Text('Rename'),
           ),
-          CupertinoContextMenuAction(
-            trailingIcon: CupertinoIcons.chevron_left_slash_chevron_right,
-            onPressed: () => go(TerminalScreen(sid: s.id)),
-            child: const Text('Terminal'),
-          ),
+          // The tap opens one of chat / terminal; the menu reaches the other.
+          if (opensTerminal(s))
+            CupertinoContextMenuAction(
+              trailingIcon: CupertinoIcons.bubble_left,
+              onPressed: () => go(ChatScreen(sid: s.id)),
+              child: const Text('Chat'),
+            )
+          else
+            CupertinoContextMenuAction(
+              trailingIcon: CupertinoIcons.chevron_left_slash_chevron_right,
+              onPressed: () => go(TerminalScreen(sid: s.id)),
+              child: const Text('Terminal'),
+            ),
           CupertinoContextMenuAction(
             trailingIcon: CupertinoIcons.folder,
             onPressed: () => go(FilesScreen(sid: s.id)),
