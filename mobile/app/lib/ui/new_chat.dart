@@ -17,6 +17,27 @@ const chatModels = [
   ('deepseek', 'deepseek/deepseek-v4.1-flash-ultrafast'),
 ];
 
+/// The folder to list for the typed [text] and the start of a name to filter its folders by:
+/// `~/fe` is `~/` and `fe`, `~` is `~` and nothing (the desktop's `projects.rs` `split`).
+(String, String) splitFolderPath(String text) {
+  final i = text.lastIndexOf('/');
+  if (i >= 0) return (text.substring(0, i + 1), text.substring(i + 1));
+  if (text == '~') return (text, '');
+  return ('', text);
+}
+
+/// The folders of a listing that start with [filter], case aside; hidden ones only once the
+/// filter starts with a dot (the desktop's `projects.rs` `matching`).
+List<String> matchingFolders(Iterable<String> names, String filter) {
+  final f = filter.toLowerCase();
+  return [
+    for (final n in names)
+      if ((f.startsWith('.') || !n.startsWith('.')) &&
+          n.toLowerCase().startsWith(f))
+        n,
+  ];
+}
+
 /// Opens the New chat sheet; on Start pushes the new session's chat on this tab.
 Future<void> openNewChat(BuildContext context, {String? cwd}) async {
   final nav = Navigator.of(context);
@@ -57,6 +78,12 @@ class _NewChatSheetState extends State<NewChatSheet> {
   bool _starting = false;
   bool _started = false;
 
+  /// Counts listings asked for: only the newest one's answer is shown.
+  int _asked = 0;
+
+  /// What follows the last `/` of the field: the folders shown start with it.
+  String _filter = '';
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -74,8 +101,15 @@ class _NewChatSheetState extends State<NewChatSheet> {
     super.dispose();
   }
 
-  Future<void> _open(String path, {bool make = false}) async {
+  /// Lists [path]. [keepText]: the user is typing, so the field keeps what they typed instead of
+  /// becoming the folder's path.
+  Future<void> _open(
+    String path, {
+    bool make = false,
+    bool keepText = false,
+  }) async {
     final link = Femme.of(context).link;
+    final asked = ++_asked;
     setState(() {
       _loading = true;
       _error = null;
@@ -83,22 +117,44 @@ class _NewChatSheetState extends State<NewChatSheet> {
     });
     try {
       final r = (await link.req(Req.folders(path, make: make))).folders;
-      if (!mounted) return;
+      if (!mounted || asked != _asked) return;
       setState(() {
         _home ??= path == '~' ? r.path : null;
         _dir = r.path;
         _names = [...r.names]
           ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-        _path.text = _display(r.path);
+        if (!keepText) {
+          _path.text = _shown(r.path);
+          _filter = '';
+        }
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || asked != _asked) return;
       setState(() {
         _error = describeError(e);
         _missing = e is FemmeError && e.code == 'NotFound';
       });
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && asked == _asked) setState(() => _loading = false);
+    }
+  }
+
+  /// The field for folder [abs]: its path ending in `/`, so what is typed next filters it.
+  String _shown(String abs) {
+    final d = _display(abs);
+    return d.endsWith('/') ? d : '$d/';
+  }
+
+  /// The field changed: filter by what follows the last `/`, and list the folder before it when
+  /// that is another one.
+  void _typed(String text) {
+    final (dir, filter) = splitFolderPath(text);
+    setState(() => _filter = filter);
+    final shownDir = _dir == null ? null : _shown(_dir!);
+    if (dir.isNotEmpty && dir != shownDir && dir != '~') {
+      _open(dir, keepText: true);
+    } else if (dir == '~' && shownDir != '~/') {
+      _open('~', keepText: true);
     }
   }
 
@@ -162,6 +218,7 @@ class _NewChatSheetState extends State<NewChatSheet> {
   Widget build(BuildContext context) {
     final muted = FemmeColors.mutedC.resolveFrom(context);
     final crumbs = _crumbs();
+    final shown = matchingFolders(_names, _filter);
     return SheetPage(
       title: 'New chat',
       doneLabel: 'Start',
@@ -183,6 +240,7 @@ class _NewChatSheetState extends State<NewChatSheet> {
                     child: Icon(CupertinoIcons.folder, size: 18),
                   ),
                   textInputAction: TextInputAction.go,
+                  onChanged: _typed,
                   onSubmitted: (v) => _open(v.trim().isEmpty ? '~' : v.trim()),
                 ),
               ),
@@ -227,11 +285,16 @@ class _NewChatSheetState extends State<NewChatSheet> {
                         )
                       : null,
                 ),
-              if (!_loading && _error == null && _names.isEmpty)
+              if (!_loading && _error == null && shown.isEmpty)
                 CupertinoListTile(
-                  title: Text('no subfolders', style: TextStyle(color: muted)),
+                  title: Text(
+                    _filter.isEmpty
+                        ? 'no subfolders'
+                        : 'no folder starts with $_filter',
+                    style: TextStyle(color: muted),
+                  ),
                 ),
-              for (final n in _names.where((n) => !n.startsWith('.')))
+              for (final n in shown)
                 CupertinoListTile(
                   leading: const Icon(CupertinoIcons.folder_fill),
                   title: Text(n),
