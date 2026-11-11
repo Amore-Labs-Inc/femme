@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Runs the release APK on a physical Google Pixel in AWS Device Farm (us-west-2), paired with a
 # live box through its femme:// link, and downloads the screenshots, logcat and video:
-#   mobile/ci/devicefarm.sh <app-release.apk> '<femme://pair?...>' [out dir]
+#   mobile/ci/devicefarm.sh <app-release.apk> '<femme://pair?...>' [out dir] [session id]
+# With a session id it also opens femme://session/<id> (the link a "needs you" notification
+# carries) with the app in the foreground, from the background, and after a kill.
 # Needs the aws CLI with Device Farm rights (the project `femme-mobile` and the one-device pool
 # `pixel8` are created on first use). The pairing link goes into the test package, which only
 # this AWS account can read; revoke the device (`femmed devices revoke <name>`) afterwards.
 # Cost: a few device-minutes per run. Pixel 8 is 1080x2400, the same as the CI emulator, so the
 # tab taps at 94 % of the height land in the tab bar with either navigation mode.
 set -euo pipefail
-apk=$1; link=$2; out=${3:-devicefarm-out}
+apk=$1; link=$2; out=${3:-devicefarm-out}; sid=${4:-}
 region=us-west-2
 aws() { command aws --region "$region" --output json "$@"; }
 j() { python3 -c "import sys,json; print(eval('json.load(sys.stdin)$1'))"; }
@@ -37,6 +39,13 @@ tab 3; shot 03-chats
 tab 5; sleep 3; shot 04-box
 tab 7; shot 05-me
 tab 1; adb shell input tap \$((W/2)) \$((H*36/100)); sleep 8; shot 06-chat
+if [ -n "$sid" ]; then
+  adb shell am start -a android.intent.action.VIEW -d "femme://session/$sid"; sleep 8; shot 07-session-link-foreground
+  adb shell input keyevent KEYCODE_HOME; sleep 2
+  adb shell am start -a android.intent.action.VIEW -d "femme://session/$sid"; sleep 8; shot 08-session-link-background
+  adb shell am force-stop \$pkg; sleep 2
+  adb shell am start -a android.intent.action.VIEW -d "femme://session/$sid"; sleep 15; shot 09-session-link-cold
+fi
 adb logcat -d > "\$L/logcat.txt"
 adb shell getprop ro.product.model > "\$L/device.txt"; adb shell getprop ro.build.version.release >> "\$L/device.txt"
 exit 0

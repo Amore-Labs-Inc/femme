@@ -280,7 +280,10 @@ the device ipa is built unsigned on the same macOS runner (Xcode 26).
 
 Physical device (2026-11-11): the release APK ran on a Google Pixel 8 (Android 14) in AWS
 Device Farm, paired itself with the live box through its `femme://pair` link, walked the tabs
-and opened a chat with no crash in logcat; the box's device list shows the Pixel. The recipe is
+and opened a chat with no crash in logcat; the box's device list shows the Pixel. A later run
+opened `femme://session/<sid>` (the click link a "needs you" push carries) three ways on the
+same Pixel: app in the foreground, from the background, and from a cold start after a kill; all
+three landed in that chat. The recipe is
 `mobile/ci/devicefarm.sh <apk> '<pair link>'`. The unsigned ipa ran the same day on a physical
 Apple iPhone 16 (iOS 18) there too: Device Farm re-signs it with its own profile, the Appium test
 typed the host and token into the pairing screen, tapped Connect, and walked the tabs paired
