@@ -237,7 +237,10 @@ class _PushSection extends StatelessWidget {
                 fontSize: 13,
               ),
             ),
-            trailing: const Icon(CupertinoIcons.doc_on_doc, size: 18),
+            trailing: const Text(
+              'Copy',
+              style: TextStyle(color: FemmeColors.accent),
+            ),
             onTap: () {
               tapHaptic();
               Clipboard.setData(ClipboardData(text: topic));
