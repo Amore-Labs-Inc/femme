@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
+  test('paired just now, else paired 5m ago', _pairedAgo);
   test('the About version carries the commit when the build has one', () {
     final info = PackageInfo(
       appName: 'FEMME',
@@ -18,4 +19,16 @@ void main() {
     );
     expect(femmeSha, isEmpty, reason: 'no --dart-define in tests');
   });
+}
+
+void _pairedAgo() {
+  final now = DateTime(2026, 11, 11, 3);
+  expect(
+    pairedAgo(now.subtract(const Duration(seconds: 20)), now: now),
+    'paired just now',
+  );
+  expect(
+    pairedAgo(now.subtract(const Duration(minutes: 5)), now: now),
+    'paired 5m ago',
+  );
 }

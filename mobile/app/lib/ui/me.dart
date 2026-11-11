@@ -101,7 +101,7 @@ class _MeTabState extends State<MeTab> {
                     additionalInfo: Text(
                       paired == null
                           ? 'instance ${f.prefs.clientInstance}'
-                          : 'paired ${ago(paired)} ago',
+                          : pairedAgo(paired),
                     ),
                   ),
                   CupertinoListTile(
@@ -319,4 +319,10 @@ String appVersionText(PackageInfo? info, {String sha = femmeSha}) {
   final short = sha.length > 7 ? sha.substring(0, 7) : sha;
   final v = '${info.version} (${info.buildNumber})';
   return short.isEmpty ? v : '$v · $short';
+}
+
+/// `paired just now`, else `paired 5m ago` (the `ago` helper says `now` under a minute).
+String pairedAgo(DateTime t, {DateTime? now}) {
+  final a = ago(t, now: now);
+  return a == 'now' ? 'paired just now' : 'paired $a ago';
 }
