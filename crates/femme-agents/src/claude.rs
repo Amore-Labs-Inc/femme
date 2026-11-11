@@ -3579,8 +3579,8 @@ mod tests {
                 })
                 .collect()
         };
-        assert!(retracted(&f.line(typed("u1", "p0", "merge this pls"))).is_empty());
-        let ev = f.line(typed("u2", "p0", "merge this pls, to main directly"));
+        assert!(retracted(&f.line(typed("u1", "p0", "fix the build"))).is_empty());
+        let ev = f.line(typed("u2", "p0", "fix the build, and run the tests"));
         assert_eq!(retracted(&ev), ["u1"]);
         assert!(ev.iter().any(
             |e| matches!(e, AgentEvent::ItemCompleted { id, kind: ItemKind::UserMessage, .. } if id == "u2")

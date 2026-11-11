@@ -2467,9 +2467,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         std::fs::create_dir_all(&proj).unwrap();
         let file = proj.join("u-1.jsonl");
         let first = concat!(
-            r#"{"type":"user","uuid":"u1","parentUuid":"p0","message":{"role":"user","content":"perfect, merge this pls"}}"#,
+            r#"{"type":"user","uuid":"u1","parentUuid":"p0","message":{"role":"user","content":"fix the build"}}"#,
             "\n",
-            r#"{"type":"last-prompt","lastPrompt":"perfect, merge this pls"}"#,
+            r#"{"type":"last-prompt","lastPrompt":"fix the build"}"#,
             "\n"
         );
         std::fs::write(&file, first).unwrap();
@@ -2493,7 +2493,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(shown(&d), ["u1"]);
 
         let taken = d.sessions.head(sid).unwrap().take_back().await;
-        assert_eq!(taken, Ok(Some("perfect, merge this pls".into())));
+        assert_eq!(taken, Ok(Some("fix the build".into())));
         assert_eq!(
             std::fs::read_to_string(dir.path().join("keys")).unwrap(),
             "wA:p1 esc\nwA:p1 ctrl+u\n"
@@ -2503,11 +2503,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let second = concat!(
             r#"{"type":"file-history-snapshot"}"#,
             "\n",
-            r#"{"type":"user","uuid":"u2","parentUuid":"p0","message":{"role":"user","content":"perfect, merge this pls merge to main directly"}}"#,
+            r#"{"type":"user","uuid":"u2","parentUuid":"p0","message":{"role":"user","content":"fix the build, and run the tests"}}"#,
             "\n",
             r#"{"type":"last-prompt","explicit":true}"#,
             "\n",
-            r#"{"type":"assistant","uuid":"a1","parentUuid":"u2","message":{"id":"m1","content":[{"type":"text","text":"merged"}]}}"#,
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u2","message":{"id":"m1","content":[{"type":"text","text":"done"}]}}"#,
             "\n",
             r#"{"type":"system","subtype":"turn_duration","durationMs":12}"#,
             "\n"
