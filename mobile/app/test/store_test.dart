@@ -345,4 +345,46 @@ void main() {
     expect(await g, 0);
     expect(store.hasOlder(sid), isFalse);
   });
+
+  int subscribes() =>
+      link.sent.where((s) => (s.$2 as Map).containsKey('Subscribe')).length;
+
+  test(
+    'a refused session subscribe is tried again while the chat is open',
+    () async {
+      store.subscribeRetry = const Duration(milliseconds: 20);
+      store.subscribe(sid);
+      expect(subscribes(), 1);
+      link.completers.last.completeError(const FemmeError('NotFound', 'no'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(subscribes(), 2);
+      link.completers.last.completeError(const FemmeError('NotFound', 'no'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(subscribes(), 3);
+      link.completers.last.complete(const Resp('Subscribed', null));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(subscribes(), 3);
+    },
+  );
+
+  test(
+    'a refused subscribe stops being retried once the chat closes',
+    () async {
+      store.subscribeRetry = const Duration(milliseconds: 20);
+      store.subscribe(sid);
+      link.completers.last.completeError(const FemmeError('NotFound', 'no'));
+      await Future<void>.delayed(Duration.zero);
+      store.unsubscribe(sid);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(subscribes(), 1);
+    },
+  );
+
+  test('a subscribe lost with the link waits for the reconnection', () async {
+    store.subscribeRetry = const Duration(milliseconds: 20);
+    store.subscribe(sid);
+    link.completers.last.completeError(const LinkLost('gone'));
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(subscribes(), 1);
+  });
 }

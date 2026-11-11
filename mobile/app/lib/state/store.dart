@@ -55,6 +55,9 @@ class Store extends ChangeNotifier {
   @override
   void dispose() {
     _sub?.cancel();
+    for (final t in _retries.values) {
+      t.cancel();
+    }
     super.dispose();
   }
 
@@ -104,7 +107,35 @@ class Store extends ChangeNotifier {
   void _subscribe(Scope scope, int? after) {
     final link = _link;
     if (link == null || !link.isOnline) return;
-    link.req(Req.subscribe(scope, after: after), resend: false).ignore();
+    final sent = link.req(Req.subscribe(scope, after: after), resend: false);
+    final sid = scope.sid;
+    if (sid == null) {
+      sent.ignore();
+      return;
+    }
+    sent.then<void>(
+      (_) {},
+      onError: (Object e) {
+        // A lost link resubscribes on the next connection ([cursors], [onOnline]).
+        if (e is! LinkLost) _retryLater(sid);
+      },
+    );
+  }
+
+  /// How long a refused session subscribe waits before it is tried again (the desktop's
+  /// `RETRY`, `desktop/src/transcript/live.rs`).
+  Duration subscribeRetry = const Duration(seconds: 3);
+  final _retries = <String, Timer>{};
+
+  /// The box refused to subscribe [sid]: ask again while the chat stays open.
+  void _retryLater(String sid) {
+    _retries[sid]?.cancel();
+    _retries[sid] = Timer(subscribeRetry, () {
+      _retries.remove(sid);
+      final t = _transcripts[sid];
+      if (t == null || t.refs == 0) return;
+      _subscribe(Scope.session(sid), t.rev);
+    });
   }
 
   // ---- events ----
@@ -197,6 +228,7 @@ class Store extends ChangeNotifier {
     final t = _transcripts[sid];
     if (t == null || t.refs == 0) return;
     if (--t.refs == 0) {
+      _retries.remove(sid)?.cancel();
       final link = _link;
       if (link != null && link.isOnline) {
         link.req(Req.unsubscribe(Scope.session(sid)), resend: false).ignore();
