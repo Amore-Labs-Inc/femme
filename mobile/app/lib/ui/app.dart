@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import '../net/lifecycle.dart';
 import '../net/link.dart';
 import '../state/box_watch.dart';
+import '../state/push.dart';
 import '../state/pairing.dart';
 import '../state/prefs.dart';
 import '../state/store.dart';
@@ -28,6 +29,7 @@ class _FemmeAppState extends State<FemmeApp> {
   late final LinkLifecycle _lifecycle = LinkLifecycle(_link);
   late final LinkClock _clock = LinkClock(_link.state);
   late final BoxWatch _boxWatch = BoxWatch(_link.req, _link.state);
+  late final PushSync _push = PushSync(_link.req, _link.state, widget.prefs);
   (String, String)? _connectedTo;
 
   @override
@@ -37,6 +39,7 @@ class _FemmeAppState extends State<FemmeApp> {
     _lifecycle;
     _clock;
     _boxWatch;
+    _push;
     PairInfo.load();
     widget.prefs.addListener(_onPrefs);
     _onPrefs();
@@ -63,6 +66,7 @@ class _FemmeAppState extends State<FemmeApp> {
     _lifecycle.dispose();
     _clock.dispose();
     _boxWatch.dispose();
+    _push.dispose();
     _link.close();
     _store.dispose();
     super.dispose();
@@ -80,6 +84,7 @@ class _FemmeAppState extends State<FemmeApp> {
       link: _link,
       prefs: widget.prefs,
       boxWatch: _boxWatch,
+      push: _push,
       child: CupertinoApp(
         title: 'FEMME',
         debugShowCheckedModeBanner: false,

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../net/ids.dart';
+import 'push.dart';
 
 /// Where the store keeps the prompts not confirmed yet (see `Store`).
 abstract interface class OutboxKeeper {
@@ -13,7 +14,7 @@ enum ThemePref { system, light, dark }
 
 /// Settings kept on the phone: where the box is, the device token, this install's
 /// `client_instance`, and the theme.
-class Prefs extends ChangeNotifier implements OutboxKeeper {
+class Prefs extends ChangeNotifier implements OutboxKeeper, PushKeeper {
   Prefs._(this._sp, this.clientInstance);
 
   static const _kHost = 'host';
@@ -21,6 +22,9 @@ class Prefs extends ChangeNotifier implements OutboxKeeper {
   static const _kInstance = 'client_instance';
   static const _kTheme = 'theme';
   static const _kOutbox = 'outbox';
+  static const _kPushTopic = 'push.topic';
+  static const _kPushOn = 'push.on';
+  static const _kPushRules = 'push.rules';
 
   /// The instance [load] made last. `Store()` keeps its outbox here when it is not handed a
   /// keeper; null in tests that never load prefs (the store then keeps it in memory only).
@@ -80,6 +84,21 @@ class Prefs extends ChangeNotifier implements OutboxKeeper {
 
   Future<void> setTheme(ThemePref t) async {
     await _sp.setString(_kTheme, t.name);
+    notifyListeners();
+  }
+
+  @override
+  String? get pushTopic => _sp.getString(_kPushTopic);
+  @override
+  bool get pushOn => _sp.getBool(_kPushOn) ?? false;
+  @override
+  String? get pushRulesJson => _sp.getString(_kPushRules);
+
+  @override
+  Future<void> setPush({String? topic, bool? on, String? rulesJson}) async {
+    if (topic != null) await _sp.setString(_kPushTopic, topic);
+    if (on != null) await _sp.setBool(_kPushOn, on);
+    if (rulesJson != null) await _sp.setString(_kPushRules, rulesJson);
     notifyListeners();
   }
 }

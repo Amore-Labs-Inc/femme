@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:femme_mobile/net/models.dart' hide Row;
 import 'package:femme_mobile/net/term_models.dart';
 import 'package:femme_mobile/state/term.dart';
+import 'package:femme_mobile/ui/terminal/keys.dart';
 import 'package:femme_mobile/ui/terminal/mouse.dart';
 import 'package:femme_mobile/ui/terminal/painter.dart';
 import 'package:femme_mobile/ui/terminal/surface.dart';
@@ -30,16 +31,17 @@ class _Port implements TermPort {
   ];
 }
 
-Map ev(int seq, String kind, int col, int row) => {
+Map ev(int seq, String kind, int col, int row, {String mods = ''}) => {
   'seq': seq,
-  'ev': {'kind': kind, 'button': 0, 'col': col, 'row': row, 'mods': ''},
+  'ev': {'kind': kind, 'button': 0, 'col': col, 'row': row, 'mods': mods},
 };
 
 /// A 30x10 screen with [modes] on a surface at the top left of a 400x300 box.
 Future<(TermView, _Port)> pumpSurface(
   WidgetTester tester,
-  Set<String> modes,
-) async {
+  Set<String> modes, {
+  StickyMods? mods,
+}) async {
   final port = _Port();
   final view = TermView(
     pane: const PaneId(sid, 1),
@@ -80,7 +82,8 @@ Future<(TermView, _Port)> pumpSurface(
           height: 300,
           child: ListenableBuilder(
             listenable: view,
-            builder: (_, _) => TermSurface(view: view, onTap: () {}),
+            builder: (_, _) =>
+                TermSurface(view: view, onTap: () {}, mods: mods),
           ),
         ),
       ),
@@ -198,5 +201,60 @@ void main() {
     expect(port.mouse, isEmpty);
     // The alternate screen with ALTERNATE_SCROLL turns the pan into arrow keys instead.
     expect(port.sent.whereType<Map>().any((s) => s.containsKey('Key')), isTrue);
+  });
+
+  testWidgets('a tap carries the sticky Shift, which is then used up', (
+    tester,
+  ) async {
+    final mods = StickyMods()..tapShift();
+    final (_, port) = await pumpSurface(tester, {
+      Modes.mouseClick,
+      Modes.sgrMouse,
+    }, mods: mods);
+    final m = CellMetrics.measure(13);
+    await tester.tapAt(Offset(m.width * 5.5, m.height * 2.5));
+    expect(port.mouse, [
+      ev(1, 'Press', 5, 2, mods: 'SHIFT'),
+      ev(2, 'Release', 5, 2, mods: 'SHIFT'),
+    ]);
+    expect(mods.shift, isFalse);
+    await tester.tapAt(Offset(m.width * 5.5, m.height * 2.5));
+    expect((port.mouse.last['ev'] as Map)['mods'], '');
+  });
+
+  testWidgets('mods are spelled as bitflags; a locked one stays', (
+    tester,
+  ) async {
+    final mods = StickyMods()
+      ..tapCtrl()
+      ..tapCtrl()
+      ..tapShift();
+    final (_, port) = await pumpSurface(tester, {Modes.mouseClick}, mods: mods);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.tapAt(const Offset(20, 20));
+    expect(
+      [for (final e in port.mouse) (e['ev'] as Map)['mods']],
+      ['SHIFT | CTRL', 'SHIFT | CTRL', 'CTRL', 'CTRL'],
+    );
+    expect(mods.ctrlLocked, isTrue);
+  });
+
+  testWidgets('wheel notches carry the sticky Alt, used up on lift', (
+    tester,
+  ) async {
+    final mods = StickyMods()..tapAlt();
+    final (_, port) = await pumpSurface(tester, {Modes.mouseClick}, mods: mods);
+    final m = CellMetrics.measure(13);
+    final g = await tester.startGesture(const Offset(100, 100));
+    await g.moveBy(const Offset(0, 40));
+    await tester.pump();
+    await g.moveBy(Offset(0, m.height * 2));
+    await tester.pump();
+    expect(port.mouse, isNotEmpty);
+    expect(port.mouse.map((e) => (e['ev'] as Map)['mods']).toSet(), {'ALT'});
+    expect(mods.alt, isTrue, reason: 'held for the whole gesture');
+    await g.up();
+    await tester.pump();
+    expect(mods.alt, isFalse);
   });
 }

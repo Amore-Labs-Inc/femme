@@ -1,10 +1,12 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../net/link.dart';
 import '../state/pairing.dart';
 import '../state/prefs.dart';
+import '../state/push.dart';
 import 'femme.dart';
 import 'me/pairing.dart';
 import 'theme.dart';
@@ -151,21 +153,7 @@ class _MeTabState extends State<MeTab> {
                   ),
                 ],
               ),
-              CupertinoListSection.insetGrouped(
-                header: const Text('Notifications'),
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(
-                      'For now the box pushes through ntfy: subscribe to its topic in the '
-                      'ntfy app to hear when a session needs you or is done. Push straight '
-                      'to this app (with answer buttons on the lock screen) comes with '
-                      'PushRegister on the box.',
-                      style: TextStyle(color: muted, fontSize: 14),
-                    ),
-                  ),
-                ],
-              ),
+              _PushSection(push: f.push, muted: muted),
               CupertinoListSection.insetGrouped(
                 header: const Text('About'),
                 children: [
@@ -192,6 +180,124 @@ class _MeTabState extends State<MeTab> {
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// Push through ntfy: on/off, this phone's topic, what to push, and how the box took it.
+class _PushSection extends StatelessWidget {
+  const _PushSection({required this.push, required this.muted});
+  final PushSync? push;
+  final Color muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = push;
+    if (p == null) return const SizedBox.shrink();
+    final rules = p.rules;
+    final topic = p.topic;
+    final status = p.error != null
+        ? (p.unsupported
+              ? 'The box is too old for push: update femmed.'
+              : 'Not registered yet: ${p.error}')
+        : p.registered != null
+        ? 'Registered with the box.'
+        : (p.on ? 'Registering…' : null);
+    return CupertinoListSection.insetGrouped(
+      header: const Text('Notifications'),
+      footer: Text(
+        p.on
+            ? 'Install the ntfy app, open the link above and allow notifications: the box '
+                  'posts to your topic when a session needs you or finishes. The topic name '
+                  'is the secret; make a new one if it leaks.'
+            : 'The box pushes through ntfy, so the lock screen tells you when a session '
+                  'needs you or is done. No account needed: the ntfy app and a topic.',
+        style: TextStyle(color: muted),
+      ),
+      children: [
+        CupertinoListTile(
+          title: const Text('Push through ntfy'),
+          trailing: CupertinoSwitch(
+            value: p.on,
+            onChanged: (v) {
+              tapHaptic();
+              p.setOn(v);
+            },
+          ),
+        ),
+        if (p.on && topic != null) ...[
+          CupertinoListTile(
+            title: const Text('Topic'),
+            subtitle: Text(
+              topic,
+              style: const TextStyle(
+                fontFamily: monoFamily,
+                fontFamilyFallback: monoFallback,
+                fontSize: 13,
+              ),
+            ),
+            trailing: const Text(
+              'Copy',
+              style: TextStyle(color: FemmeColors.accent),
+            ),
+            onTap: () {
+              tapHaptic();
+              Clipboard.setData(ClipboardData(text: topic));
+            },
+          ),
+          CupertinoListTile(
+            title: const Text('Subscribe in ntfy'),
+            trailing: const Icon(CupertinoIcons.arrow_up_right),
+            onTap: () => launchUrl(
+              Uri.parse('https://ntfy.sh/$topic'),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+          CupertinoListTile(
+            title: const Text('When a session needs you'),
+            trailing: CupertinoSwitch(
+              value: rules.blocked,
+              onChanged: (v) => p.setRules(rules.copyWith(blocked: v)),
+            ),
+          ),
+          CupertinoListTile(
+            title: const Text('When a session finishes'),
+            trailing: CupertinoSwitch(
+              value: rules.done,
+              onChanged: (v) => p.setRules(rules.copyWith(done: v)),
+            ),
+          ),
+          CupertinoListTile(
+            title: const Text('Quiet from 23:00 to 07:00'),
+            trailing: CupertinoSwitch(
+              value: rules.quiet != null,
+              onChanged: (v) => p.setRules(
+                v
+                    ? rules.copyWith(quiet: (23, 7))
+                    : rules.copyWith(clearQuiet: true),
+              ),
+            ),
+          ),
+          CupertinoListTile(
+            title: const Text('New topic'),
+            subtitle: const Text('the old one stops getting pushes'),
+            onTap: () {
+              actionHaptic();
+              p.rotate();
+            },
+          ),
+        ],
+        if (status != null)
+          CupertinoListTile(
+            title: Text(
+              status,
+              style: TextStyle(
+                color: p.error != null ? FemmeColors.bad : muted,
+                fontSize: 14,
+              ),
+            ),
+          ),
       ],
     );
   }

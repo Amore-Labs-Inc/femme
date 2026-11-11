@@ -271,7 +271,10 @@ an Android emulator and a simulator build on an iPhone, pairs both with the box 
 the tabs (`.github/workflows/mobile.yml`, artifacts `femme-android-screens`, `femme-ios-screens`);
 the device ipa is built unsigned on the same macOS runner (Xcode 26).
 
-Not yet: push to the phone itself (`PushRegister` + an APNs/FCM notifier needs the user's Apple
-developer account and a Firebase project; until then the box's ntfy topic is the push),
-`Scope::Attention` (Now subscribes per session today), terminal fling momentum and sticky
-modifiers on mouse events.
+Push: the box posts to a per-phone ntfy topic (`Req::PushRegister{platform: Ntfy}`, Me tab),
+and the ntfy app shows it on the lock screen; push straight into this app (APNs/FCM) needs an
+Apple developer account and a Firebase project, so it waits for the owner's say-so.
+
+`Scope::Attention` is not built on purpose: Now subscribes only to the blocked sessions (a
+handful at a time), which is one small stream per open question; a merged scope would save
+nothing a phone can feel. Build it when a box has hundreds of blocked sessions at once.
