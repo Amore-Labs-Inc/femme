@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../net/rpc.dart';
 import '../../state/box.dart';
@@ -235,6 +236,19 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
               ),
             CupertinoListSection.insetGrouped(
               children: [
+                if (Uri.tryParse(pr.url)?.hasScheme ?? false)
+                  CupertinoListTile(
+                    leading: const Icon(CupertinoIcons.link),
+                    title: const Text('Open on GitHub'),
+                    subtitle: Text(pr.url, overflow: TextOverflow.ellipsis),
+                    onTap: () {
+                      tapHaptic();
+                      launchUrl(
+                        Uri.parse(pr.url),
+                        mode: LaunchMode.externalApplication,
+                      );
+                    },
+                  ),
                 if (pr.video != null)
                   CupertinoListTile(
                     leading: const Icon(CupertinoIcons.play_rectangle_fill),
