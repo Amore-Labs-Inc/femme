@@ -244,4 +244,30 @@ void main() {
       expect(find.text('under'), findsOneWidget);
     });
   });
+
+  testWidgets('no refresh button (pull to refresh does it); separators '
+      'start at the name', (t) async {
+    final tree = FilesTree(requester: box(), sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    expect(find.byIcon(CupertinoIcons.arrow_clockwise), findsNothing);
+    expect(find.bySemanticsLabel('Refresh'), findsNothing);
+    expect(
+      find.byType(CupertinoSliverRefreshControl, skipOffstage: false),
+      findsOneWidget,
+    );
+
+    final row = find.ancestor(
+      of: find.text('notes.txt'),
+      matching: find.byType(FileRow),
+    );
+    final sep = find.descendant(
+      of: row,
+      matching: find.byKey(const ValueKey('file-row-separator')),
+    );
+    final name = t.getTopLeft(find.text('notes.txt')).dx;
+    expect(t.getTopLeft(sep).dx - t.getTopLeft(row).dx, fileRowTextInset);
+    expect(t.getTopLeft(sep).dx, name);
+    expect(t.getTopRight(sep).dx, t.getTopRight(row).dx);
+  });
 }
