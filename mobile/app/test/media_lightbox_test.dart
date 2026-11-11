@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:femme_mobile/ui/media/lightbox.dart';
@@ -8,7 +7,7 @@ import 'package:video_player/video_player.dart';
 
 /// A player that never reaches the platform: initialised at once, records volumes.
 class FakePlayer extends VideoPlayerController {
-  FakePlayer(File f, this.volumes) : super.file(f);
+  FakePlayer(super.file, this.volumes) : super.file();
   final List<double> volumes;
 
   @override
@@ -32,7 +31,9 @@ class FakePlayer extends VideoPlayerController {
     value = value.copyWith(volume: volume);
   }
 
+  /// The platform player it would dispose was never made.
   @override
+  // ignore: must_call_super
   Future<void> dispose() async {}
 }
 
