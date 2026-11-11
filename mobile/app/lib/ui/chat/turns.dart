@@ -286,6 +286,21 @@ Set<String> endedTasksOf(List<Item> items, Json? Function(Item) body) => {
       if (body(i)?['task'] case {'call': final String c}) c,
 };
 
+/// Whether a task the turn waits for (a running foreground Bash or Agent call) could move to
+/// the background: the gate of `Background all` (desktop live.rs `background(None)`).
+bool hasForegroundTask(List<Item> items, Json? Function(Item) body) {
+  final answered = <String>{
+    for (final i in items)
+      if (i.kind == ItemKind.toolResult) ?callIdOf(i, body(i)),
+  };
+  return items.any(
+    (i) =>
+        i.kind == ItemKind.toolCall &&
+        !answered.contains(i.itemId) &&
+        toolLine(call: i, callBody: body(i)).backgroundable,
+  );
+}
+
 /// The working line's verb from the last item: `Thinking`, `Writing`, `Running a tool`.
 String workingVerb(List<Item> items) {
   for (final i in items.reversed) {
