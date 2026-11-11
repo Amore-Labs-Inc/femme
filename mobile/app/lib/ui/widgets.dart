@@ -8,6 +8,7 @@ import '../state/box.dart';
 import 'chat.dart';
 import 'femme.dart';
 import 'files.dart';
+import 'follow.dart';
 import 'link_status.dart';
 import 'terminal.dart';
 import 'theme.dart';
@@ -195,8 +196,10 @@ bool opensTerminal(Session? s) =>
 
 /// What tapping a session opens: [TerminalScreen] for a shell or TUI session, else [ChatScreen]
 /// (also while the store has not seen the session yet).
-Widget sessionScreen(Session? s, String sid) =>
-    opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid);
+Widget sessionScreen(Session? s, String sid) => Following(
+  sid: sid,
+  child: opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid),
+);
 
 /// Opens a session on the current tab's navigator: the terminal for a shell or TUI session, the
 /// chat otherwise.
