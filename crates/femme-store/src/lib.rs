@@ -55,6 +55,7 @@ pub mod auth;
 pub mod import;
 pub mod issues;
 pub mod items;
+pub mod push;
 pub mod retain;
 pub mod sessions;
 pub mod sync;
@@ -74,6 +75,7 @@ use sha2::{Digest, Sha256};
 
 pub use auth::{ApiKey, Device};
 pub use import::{ExportReport, ImportReport};
+pub use push::Push;
 pub use retain::{Caps, RetainReport};
 pub use sync::Changes;
 

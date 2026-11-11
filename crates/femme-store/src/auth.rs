@@ -217,7 +217,8 @@ impl Tx<'_> {
         Ok(id)
     }
 
-    /// Revokes a device (at [`Tx::now`]); it can no longer connect. `NotFound` if unknown.
+    /// Revokes a device (at [`Tx::now`]); it can no longer connect, and its push registrations
+    /// are dropped. `NotFound` if unknown.
     pub fn revoke_device(&mut self, id: DeviceId) -> Result<()> {
         let n = self.execute(
             "UPDATE devices SET revoked = COALESCE(revoked, ?2) WHERE id = ?1",
@@ -226,6 +227,7 @@ impl Tx<'_> {
         if n == 0 {
             return Err(Error::NotFound);
         }
+        self.execute("DELETE FROM push WHERE device = ?1", [id_blob(id)])?;
         Ok(())
     }
 

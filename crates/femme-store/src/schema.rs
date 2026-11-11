@@ -8,7 +8,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::{Error, Result};
 
 /// Every migration, oldest first. Index + 1 is the `user_version` it leaves behind.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 // Notes on the shape (plan §7):
 // - STRICT: SQLite refuses a TEXT in a BLOB column and the like, so an encoding slip is an error
@@ -176,6 +176,19 @@ const V6: &str = "ALTER TABLE sessions ADD COLUMN effort TEXT;";
 
 /// A Claude session's `/goal` (`Session::goal` as JSON): NULL when there is none.
 const V7: &str = "ALTER TABLE sessions ADD COLUMN goal TEXT;";
+
+/// Phones that asked for pushes (`femme_store::push`). Not replicated, no rev; a device's rows go
+/// with it.
+const V8: &str = r#"
+CREATE TABLE push (
+    device   BLOB NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    token    TEXT NOT NULL,
+    rules    TEXT NOT NULL,
+    created  INTEGER NOT NULL,
+    PRIMARY KEY (device, token)
+) STRICT, WITHOUT ROWID;
+"#;
 
 /// Brings the database up to [`MIGRATIONS`]'s last version. Safe to run from two processes at
 /// once: each script runs inside `BEGIN IMMEDIATE` after re-reading the version.
