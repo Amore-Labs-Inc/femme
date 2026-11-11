@@ -2242,8 +2242,9 @@ fn tag<'a>(text: &'a str, t: &str) -> Option<&'a str> {
 
 /// The row of a `<task-notification>` that is not a task's end (no `<status>`), i.e. a Monitor
 /// event: `◷ <description> · <event>`. The first line is the row, a longer event's other lines
-/// follow it; the note to the model after `</event>` is left out.
-fn monitor_event(text: &str) -> Option<String> {
+/// follow it; the note to the model after `</event>` is left out. Public for the daemon, which
+/// reads from the transcript on disk the events the stream does not replay.
+pub fn monitor_event(text: &str) -> Option<String> {
     if tag(text, "status").is_some() {
         return None;
     }
