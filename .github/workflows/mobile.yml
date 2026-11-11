@@ -46,7 +46,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-      - run: flutter build apk --release
+      - run: flutter build apk --release --dart-define=FEMME_SHA=${{ github.sha }}
         working-directory: mobile/app
       - uses: actions/upload-artifact@v4
         with:
@@ -67,7 +67,7 @@ jobs:
       # The image's default Xcode (16.4) is too old for the pinned plugins' Swift
       # (video_player_avfoundation 2.12 uses `isolation:`); the newest Xcode 26 on the image.
       - run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)" && xcodebuild -version
-      - run: flutter build ios --release --no-codesign
+      - run: flutter build ios --release --no-codesign --dart-define=FEMME_SHA=${{ github.sha }}
         working-directory: mobile/app
       - name: package the unsigned app
         run: |
@@ -124,7 +124,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
       - run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)" && xcodebuild -version
-      - run: flutter build ios --simulator
+      - run: flutter build ios --simulator --dart-define=FEMME_SHA=${{ github.sha }}
         working-directory: mobile/app
       - name: boot, install, pair, screenshot
         env:
