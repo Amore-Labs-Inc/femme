@@ -11,10 +11,12 @@ import '../femme.dart';
 import '../media/lightbox.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'poll.dart';
 import 'prs.dart';
 
-/// One pull request: its description, the demo, and merge / close / fix. A merge is followed by
-/// the app's [MergeWatch], so it goes on after the page closes.
+/// One pull request: its description, the demo, and merge / close / fix. It reads its PR again
+/// every 10 s while shown, as the list does; a merge is followed by the app's [MergeWatch], so it
+/// goes on after the page closes.
 class PrDetailScreen extends StatefulWidget {
   const PrDetailScreen({super.key, required this.pr});
   final Pr pr;
@@ -23,7 +25,7 @@ class PrDetailScreen extends StatefulWidget {
   State<PrDetailScreen> createState() => _PrDetailScreenState();
 }
 
-class _PrDetailScreenState extends State<PrDetailScreen> {
+class _PrDetailScreenState extends State<PrDetailScreen> with Polling {
   bool _busy = false;
   late Pr _pr = widget.pr;
 
@@ -34,6 +36,9 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
 
   /// A watch of this page's own when the app has none (tests).
   MergeWatch? _own;
+
+  @override
+  Duration get every => const Duration(seconds: 10);
 
   @override
   void didChangeDependencies() {
@@ -56,6 +61,16 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
   }
 
   Pr get pr => _pr;
+
+  @override
+  Future<void> poll() async {
+    try {
+      final list = (await Femme.of(context).link.req(Req.prs)).prs;
+      if (mounted) _take(list);
+    } catch (_) {
+      // offline or restarting: keep what is shown, the next round asks again
+    }
+  }
 
   void _onList() {
     final list = _merges?.prs.value;
