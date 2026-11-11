@@ -95,7 +95,7 @@ OpenPlan planOpen(
   return OpenPlan.read;
 }
 
-enum ViewerKind { image, text, pdf, video, audio, binary }
+enum ViewerKind { image, svg, text, pdf, video, audio, binary }
 
 const _image = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
 const _video = {'mp4', 'mov', 'webm', 'm4v'};
@@ -126,7 +126,6 @@ const _text = {
   'env',
   'properties',
   'xml',
-  'svg',
   'plist',
   'lock',
   'sum',
@@ -260,10 +259,164 @@ ViewerKind viewerKind(String name) {
   if (_image.contains(ext)) return ViewerKind.image;
   if (_video.contains(ext)) return ViewerKind.video;
   if (_audio.contains(ext)) return ViewerKind.audio;
+  if (ext == 'svg') return ViewerKind.svg;
   if (ext == 'pdf') return ViewerKind.pdf;
   if (_text.contains(ext)) return ViewerKind.text;
   return ViewerKind.binary;
 }
+
+/// The extension of `name`, lower case, `""` when it has none.
+String _extOf(String name) {
+  final lower = name.toLowerCase();
+  final dot = lower.lastIndexOf('.');
+  return dot < 0 ? '' : lower.substring(dot + 1);
+}
+
+/// Markdown, shown rendered with a switch to the raw text.
+bool isMarkdown(String name) => const {'md', 'markdown'}.contains(_extOf(name));
+
+/// The `highlight` grammar for a file's name (the desktop picks a TextMate grammar the same way,
+/// `viewer/highlight.rs`), `null` for plain text.
+String? languageFor(String name) {
+  final lower = name.toLowerCase();
+  final byName = _langNames[lower];
+  if (byName != null) return byName;
+  return _langExts[_extOf(lower)];
+}
+
+const _langNames = {
+  'makefile': 'makefile',
+  'gnumakefile': 'makefile',
+  'dockerfile': 'dockerfile',
+  'containerfile': 'dockerfile',
+  'cmakelists.txt': 'cmake',
+  'pkgbuild': 'bash',
+  'gemfile': 'ruby',
+  'rakefile': 'ruby',
+  'vagrantfile': 'ruby',
+  'brewfile': 'ruby',
+  'jenkinsfile': 'groovy',
+  '.bashrc': 'bash',
+  '.zshrc': 'bash',
+  '.profile': 'bash',
+  '.env': 'bash',
+};
+
+const _langExts = {
+  'rs': 'rust',
+  'c': 'cpp',
+  'h': 'cpp',
+  'cc': 'cpp',
+  'cpp': 'cpp',
+  'cxx': 'cpp',
+  'hpp': 'cpp',
+  'hh': 'cpp',
+  'hxx': 'cpp',
+  'm': 'objectivec',
+  'mm': 'objectivec',
+  'go': 'go',
+  'nim': 'nimrod',
+  'd': 'd',
+  'asm': 'x86asm',
+  's': 'x86asm',
+  'cmake': 'cmake',
+  'mk': 'makefile',
+  'make': 'makefile',
+  'gradle': 'gradle',
+  'nix': 'nix',
+  'java': 'java',
+  'kt': 'kotlin',
+  'kts': 'kotlin',
+  'scala': 'scala',
+  'groovy': 'groovy',
+  'clj': 'clojure',
+  'cljs': 'clojure',
+  'edn': 'clojure',
+  'cs': 'cs',
+  'fs': 'fsharp',
+  'fsx': 'fsharp',
+  'vb': 'vbnet',
+  'swift': 'swift',
+  'dart': 'dart',
+  'py': 'python',
+  'pyi': 'python',
+  'rb': 'ruby',
+  'php': 'php',
+  'pl': 'perl',
+  'pm': 'perl',
+  'lua': 'lua',
+  'r': 'r',
+  'jl': 'julia',
+  'sh': 'bash',
+  'bash': 'bash',
+  'zsh': 'bash',
+  'fish': 'bash',
+  'ps1': 'powershell',
+  'bat': 'dos',
+  'cmd': 'dos',
+  'awk': 'awk',
+  'vim': 'vim',
+  'el': 'lisp',
+  'lisp': 'lisp',
+  'scm': 'scheme',
+  'rkt': 'scheme',
+  'hs': 'haskell',
+  'lhs': 'haskell',
+  'ml': 'ocaml',
+  'mli': 'ocaml',
+  'ex': 'elixir',
+  'exs': 'elixir',
+  'erl': 'erlang',
+  'hrl': 'erlang',
+  'elm': 'elm',
+  'sql': 'sql',
+  'proto': 'protobuf',
+  'thrift': 'thrift',
+  'sol': 'solidity',
+  'v': 'verilog',
+  'sv': 'verilog',
+  'vhd': 'vhdl',
+  'glsl': 'glsl',
+  'frag': 'glsl',
+  'vert': 'glsl',
+  'html': 'xml',
+  'htm': 'xml',
+  'xml': 'xml',
+  'svg': 'xml',
+  'plist': 'xml',
+  'vue': 'vue',
+  'css': 'css',
+  'scss': 'scss',
+  'sass': 'scss',
+  'less': 'less',
+  'js': 'javascript',
+  'mjs': 'javascript',
+  'cjs': 'javascript',
+  'jsx': 'javascript',
+  'ts': 'typescript',
+  'tsx': 'typescript',
+  'mts': 'typescript',
+  'cts': 'typescript',
+  'graphql': 'graphql',
+  'gql': 'graphql',
+  'json': 'json',
+  'jsonl': 'json',
+  'ndjson': 'json',
+  'json5': 'json',
+  'arb': 'json',
+  'yaml': 'yaml',
+  'yml': 'yaml',
+  'toml': 'ini',
+  'ini': 'ini',
+  'cfg': 'ini',
+  'conf': 'ini',
+  'properties': 'properties',
+  'diff': 'diff',
+  'patch': 'diff',
+  'md': 'markdown',
+  'markdown': 'markdown',
+  'tex': 'tex',
+};
 
 /// The first [headBytes] decode as UTF-8 and hold no NUL. A cut at the end of the window may
 /// split a character, so up to 3 trailing bytes are let go.

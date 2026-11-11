@@ -40,7 +40,7 @@ void main() {
       'A.PNG': ViewerKind.image,
       'photo.JPEG': ViewerKind.image,
       'x.webp': ViewerKind.image,
-      'logo.svg': ViewerKind.text,
+      'logo.svg': ViewerKind.svg,
       'main.rs': ViewerKind.text,
       'README.md': ViewerKind.text,
       'data.json': ViewerKind.text,

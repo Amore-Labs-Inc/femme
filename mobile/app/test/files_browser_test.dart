@@ -12,6 +12,7 @@ FakeBox box() => FakeBox(
   dirs: {
     '': const [
       FsEntry('README.md', false, 12),
+      FsEntry('notes.txt', false, 11),
       FsEntry('src', true, 0),
       FsEntry('.env', false, 4),
       FsEntry('huge.bin', false, 20 << 20),
@@ -23,6 +24,7 @@ FakeBox box() => FakeBox(
   },
   files: {
     'README.md': 'hello\nworld\n'.codeUnits,
+    'notes.txt': 'hello\nworld'.codeUnits,
     'blob': [0, 1, 2],
   },
 );
@@ -67,9 +69,9 @@ void main() {
     final tree = FilesTree(requester: b, sid: 's1');
     await t.pumpWidget(app(tree));
     await t.pumpAndSettle();
-    await t.tap(find.text('README.md'));
+    await t.tap(find.text('notes.txt'));
     await t.pumpAndSettle();
-    expect(b.read, ['README.md']);
+    expect(b.read, ['notes.txt']);
     expect(find.byType(LinesView), findsOneWidget);
     expect(find.text('hello'), findsOneWidget);
     expect(find.text('world'), findsOneWidget);
