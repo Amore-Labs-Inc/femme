@@ -20,6 +20,19 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>femme</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>femme</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
