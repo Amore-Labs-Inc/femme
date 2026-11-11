@@ -173,6 +173,23 @@ impl Daemon {
         }
         Ok(out)
     }
+
+    /// [`Daemon::write_items`] publishes the items it stored, not the ones it deleted: the
+    /// tombstones session `sid`'s items got after rev `before` go to the hub here.
+    pub(crate) fn say_removed(&self, sid: Sid, before: u64) {
+        match self
+            .store
+            .changes_since(Scope::Session(sid), Some(before), usize::MAX)
+        {
+            Ok(ch) => self.hub.publish(
+                ch.rows
+                    .into_iter()
+                    .filter(|r| matches!(r, Row::Tombstone { .. }))
+                    .collect(),
+            ),
+            Err(e) => tracing::warn!(%sid, %e, "deleted items not published"),
+        }
+    }
 }
 
 /// A subscriber's catch-up: every page the byte budget split.

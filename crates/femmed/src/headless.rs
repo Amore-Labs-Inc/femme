@@ -1158,6 +1158,7 @@ impl Actor {
             return;
         }
         let (sid, epoch) = (self.sid, self.epoch);
+        let removed = removes(d, &puts);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
@@ -1173,6 +1174,9 @@ impl Actor {
             }
             Ok(())
         });
+        if let Some(before) = removed {
+            d.say_removed(sid, before);
+        }
         match r {
             Ok(()) => {
                 self.committed = committed;
@@ -1703,6 +1707,16 @@ enum Put {
     Done(Item),
     /// An open item's body changes.
     Update(String, Value),
+    /// The agent took an item back: deleted, with a tombstone ([`Daemon::say_removed`]).
+    Remove(String),
+}
+
+/// The store's rev before a write that holds a [`Put::Remove`], for [`Daemon::say_removed`].
+fn removes(d: &Daemon, puts: &[Put]) -> Option<u64> {
+    puts.iter()
+        .any(|p| matches!(p, Put::Remove(_)))
+        .then(|| d.store.rev().ok())
+        .flatten()
 }
 
 #[derive(Default)]
@@ -1788,7 +1802,7 @@ fn event_item(sid: Sid, id: String, text: &str, now: i64) -> Item {
         ItemStatus::Completed,
         Some(&body(&Event {
             text: text.into(),
-            task: None,
+            ..Default::default()
         })),
         now,
     )
@@ -1855,6 +1869,10 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.deltas.push((id, offset, text));
             }
             AgentEvent::ItemUpdated { id, body } => f.puts.push(Put::Update(id, body)),
+            AgentEvent::ItemRetracted { id } => {
+                st.streams.remove(&id);
+                f.puts.push(Put::Remove(id));
+            }
             AgentEvent::ItemCompleted {
                 id,
                 kind,
@@ -2027,6 +2045,11 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
             item.body = Some(b.to_string());
             item.blob_hash = None;
             published.push(tx.put_item(&item)?);
+        }
+        Put::Remove(id) => {
+            if store_items::get_item(tx, sid, id)?.is_some() {
+                tx.delete_item(sid, id)?;
+            }
         }
     }
     Ok(())
@@ -2733,6 +2756,54 @@ mod tests {
         let live = write(None, None, 1);
         assert_eq!(live.context, ctx(44_302, 1_000_000, 1));
         assert!(live.rev > first.rev);
+    }
+
+    /// Claude took a refused reply back (`ItemRetracted`): its item is deleted and the session's
+    /// change feed says so with a tombstone; an id the store does not hold is a no-op.
+    #[test]
+    fn a_retracted_item_is_deleted_with_a_tombstone() {
+        let (store, sid) = store_with_session();
+        let partial = new_item(
+            sid,
+            "m1:0".into(),
+            ItemKind::AssistantMessage,
+            ItemStatus::Completed,
+            Some(&json!({"text": "Step one is"})),
+            1,
+        );
+        apply_puts(&store, sid, vec![Put::Done(partial)]);
+        let mut st = FoldState::default();
+        st.streams.insert("m1:0".into(), "Step one is".into());
+        let retract = |id: &str| AgentEvent::ItemRetracted { id: id.into() };
+        let f = fold(
+            &mut st,
+            sid,
+            "o9",
+            vec![retract("m1:0"), retract("gone")],
+            2,
+        );
+        assert!(st.streams.is_empty());
+        assert!(
+            matches!(&f.puts[..], [Put::Remove(a), Put::Remove(b)] if a == "m1:0" && b == "gone")
+        );
+        let before = store.rev().unwrap();
+        assert!(apply_puts(&store, sid, f.puts).is_empty());
+        assert!(store
+            .read(|c| store_items::get_item(c, sid, "m1:0"))
+            .unwrap()
+            .is_none());
+        let rows = store
+            .changes_since(
+                femme_proto::rpc::Scope::Session(sid),
+                Some(before),
+                usize::MAX,
+            )
+            .unwrap()
+            .rows;
+        assert!(
+            matches!(&rows[..], [femme_proto::state::Row::Tombstone { id, .. }] if *id == format!("{sid}/m1:0")),
+            "{rows:?}"
+        );
     }
 
     #[test]

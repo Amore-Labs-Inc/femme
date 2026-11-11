@@ -117,6 +117,12 @@ pub struct Event {
     /// Set when the line says a background task stopped: which call, and how.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TaskEnd>,
+    /// The line is a warning (a model fallback, a refusal): clients mark it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
+    /// The agent's own longer wording of the line, shown when its row is unfolded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A background task's end (Claude's `task_notification`): an `Agent` run in the background or a

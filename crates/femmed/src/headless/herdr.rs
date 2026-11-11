@@ -891,12 +891,16 @@ impl Tail {
             return;
         }
         let sid = self.sid;
+        let removed = super::removes(d, &puts);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
             }
             tx.set_spool_committed(sid, end)
         });
+        if let Some(before) = removed {
+            d.say_removed(sid, before);
+        }
         match r {
             Ok(()) => self.committed = end,
             Err(e) => {
@@ -1095,7 +1099,7 @@ fn ids_of(v: &Value) -> Vec<String> {
 fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
     let held = puts.iter().any(|p| match p {
         Put::Start(i) | Put::Done(i) => i.item_id == id && i.kind == ItemKind::UserMessage,
-        Put::Update(..) => false,
+        Put::Update(..) | Put::Remove(_) => false,
     });
     if held {
         return None;

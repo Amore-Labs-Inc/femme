@@ -481,7 +481,10 @@ impl CodexDriver {
             id,
             kind: ItemKind::Event,
             status,
-            body: body(&items::Event { text, task: None }),
+            body: body(&items::Event {
+                text,
+                ..Default::default()
+            }),
             parent: None,
         });
     }
@@ -1417,7 +1420,10 @@ fn text_body(kind: ItemKind, text: String) -> Value {
         ItemKind::UserMessage => body(&items::UserMessage { text }),
         ItemKind::Thinking => body(&items::Thinking { text }),
         ItemKind::Plan => body(&items::Plan { text }),
-        ItemKind::Event => body(&items::Event { text, task: None }),
+        ItemKind::Event => body(&items::Event {
+            text,
+            ..Default::default()
+        }),
         _ => body(&items::AssistantMessage { text }),
     }
 }
