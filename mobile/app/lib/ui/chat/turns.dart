@@ -301,31 +301,87 @@ bool hasForegroundTask(List<Item> items, Json? Function(Item) body) {
   );
 }
 
-/// The working line's verb from the last item: `Thinking`, `Writing`, `Running a tool`.
+/// Index of the message that opened the turn (the last user or peer message), or -1.
+int _turnStart(List<Item> items) => items.lastIndexWhere(
+  (i) => i.kind == ItemKind.userMessage || i.kind == ItemKind.peerMessage,
+);
+
+/// The working line's verb (desktop working.rs): the newest item of the turn still in progress
+/// says what is happening (`Writing`, `Running a tool`); between items it is `Thinking`.
 String workingVerb(List<Item> items) {
-  for (final i in items.reversed) {
-    switch (i.kind) {
-      case ItemKind.thinking:
-        return 'Thinking';
-      case ItemKind.assistantMessage:
-        return 'Writing';
-      case ItemKind.toolCall || ItemKind.toolResult:
-        return 'Running a tool';
-      case ItemKind.userMessage:
-        return 'Thinking';
-      default:
-        continue;
-    }
+  final turn = items.sublist(_turnStart(items) + 1);
+  for (final i in turn.reversed) {
+    if (i.status != ItemStatus.inProgress) continue;
+    return switch (i.kind) {
+      ItemKind.assistantMessage => 'Writing',
+      ItemKind.toolCall || ItemKind.toolResult => 'Running a tool',
+      _ => 'Thinking',
+    };
   }
-  return 'Working';
+  return 'Thinking';
 }
 
-/// Unix ms of the last user message (the working line counts from it).
+/// Unix ms of the message that opened the turn (a user's, or a peer's): the working line counts
+/// from it.
 int? lastUserTs(List<Item> items) {
-  for (final i in items.reversed) {
-    if (i.kind == ItemKind.userMessage) return i.ts;
+  final n = _turnStart(items);
+  return n < 0 ? null : items[n].ts;
+}
+
+/// UTF-8 bytes of [s], without encoding it.
+int utf8Length(String s) {
+  var n = 0;
+  for (final u in s.codeUnits) {
+    n += u < 0x80
+        ? 1
+        : u < 0x800
+        ? 2
+        : (u >= 0xD800 && u < 0xE000)
+        ? 2 // each half of a surrogate pair: 4 bytes for the two
+        : 3;
   }
-  return null;
+  return n;
+}
+
+/// Bytes the agent has produced this turn: its text, thoughts and tool calls ([textOf] is the
+/// text shown, streaming included).
+int turnBytes(List<Item> items, String Function(Item) textOf) {
+  var n = 0;
+  for (final i in items.skip(_turnStart(items) + 1)) {
+    if (i.kind == ItemKind.assistantMessage ||
+        i.kind == ItemKind.thinking ||
+        i.kind == ItemKind.toolCall) {
+      n += utf8Length(textOf(i));
+    }
+  }
+  return n;
+}
+
+/// `850`, `15.0k`: about four bytes to a token.
+String tokenCount(int bytes) {
+  final t = bytes ~/ 4;
+  return t < 1000 ? '$t' : '${(t / 1000).toStringAsFixed(1)}k';
+}
+
+/// `42s`, `5m 42s`, `1h 3m`.
+String workingElapsed(int secs) {
+  final s = secs < 0 ? 0 : secs;
+  if (s < 60) return '${s}s';
+  if (s < 3600) return '${s ~/ 60}m ${s % 60}s';
+  return '${s ~/ 3600}h ${s % 3600 ~/ 60}m';
+}
+
+const _stars = ['·', '✢', '✳', '✶', '✻', '✽'];
+
+/// `✻ Thinking… (5m 42s · ↓ 15.0k tokens)` at [now] (unix ms); the star turns once a second.
+String workingText(String verb, int? since, int bytes, int now) {
+  final secs = since == null ? null : (now - since) ~/ 1000;
+  final star = _stars[(secs ?? 0) % _stars.length];
+  final facts = [
+    if (secs != null) workingElapsed(secs),
+    if (bytes > 0) '↓ ${tokenCount(bytes)} tokens',
+  ];
+  return facts.isEmpty ? '$star $verb…' : '$star $verb… (${facts.join(' · ')})';
 }
 
 /// One subagent on show in the strip above the transcript (desktop agents.rs `Chip`).

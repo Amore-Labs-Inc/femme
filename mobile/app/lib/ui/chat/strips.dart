@@ -7,8 +7,11 @@ import 'package:flutter/cupertino.dart';
 
 import '../../net/models.dart' hide Row;
 import '../../state/chat.dart';
+import '../femme.dart';
 import '../theme.dart';
 import 'look.dart';
+import 'media.dart';
+import 'turns.dart';
 
 Future<void> _note(BuildContext context, String title, String body) =>
     showCupertinoDialog<void>(
@@ -132,7 +135,8 @@ class GoalStrip extends StatelessWidget {
   }
 }
 
-/// `✻ Thinking… (5m 42s)`, redrawn every second while shown.
+/// `✻ Thinking… (5m 42s · ↓ 15.0k tokens)`, redrawn every second while shown; the tokens are
+/// counted from the main thread's items of the turn (desktop working.rs).
 class WorkingLine extends StatefulWidget {
   const WorkingLine({super.key, required this.verb, this.since});
   final String verb;
@@ -143,15 +147,13 @@ class WorkingLine extends StatefulWidget {
 }
 
 class _WorkingLineState extends State<WorkingLine> {
-  static const _spin = ['·', '✢', '✳', '✶', '✻', '✽'];
   Timer? _t;
-  int _n = 0;
 
   @override
   void initState() {
     super.initState();
-    _t = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (mounted) setState(() => _n++);
+    _t = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
     });
   }
 
@@ -163,14 +165,21 @@ class _WorkingLineState extends State<WorkingLine> {
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.since;
-    final el = s == null
-        ? ''
-        : ' (${duration(DateTime.now().millisecondsSinceEpoch - s)})';
+    final store = Femme.of(context).store;
+    final main = [
+      for (final i in store.items(ChatScope.of(context).sid))
+        if (i.parent == null) i,
+    ];
+    final bytes = turnBytes(main, store.textOf);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
       child: Text(
-        '${_spin[_n % _spin.length]} ${widget.verb}…$el',
+        workingText(
+          widget.verb,
+          widget.since,
+          bytes,
+          DateTime.now().millisecondsSinceEpoch,
+        ),
         style: mono(context, size: 13, color: FemmeColors.neon),
       ),
     );

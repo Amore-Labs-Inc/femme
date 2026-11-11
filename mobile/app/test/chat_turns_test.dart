@@ -261,4 +261,47 @@ void main() {
       },
     );
   });
+
+  test('the working line names the work, the time and the tokens', () {
+    final items = [
+      it('u1', ItemKind.userMessage, body: {'text': 'old question'}, ts: 1000),
+      it('a1', ItemKind.assistantMessage, body: {'text': 'old, not counted'}),
+      it(
+        'u2',
+        ItemKind.userMessage,
+        body: {'text': 'fix the build'},
+        ts: 10000,
+      ),
+      it('t', ItemKind.thinking, body: {'text': 't' * 4000}),
+      it(
+        'w',
+        ItemKind.assistantMessage,
+        body: {'text': 'w' * 2000},
+        status: ItemStatus.inProgress,
+      ),
+    ];
+    final verb = workingVerb(items);
+    final since = lastUserTs(items);
+    expect((verb, since), ('Writing', 10000));
+    final bytes = turnBytes(items, (i) => i.text);
+    expect(bytes, 6000);
+    expect(
+      workingText(verb, since, bytes, 10000 + 342000),
+      '· Writing… (5m 42s · ↓ 1.5k tokens)',
+    );
+    expect(workingText('Thinking', null, 0, 0), '· Thinking…');
+    expect(workingElapsed(3725), '1h 2m');
+    expect(tokenCount(3999), '999');
+    expect(utf8Length('é✻😀'), 2 + 3 + 4);
+  });
+
+  test("a peer's message opens the turn; between items it is thinking", () {
+    final items = [
+      it('u', ItemKind.userMessage, body: {'text': 'go'}, ts: 1000),
+      it('p', ItemKind.peerMessage, body: {'text': 'hi'}, ts: 10000),
+      call('a', 'Bash', {'command': 'x'}),
+    ];
+    expect(lastUserTs(items), 10000);
+    expect(workingVerb(items), 'Thinking');
+  });
 }
