@@ -216,28 +216,37 @@ class _TranscriptViewState extends State<TranscriptView> {
           Positioned(
             right: 16,
             bottom: 12,
-            child: GestureDetector(
-              onTap: _toEnd,
-              child: Container(
-                constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: paper(context),
-                  border: Border.all(color: ink(context), width: 1.2),
-                  boxShadow: [
-                    BoxShadow(color: ink(context), offset: const Offset(2, 2)),
-                  ],
-                ),
-                child: Text(
-                  _count > _seen ? '↓ new' : '↓',
-                  style: mono(
-                    context,
-                    size: 14,
-                    color: _count > _seen ? FemmeColors.accent : null,
+            child: Semantics(
+              label: _count > _seen
+                  ? 'new messages, scroll to latest'
+                  : 'scroll to latest',
+              button: true,
+              excludeSemantics: true,
+              child: GestureDetector(
+                onTap: _toEnd,
+                child: Container(
+                  constraints: const BoxConstraints(
+                    minHeight: 44,
+                    minWidth: 44,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.secondarySystemGroupedBackground
+                        .resolveFrom(context),
+                    borderRadius: BorderRadius.circular(999),
+                    boxShadow: softShadow,
+                  ),
+                  child: Text(
+                    _count > _seen ? '↓ new' : '↓',
+                    style: mono(
+                      context,
+                      size: 14,
+                      color: _count > _seen ? FemmeColors.accent : null,
+                    ),
                   ),
                 ),
               ),

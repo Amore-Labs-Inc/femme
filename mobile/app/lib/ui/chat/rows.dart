@@ -228,24 +228,16 @@ class UserBubble extends StatelessWidget {
                   discard: op == null ? null : () => f.store.discard(op),
                 ),
                 child: Container(
+                  key: const ValueKey('user-bubble'),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
+                    horizontal: 14,
                     vertical: 9,
                   ),
-                  decoration: BoxDecoration(
-                    color: FemmeColors.accent,
-                    border: Border.all(color: ink(context), width: 1.2),
-                    boxShadow: [
-                      BoxShadow(
-                        color: ink(context),
-                        offset: const Offset(2, 2),
-                      ),
-                    ],
-                  ),
+                  decoration: userBubble,
                   child: Text(
                     split.text,
                     style: const TextStyle(
-                      color: FemmeColors.paper,
+                      color: CupertinoColors.white,
                       fontSize: 16,
                       height: 1.35,
                     ),
@@ -276,6 +268,18 @@ class UserBubble extends StatelessWidget {
   }
 }
 
+/// Your own message: an iOS bubble, accent fill, 18 pt corners with a smaller tail corner at
+/// the bottom right, no border and no shadow.
+const userBubble = BoxDecoration(
+  color: FemmeColors.accent,
+  borderRadius: BorderRadius.only(
+    topLeft: Radius.circular(bubbleRadius),
+    topRight: Radius.circular(bubbleRadius),
+    bottomLeft: Radius.circular(bubbleRadius),
+    bottomRight: Radius.circular(6),
+  ),
+);
+
 class PeerCard extends StatelessWidget {
   const PeerCard(this.item, {super.key});
   final Item item;
@@ -294,11 +298,10 @@ class PeerCard extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: paper(context),
-            border: Border.all(color: ink(context), width: 1.2),
-            boxShadow: [
-              BoxShadow(color: ink(context), offset: const Offset(2, 2)),
-            ],
+            color: CupertinoColors.secondarySystemBackground.resolveFrom(
+              context,
+            ),
+            borderRadius: BorderRadius.circular(cardRadius),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -443,8 +446,8 @@ class PlanRow extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          border: Border.all(color: ink(context), width: 1.2),
-          color: paper(context),
+          color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+          borderRadius: BorderRadius.circular(cardRadius),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

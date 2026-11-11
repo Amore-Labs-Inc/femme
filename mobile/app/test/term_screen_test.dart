@@ -176,4 +176,68 @@ void main() {
     expect(find.text('Close htop?'), findsNothing);
     expect(store.panes.length, 3);
   });
+
+  testWidgets('the nav bar close and + are named 44 pt buttons', (
+    tester,
+  ) async {
+    final store = Store();
+    put(store, session(sid), [pane(sid, 1, title: 'zsh'), pane(sid, 2)]);
+    await show(tester, store, sid);
+    for (final (key, label) in [
+      ('term-close', 'close pane'),
+      ('term-new', 'new shell pane'),
+    ]) {
+      final b = find.byKey(ValueKey(key));
+      expect(tester.getSize(b).height, greaterThanOrEqualTo(44));
+      expect(tester.getSize(b).width, greaterThanOrEqualTo(44));
+      expect(
+        find.descendant(of: b, matching: find.bySemanticsLabel(label)),
+        findsOneWidget,
+      );
+    }
+  });
+
+  testWidgets('a session without panes offers a filled, rounded, 44 pt '
+      'Open a shell', (tester) async {
+    final empty = Store();
+    put(empty, session(sid2), []);
+    await show(tester, empty, sid2);
+    final open = find.byKey(const ValueKey('term-open-shell'));
+    expect(tester.getSize(open).height, greaterThanOrEqualTo(44));
+    final deco = tester
+        .widgetList<DecoratedBox>(
+          find.descendant(of: open, matching: find.byType(DecoratedBox)),
+        )
+        .map((d) => d.decoration)
+        .whereType<ShapeDecoration>()
+        .first;
+    expect(
+      (deco.shape as RoundedSuperellipseBorder).borderRadius,
+      const BorderRadius.all(Radius.circular(12)),
+    );
+  });
+
+  testWidgets('the closed card is rounded, without border or hard shadow', (
+    tester,
+  ) async {
+    final store = Store();
+    put(store, session(sid, status: 'Closed', closed: 1), []);
+    await show(tester, store, sid);
+    final box = tester
+        .widgetList<Container>(
+          find.ancestor(
+            of: find.text('session closed'),
+            matching: find.byType(Container),
+          ),
+        )
+        .map((c) => c.decoration)
+        .whereType<BoxDecoration>()
+        .first;
+    expect(box.border, isNull);
+    expect(box.borderRadius, const BorderRadius.all(Radius.circular(12)));
+    for (final s in box.boxShadow ?? const <BoxShadow>[]) {
+      expect(s.blurRadius, greaterThan(0));
+      expect(s.offset.dx, 0);
+    }
+  });
 }

@@ -380,12 +380,19 @@ class _LivePill extends StatelessWidget {
         onTap();
       },
       child: Container(
+        key: const ValueKey('term-live-pill'),
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
-          color: FemmeColors.paperC.resolveFrom(context),
-          border: Border.all(color: ink, width: 1.2),
-          boxShadow: [BoxShadow(color: ink, offset: const Offset(2, 2))],
+          color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+          borderRadius: const BorderRadius.all(Radius.circular(999)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x26000000),
+              blurRadius: 12,
+              offset: Offset(0, 3),
+            ),
+          ],
         ),
         alignment: Alignment.center,
         child: Row(

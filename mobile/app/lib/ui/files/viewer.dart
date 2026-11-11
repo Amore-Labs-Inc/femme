@@ -182,7 +182,7 @@ class _FileViewerPageState extends State<FileViewerPage> {
                         HapticFeedback.selectionClick();
                         shareBytes(bctx, _name, bytes);
                       },
-                child: const Icon(CupertinoIcons.share),
+                child: const Icon(CupertinoIcons.share, semanticLabel: 'share'),
               ),
             ),
           ],
@@ -306,33 +306,22 @@ class _Note extends StatelessWidget {
   );
 }
 
-/// The design's button: ink border, no radius, a hard 2 px shadow.
+/// The page's action: a filled accent button with 12 pt corners, 44 pt tall.
 class _FlatButton extends StatelessWidget {
   const _FlatButton({required this.label, this.onPressed});
   final String label;
   final VoidCallback? onPressed;
 
   @override
-  Widget build(BuildContext context) {
-    final ink = FemmeColors.inkC.resolveFrom(context);
-    return GestureDetector(
-      onTap: onPressed == null
-          ? null
-          : () {
-              HapticFeedback.selectionClick();
-              onPressed!();
-            },
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 44, minWidth: 120),
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: FemmeColors.paperC.resolveFrom(context),
-          border: Border.all(color: ink, width: 1.2),
-          boxShadow: [BoxShadow(color: ink, offset: const Offset(2, 2))],
-        ),
-        child: Text(label, style: TextStyle(color: ink, fontSize: 16)),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => CupertinoButton.filled(
+    minimumSize: const Size(120, 44),
+    borderRadius: const BorderRadius.all(Radius.circular(12)),
+    onPressed: onPressed == null
+        ? null
+        : () {
+            HapticFeedback.selectionClick();
+            onPressed!();
+          },
+    child: Text(label),
+  );
 }

@@ -7,11 +7,7 @@ planned daemon additions are in `PROTOCOL.md`.
 
 ## Status (2026-11-11)
 
-Re-audited 2026-11-11 after parity round 3 (141 rows in §1–16; the `phone` column of each table holds the verdict): **126 done, 1 partial, 0 missing, 14 n/a.** Paths in the `phone` column are relative to `mobile/app/lib/`.
-
-Still partial:
-
-- §1 Current session follows closes (partial, optional on phone): a closed chat says `session closed` with a Close button; it does not move on by itself to the newest live session, and a new Claude session does not take over from a shell
+Re-audited 2026-11-11 after parity round 3 (141 rows in §1–16; the `phone` column of each table holds the verdict): **127 done, 0 partial, 0 missing, 14 n/a.** Paths in the `phone` column are relative to `mobile/app/lib/`.
 
 Earlier audit (2026-11-11, before round 3): 87 done, 36 partial, 4 missing, 14 n/a.
 
@@ -49,7 +45,7 @@ Code-verified absences, so nobody builds a phone screen to match a desktop featu
 | Request timeout | 30 s per request; a failed request's reason sits in `Net::error` and shows in the status line until the next success | `crates/femme-client/src/lib.rs:55`, `desktop/src/net.rs:543-575` | `S2C::Resp{result: Err(Err{code,msg})}` `rpc.rs:354-369` | `ErrCode::Unsupported` means "daemon too old": cards say so plainly (`desktop/src/prs.rs:261-268`, `desktop/src/accounts.rs:9-10`). | done · net/link.dart (30 s), state/box.dart describeError (`box too old for this`) |
 | Server info / check for updates | femme ▸ Check for updates: asks which commit the box runs, compares with the build's `COMMIT`; verdict row for 10 s (`up to date`, `box runs <sha>: building it now …`, `no marker`, `daemon too old`); also run on every (re)connection and it starts the PC updater unit | `desktop/src/menu.rs:16-19,88-200,474-540`, `app.rs:492-501` | `Req::ServerInfo` → `Resp::ServerInfo{version, deployed}` `rpc.rs:205,340-344` | Phone: show daemon version + deployed sha in a "Box" screen; no self-updater (app stores do that). | done · ui/box/info.dart (version, deployed sha, round-trip, Check) |
 | Which session opens at start | newest live, running agent session (Claude > Codex > Pi; crashed/failed/interrupted don't count); none → create headless Claude in `~`; that fails → newest live shell or a new shell. Waits for the first `Changes` (≤ 2 s after link up) | `desktop/src/session.rs:1-60,128-...` (`open_at_start` at :138) | `Subscribe{Global}`, maybe `SessionCreate` | Phone should NOT auto-create a session at start; open the "Now" list instead. | done · ui/app.dart (opens on Now, never creates a session) |
-| Current session follows closes | when the shown session closes, the centre moves to the newest live one (or none); a Claude session that appears while a shell is shown (user typed `claude`) takes the centre | `desktop/src/net.rs:56-61,203-242` | rows of `Subscribe{Global}` | Optional on phone. | partial (optional): an open chat whose session closes says `session closed` with a Close button (ui/chat.dart); missing: moving on by itself to the newest live session, and a new Claude session taking over from a shell |
+| Current session follows closes | when the shown session closes, the centre moves to the newest live one (or none); a Claude session that appears while a shell is shown (user typed `claude`) takes the centre | `desktop/src/net.rs:56-61,203-242` | rows of `Subscribe{Global}` | Optional on phone. | done: a chat or terminal whose session closes moves to the newest live session (or back to the list) with a toast naming what closed; a Claude session that appears while a live shell is on show takes its place (ui/follow.dart Following, wrapped by widgets.dart sessionScreen); a session opened after it closed keeps its `session closed` card |
 
 ## 2. Sidebar / sessions list
 

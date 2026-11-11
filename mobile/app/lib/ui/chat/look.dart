@@ -1,5 +1,5 @@
 /// Small look helpers shared by the chat's pieces: the permission chip's colours, the monospace
-/// style, the muted colour, and a tappable chip.
+/// style, the muted colour, the iOS radii and fills, a capsule chip and the toast.
 library;
 
 import 'package:flutter/cupertino.dart';
@@ -52,7 +52,30 @@ Color ink(BuildContext context) => FemmeColors.inkC.resolveFrom(context);
 Color panel(BuildContext context) => FemmeColors.panelC.resolveFrom(context);
 Color paper(BuildContext context) => FemmeColors.paperC.resolveFrom(context);
 
-/// A small bordered chip: a colour square and a label; tappable when [onTap] is set.
+/// The phone's iOS shapes (the desktop's square, hard-shadowed look is not used here).
+const bubbleRadius = 18.0;
+const cardRadius = 12.0;
+const codeRadius = 10.0;
+
+/// The composer's capsule text field, as iOS Messages.
+const composerRadius = 20.0;
+
+/// A soft iOS drop shadow for floating panels (popups, toasts).
+const softShadow = [
+  BoxShadow(color: Color(0x1F000000), blurRadius: 12, offset: Offset(0, 4)),
+];
+
+/// The hairline width: one physical pixel.
+double hairline(BuildContext context) =>
+    1 / MediaQuery.devicePixelRatioOf(context);
+
+Color fill(BuildContext context) =>
+    CupertinoColors.tertiarySystemFill.resolveFrom(context);
+Color separator(BuildContext context) =>
+    CupertinoColors.separator.resolveFrom(context);
+
+/// A capsule chip: an optional colour dot (which also tints the capsule) and a label;
+/// tappable when [onTap] is set.
 class Chip extends StatelessWidget {
   const Chip({super.key, required this.label, this.color, this.onTap});
   final String label;
@@ -61,24 +84,22 @@ class Chip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = color;
     final body = Container(
       constraints: const BoxConstraints(minHeight: 28),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        border: Border.all(color: ink(context), width: 1.2),
-        color: paper(context),
+        borderRadius: BorderRadius.circular(999),
+        color: c == null ? fill(context) : c.withValues(alpha: 0.18),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (color != null) ...[
+          if (c != null) ...[
             Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: color,
-                border: Border.all(color: ink(context), width: 1),
-              ),
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: c, shape: BoxShape.circle),
             ),
             const SizedBox(width: 6),
           ],
@@ -87,7 +108,7 @@ class Chip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: mono(context, size: 12),
+              style: mono(context, size: 13),
             ),
           ),
         ],
@@ -117,12 +138,12 @@ void toast(BuildContext context, String text) {
       bottom: MediaQuery.of(ctx).padding.bottom + 96,
       child: IgnorePointer(
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          key: const ValueKey('toast'),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: FemmeColors.inkC.resolveFrom(ctx),
-            boxShadow: const [
-              BoxShadow(color: FemmeColors.done, offset: Offset(3, 3)),
-            ],
+            borderRadius: BorderRadius.circular(cardRadius),
+            boxShadow: softShadow,
           ),
           child: Text(
             text,

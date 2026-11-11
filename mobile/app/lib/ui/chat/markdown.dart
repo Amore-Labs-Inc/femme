@@ -1,4 +1,4 @@
-/// Assistant markdown: body 16 px, code in monospace on the panel colour with its language at
+/// Assistant markdown: body 16 px, code in monospace in a rounded grey box with its language at
 /// the top right, links open in the browser. Text still streaming is closed for drawing only:
 /// an open fence is a code block to the end, a lone `**` is literal (desktop markdown.rs:1-8).
 library;
@@ -85,6 +85,12 @@ String? _langOf(Object? node) {
   return null;
 }
 
+/// A code block's box: rounded 10 pt, the grouped secondary background, no border.
+BoxDecoration codeBlockDecoration(BuildContext context) => BoxDecoration(
+  color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+  borderRadius: BorderRadius.circular(codeRadius),
+);
+
 /// A code block: its language small at the top right, the code scrolling sideways.
 class _CodeBlock extends MarkdownElementBuilder {
   @override
@@ -106,8 +112,16 @@ class _CodeBlock extends MarkdownElementBuilder {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (lang != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 4, 8, 0),
+          Container(
+            padding: const EdgeInsets.fromLTRB(10, 4, 8, 4),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: separator(context),
+                  width: hairline(context),
+                ),
+              ),
+            ),
             child: Text(
               lang,
               textAlign: TextAlign.right,
@@ -118,7 +132,7 @@ class _CodeBlock extends MarkdownElementBuilder {
           scrollDirection: Axis.horizontal,
           padding: lang == null
               ? const EdgeInsets.all(10)
-              : const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              : const EdgeInsets.fromLTRB(10, 8, 10, 10),
           child: Text(code, style: mono(context, size: 13)),
         ),
       ],
@@ -147,11 +161,8 @@ class Md extends StatelessWidget {
         color: theme.primaryColor,
         decoration: TextDecoration.underline,
       ),
-      code: code.copyWith(backgroundColor: panel(context)),
-      codeblockDecoration: BoxDecoration(
-        color: panel(context),
-        border: Border.all(color: ink(context), width: 1.2),
-      ),
+      code: code.copyWith(backgroundColor: fill(context)),
+      codeblockDecoration: codeBlockDecoration(context),
       codeblockPadding: const EdgeInsets.all(10),
       blockquoteDecoration: BoxDecoration(
         border: Border(left: BorderSide(color: muted(context), width: 3)),
@@ -165,9 +176,14 @@ class Md extends StatelessWidget {
       h6: body.copyWith(fontWeight: FontWeight.w700),
       tableBody: body.copyWith(fontSize: size - 2),
       tableHead: body.copyWith(fontSize: size - 2, fontWeight: FontWeight.w700),
-      tableBorder: TableBorder.all(color: muted(context), width: 1),
+      tableBorder: TableBorder.all(
+        color: separator(context),
+        width: hairline(context),
+      ),
       horizontalRuleDecoration: BoxDecoration(
-        border: Border(top: BorderSide(color: muted(context), width: 1)),
+        border: Border(
+          top: BorderSide(color: separator(context), width: hairline(context)),
+        ),
       ),
     );
     return MarkdownBody(

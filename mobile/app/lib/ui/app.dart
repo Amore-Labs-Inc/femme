@@ -172,6 +172,13 @@ class _ShellState extends State<Shell> {
   final _tabs = CupertinoTabController();
   final _navs = List.generate(4, (_) => GlobalKey<NavigatorState>());
 
+  /// Each tab's root list, for the scroll to the top on a second tap of its tab.
+  final _scrolls = List.generate(4, (_) => ScrollController());
+
+  /// The tab on screen before a tap (the controller already holds the new one when the bar's
+  /// `onTap` runs).
+  int _shownTab = 0;
+
   @override
   void initState() {
     super.initState();
@@ -194,6 +201,9 @@ class _ShellState extends State<Shell> {
   void dispose() {
     widget.open?.removeListener(_onOpen);
     _tabs.dispose();
+    for (final c in _scrolls) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -202,6 +212,7 @@ class _ShellState extends State<Shell> {
     if (sid == null || !mounted) return;
     widget.open!.value = null;
     _tabs.index = 0;
+    _shownTab = 0;
     // Switching tabs builds Now's navigator if it was never shown; push once it exists.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final nav = _navs[0].currentState;
@@ -213,6 +224,27 @@ class _ShellState extends State<Shell> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  /// A tab tapped again, as iOS does: back to the tab's first page, or, already there, its
+  /// list to the top.
+  void _onTabTap(int i) {
+    final again = i == _shownTab;
+    _shownTab = i;
+    if (!again) return;
+    final nav = _navs[i].currentState;
+    if (nav != null && nav.canPop()) {
+      nav.popUntil((r) => r.isFirst);
+      return;
+    }
+    final c = _scrolls[i];
+    if (c.hasClients && c.offset > c.position.minScrollExtent) {
+      c.animateTo(
+        c.position.minScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: const Cubic(0.32, 0.72, 0, 1),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final f = Femme.of(context);
@@ -222,6 +254,7 @@ class _ShellState extends State<Shell> {
       controller: _tabs,
       tabBar: CupertinoTabBar(
         activeColor: FemmeColors.accent,
+        onTap: _onTabTap,
         items: [
           BottomNavigationBarItem(
             icon: _Badged(
@@ -251,12 +284,17 @@ class _ShellState extends State<Shell> {
       ),
       tabBuilder: (context, i) => CupertinoTabView(
         navigatorKey: _navs[i],
-        builder: (context) => switch (i) {
-          0 => const NowTab(),
-          1 => const ChatsTab(),
-          2 => const BoxTab(),
-          _ => const MeTab(),
-        },
+        // The root page's list takes this as its primary controller (pushed pages have their
+        // own route's), so a second tap of the tab can scroll it.
+        builder: (context) => PrimaryScrollController(
+          controller: _scrolls[i],
+          child: switch (i) {
+            0 => const NowTab(),
+            1 => const ChatsTab(),
+            2 => const BoxTab(),
+            _ => const MeTab(),
+          },
+        ),
       ),
     );
   }

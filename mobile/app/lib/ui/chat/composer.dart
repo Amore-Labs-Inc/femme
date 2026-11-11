@@ -247,17 +247,25 @@ class _ComposerState extends State<Composer> {
       constraints: const BoxConstraints(maxHeight: 280),
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
       decoration: BoxDecoration(
-        color: paper(context),
-        border: Border.all(color: ink(context), width: 1.2),
-        boxShadow: const [
-          BoxShadow(color: FemmeColors.done, offset: Offset(3, 3)),
-        ],
+        color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+          context,
+        ),
+        borderRadius: BorderRadius.circular(cardRadius),
+        boxShadow: softShadow,
       ),
+      clipBehavior: Clip.antiAlias,
       child: ListView(
+        key: const ValueKey('slash-popup'),
         shrinkWrap: true,
         padding: EdgeInsets.zero,
         children: [
-          for (final (label, sub, tap) in rows)
+          for (final (i, (label, sub, tap)) in rows.indexed) ...[
+            if (i > 0)
+              Container(
+                margin: const EdgeInsets.only(left: 12),
+                height: hairline(context),
+                color: separator(context),
+              ),
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
@@ -284,6 +292,7 @@ class _ComposerState extends State<Composer> {
                 ),
               ),
             ),
+          ],
         ],
       ),
     );
@@ -303,14 +312,19 @@ class _ComposerState extends State<Composer> {
         Container(
           decoration: BoxDecoration(
             color: paper(context),
-            border: Border(top: BorderSide(color: ink(context), width: 1.2)),
+            border: Border(
+              top: BorderSide(
+                color: separator(context),
+                width: hairline(context),
+              ),
+            ),
           ),
           padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               _IconBtn(CupertinoIcons.add, shell ? null : _attach, 'attach'),
-              _IconBtn(CupertinoIcons.clock, _history, 'history'),
+              _IconBtn(CupertinoIcons.clock, _history, 'earlier prompts'),
               Expanded(
                 child: CupertinoTextField(
                   controller: _text,
@@ -322,13 +336,17 @@ class _ComposerState extends State<Composer> {
                   textCapitalization: TextCapitalization.sentences,
                   placeholder: _placeholder(f),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 10,
+                    horizontal: 14,
+                    vertical: 9,
                   ),
                   style: TextStyle(fontSize: 16, color: ink(context)),
                   decoration: BoxDecoration(
                     color: paper(context),
-                    border: Border.all(color: ink(context), width: 1.2),
+                    borderRadius: BorderRadius.circular(composerRadius),
+                    border: Border.all(
+                      color: separator(context),
+                      width: hairline(context),
+                    ),
                   ),
                 ),
               ),
@@ -336,7 +354,7 @@ class _ComposerState extends State<Composer> {
                 _IconBtn(
                   CupertinoIcons.stop_fill,
                   _interrupt,
-                  'stop',
+                  'interrupt',
                   color: FemmeColors.bad,
                 ),
               GestureDetector(
@@ -377,6 +395,7 @@ class _IconBtn extends StatelessWidget {
   Widget build(BuildContext context) => Semantics(
     label: label,
     button: true,
+    excludeSemantics: true,
     child: CupertinoButton(
       padding: EdgeInsets.zero,
       minimumSize: const Size(44, 44),

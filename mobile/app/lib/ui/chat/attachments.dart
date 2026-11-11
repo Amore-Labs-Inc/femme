@@ -401,12 +401,11 @@ class _FileChip extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.only(left: 4),
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          color: paper(context),
-          border: Border.all(
-            color: failed ? FemmeColors.bad : ink(context),
-            width: 1.2,
-          ),
+          color: fill(context),
+          borderRadius: BorderRadius.circular(codeRadius),
+          border: failed ? Border.all(color: FemmeColors.bad, width: 1) : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -453,12 +452,13 @@ class _FileChip extends StatelessWidget {
             ),
             CupertinoButton(
               padding: EdgeInsets.zero,
-              minimumSize: const Size(36, 44),
+              minimumSize: const Size(44, 44),
               onPressed: () => files.remove(f),
               child: Icon(
                 CupertinoIcons.xmark,
                 size: 16,
                 color: muted(context),
+                semanticLabel: 'remove',
               ),
             ),
           ],

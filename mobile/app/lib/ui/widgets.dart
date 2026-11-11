@@ -8,6 +8,7 @@ import '../state/box.dart';
 import 'chat.dart';
 import 'femme.dart';
 import 'files.dart';
+import 'follow.dart';
 import 'link_status.dart';
 import 'terminal.dart';
 import 'theme.dart';
@@ -27,24 +28,44 @@ Color statusColor(Session s) {
   };
 }
 
-/// The status dot: an 8 px ink-bordered square in the lane colour.
+/// The status dot: an 8 px filled circle in the lane colour, with a hairline a shade darker so
+/// the pale idle grey still reads on a white card. VoiceOver says [label], or the lane's word.
 class StatusDot extends StatelessWidget {
-  const StatusDot(this.color, {super.key});
+  const StatusDot(this.color, {super.key, this.label});
   final Color color;
 
+  /// What VoiceOver says; null: the lane's word for [color] ([laneWord]).
+  final String? label;
+
   @override
-  Widget build(BuildContext context) => Container(
-    width: 8,
-    height: 8,
-    decoration: BoxDecoration(
-      color: color,
-      border: Border.all(
-        color: FemmeColors.inkC.resolveFrom(context),
-        width: 1.2,
+  Widget build(BuildContext context) => Semantics(
+    label: label ?? laneWord(color),
+    child: Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Color.lerp(color, const Color(0xFF000000), .25)!,
+          width: .5,
+        ),
       ),
     ),
   );
 }
+
+/// The word for a lane colour ([statusColor]): `working`, `needs you`, `idle`, `failed`,
+/// `closed`, `pull request`; `status` for any other colour.
+String laneWord(Color c) => switch (c) {
+  FemmeColors.work => 'working',
+  FemmeColors.pause => 'needs you',
+  FemmeColors.queue => 'idle',
+  FemmeColors.bad => 'failed',
+  FemmeColors.done => 'closed',
+  FemmeColors.pr => 'pull request',
+  _ => 'status',
+};
 
 class SessionTile extends StatelessWidget {
   const SessionTile(this.session, {super.key, this.subtitle, this.onTap});
@@ -54,7 +75,7 @@ class SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoListTile(
-    leading: StatusDot(statusColor(session)),
+    leading: StatusDot(statusColor(session), label: wireStatus(session)),
     leadingSize: 8,
     title: Text(session.title),
     subtitle: Text(
@@ -67,6 +88,17 @@ class SessionTile extends StatelessWidget {
 }
 
 String wireStatus(Session s) => s.needsYou ? 'needs you' : s.status.name;
+
+/// The status word a row shows and VoiceOver says: `needs you`, `done`, `working`, else the
+/// status name (`idle`, `paused`, `failed`, …).
+String statusWord(Session s) {
+  if (s.needsYou) return 'needs you';
+  if (s.attention == Attention.done) return 'done';
+  return switch (s.status) {
+    SessionStatus.working || SessionStatus.starting => 'working',
+    final st => st.name,
+  };
+}
 
 /// `ws 41 ms · femmed 0.9.1` (`online · …` before the first round-trip sample) / `connecting…` /
 /// `offline: <why>` / `not enrolled: pair again` (the box refused this phone's token; tapping the
@@ -120,6 +152,9 @@ class TabPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoPageScaffold(
+    // Grouped grey under everything, nav bar included, as in Settings: the inset sections keep
+    // their own cards, and no seam shows under the large title.
+    backgroundColor: groupedBackground(context),
     child: CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
@@ -127,6 +162,7 @@ class TabPage extends StatelessWidget {
           largeTitle: Text(title),
           leading: leading,
           trailing: trailing,
+          backgroundColor: groupedBackground(context),
         ),
         if (onRefresh != null)
           CupertinoSliverRefreshControl(onRefresh: onRefresh),
@@ -140,7 +176,8 @@ class TabPage extends StatelessWidget {
               child: Row(
                 children: [
                   if (dot != null) ...[
-                    StatusDot(dot!),
+                    // the line beside it says the same in words
+                    ExcludeSemantics(child: StatusDot(dot!)),
                     const SizedBox(width: 8),
                   ],
                   Expanded(
@@ -165,6 +202,21 @@ class TabPage extends StatelessWidget {
     ),
   );
 }
+
+/// The page colour of a tab: the system grouped grey (white cards sit on it).
+Color groupedBackground(BuildContext context) =>
+    CupertinoColors.systemGroupedBackground.resolveFrom(context);
+
+/// A section footer as iOS sets it: footnote (13 pt), secondary label colour. Pass it as an
+/// inset grouped section's `footer`, which already gives it the side margins.
+Widget sectionFooter(BuildContext context, String text) => Text(
+  text,
+  style: TextStyle(
+    fontSize: 13,
+    height: 1.25,
+    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+  ),
+);
 
 /// A titled list section, or nothing when [children] is empty.
 Widget section(String header, List<Widget> children, {Widget? footer}) =>
@@ -195,8 +247,10 @@ bool opensTerminal(Session? s) =>
 
 /// What tapping a session opens: [TerminalScreen] for a shell or TUI session, else [ChatScreen]
 /// (also while the store has not seen the session yet).
-Widget sessionScreen(Session? s, String sid) =>
-    opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid);
+Widget sessionScreen(Session? s, String sid) => Following(
+  sid: sid,
+  child: opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid),
+);
 
 /// Opens a session on the current tab's navigator: the terminal for a shell or TUI session, the
 /// chat otherwise.

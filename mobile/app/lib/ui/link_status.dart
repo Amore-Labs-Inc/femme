@@ -48,7 +48,7 @@ class LinkStatusSheet extends StatelessWidget {
       title: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          StatusDot(linkColor(s)),
+          ExcludeSemantics(child: StatusDot(linkColor(s))),
           const SizedBox(width: 8),
           const Text('Link'),
         ],

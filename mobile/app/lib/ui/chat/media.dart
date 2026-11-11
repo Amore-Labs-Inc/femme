@@ -212,8 +212,8 @@ class _ThumbState extends State<_Thumb> {
         constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
         clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
-          color: panel(context),
-          border: Border.all(color: ink(context), width: 1.2),
+          color: fill(context),
+          borderRadius: BorderRadius.circular(codeRadius),
         ),
         child: child,
       ),
@@ -272,7 +272,7 @@ class _VideoTile extends StatelessWidget {
         clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
           color: FemmeColors.ink,
-          border: Border.all(color: ink(context), width: 1.2),
+          borderRadius: BorderRadius.circular(codeRadius),
         ),
         child: child,
       ),

@@ -15,7 +15,7 @@ Color prBadgeColor(PrBadge b) => switch (b) {
   PrBadge.checking => FemmeColors.done,
 };
 
-/// A small status pill.
+/// A small status tag: a capsule tinted with [color], or the grey system fill when [faint].
 class StatusChip extends StatelessWidget {
   const StatusChip(this.label, this.color, {super.key, this.faint = false});
   final String label;
@@ -24,16 +24,20 @@ class StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
     decoration: BoxDecoration(
-      color: faint ? null : color.withValues(alpha: 0.18),
-      border: Border.all(color: color, width: 1),
+      color: faint
+          ? CupertinoColors.tertiarySystemFill.resolveFrom(context)
+          : color.withValues(alpha: 0.16),
+      borderRadius: const BorderRadius.all(Radius.circular(999)),
     ),
     child: Text(
       label,
       style: TextStyle(
-        fontSize: 12,
-        color: faint ? FemmeColors.mutedC.resolveFrom(context) : color,
+        fontSize: 13,
+        color: faint
+            ? CupertinoColors.secondaryLabel.resolveFrom(context)
+            : color,
         fontWeight: FontWeight.w600,
       ),
     ),

@@ -227,12 +227,11 @@ class CodeBlock extends StatelessWidget {
     },
     child: Container(
       margin: const EdgeInsets.only(top: 6),
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: panel(context),
-        border: Border.all(
-          color: red ? FemmeColors.bad : ink(context),
-          width: 1.2,
-        ),
+        color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+        borderRadius: BorderRadius.circular(codeRadius),
+        border: red ? Border.all(color: FemmeColors.bad, width: 1) : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

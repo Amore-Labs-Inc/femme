@@ -53,7 +53,7 @@ List<(String, String)> xpRows(Context c) {
 }
 
 /// The context XP bar (desktop composer/xp.rs): fill = used / window (0 while the window is
-/// unknown), red from 90 %, cut into 5 segments by ink notches; level = compactions + 1, and a
+/// unknown), red from 90 %, a capsule cut into 5 segments by notches; level = compactions + 1, and a
 /// compaction seen while the chat is open plays a neon ring once around the bar.
 class XpBar extends StatefulWidget {
   const XpBar(this.context_, {super.key});
@@ -95,7 +95,8 @@ class _XpBarState extends State<XpBar> with SingleTickerProviderStateMixin {
     final frac = c?.fraction ?? 0;
     final level = (c?.compactions ?? 0) + 1;
     final red = frac >= 0.9;
-    final rule = ink(context);
+    // notches cut the capsule in the page colour, as gaps between segments
+    final rule = CupertinoColors.systemBackground.resolveFrom(context);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => _note(
@@ -122,9 +123,10 @@ class _XpBarState extends State<XpBar> with SingleTickerProviderStateMixin {
                   children: [
                     Positioned.fill(
                       child: Container(
+                        clipBehavior: Clip.antiAlias,
                         decoration: BoxDecoration(
-                          color: panel(context),
-                          border: Border.all(color: rule, width: 1),
+                          color: fill(context),
+                          borderRadius: BorderRadius.circular(999),
                         ),
                         child: FractionallySizedBox(
                           alignment: Alignment.centerLeft,
