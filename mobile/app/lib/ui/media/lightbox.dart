@@ -372,6 +372,19 @@ class _Note extends StatelessWidget {
 
 // ---- video ----
 
+/// Sound off in the lightbox's videos; the choice holds for the rest of the app run.
+bool _muted = false;
+
+@visibleForTesting
+bool get lightboxMuted => _muted;
+@visibleForTesting
+set lightboxMuted(bool v) => _muted = v;
+
+/// Makes the player for a video's temp file; tests hand a fake.
+@visibleForTesting
+VideoPlayerController Function(File file) lightboxPlayer =
+    VideoPlayerController.file;
+
 /// Plays the bytes from a temp file (video_player cannot play from memory); the file goes
 /// with the view.
 class _VideoView extends StatefulWidget {
@@ -412,11 +425,12 @@ class _VideoViewState extends State<_VideoView> {
         _cleanup();
         return;
       }
-      final c = VideoPlayerController.file(f);
+      final c = lightboxPlayer(f);
       _c = c;
       await c.initialize();
       if (_disposed) return;
       c.addListener(_tick);
+      await c.setVolume(_muted ? 0 : 1);
       await c.play();
       if (mounted) setState(() {});
     } catch (e) {
@@ -462,6 +476,12 @@ class _VideoViewState extends State<_VideoView> {
     }
   }
 
+  void _toggleSound() {
+    HapticFeedback.selectionClick();
+    setState(() => _muted = !_muted);
+    _c?.setVolume(_muted ? 0 : 1);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
@@ -501,7 +521,7 @@ class _VideoViewState extends State<_VideoView> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
           child: Row(
             children: [
               _IconButton(
@@ -547,6 +567,13 @@ class _VideoViewState extends State<_VideoView> {
                   fontFeatures: [FontFeature.tabularFigures()],
                   decoration: TextDecoration.none,
                 ),
+              ),
+              _IconButton(
+                icon: _muted
+                    ? CupertinoIcons.speaker_slash_fill
+                    : CupertinoIcons.speaker_2_fill,
+                label: _muted ? 'Sound on' : 'Mute',
+                onTap: _toggleSound,
               ),
             ],
           ),
