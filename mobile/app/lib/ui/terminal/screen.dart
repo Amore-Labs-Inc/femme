@@ -323,16 +323,25 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
                 closeReq(f.store, view.pane) != null)
               CupertinoButton(
                 key: const ValueKey('term-close'),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(44, 44),
                 onPressed: () => _askClose(view.pane, title, running: true),
-                child: const Icon(CupertinoIcons.xmark),
+                child: const Icon(
+                  CupertinoIcons.xmark,
+                  semanticLabel: 'close pane',
+                ),
               ),
             CupertinoButton(
+              key: const ValueKey('term-new'),
               padding: EdgeInsets.zero,
+              minimumSize: const Size(44, 44),
               onPressed: _opening ? null : _newPane,
               child: _opening
                   ? const CupertinoActivityIndicator()
-                  : const Icon(CupertinoIcons.add),
+                  : const Icon(
+                      CupertinoIcons.add,
+                      semanticLabel: 'new shell pane',
+                    ),
             ),
           ],
         ),
@@ -499,6 +508,9 @@ class _Empty extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         CupertinoButton.filled(
+          key: const ValueKey('term-open-shell'),
+          minimumSize: const Size(44, 44),
+          borderRadius: const BorderRadius.all(Radius.circular(12)),
           onPressed: opening ? null : onOpen,
           child: const Text('Open a shell'),
         ),
@@ -533,11 +545,7 @@ class _ClosedCard extends StatelessWidget {
         child: Container(
           margin: const EdgeInsets.all(24),
           padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: FemmeColors.paperC.resolveFrom(context),
-            border: Border.all(color: ink, width: 1.2),
-            boxShadow: [BoxShadow(color: ink, offset: const Offset(3, 3))],
-          ),
+          decoration: _softCard(context),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -578,12 +586,18 @@ class _Toast extends StatelessWidget {
     final ink = FemmeColors.inkC.resolveFrom(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: FemmeColors.paperC.resolveFrom(context),
-        border: Border.all(color: ink, width: 1.2),
-        boxShadow: [BoxShadow(color: ink, offset: const Offset(2, 2))],
-      ),
+      decoration: _softCard(context),
       child: Text(text, style: TextStyle(color: ink, fontSize: 14)),
     );
   }
 }
+
+/// A floating card or toast as iOS draws one: 12 pt corners on the secondary system background,
+/// a soft shadow and no border.
+BoxDecoration _softCard(BuildContext context) => BoxDecoration(
+  color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+  borderRadius: const BorderRadius.all(Radius.circular(12)),
+  boxShadow: const [
+    BoxShadow(color: Color(0x26000000), blurRadius: 16, offset: Offset(0, 4)),
+  ],
+);
