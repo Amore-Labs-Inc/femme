@@ -132,4 +132,48 @@ void main() {
     ]);
     expect(strip.groupValue, const PaneId(sid2, 1));
   });
+
+  test('closing a running pane asks first; the agent\'s own pane never', () {
+    final store = Store();
+    put(store, session(sid), [pane(sid, 1), pane(sid, 2)]);
+    put(store, session(sid2, agent: 'Claude', mode: 'Tui'), [
+      pane(sid2, 0, kind: 'Agent'),
+      pane(sid2, 1),
+    ]);
+    expect(
+      closeConfirm(store, const PaneId(sid, 1), 'zsh')?.$3,
+      'Close session',
+    );
+    expect(closeConfirm(store, const PaneId(sid, 2), 'zsh')?.$1, 'Close zsh?');
+    expect(closeConfirm(store, const PaneId(sid, 2), 'zsh')?.$3, 'Close pane');
+    expect(closeConfirm(store, const PaneId(sid2, 0), 'claude'), isNull);
+    expect(closeConfirm(store, const PaneId(sid2, 1), 'sh')?.$3, 'Close pane');
+  });
+
+  testWidgets('a running pane has a close button that confirms first', (
+    tester,
+  ) async {
+    final store = Store();
+    put(store, session(sid), [
+      pane(sid, 1, title: 'zsh'),
+      pane(sid, 2, title: 'htop'),
+    ]);
+    put(store, session(sid2, agent: 'Claude', mode: 'Tui'), [
+      pane(sid2, 0, kind: 'Agent', title: 'claude'),
+    ]);
+    await show(tester, store, sid2);
+    // the agent's own pane: no close
+    expect(find.byKey(const ValueKey('term-close')), findsNothing);
+
+    await tester.tap(find.text('htop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('term-close')));
+    await tester.pumpAndSettle();
+    expect(find.text('Close htop?'), findsOneWidget);
+    expect(find.text('The program in it is still running.'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Close htop?'), findsNothing);
+    expect(store.panes.length, 3);
+  });
 }

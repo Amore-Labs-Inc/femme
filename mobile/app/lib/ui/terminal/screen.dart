@@ -101,6 +101,22 @@ String endedTitle(Store store, PaneId pane) =>
     ? 'session closed'
     : 'pane closed';
 
+/// The confirm before closing [pane] while its program runs: (title, message, action), or null
+/// when it may not be closed from here.
+(String, String, String)? closeConfirm(Store store, PaneId pane, String label) {
+  final req = closeReq(store, pane);
+  if (req == null) return null;
+  final session = req is Map && req.containsKey('SessionClose');
+  return (
+    'Close $label?',
+    session
+        ? 'The program in it is still running. This pane is the session\'s own, '
+              'so closing it ends the session.'
+        : 'The program in it is still running.',
+    session ? 'Close session' : 'Close pane',
+  );
+}
+
 class TerminalScreenBody extends StatefulWidget {
   const TerminalScreenBody({super.key, required this.sid, this.pane});
   final String sid;
@@ -190,6 +206,40 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     }
   }
 
+  /// Closes [id] after a confirm while its program still runs.
+  Future<void> _askClose(
+    PaneId id,
+    String label, {
+    required bool running,
+  }) async {
+    final f = Femme.of(context);
+    final ask = closeConfirm(f.store, id, label);
+    if (ask == null) return;
+    if (running) {
+      final (title, message, action) = ask;
+      final ok = await showCupertinoDialog<bool>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(action),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    await _close(id);
+  }
+
   Future<void> _close(PaneId id) async {
     final f = Femme.of(context);
     final req = closeReq(f.store, id);
@@ -248,12 +298,26 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         middle: Text(title, overflow: TextOverflow.ellipsis),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _opening ? null : _newPane,
-          child: _opening
-              ? const CupertinoActivityIndicator()
-              : const Icon(CupertinoIcons.add),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (view != null &&
+                view.exited == null &&
+                closeReq(f.store, view.pane) != null)
+              CupertinoButton(
+                key: const ValueKey('term-close'),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                onPressed: () => _askClose(view.pane, title, running: true),
+                child: const Icon(CupertinoIcons.xmark),
+              ),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: _opening ? null : _newPane,
+              child: _opening
+                  ? const CupertinoActivityIndicator()
+                  : const Icon(CupertinoIcons.add),
+            ),
+          ],
         ),
       ),
       child: SafeArea(
