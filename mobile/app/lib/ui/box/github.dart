@@ -93,7 +93,8 @@ class _GithubSheetState extends State<GithubSheet> {
           children: [
             CupertinoListSection.insetGrouped(
               footer: f.phase == GithubPhase.code
-                  ? const Text(
+                  ? sectionFooter(
+                      context,
                       'Its clones push as that account once the code is entered.',
                     )
                   : null,
