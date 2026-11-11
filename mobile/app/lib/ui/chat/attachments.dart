@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:pasteboard/pasteboard.dart';
 
@@ -15,6 +16,8 @@ import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
 import '../../state/store.dart';
+import '../media/actions.dart';
+import '../media/lightbox.dart';
 import '../media/sniff.dart';
 import '../theme.dart';
 import 'attached.dart';
@@ -32,6 +35,16 @@ class DraftFile {
   UploadState state = UploadState.uploading;
   List<int>? hash;
   String? error;
+
+  /// A picture's pixel size from its header (null for SVG and non-pictures).
+  late final ({int w, int h})? pixels = pixelSize(bytes);
+}
+
+/// `1.5 KB`, or `1.5 KB · 640x480` for a picture whose header says (the desktop's chip line).
+String sizeLine(DraftFile f) {
+  final p = f.pixels;
+  final size = byteSize(f.bytes.length);
+  return p == null ? size : '$size · ${p.w}x${p.h}';
 }
 
 /// The files of the prompt being written.
@@ -290,21 +303,101 @@ class FileChips extends StatelessWidget {
   );
 }
 
+/// A chip's menu: Preview (a picture or video, in the lightbox), Copy image (a raster picture,
+/// where the platform can), Remove.
+Future<void> chipMenu(
+  BuildContext context,
+  DraftFile f,
+  DraftFiles files,
+) async {
+  HapticFeedback.selectionClick();
+  final raster = isPicture(f.name) && !isSvg(f.name);
+  final viewable = isPicture(f.name) || isVideo(f.name);
+  final pick = await showCupertinoModalPopup<String>(
+    context: context,
+    builder: (ctx) => CupertinoActionSheet(
+      title: Text(f.name),
+      actions: [
+        if (viewable)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'preview'),
+            child: const Text('Preview'),
+          ),
+        if (raster && canCopyImage)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'copy'),
+            child: const Text('Copy image'),
+          ),
+        CupertinoActionSheetAction(
+          isDestructiveAction: true,
+          onPressed: () => Navigator.pop(ctx, 'remove'),
+          child: const Text('Remove'),
+        ),
+      ],
+      cancelButton: CupertinoActionSheetAction(
+        onPressed: () => Navigator.pop(ctx),
+        child: const Text('Cancel'),
+      ),
+    ),
+  );
+  if (!context.mounted) return;
+  switch (pick) {
+    case 'preview':
+      await showLightbox(
+        context,
+        bytes: f.bytes,
+        name: f.name,
+        video: isVideo(f.name),
+      );
+    case 'copy':
+      final why = await copyImage(f.bytes);
+      if (context.mounted) toast(context, why ?? 'copied');
+    case 'remove':
+      files.remove(f);
+  }
+}
+
 class _FileChip extends StatelessWidget {
   const _FileChip(this.f, this.files);
   final DraftFile f;
   final DraftFiles files;
+
+  static const _doc = Icon(CupertinoIcons.doc, size: 28);
+
+  /// A small picture of what is attached; a document glyph for anything else.
+  Widget _thumb() {
+    if (isSvg(f.name)) {
+      return SvgPicture.memory(
+        f.bytes,
+        width: 40,
+        height: 40,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _doc,
+      );
+    }
+    if (isPicture(f.name)) {
+      return Image.memory(
+        f.bytes,
+        width: 40,
+        height: 40,
+        fit: BoxFit.cover,
+        cacheWidth: 120,
+        errorBuilder: (_, _, _) => _doc,
+      );
+    }
+    return _doc;
+  }
 
   @override
   Widget build(BuildContext context) {
     final failed = f.state == UploadState.failed;
     final status = switch (f.state) {
       UploadState.uploading => 'uploading…',
-      UploadState.ready => byteSize(f.bytes.length),
+      UploadState.ready => sizeLine(f),
       UploadState.failed => 'failed · retry',
     };
     return GestureDetector(
-      onTap: failed ? () => files.retry(f) : null,
+      onTap: failed ? () => files.retry(f) : () => chipMenu(context, f, files),
       child: Container(
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.only(left: 4),
@@ -318,10 +411,7 @@ class _FileChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (isPicture(f.name) && !isSvg(f.name))
-              Image.memory(f.bytes, width: 40, height: 40, fit: BoxFit.cover)
-            else
-              const Icon(CupertinoIcons.doc, size: 28),
+            _thumb(),
             const SizedBox(width: 6),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 140),
