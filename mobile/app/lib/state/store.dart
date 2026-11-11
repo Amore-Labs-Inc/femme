@@ -33,6 +33,10 @@ class Store extends ChangeNotifier {
   int? globalRev;
 
   final sessions = <String, Session>{};
+
+  /// Sessions known to have closed: tombstoned (their last row, or null when it was never held)
+  /// or carrying a `closed` row. An open chat reads it to say `session closed`.
+  final _closed = <String, Session?>{};
   final issues = <int, Issue>{};
 
   /// Keyed by [PaneId.key] (`sid:no`).
@@ -78,6 +82,7 @@ class Store extends ChangeNotifier {
   void onWelcome(int newEpoch) {
     if (epoch != null && epoch != newEpoch) {
       sessions.clear();
+      _closed.clear();
       issues.clear();
       panes.clear();
       globalRev = null;
@@ -133,7 +138,7 @@ class Store extends ChangeNotifier {
     _retries[sid] = Timer(subscribeRetry, () {
       _retries.remove(sid);
       final t = _transcripts[sid];
-      if (t == null || t.refs == 0) return;
+      if (t == null || t.refs == 0 || isClosed(sid)) return;
       _subscribe(Scope.session(sid), t.rev);
     });
   }
@@ -189,6 +194,11 @@ class Store extends ChangeNotifier {
         final old = sessions[session.id];
         if (old == null || old.rev <= session.rev) {
           sessions[session.id] = session;
+          if (_ended(session)) {
+            _closed[session.id] = session;
+          } else {
+            _closed.remove(session.id);
+          }
         }
       case PaneRow(:final pane):
         final old = panes[pane.id.key];
@@ -199,8 +209,9 @@ class Store extends ChangeNotifier {
       case Tombstone(:final entity, :final id):
         switch (entity) {
           case Entity.session:
-            sessions.remove(id);
-            _transcripts[id]?.clear();
+            _closed[id] = sessions.remove(id) ?? _closed[id];
+            // An open chat keeps what it shows: an ended transcript can still be read.
+            if (!isSubscribed(id)) _transcripts[id]?.clear();
             panes.removeWhere((_, p) => p.id.sid == id);
           case Entity.pane:
             panes.remove(id);
@@ -213,6 +224,15 @@ class Store extends ChangeNotifier {
         break;
     }
   }
+
+  static bool _ended(Session s) =>
+      s.closed != null || s.status == SessionStatus.closed;
+
+  /// The session's row: the live one, else the last one held before it closed.
+  Session? session(String sid) => sessions[sid] ?? _closed[sid];
+
+  /// Whether [sid] is known to have closed (closed row or tombstone), as opposed to not known yet.
+  bool isClosed(String sid) => _closed.containsKey(sid);
 
   static int _max(int? a, int b) => a == null || b > a ? b : a;
 
@@ -438,9 +458,7 @@ class Store extends ChangeNotifier {
 
   /// The sessions the lists show: live ones, as the desktop's sidebar (a closed row stays until
   /// retention tombstones it).
-  Iterable<Session> get live => sessions.values.where(
-    (s) => s.closed == null && s.status != SessionStatus.closed,
-  );
+  Iterable<Session> get live => sessions.values.where((s) => !_ended(s));
 
   List<Session> _sorted(bool Function(Session) where) =>
       live.where(where).toList()..sort((a, b) => b.rev.compareTo(a.rev));

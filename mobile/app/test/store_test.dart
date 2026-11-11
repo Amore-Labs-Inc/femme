@@ -387,4 +387,96 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 60));
     expect(subscribes(), 1);
   });
+
+  test('a tombstoned or closed session is known as closed, not unknown', () {
+    store.apply(
+      msg(
+        changes('Global', 10, [
+          {'Session': sessionJson(rev: 9)},
+          {'Session': sessionJson(id: sid2, rev: 10, status: 'Idle')},
+        ]),
+      ),
+    );
+    expect(store.isClosed(sid), isFalse);
+    expect(store.isClosed('01UNKNOWN'), isFalse);
+    expect(store.session('01UNKNOWN'), isNull);
+
+    store.apply(
+      msg(
+        changes('Global', 11, [
+          {'Session': sessionJson(rev: 11, status: 'Closed')},
+          {
+            'Tombstone': {'entity': 'Session', 'id': sid2, 'rev': 11},
+          },
+        ]),
+      ),
+    );
+    expect(store.isClosed(sid), isTrue);
+    expect(store.isClosed(sid2), isTrue);
+    // the last row stays readable for the chat header; the lists drop both
+    expect(store.session(sid2)!.id, sid2);
+    expect(store.sessions.containsKey(sid2), isFalse);
+    expect(store.live, isEmpty);
+
+    // a tombstone for a session never held still says closed
+    store.apply(
+      msg(
+        changes('Global', 12, [
+          {
+            'Tombstone': {'entity': 'Session', 'id': '01NEVERSEEN', 'rev': 12},
+          },
+        ]),
+      ),
+    );
+    expect(store.isClosed('01NEVERSEEN'), isTrue);
+    expect(store.session('01NEVERSEEN'), isNull);
+
+    // a new epoch forgets the markers
+    store.onWelcome(1);
+    store.onWelcome(2);
+    expect(store.isClosed(sid2), isFalse);
+  });
+
+  test('an open chat keeps its transcript when its session is tombstoned', () {
+    store.subscribe(sid);
+    store.apply(
+      msg(
+        changes(
+          {'Session': sid},
+          60,
+          [
+            {'Item': itemJson()},
+          ],
+        ),
+      ),
+    );
+    store.apply(
+      msg(
+        changes('Global', 61, [
+          {
+            'Tombstone': {'entity': 'Session', 'id': sid, 'rev': 61},
+          },
+        ]),
+      ),
+    );
+    expect(store.isClosed(sid), isTrue);
+    expect(store.items(sid), hasLength(1));
+  });
+
+  test('a closed session is not resubscribed', () async {
+    store.subscribeRetry = const Duration(milliseconds: 20);
+    store.subscribe(sid);
+    link.completers.last.completeError(const FemmeError('NotFound', 'no'));
+    store.apply(
+      msg(
+        changes('Global', 5, [
+          {
+            'Tombstone': {'entity': 'Session', 'id': sid, 'rev': 5},
+          },
+        ]),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(subscribes(), 1);
+  });
 }
