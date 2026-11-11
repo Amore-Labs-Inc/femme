@@ -566,6 +566,32 @@ mod tests {
         HashSet::new()
     }
 
+    /// Claude retracts the reply its model's safeguards refused: the daemon deletes the item, and
+    /// the turn reads "the user's message, the fallback note, the other model's answer".
+    #[test]
+    fn a_retracted_item_is_not_laid_out() {
+        let mut b = Build::new();
+        b.user("u");
+        b.say("partial");
+        b.add(
+            ItemKind::Event,
+            ItemStatus::Completed,
+            "u-f",
+            json!({"text":"fable 5.2 → opus 4.8 · safeguards flagged this message (cyber)","warning":true}),
+        );
+        b.say("answer");
+        assert_eq!(layout(&b.items, None, &none()).rows.len(), 4);
+        b.items.apply_rows(&[ProtoRow::Tombstone {
+            entity: femme_proto::state::Entity::Item,
+            id: format!("{SID}/partial"),
+            rev: 9,
+        }]);
+        assert_eq!(
+            keys(&layout(&b.items, None, &none())),
+            [Key::Item(1), Key::Item(3), Key::Item(4)]
+        );
+    }
+
     #[test]
     fn a_result_shares_the_row_of_its_call() {
         let mut b = Build::new();

@@ -311,6 +311,12 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
     },
+    /// The agent took the item back (Claude retracts a reply its model's safeguards refused, with
+    /// the tool results under it): it leaves the transcript. An id nobody holds is not an error.
+    ItemRetracted {
+        /// Item id.
+        id: String,
+    },
     /// The agent asks the user something and waits. Answer with [`Driver::answer`] using
     /// `q.request_id`. The daemon creates the `Question` item `item_id` as `Pending`.
     QuestionAsked {

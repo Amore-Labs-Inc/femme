@@ -51,6 +51,12 @@ Keep it current: when your module's public API changes, edit your section in the
   user's: the compact note and that message fold into one muted row
   (`▸ · conversation compacted · summary`), a click shows the summary. That detection is the
   template's prefix, display only.
+- **Model fallback**: when Claude Code answers with another model (a model's safeguards refused
+  the reply, the usage-credit gate, an overloaded model; Claude Code 2.1.321), the turn shows one
+  warning row in `warn_text`, `⚠ fable 5.2 → opus 4.8 · safeguards flagged this message (cyber)`;
+  a click unfolds Claude's own explanation with its link. The refused partial reply is retracted:
+  its items are deleted and leave the transcript, and the composer's model label follows a switch
+  that lasts the session.
 - **A message from another Claude session**: Claude Code sessions on one machine message each
   other (`SendMessage` to a name `ListAgents` shows, 2.1.224+). The CLI delivers it as a *user*
   line with `origin.kind: "peer"`; the daemon stores it as `PeerMessage {from, text}` (the

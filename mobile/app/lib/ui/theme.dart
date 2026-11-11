@@ -43,6 +43,12 @@ abstract final class FemmeColors {
     color: muted,
     darkColor: darkMuted,
   );
+
+  /// A warning said in words on paper (the desktop's `warn_text`): `pause` is a fill.
+  static const warnTextC = CupertinoDynamicColor.withBrightness(
+    color: Color(0xFF8A5200),
+    darkColor: Color(0xFFF2B544),
+  );
 }
 
 CupertinoThemeData femmeTheme(Brightness? brightness) => CupertinoThemeData(
