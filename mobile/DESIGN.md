@@ -297,7 +297,11 @@ rows, footnote footers, a full-width appearance picker, iOS bubbles and capsule 
 chat, a rounded composer, rounded code blocks, the session sheet as a real sheet, labels on every
 icon-only button, 44 pt targets with hold-to-repeat cap steppers, pressed Now rows, cards that
 fade and sections that slide on a move, re-tap of the active tab to pop and scroll, and the
-closed-session follow-on. Light and dark smoke runs of the Linux build: zero exceptions.
+closed-session follow-on. A second pass on the reviewer's re-check: terminal overlays, keys and
+buttons, the file viewer, Files separators and refresh, Box status chips and footers, the spoken
+status from the real status word, and the session sheet's grabber (Flutter 3.47's
+`showCupertinoSheet` drops `showDragHandle`; the route is pushed by hand). Light and dark smoke
+runs of the Linux build: zero exceptions.
 
 `Scope::Attention` is not built on purpose: Now subscribes only to the blocked sessions (a
 handful at a time), which is one small stream per open question; a merged scope would save
