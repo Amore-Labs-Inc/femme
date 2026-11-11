@@ -48,6 +48,31 @@ Object? closeReq(Store store, PaneId pane) {
       : Req.paneClose(pane);
 }
 
+/// Whether [sid] has ended: closed, or gone from the store (desktop `frame.rs` `centre_of`).
+bool sessionEnded(Store store, String sid) {
+  final s = store.sessions[sid];
+  return s == null || s.closed != null || s.status == SessionStatus.closed;
+}
+
+/// Whether [pane] is its session's own terminal: the agent's pane of a TUI session, or the first
+/// pane of a shell. Its program ending ends the session.
+bool isMainPane(Store store, PaneId pane) {
+  final s = store.sessions[pane.sid];
+  if (s == null) return true;
+  if (s.agent == Agent.shell) {
+    final first = terminalPanes(store, pane.sid).firstOrNull;
+    return first == null || first.id == pane;
+  }
+  return store.panes[pane.key]?.kind == PaneKind.agent;
+}
+
+/// The ended card's headline: `session closed` (desktop `Card::Closed`) when the session or its
+/// own terminal ended, `pane closed` for another pane whose program ended.
+String endedTitle(Store store, PaneId pane) =>
+    sessionEnded(store, pane.sid) || isMainPane(store, pane)
+    ? 'session closed'
+    : 'pane closed';
+
 class TerminalScreenBody extends StatefulWidget {
   const TerminalScreenBody({super.key, required this.sid, this.pane});
   final String sid;
@@ -205,7 +230,12 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
               ),
             Expanded(
               child: view == null
-                  ? _Empty(opening: _opening, onOpen: _newPane)
+                  ? sessionEnded(f.store, widget.sid)
+                        ? _ClosedCard(
+                            title: 'session closed',
+                            onBack: () => Navigator.of(context).maybePop(),
+                          )
+                        : _Empty(opening: _opening, onOpen: _newPane)
                   : Stack(
                       children: [
                         Positioned.fill(
@@ -253,9 +283,12 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
                           ),
                         if (view.exited != null)
                           Positioned.fill(
-                            child: _ExitedCard(
-                              status: view.exited!,
-                              canClose: closeReq(f.store, view.pane) != null,
+                            child: _ClosedCard(
+                              title: endedTitle(f.store, view.pane),
+                              status: view.exited,
+                              canClose:
+                                  !sessionEnded(f.store, view.pane.sid) &&
+                                  closeReq(f.store, view.pane) != null,
                               onClose: () => _close(view.pane),
                               onBack: () => Navigator.of(context).maybePop(),
                             ),
@@ -350,21 +383,26 @@ class _Empty extends StatelessWidget {
   );
 }
 
-class _ExitedCard extends StatelessWidget {
-  const _ExitedCard({
-    required this.status,
-    required this.canClose,
-    required this.onClose,
+/// The card over an ended terminal, or in place of one whose session is gone: the desktop's
+/// `session closed` card (`frame.rs` `Card::Closed`), with the program's exit status under it.
+class _ClosedCard extends StatelessWidget {
+  const _ClosedCard({
+    required this.title,
+    this.status,
+    this.canClose = false,
+    this.onClose,
     required this.onBack,
   });
-  final int status;
+  final String title;
+  final int? status;
   final bool canClose;
-  final VoidCallback onClose;
+  final VoidCallback? onClose;
   final VoidCallback onBack;
 
   @override
   Widget build(BuildContext context) {
     final ink = FemmeColors.inkC.resolveFrom(context);
+    final muted = FemmeColors.mutedC.resolveFrom(context);
     return ColoredBox(
       color: FemmeColors.paperC.resolveFrom(context).withValues(alpha: 0.7),
       child: Center(
@@ -379,9 +417,13 @@ class _ExitedCard extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Text(title, style: TextStyle(color: ink, fontSize: 17)),
+              const SizedBox(height: 4),
               Text(
-                'process exited ($status)',
-                style: TextStyle(color: ink, fontSize: 17),
+                status == null
+                    ? 'pick another one in the list'
+                    : 'process exited ($status)',
+                style: TextStyle(color: muted, fontSize: 13),
               ),
               const SizedBox(height: 16),
               Row(
