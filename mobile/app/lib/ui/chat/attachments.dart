@@ -2,16 +2,20 @@
 /// with `BlobPut`, shown as chips (uploading / size / failed · retry / remove).
 library;
 
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pasteboard/pasteboard.dart';
 
 import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
 import '../../state/store.dart';
+import '../media/sniff.dart';
 import '../theme.dart';
 import 'attached.dart';
 import 'look.dart';
@@ -36,6 +40,10 @@ class DraftFiles extends ChangeNotifier {
   final Requester link;
   final files = <DraftFile>[];
   bool _disposed = false;
+
+  /// Pictures pasted so far, for their names (`paste-1.png`, `paste-2.png`, ...).
+  int _pasted = 0;
+  String pasteName(String ext) => 'paste-${++_pasted}.$ext';
 
   @override
   void dispose() {
@@ -159,6 +167,47 @@ Future<void> sendWithFiles(
   }
 }
 
+/// The clipboard can be read where pasteboard has a plugin (not the web).
+bool get canPaste => !kIsWeb;
+
+/// Adds what the clipboard holds: a picture (`paste-<n>.<ext>`), else the copied files that are
+/// paths on this device. Returns notes for the user (refusals, or that there was nothing).
+Future<List<String>> pasteInto(
+  DraftFiles into, {
+  Future<Uint8List?> Function()? image,
+  Future<List<String>> Function()? files,
+}) async {
+  final notes = <String>[];
+  final picked = <(String, Uint8List)>[];
+  try {
+    final img = await (image ?? () => Pasteboard.image)();
+    if (img != null && img.isNotEmpty) {
+      picked.add((into.pasteName(pictureFormat(img) ?? 'png'), img));
+    } else {
+      for (var p in await (files ?? Pasteboard.files)()) {
+        if (p.startsWith('file://')) p = Uri.parse(p).toFilePath();
+        // Android hands content:// URIs, which are not files we can open.
+        if (!p.startsWith('/')) continue;
+        final f = File(p);
+        if (!await f.exists()) continue;
+        picked.add((fileName(p), await f.readAsBytes()));
+      }
+    }
+  } on MissingPluginException {
+    return ["can't read the clipboard on this device"];
+  } catch (e) {
+    return ["couldn't paste: $e"];
+  }
+  if (picked.isEmpty) {
+    return ['nothing to paste: copy a picture or a file first'];
+  }
+  for (final (name, bytes) in picked) {
+    final why = into.add(name, bytes);
+    if (why != null) notes.add(why);
+  }
+  return notes;
+}
+
 /// Asks where to pick from, then adds what was picked. Returns refusal notes.
 Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
   final source = await showCupertinoModalPopup<String>(
@@ -177,6 +226,11 @@ Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
           onPressed: () => Navigator.pop(ctx, 'files'),
           child: const Text('Files'),
         ),
+        if (canPaste)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'paste'),
+            child: const Text('Paste'),
+          ),
       ],
       cancelButton: CupertinoActionSheetAction(
         onPressed: () => Navigator.pop(ctx),
@@ -199,6 +253,8 @@ Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
         for (final f in await FilePicker.pickFiles()) {
           picked.add((f.name, await f.readAsBytes()));
         }
+      case 'paste':
+        return await pasteInto(into);
       default:
         return notes;
     }
