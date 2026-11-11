@@ -250,10 +250,10 @@ class _AccountTile extends StatelessWidget {
           if (a.fiveHour != null) _Bar('5 h', a.fiveHour!, now),
           if (a.sevenDay != null) _Bar('7 d', a.sevenDay!, now),
           for (final s in a.scoped) _Bar(s.name!.toLowerCase(), s, now),
-          if (a.reason != null)
-            Text(
-              '${a.reason}${a.stale ? ' · last good reading shown' : ''}',
-              style: TextStyle(color: muted, fontSize: 13),
+          if (a.note(now) case final note? when note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(note, style: TextStyle(color: muted, fontSize: 13)),
             ),
           if (sign != null)
             Padding(

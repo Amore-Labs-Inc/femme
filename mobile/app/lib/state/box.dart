@@ -75,6 +75,17 @@ String countdownText(Duration d) {
   return '${d.inMinutes}m';
 }
 
+/// `20m ago`, `3h ago`, `2d ago`: rounded as the board's JavaScript does (desktop `clock::ago`).
+String agoText(Duration age) {
+  final minutes = (age.inSeconds / 60 + 0.5).floor();
+  if (minutes < 60) return '${minutes}m ago';
+  if (minutes < 1440) return '${(minutes / 60 + 0.5).floor()}h ago';
+  return '${(minutes / 1440 + 0.5).floor()}d ago';
+}
+
+/// Usage older than this gets a note saying how old it is.
+const staleAfter = Duration(minutes: 15);
+
 enum Level { warn, bad }
 
 class Account {
@@ -88,6 +99,7 @@ class Account {
     this.scoped = const [],
     this.reason,
     this.stale = false,
+    this.fetchedAt,
     this.loginEnds,
   });
   final int number;
@@ -103,6 +115,9 @@ class Account {
 
   /// The windows are the last good ones, not the latest reading.
   final bool stale;
+
+  /// When the windows shown were read.
+  final DateTime? fetchedAt;
   final DateTime? loginEnds;
 
   static Account? fromJson(Object? a) {
@@ -127,6 +142,9 @@ class Account {
           ? null
           : _reason(_text(a, 'usageStatus'), _text(a, 'usageError')),
       stale: fresh == null && usage != null,
+      fetchedAt: _iso(
+        _text(a, fresh != null ? 'usageFetchedAt' : 'lastGoodFetchedAt'),
+      ),
       loginEnds: _iso(_text(a, 'loginExpiresAt')),
     );
   }
@@ -140,6 +158,21 @@ class Account {
     'no_credentials' => 'no credentials',
     _ => error == null ? 'usage unknown' : 'usage unavailable ($error)',
   };
+
+  /// The small line under the bars, when there is something to say: why there is no reading, or
+  /// how old the one shown is (`usage read 20m ago` past 15 minutes). Desktop
+  /// `accounts/model.rs` `Account::note`, word for word.
+  String? note(DateTime now) {
+    final age = fetchedAt == null ? null : agoText(now.difference(fetchedAt!));
+    if (fiveHour == null && sevenDay == null) return reason ?? 'usage unknown';
+    if (stale) {
+      final since = age == null ? null : 'last read $age';
+      return [?since, ?reason].join(' · ');
+    }
+    final at = fetchedAt;
+    if (at != null && now.difference(at) > staleAfter) return 'usage read $age';
+    return null;
+  }
 
   /// The sign-in line and how loud it is: nothing with more than 10 days left.
   (String, Level)? signIn(DateTime now) {
