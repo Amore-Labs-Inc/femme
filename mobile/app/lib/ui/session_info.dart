@@ -18,11 +18,14 @@ import 'theme.dart';
 /// Shows the sheet for [sid] as an iOS sheet (card stack, grabber, swipe down to close); it
 /// follows the session live until closed.
 Future<void> showSessionInfo(BuildContext context, String sid) {
-  return showCupertinoSheet<void>(
-    context: context,
-    showDragHandle: true,
-    scrollableBuilder: (_, scroll) =>
-        _SessionSheet(sid: sid, outer: context, scroll: scroll),
+  // The route is pushed by hand: Flutter 3.47's `showCupertinoSheet` drops `showDragHandle`
+  // unless nested navigation is on, so the grabber never showed.
+  return Navigator.of(context, rootNavigator: true).push(
+    CupertinoSheetRoute<void>(
+      showDragHandle: true,
+      scrollableBuilder: (_, scroll) =>
+          _SessionSheet(sid: sid, outer: context, scroll: scroll),
+    ),
   );
 }
 
@@ -335,7 +338,7 @@ class _Header extends StatelessWidget {
   final String text;
 
   @override
-  Widget build(BuildContext context) => Text(text.toUpperCase());
+  Widget build(BuildContext context) => Text(text);
 }
 
 class _Square extends StatelessWidget {
@@ -402,7 +405,7 @@ class _Row extends StatelessWidget {
               SizedBox(
                 width: 112,
                 child: Text(
-                  label,
+                  _cap(label),
                   style: TextStyle(
                     color: muted(context),
                     fontSize: 16,
@@ -491,7 +494,10 @@ class _Action extends StatelessWidget {
               Icon(icon, size: 20, color: c),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(label, style: TextStyle(color: c, fontSize: 16)),
+                child: Text(
+                  _cap(label),
+                  style: TextStyle(color: c, fontSize: 16),
+                ),
               ),
               if (color == null)
                 Icon(
@@ -506,3 +512,6 @@ class _Action extends StatelessWidget {
     );
   }
 }
+
+/// `title` → `Title`: iOS row labels are capitalised.
+String _cap(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
