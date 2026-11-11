@@ -1,5 +1,6 @@
 /// The row of keys a phone keyboard lacks, above the keyboard: Esc, Tab, sticky Ctrl/Alt/Shift, arrows,
-/// Home/End, PgUp/PgDn, `-` `/` `|` and paste. Flat, ink-bordered, 44 px targets.
+/// Home/End, PgUp/PgDn, `-` `/` `|` and paste. Keys like the system keyboard's: a rounded fill, no
+/// border, a darker fill while pressed, 44 pt targets.
 library;
 
 import 'package:flutter/cupertino.dart';
@@ -16,12 +17,16 @@ class ExtraKeysRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ink = FemmeColors.inkC.resolveFrom(context);
     return Container(
-      height: 48,
+      height: 52,
       decoration: BoxDecoration(
         color: FemmeColors.panelC.resolveFrom(context),
-        border: Border(top: BorderSide(color: ink, width: 1.2)),
+        border: Border(
+          top: BorderSide(
+            color: CupertinoColors.separator.resolveFrom(context),
+            width: 0,
+          ),
+        ),
       ),
       child: ListView(
         scrollDirection: Axis.horizontal,
@@ -65,8 +70,18 @@ class _KeyButtonState extends State<_KeyButton> {
   @override
   Widget build(BuildContext context) {
     final ink = FemmeColors.inkC.resolveFrom(context);
-    final paper = FemmeColors.paperC.resolveFrom(context);
-    final fill = widget.armed ? FemmeColors.accent : paper;
+    final Color fill;
+    if (widget.armed) {
+      fill = _down
+          ? Color.lerp(FemmeColors.accent, ink, 0.2)!
+          : FemmeColors.accent;
+    } else {
+      fill =
+          (_down
+                  ? CupertinoColors.systemFill
+                  : CupertinoColors.tertiarySystemFill)
+              .resolveFrom(context);
+    }
     final fg = widget.armed ? FemmeColors.paper : ink;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
@@ -77,15 +92,11 @@ class _KeyButtonState extends State<_KeyButton> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 90),
-          constraints: const BoxConstraints(minWidth: 44),
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          transform: Matrix4.translationValues(_down ? 2 : 0, _down ? 2 : 0, 0),
           decoration: BoxDecoration(
-            color: _down ? FemmeColors.neon : fill,
-            border: Border.all(color: ink, width: 1.2),
-            boxShadow: _down
-                ? null
-                : [BoxShadow(color: ink, offset: const Offset(2, 2))],
+            color: fill,
+            borderRadius: const BorderRadius.all(Radius.circular(7)),
           ),
           alignment: Alignment.center,
           child: Text(
