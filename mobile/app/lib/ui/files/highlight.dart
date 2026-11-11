@@ -1,6 +1,5 @@
 import 'package:flutter/cupertino.dart';
 // `highlight` comes with `flutter_highlight` (pubspec); its widget is Material, the parser is not.
-// ignore: depend_on_referenced_packages
 import 'package:highlight/highlight.dart' show highlight, Node;
 
 import '../theme.dart';
