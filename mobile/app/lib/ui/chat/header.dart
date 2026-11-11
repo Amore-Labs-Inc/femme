@@ -19,29 +19,46 @@ import 'turns.dart';
 ObstructingPreferredSizeWidget chatNavBar(BuildContext context, String sid) {
   final s = Femme.of(context).store.sessions[sid];
   return CupertinoNavigationBar(
-    middle: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => showSessionInfo(context, sid),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(
-            child: Text(
-              s == null ? 'chat' : sessionTitle(s),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+    middle: Semantics(
+      button: true,
+      hint: 'session info',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => showSessionInfo(context, sid),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  s == null ? 'chat' : sessionTitle(s),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                CupertinoIcons.info_circle,
+                size: 16,
+                color: muted(context),
+                semanticLabel: 'session info',
+              ),
+            ],
           ),
-          const SizedBox(width: 4),
-          Icon(CupertinoIcons.info_circle, size: 16, color: muted(context)),
-        ],
+        ),
       ),
     ),
-    trailing: CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: const Size(44, 44),
-      onPressed: () => showChatMenu(context, sid),
-      child: const Icon(CupertinoIcons.ellipsis_circle),
+    trailing: Semantics(
+      label: 'more actions',
+      button: true,
+      excludeSemantics: true,
+      child: CupertinoButton(
+        padding: EdgeInsets.zero,
+        minimumSize: const Size(44, 44),
+        onPressed: () => showChatMenu(context, sid),
+        child: const Icon(CupertinoIcons.ellipsis_circle),
+      ),
     ),
   );
 }
@@ -67,7 +84,12 @@ class SubtitleStrip extends StatelessWidget {
     final claude = s.agent == Agent.claude;
     return Container(
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: panel(context), width: 1)),
+        border: Border(
+          bottom: BorderSide(
+            color: separator(context),
+            width: hairline(context),
+          ),
+        ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Wrap(
@@ -76,16 +98,9 @@ class SubtitleStrip extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                StatusDot(statusColor(s)),
-                const SizedBox(width: 6),
-                Text(
-                  f.link.isOnline ? wireStatus(s) : 'offline',
-                  style: mono(context, size: 12, color: muted(context)),
-                ),
-              ],
+            child: Chip(
+              label: f.link.isOnline ? wireStatus(s) : 'offline',
+              color: statusColor(s),
             ),
           ),
           if (s.agent != Agent.shell) Chip(label: modelEffort(s)),
