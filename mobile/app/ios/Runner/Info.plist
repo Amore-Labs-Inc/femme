@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Femme Mobile</string>
+	<string>FEMME</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -79,5 +79,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>FEMME scans the pairing QR code and takes photos to send to a chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>FEMME attaches photos and videos you pick to a chat.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FEMME saves pictures from a chat to your library when you ask.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FEMME records sound when you record a video to send to a chat.</string>
 </dict>
 </plist>

@@ -159,11 +159,7 @@ class _MeTabState extends State<MeTab> {
                 children: [
                   CupertinoListTile(
                     title: const Text('FEMME for iPhone and Android'),
-                    additionalInfo: Text(
-                      _info == null
-                          ? '—'
-                          : '${_info!.version} (${_info!.buildNumber})',
-                    ),
+                    additionalInfo: Text(appVersionText(_info)),
                   ),
                   CupertinoListTile(
                     title: const Text('femmed'),
@@ -301,4 +297,17 @@ class _PushSection extends StatelessWidget {
       ],
     );
   }
+}
+
+/// The commit this build was made from, passed by CI as `--dart-define=FEMME_SHA=<sha>`; empty
+/// in a local build.
+const femmeSha = String.fromEnvironment('FEMME_SHA');
+
+/// `1.0.0 (12) · a3ca099`: the app version, its build number and, when the build knows it, the
+/// commit (desktop `menu.rs` VERSION + COMMIT).
+String appVersionText(PackageInfo? info, {String sha = femmeSha}) {
+  if (info == null) return '—';
+  final short = sha.length > 7 ? sha.substring(0, 7) : sha;
+  final v = '${info.version} (${info.buildNumber})';
+  return short.isEmpty ? v : '$v · $short';
 }

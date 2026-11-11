@@ -5,19 +5,28 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../state/files.dart';
+import '../chat/markdown.dart';
 import '../theme.dart';
 import 'hex.dart';
+import 'highlight.dart';
 import 'media.dart';
+import 'pdf.dart';
 import 'share.dart';
 import 'text_view.dart';
 
-/// Decodes and splits off the UI thread when the file is big.
-Future<List<String>> _linesOf(Uint8List bytes) => bytes.length > (256 << 10)
-    ? compute(_decode, bytes)
-    : Future.value(_decode(bytes));
+/// A text file ready to draw: its lines and, for code, their highlighted runs.
+typedef TextDoc = ({List<String> lines, List<List<Run>>? runs});
 
-List<String> _decode(Uint8List bytes) =>
-    splitLines(utf8.decode(bytes, allowMalformed: true));
+/// Decodes, splits and highlights; off the UI thread when the file is big.
+Future<TextDoc> textDocOf(Uint8List bytes, String? language) =>
+    bytes.length > (256 << 10)
+    ? compute(_prepare, (bytes: bytes, language: language))
+    : Future.value(_prepare((bytes: bytes, language: language)));
+
+TextDoc _prepare(({Uint8List bytes, String? language}) a) {
+  final lines = splitLines(utf8.decode(a.bytes, allowMalformed: true));
+  return (lines: lines, runs: highlightLines(lines, a.language));
+}
 
 /// A file of the session folder on its own page: size rules first, then the read, then the
 /// viewer its kind asks for. Share in the bar once the bytes are in.
@@ -45,24 +54,45 @@ class _FileViewerPageState extends State<FileViewerPage> {
   _Phase _phase = _Phase.loading;
   Uint8List? _bytes;
   ViewerKind? _kind;
-  List<String>? _lines;
+  TextDoc? _text;
   Object? _error;
+
+  /// Markdown shown as its raw text.
+  bool _raw = false;
 
   String get _name => baseName(widget.path);
 
   @override
   void initState() {
     super.initState();
+    final cached = widget.tree.cache.contains(widget.path);
+    final reading = widget.tree.reading(widget.path);
+    // Below the lowest threshold nothing depends on the network: plan now.
+    if (cached ||
+        reading ||
+        widget.len <= askAboveCellular ||
+        widget.len > maxRead) {
+      _plan(askAboveCellular);
+    } else {
+      askAboveNow().then((above) {
+        if (mounted) _plan(above);
+      });
+    }
+  }
+
+  /// The size rules with the ask threshold of the network the phone is on.
+  void _plan(int askAbove) {
     final plan = planOpen(
       widget.len,
       cached: widget.tree.cache.contains(widget.path),
       reading: widget.tree.reading(widget.path),
+      askAbove: askAbove,
     );
     switch (plan) {
       case OpenPlan.refuse:
-        _phase = _Phase.refused;
+        setState(() => _phase = _Phase.refused);
       case OpenPlan.ask:
-        _phase = _Phase.asking;
+        setState(() => _phase = _Phase.asking);
         WidgetsBinding.instance.addPostFrameCallback((_) => _ask());
       case OpenPlan.show || OpenPlan.wait || OpenPlan.read:
         _load();
@@ -86,12 +116,14 @@ class _FileViewerPageState extends State<FileViewerPage> {
     try {
       final bytes = await widget.tree.read(widget.path);
       final kind = shownKind(_name, bytes);
-      final lines = kind == ViewerKind.text ? await _linesOf(bytes) : null;
+      final text = kind == ViewerKind.text
+          ? await textDocOf(bytes, languageFor(_name))
+          : null;
       if (!mounted) return;
       setState(() {
         _bytes = bytes;
         _kind = kind;
-        _lines = lines;
+        _text = text;
         _phase = _Phase.shown;
       });
     } catch (e) {
@@ -103,6 +135,10 @@ class _FileViewerPageState extends State<FileViewerPage> {
       }
     }
   }
+
+  /// A markdown file shown as text: rendered, with the switch to raw.
+  bool get _markdown =>
+      _phase == _Phase.shown && _kind == ViewerKind.text && isMarkdown(_name);
 
   bool get _dark =>
       _phase == _Phase.shown &&
@@ -117,22 +153,43 @@ class _FileViewerPageState extends State<FileViewerPage> {
       backgroundColor: _dark ? backdrop : null,
       navigationBar: CupertinoNavigationBar(
         middle: Text(_name, overflow: TextOverflow.ellipsis),
-        trailing: Builder(
-          builder: (bctx) => CupertinoButton(
-            padding: EdgeInsets.zero,
-            minimumSize: const Size(44, 44),
-            onPressed: bytes == null
-                ? null
-                : () {
-                    HapticFeedback.selectionClick();
-                    shareBytes(bctx, _name, bytes);
-                  },
-            child: const Icon(CupertinoIcons.share),
-          ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_markdown)
+              CupertinoButton(
+                key: const Key('md-toggle'),
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(44, 44),
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  setState(() => _raw = !_raw);
+                },
+                child: Icon(
+                  _raw
+                      ? CupertinoIcons.doc_richtext
+                      : CupertinoIcons.doc_plaintext,
+                  semanticLabel: _raw ? 'Rendered' : 'Raw text',
+                ),
+              ),
+            Builder(
+              builder: (bctx) => CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(44, 44),
+                onPressed: bytes == null
+                    ? null
+                    : () {
+                        HapticFeedback.selectionClick();
+                        shareBytes(bctx, _name, bytes);
+                      },
+                child: const Icon(CupertinoIcons.share),
+              ),
+            ),
+          ],
         ),
       ),
       child: SafeArea(
-        bottom: !_dark && _kind != ViewerKind.text,
+        bottom: !_dark && _kind != ViewerKind.text && !_markdown,
         child: _body(context),
       ),
     );
@@ -159,27 +216,65 @@ class _FileViewerPageState extends State<FileViewerPage> {
       case _Phase.shown:
         break;
     }
-    final bytes = _bytes!;
-    return switch (_kind!) {
-      ViewerKind.image => ImageView(bytes: bytes),
-      ViewerKind.text => LinesView(lines: _lines!),
-      ViewerKind.video => MediaView(name: _name, bytes: bytes),
-      ViewerKind.audio => MediaView(name: _name, bytes: bytes, audio: true),
-      ViewerKind.pdf => Builder(
-        builder: (bctx) => _Note(
-          text: 'PDF: share to open it in Files or Books.',
-          action: 'Share',
-          onAction: () => shareBytes(bctx, _name, bytes),
-        ),
-      ),
-      ViewerKind.binary => HexView(
-        bytes: bytes,
-        note: viewerKind(_name) == ViewerKind.text && bytes.length > textMax
-            ? 'Text over ${humanSize(textMax)}: first ${humanSize(headBytes)} as hex.'
-            : null,
-      ),
-    };
+    return fileBody(
+      name: _name,
+      kind: _kind!,
+      bytes: _bytes!,
+      text: _text,
+      raw: _raw,
+    );
   }
+}
+
+/// The view for a file's bytes once read: [kind] from [shownKind], [text] from [textDocOf] for
+/// text. Markdown renders unless [raw].
+Widget fileBody({
+  required String name,
+  required ViewerKind kind,
+  required Uint8List bytes,
+  TextDoc? text,
+  bool raw = false,
+}) => switch (kind) {
+  ViewerKind.image => ImageView(bytes: bytes),
+  ViewerKind.svg => SvgView(bytes: bytes),
+  ViewerKind.text when isMarkdown(name) && !raw => MarkdownView(
+    text: utf8.decode(bytes, allowMalformed: true),
+  ),
+  ViewerKind.text => LinesView(lines: text!.lines, runs: text.runs),
+  ViewerKind.video => MediaView(name: name, bytes: bytes),
+  ViewerKind.audio => MediaView(name: name, bytes: bytes, audio: true),
+  ViewerKind.pdf => PdfPages(name: name, bytes: bytes),
+  ViewerKind.binary => HexView(
+    bytes: bytes,
+    note: viewerKind(name) == ViewerKind.text && bytes.length > textMax
+        ? 'Text over ${humanSize(textMax)}: first ${humanSize(headBytes)} as hex.'
+        : null,
+  ),
+};
+
+/// A markdown file rendered with the chat's [Md], scrolling, selectable.
+class MarkdownView extends StatelessWidget {
+  const MarkdownView({super.key, required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => SelectableRegion(
+    selectionControls: cupertinoTextSelectionHandleControls,
+    contextMenuBuilder: (context, state) =>
+        CupertinoAdaptiveTextSelectionToolbar.buttonItems(
+          anchors: state.contextMenuAnchors,
+          buttonItems: state.contextMenuButtonItems,
+        ),
+    child: SingleChildScrollView(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        12,
+        16,
+        16 + MediaQuery.paddingOf(context).bottom,
+      ),
+      child: Md(text),
+    ),
+  );
 }
 
 /// A centred line, with a button under it.

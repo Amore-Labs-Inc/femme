@@ -26,7 +26,7 @@ class _KeysSectionState extends State<KeysSection> with Polling {
   Map<String, KeyGithub> _github = const {};
 
   @override
-  Duration get every => const Duration(minutes: 1);
+  Duration get every => const Duration(seconds: 10);
 
   Future<Resp> _req(Object r) => Femme.of(context).link.req(r);
 

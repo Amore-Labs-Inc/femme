@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
+import '../../net/link.dart';
 import '../../net/models.dart' hide Row;
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
@@ -48,6 +49,7 @@ class _ComposerState extends State<Composer> {
   final _focus = FocusNode();
   late final DraftFiles _files;
   late final Store _store;
+  late final Requester _link;
   bool _hasFiles = false;
   Timer? _save;
   bool _loaded = false;
@@ -59,6 +61,7 @@ class _ComposerState extends State<Composer> {
       _hasFiles = true;
       final f = Femme.of(context);
       _store = f.store;
+      _link = f.link;
       _files = DraftFiles(f.link)..addListener(_rebuild);
     }
   }
@@ -111,11 +114,18 @@ class _ComposerState extends State<Composer> {
   Future<void> _sendText(
     String text,
     PromptHow how, {
-    List<Attachment> attachments = const [],
+    List<DraftFile> files = const [],
   }) async {
     final store = _store;
     try {
-      await store.send(widget.sid, text, how: how, attachments: attachments);
+      await sendWithFiles(
+        store,
+        _link,
+        widget.sid,
+        text,
+        how: how,
+        sent: files,
+      );
       // The daemon stores no message for a `/command`: drop its bubble once accepted.
       if (text.startsWith('/')) {
         for (final o in store.outbox) {
@@ -143,11 +153,15 @@ class _ComposerState extends State<Composer> {
         ? PromptHow.queue
         : PromptHow.steer;
     interrupt ? HapticFeedback.mediumImpact() : HapticFeedback.lightImpact();
-    final attachments = _files.ready;
+    // Kept with their bytes: an upload the box has swept since goes up again.
+    final sent = [
+      for (final f in _files.files)
+        if (f.state == UploadState.ready) f,
+    ];
     _files.clear();
     _text.clear();
     ChatController.saveDraft(widget.sid, '');
-    await _sendText(text, how, attachments: attachments);
+    await _sendText(text, how, files: sent);
   }
 
   Future<void> _pickModel(ModelChoice m, String? effort) async {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
 
+import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/box.dart';
 import '../../state/box_flows.dart';
@@ -31,6 +32,9 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   /// What `/api/meta` says: the default cap and the scheduler's word (the footer).
   BoxMeta? _meta;
 
+  /// Who the box's AWS CLI runs as; null until the first read.
+  AwsIdentity? _aws;
+
   /// The link of a Claude sign-in in progress on the box.
   String? _loginLink;
 
@@ -40,6 +44,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   @override
   Duration get every => const Duration(seconds: 10);
+
+  /// The link caps are sent on, kept here so the flush in [dispose] needs no context lookup
+  /// (`Femme.of` on a deactivated element asserts).
+  late Link _link;
+
+  @override
+  void didChangeDependencies() {
+    _link = Femme.of(context).link;
+    super.didChangeDependencies();
+  }
 
   @override
   void dispose() {
@@ -60,6 +74,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
           _accounts = parsed.accounts ?? _accounts;
           _error = parsed.error;
           _loginLink = parseLoginLink(body);
+          _aws = parseAws(body);
         });
       }
     } catch (e) {
@@ -131,7 +146,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   void _flush() {
     if (_pending.isEmpty) return;
-    final link = Femme.of(context).link;
+    final link = _link;
     final todo = Map.of(_pending);
     _pending.clear();
     for (final e in todo.entries) {
@@ -190,7 +205,46 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
             ),
             onTap: _switching == null ? _add : null,
           ),
+        if (_aws != null) _AwsTile(_aws!),
       ],
+    );
+  }
+}
+
+/// AWS: who the box's CLI runs as, with the green bar when it has an identity (desktop
+/// `accounts/view.rs` `aws_card`).
+class _AwsTile extends StatelessWidget {
+  const _AwsTile(this.aws);
+  final AwsIdentity aws;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    final small = TextStyle(color: muted, fontSize: 13);
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(width: 4, color: aws.active ? FemmeColors.work : null),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'AWS',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text(aws.line, style: small),
+                  if (!aws.active && aws.detail != null)
+                    Text(aws.detail!, style: small),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -250,10 +304,10 @@ class _AccountTile extends StatelessWidget {
           if (a.fiveHour != null) _Bar('5 h', a.fiveHour!, now),
           if (a.sevenDay != null) _Bar('7 d', a.sevenDay!, now),
           for (final s in a.scoped) _Bar(s.name!.toLowerCase(), s, now),
-          if (a.reason != null)
-            Text(
-              '${a.reason}${a.stale ? ' · last good reading shown' : ''}',
-              style: TextStyle(color: muted, fontSize: 13),
+          if (a.note(now) case final note? when note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(note, style: TextStyle(color: muted, fontSize: 13)),
             ),
           if (sign != null)
             Padding(

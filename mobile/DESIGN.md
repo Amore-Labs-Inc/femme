@@ -275,6 +275,14 @@ Push: the box posts to a per-phone ntfy topic (`Req::PushRegister{platform: Ntfy
 and the ntfy app shows it on the lock screen; push straight into this app (APNs/FCM) needs an
 Apple developer account and a Firebase project, so it waits for the owner's say-so.
 
+Parity round 3 (2026-11-11, PR #59) closed the audit's 40 partial and missing rows: the
+re-audit of `PARITY.md` stands at 126 done, 1 partial (a closed chat does not move on to the
+newest live session by itself; optional on a phone), 0 missing, 14 n/a. Among them: code blocks
+with syntax colours, the context bar with its five notches and the level-up ring, new transcript
+rows fading in, thumbnail long-press menu (Open, Share, Save to Photos, Copy image), clipboard
+paste into a chat, the token in the secure store, the commit sha in About, and the camera, photo
+library and microphone usage strings iOS needs before it lets the app ask.
+
 `Scope::Attention` is not built on purpose: Now subscribes only to the blocked sessions (a
 handful at a time), which is one small stream per open question; a merged scope would save
 nothing a phone can feel. Build it when a box has hundreds of blocked sessions at once.

@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Save to Photos on Android 9 and older (gal); newer versions need nothing. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <application
-        android:label="femme_mobile"
+        android:label="FEMME"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

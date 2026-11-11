@@ -1,4 +1,5 @@
-/// The Terminal screen: one session's terminal panes (a segmented control when it has several),
+/// The Terminal screen: the terminal panes of every live session (a segmented control when there
+/// are several, oldest session first), opened on one session's first pane,
 /// the grid, the hidden keyboard field and the extra-keys row; `+` opens a shell pane.
 library;
 
@@ -27,6 +28,33 @@ List<Pane> terminalPanes(Store store, String sid) {
     ..sort((a, b) => a.id.no.compareTo(b.id.no));
 }
 
+/// The panes that get a tab: those of live sessions, oldest session first (a new one lands at
+/// the right), then by number (desktop `net.rs` `tabs`). A headless agent's own pane is not one.
+List<Pane> terminalTabs(Store store) {
+  final v = <(Session, Pane)>[];
+  for (final p in store.panes.values) {
+    final s = store.sessions[p.id.sid];
+    if (s == null || sessionEnded(store, s.id)) continue;
+    if (s.mode == Mode.headless && p.kind == PaneKind.agent) continue;
+    v.add((s, p));
+  }
+  v.sort((a, b) {
+    final c = a.$1.created.compareTo(b.$1.created);
+    if (c != 0) return c;
+    final d = a.$1.id.compareTo(b.$1.id);
+    return d != 0 ? d : a.$2.id.no.compareTo(b.$2.id.no);
+  });
+  return [for (final (_, p) in v) p];
+}
+
+/// The tab on show: [picked] if it is in [tabs], else the one that took its place (position
+/// [ix], or the last), else null for no tabs (desktop `terminal/panel/tabs.rs` `on_show`).
+int? onShow(List<Pane> tabs, PaneId? picked, int ix) {
+  if (tabs.isEmpty) return null;
+  final at = tabs.indexWhere((p) => p.id == picked);
+  return at >= 0 ? at : ix.clamp(0, tabs.length - 1);
+}
+
 /// A pane's label: the program's title, else the pane's, else `<session> · <no>`; 28 chars.
 String paneLabel(Store store, PaneId id, String? termTitle) {
   String? named(String? t) => t == null || t.isEmpty ? null : t;
@@ -48,6 +76,47 @@ Object? closeReq(Store store, PaneId pane) {
       : Req.paneClose(pane);
 }
 
+/// Whether [sid] has ended: closed, or gone from the store (desktop `frame.rs` `centre_of`).
+bool sessionEnded(Store store, String sid) {
+  final s = store.sessions[sid];
+  return s == null || s.closed != null || s.status == SessionStatus.closed;
+}
+
+/// Whether [pane] is its session's own terminal: the agent's pane of a TUI session, or the first
+/// pane of a shell. Its program ending ends the session.
+bool isMainPane(Store store, PaneId pane) {
+  final s = store.sessions[pane.sid];
+  if (s == null) return true;
+  if (s.agent == Agent.shell) {
+    final first = terminalPanes(store, pane.sid).firstOrNull;
+    return first == null || first.id == pane;
+  }
+  return store.panes[pane.key]?.kind == PaneKind.agent;
+}
+
+/// The ended card's headline: `session closed` (desktop `Card::Closed`) when the session or its
+/// own terminal ended, `pane closed` for another pane whose program ended.
+String endedTitle(Store store, PaneId pane) =>
+    sessionEnded(store, pane.sid) || isMainPane(store, pane)
+    ? 'session closed'
+    : 'pane closed';
+
+/// The confirm before closing [pane] while its program runs: (title, message, action), or null
+/// when it may not be closed from here.
+(String, String, String)? closeConfirm(Store store, PaneId pane, String label) {
+  final req = closeReq(store, pane);
+  if (req == null) return null;
+  final session = req is Map && req.containsKey('SessionClose');
+  return (
+    'Close $label?',
+    session
+        ? 'The program in it is still running. This pane is the session\'s own, '
+              'so closing it ends the session.'
+        : 'The program in it is still running.',
+    session ? 'Close session' : 'Close pane',
+  );
+}
+
 class TerminalScreenBody extends StatefulWidget {
   const TerminalScreenBody({super.key, required this.sid, this.pane});
   final String sid;
@@ -60,22 +129,38 @@ class TerminalScreenBody extends StatefulWidget {
 class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   final _focus = FocusNode();
   final _mods = StickyMods();
-  int? _no;
+
+  /// The pane picked, and its position among the tabs when it was last shown.
+  PaneId? _picked;
+  int _ix = 0;
   TermView? _view;
   int _bells = 0;
   String? _toast;
   bool _opening = false;
 
+  late final AppLifecycleListener _life;
+  bool _foreground = true;
+
   @override
   void initState() {
     super.initState();
-    _no = widget.pane;
+    _focus.addListener(_syncFocus);
+    _life = AppLifecycleListener(
+      onStateChange: (st) {
+        _foreground = st == AppLifecycleState.resumed;
+        _syncFocus();
+      },
+    );
+    final no = widget.pane;
+    if (no != null) _picked = PaneId(widget.sid, no);
   }
 
   @override
   void dispose() {
     _view?.removeListener(_onView);
     _view?.dispose();
+    _life.dispose();
+    _focus.removeListener(_syncFocus);
     _focus.dispose();
     super.dispose();
   }
@@ -90,7 +175,12 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     _view = TermView.forLink(f.link, id)
       ..addListener(_onView)
       ..start();
+    _syncFocus();
   }
+
+  /// Tells the pane on show whether it has the keyboard and the app is in front (`TermUp::Focus`,
+  /// desktop `terminal/pane.rs`: focused and the window active).
+  void _syncFocus() => _view?.setFocus(_focus.hasFocus && _foreground);
 
   void _onView() {
     final v = _view;
@@ -123,13 +213,48 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     setState(() => _opening = true);
     final f = Femme.of(context);
     try {
-      final r = await f.link.req(Req.paneOpen(widget.sid));
-      if (mounted) setState(() => _no = r.pane.no);
+      final sid = _picked?.sid ?? widget.sid;
+      final r = await f.link.req(Req.paneOpen(sid));
+      if (mounted) setState(() => _picked = r.pane);
     } catch (e) {
       _flash('could not open a shell: $e');
     } finally {
       if (mounted) setState(() => _opening = false);
     }
+  }
+
+  /// Closes [id] after a confirm while its program still runs.
+  Future<void> _askClose(
+    PaneId id,
+    String label, {
+    required bool running,
+  }) async {
+    final f = Femme.of(context);
+    final ask = closeConfirm(f.store, id, label);
+    if (ask == null) return;
+    if (running) {
+      final (title, message, action) = ask;
+      final ok = await showCupertinoDialog<bool>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(action),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    await _close(id);
   }
 
   Future<void> _close(PaneId id) async {
@@ -145,11 +270,11 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
       }
     }
     if (!mounted) return;
-    final rest = terminalPanes(f.store, widget.sid).where((p) => p.id != id);
+    final rest = terminalTabs(f.store).where((p) => p.id != id).toList();
     if (rest.isEmpty) {
       nav.maybePop();
     } else {
-      setState(() => _no = rest.first.id.no);
+      setState(() => _picked = rest[_ix.clamp(0, rest.length - 1)].id);
     }
   }
 
@@ -164,48 +289,77 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   @override
   Widget build(BuildContext context) {
     final f = Femme.of(context);
-    final panes = terminalPanes(f.store, widget.sid);
-    Pane? shown;
-    for (final p in panes) {
-      if (p.id.no == _no) shown = p;
+    final tabs = terminalTabs(f.store);
+    // Opened on a session: its first pane, until one is picked.
+    _picked ??= terminalPanes(f.store, widget.sid).firstOrNull?.id;
+    final picked = _picked;
+    PaneId? shown;
+    final cur = _view;
+    if (cur != null && cur.pane == picked && cur.exited != null) {
+      // An ended pane stays on show with its card until the user leaves it.
+      shown = picked;
+    } else if (picked != null && !sessionEnded(f.store, picked.sid)) {
+      final at = onShow(tabs, picked, _ix);
+      if (at != null) {
+        _ix = at;
+        shown = tabs[at].id;
+      }
     }
-    shown ??= panes.firstOrNull;
-    if (shown != null) _attach(shown.id);
+    if (shown != null) _attach(shown);
     final view = shown == null ? null : _view;
     final title = shown == null
         ? 'Terminal'
-        : paneLabel(f.store, shown.id, view?.grid.title);
+        : paneLabel(f.store, shown, view?.grid.title);
     final muted = FemmeColors.mutedC.resolveFrom(context);
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         middle: Text(title, overflow: TextOverflow.ellipsis),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _opening ? null : _newPane,
-          child: _opening
-              ? const CupertinoActivityIndicator()
-              : const Icon(CupertinoIcons.add),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (view != null &&
+                view.exited == null &&
+                closeReq(f.store, view.pane) != null)
+              CupertinoButton(
+                key: const ValueKey('term-close'),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                onPressed: () => _askClose(view.pane, title, running: true),
+                child: const Icon(CupertinoIcons.xmark),
+              ),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: _opening ? null : _newPane,
+              child: _opening
+                  ? const CupertinoActivityIndicator()
+                  : const Icon(CupertinoIcons.add),
+            ),
+          ],
         ),
       ),
       child: SafeArea(
         bottom: false,
         child: Column(
           children: [
-            if (panes.length > 1)
+            if (tabs.length > 1)
               _PaneTabs(
-                panes: panes,
-                selected: shown!.id.no,
+                panes: tabs,
+                selected: tabs.any((p) => p.id == shown) ? shown : null,
                 label: (p) => paneLabel(
                   f.store,
                   p.id,
                   p.id == view?.pane ? view?.grid.title : null,
                 ),
-                onSelect: (no) => setState(() => _no = no),
+                onSelect: (id) => setState(() => _picked = id),
               ),
             Expanded(
               child: view == null
-                  ? _Empty(opening: _opening, onOpen: _newPane)
+                  ? sessionEnded(f.store, picked?.sid ?? widget.sid)
+                        ? _ClosedCard(
+                            title: 'session closed',
+                            onBack: () => Navigator.of(context).maybePop(),
+                          )
+                        : _Empty(opening: _opening, onOpen: _newPane)
                   : Stack(
                       children: [
                         Positioned.fill(
@@ -253,9 +407,12 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
                           ),
                         if (view.exited != null)
                           Positioned.fill(
-                            child: _ExitedCard(
-                              status: view.exited!,
-                              canClose: closeReq(f.store, view.pane) != null,
+                            child: _ClosedCard(
+                              title: endedTitle(f.store, view.pane),
+                              status: view.exited,
+                              canClose:
+                                  !sessionEnded(f.store, view.pane.sid) &&
+                                  closeReq(f.store, view.pane) != null,
                               onClose: () => _close(view.pane),
                               onBack: () => Navigator.of(context).maybePop(),
                             ),
@@ -293,25 +450,25 @@ class _PaneTabs extends StatelessWidget {
     required this.onSelect,
   });
   final List<Pane> panes;
-  final int selected;
+  final PaneId? selected;
   final String Function(Pane) label;
-  final void Function(int no) onSelect;
+  final void Function(PaneId id) onSelect;
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
     child: SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: CupertinoSlidingSegmentedControl<int>(
+      child: CupertinoSlidingSegmentedControl<PaneId>(
         groupValue: selected,
-        onValueChanged: (no) {
-          if (no == null) return;
+        onValueChanged: (id) {
+          if (id == null) return;
           HapticFeedback.selectionClick();
-          onSelect(no);
+          onSelect(id);
         },
         children: {
           for (final p in panes)
-            p.id.no: Padding(
+            p.id: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Text(
                 label(p),
@@ -350,21 +507,26 @@ class _Empty extends StatelessWidget {
   );
 }
 
-class _ExitedCard extends StatelessWidget {
-  const _ExitedCard({
-    required this.status,
-    required this.canClose,
-    required this.onClose,
+/// The card over an ended terminal, or in place of one whose session is gone: the desktop's
+/// `session closed` card (`frame.rs` `Card::Closed`), with the program's exit status under it.
+class _ClosedCard extends StatelessWidget {
+  const _ClosedCard({
+    required this.title,
+    this.status,
+    this.canClose = false,
+    this.onClose,
     required this.onBack,
   });
-  final int status;
+  final String title;
+  final int? status;
   final bool canClose;
-  final VoidCallback onClose;
+  final VoidCallback? onClose;
   final VoidCallback onBack;
 
   @override
   Widget build(BuildContext context) {
     final ink = FemmeColors.inkC.resolveFrom(context);
+    final muted = FemmeColors.mutedC.resolveFrom(context);
     return ColoredBox(
       color: FemmeColors.paperC.resolveFrom(context).withValues(alpha: 0.7),
       child: Center(
@@ -379,9 +541,13 @@ class _ExitedCard extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Text(title, style: TextStyle(color: ink, fontSize: 17)),
+              const SizedBox(height: 4),
               Text(
-                'process exited ($status)',
-                style: TextStyle(color: ink, fontSize: 17),
+                status == null
+                    ? 'pick another one in the list'
+                    : 'process exited ($status)',
+                style: TextStyle(color: muted, fontSize: 13),
               ),
               const SizedBox(height: 16),
               Row(

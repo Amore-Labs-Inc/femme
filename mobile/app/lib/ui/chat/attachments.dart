@@ -2,15 +2,23 @@
 /// with `BlobPut`, shown as chips (uploading / size / failed · retry / remove).
 library;
 
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pasteboard/pasteboard.dart';
 
 import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
+import '../../state/store.dart';
+import '../media/actions.dart';
+import '../media/lightbox.dart';
+import '../media/sniff.dart';
 import '../theme.dart';
 import 'attached.dart';
 import 'look.dart';
@@ -27,6 +35,16 @@ class DraftFile {
   UploadState state = UploadState.uploading;
   List<int>? hash;
   String? error;
+
+  /// A picture's pixel size from its header (null for SVG and non-pictures).
+  late final ({int w, int h})? pixels = pixelSize(bytes);
+}
+
+/// `1.5 KB`, or `1.5 KB · 640x480` for a picture whose header says (the desktop's chip line).
+String sizeLine(DraftFile f) {
+  final p = f.pixels;
+  final size = byteSize(f.bytes.length);
+  return p == null ? size : '$size · ${p.w}x${p.h}';
 }
 
 /// The files of the prompt being written.
@@ -35,6 +53,10 @@ class DraftFiles extends ChangeNotifier {
   final Requester link;
   final files = <DraftFile>[];
   bool _disposed = false;
+
+  /// Pictures pasted so far, for their names (`paste-1.png`, `paste-2.png`, ...).
+  int _pasted = 0;
+  String pasteName(String ext) => 'paste-${++_pasted}.$ext';
 
   @override
   void dispose() {
@@ -118,6 +140,87 @@ class DraftFiles extends ChangeNotifier {
   }
 }
 
+/// What the box says when a prompt names an upload it has swept since (`femmed`'s uploads.rs:
+/// blobs no item refers to go at start and daily).
+const uploadGone = 'its upload is gone';
+
+bool isUploadGone(Object e) => errorText(e).contains(uploadGone);
+
+/// Sends a prompt with the [sent] files' attachments. When the box answers that an upload is
+/// gone, the files go up again (`BlobPut`) and the prompt is sent once more in place of the
+/// failed bubble. Throws what the last send threw (the bubble then shows it).
+Future<void> sendWithFiles(
+  Store store,
+  Requester link,
+  String sid,
+  String text, {
+  PromptHow how = PromptHow.queue,
+  List<DraftFile> sent = const [],
+}) async {
+  final attachments = [for (final f in sent) Attachment(f.name, f.hash!)];
+  try {
+    await store.send(sid, text, how: how, attachments: attachments);
+  } catch (e) {
+    if (sent.isEmpty || !isUploadGone(e)) rethrow;
+    final again = <Attachment>[];
+    for (final f in sent) {
+      final r = await link.req(
+        Req.blobPut(f.name, f.bytes),
+        timeout: const Duration(minutes: 2),
+      );
+      f.hash = r.blobHash;
+      again.add(Attachment(f.name, f.hash!));
+    }
+    for (final o in store.outbox) {
+      if (o.sid == sid && identical(o.attachments, attachments)) {
+        store.discard(o.op);
+      }
+    }
+    await store.send(sid, text, how: how, attachments: again);
+  }
+}
+
+/// The clipboard can be read where pasteboard has a plugin (not the web).
+bool get canPaste => !kIsWeb;
+
+/// Adds what the clipboard holds: a picture (`paste-<n>.<ext>`), else the copied files that are
+/// paths on this device. Returns notes for the user (refusals, or that there was nothing).
+Future<List<String>> pasteInto(
+  DraftFiles into, {
+  Future<Uint8List?> Function()? image,
+  Future<List<String>> Function()? files,
+}) async {
+  final notes = <String>[];
+  final picked = <(String, Uint8List)>[];
+  try {
+    final img = await (image ?? () => Pasteboard.image)();
+    if (img != null && img.isNotEmpty) {
+      picked.add((into.pasteName(pictureFormat(img) ?? 'png'), img));
+    } else {
+      for (var p in await (files ?? Pasteboard.files)()) {
+        if (p.startsWith('file://')) p = Uri.parse(p).toFilePath();
+        // Android hands content:// URIs, which are not files we can open.
+        if (!p.startsWith('/')) continue;
+        final f = File(p);
+        if (!await f.exists()) continue;
+        picked.add((fileName(p), await f.readAsBytes()));
+      }
+    }
+  } on MissingPluginException {
+    return ["can't read the clipboard on this device"];
+  } catch (e) {
+    return ["couldn't paste: $e"];
+  }
+  if (picked.isEmpty) {
+    return ['nothing to paste: copy a picture or a file first'];
+  }
+  for (final (name, bytes) in picked) {
+    final why = into.add(name, bytes);
+    if (why != null) notes.add(why);
+  }
+  return notes;
+}
+
 /// Asks where to pick from, then adds what was picked. Returns refusal notes.
 Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
   final source = await showCupertinoModalPopup<String>(
@@ -136,6 +239,11 @@ Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
           onPressed: () => Navigator.pop(ctx, 'files'),
           child: const Text('Files'),
         ),
+        if (canPaste)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'paste'),
+            child: const Text('Paste'),
+          ),
       ],
       cancelButton: CupertinoActionSheetAction(
         onPressed: () => Navigator.pop(ctx),
@@ -158,6 +266,8 @@ Future<List<String>> pickInto(BuildContext context, DraftFiles into) async {
         for (final f in await FilePicker.pickFiles()) {
           picked.add((f.name, await f.readAsBytes()));
         }
+      case 'paste':
+        return await pasteInto(into);
       default:
         return notes;
     }
@@ -193,21 +303,101 @@ class FileChips extends StatelessWidget {
   );
 }
 
+/// A chip's menu: Preview (a picture or video, in the lightbox), Copy image (a raster picture,
+/// where the platform can), Remove.
+Future<void> chipMenu(
+  BuildContext context,
+  DraftFile f,
+  DraftFiles files,
+) async {
+  HapticFeedback.selectionClick();
+  final raster = isPicture(f.name) && !isSvg(f.name);
+  final viewable = isPicture(f.name) || isVideo(f.name);
+  final pick = await showCupertinoModalPopup<String>(
+    context: context,
+    builder: (ctx) => CupertinoActionSheet(
+      title: Text(f.name),
+      actions: [
+        if (viewable)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'preview'),
+            child: const Text('Preview'),
+          ),
+        if (raster && canCopyImage)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'copy'),
+            child: const Text('Copy image'),
+          ),
+        CupertinoActionSheetAction(
+          isDestructiveAction: true,
+          onPressed: () => Navigator.pop(ctx, 'remove'),
+          child: const Text('Remove'),
+        ),
+      ],
+      cancelButton: CupertinoActionSheetAction(
+        onPressed: () => Navigator.pop(ctx),
+        child: const Text('Cancel'),
+      ),
+    ),
+  );
+  if (!context.mounted) return;
+  switch (pick) {
+    case 'preview':
+      await showLightbox(
+        context,
+        bytes: f.bytes,
+        name: f.name,
+        video: isVideo(f.name),
+      );
+    case 'copy':
+      final why = await copyImage(f.bytes);
+      if (context.mounted) toast(context, why ?? 'copied');
+    case 'remove':
+      files.remove(f);
+  }
+}
+
 class _FileChip extends StatelessWidget {
   const _FileChip(this.f, this.files);
   final DraftFile f;
   final DraftFiles files;
+
+  static const _doc = Icon(CupertinoIcons.doc, size: 28);
+
+  /// A small picture of what is attached; a document glyph for anything else.
+  Widget _thumb() {
+    if (isSvg(f.name)) {
+      return SvgPicture.memory(
+        f.bytes,
+        width: 40,
+        height: 40,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _doc,
+      );
+    }
+    if (isPicture(f.name)) {
+      return Image.memory(
+        f.bytes,
+        width: 40,
+        height: 40,
+        fit: BoxFit.cover,
+        cacheWidth: 120,
+        errorBuilder: (_, _, _) => _doc,
+      );
+    }
+    return _doc;
+  }
 
   @override
   Widget build(BuildContext context) {
     final failed = f.state == UploadState.failed;
     final status = switch (f.state) {
       UploadState.uploading => 'uploading…',
-      UploadState.ready => byteSize(f.bytes.length),
+      UploadState.ready => sizeLine(f),
       UploadState.failed => 'failed · retry',
     };
     return GestureDetector(
-      onTap: failed ? () => files.retry(f) : null,
+      onTap: failed ? () => files.retry(f) : () => chipMenu(context, f, files),
       child: Container(
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.only(left: 4),
@@ -221,10 +411,7 @@ class _FileChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (isPicture(f.name) && !isSvg(f.name))
-              Image.memory(f.bytes, width: 40, height: 40, fit: BoxFit.cover)
-            else
-              const Icon(CupertinoIcons.doc, size: 28),
+            _thumb(),
             const SizedBox(width: 6),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 140),

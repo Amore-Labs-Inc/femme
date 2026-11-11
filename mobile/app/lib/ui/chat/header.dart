@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 
 import '../../net/models.dart' hide Row;
 import '../../net/rpc.dart';
@@ -13,6 +14,7 @@ import '../session_info.dart';
 import '../terminal.dart';
 import '../widgets.dart';
 import 'look.dart';
+import 'turns.dart';
 
 ObstructingPreferredSizeWidget chatNavBar(BuildContext context, String sid) {
   final s = Femme.of(context).store.sessions[sid];
@@ -105,10 +107,17 @@ class SubtitleStrip extends StatelessWidget {
 }
 
 Future<void> showChatMenu(BuildContext context, String sid) async {
+  final f = Femme.of(context);
+  final foreground = hasForegroundTask(f.store.items(sid), (i) => i.bodyJson);
   final pick = await showCupertinoModalPopup<String>(
     context: context,
     builder: (ctx) => CupertinoActionSheet(
       actions: [
+        if (foreground)
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, 'background'),
+            child: const Text('Background all'),
+          ),
         for (final (k, label) in const [
           ('terminal', 'Terminal'),
           ('files', 'Files'),
@@ -134,6 +143,8 @@ Future<void> showChatMenu(BuildContext context, String sid) async {
   if (!context.mounted) return;
   final nav = Navigator.of(context);
   switch (pick) {
+    case 'background':
+      backgroundAll(context, sid);
     case 'terminal':
       nav.push(
         CupertinoPageRoute<void>(builder: (_) => TerminalScreen(sid: sid)),
@@ -146,6 +157,19 @@ Future<void> showChatMenu(BuildContext context, String sid) async {
       renameChat(context, sid);
     case 'close':
       closeChat(context, sid);
+  }
+}
+
+/// Moves every foreground task of the chat to the background (`Background` with no call id);
+/// the turn goes on.
+Future<void> backgroundAll(BuildContext context, String sid) async {
+  HapticFeedback.selectionClick();
+  try {
+    await Femme.of(context).link.req(Req.background(sid), resend: false);
+  } catch (e) {
+    if (context.mounted) {
+      toast(context, 'not moved to the background: ${errorText(e)}');
+    }
   }
 }
 

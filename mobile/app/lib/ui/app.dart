@@ -11,7 +11,6 @@ import '../state/pairing.dart';
 import '../state/prefs.dart';
 import '../state/store.dart';
 import 'box.dart';
-import 'chat.dart';
 import 'chats.dart';
 import 'femme.dart';
 import 'me.dart';
@@ -208,7 +207,8 @@ class _ShellState extends State<Shell> {
       final nav = _navs[0].currentState;
       if (nav == null) return;
       nav.popUntil((r) => r.isFirst);
-      nav.push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
+      final s = Femme.of(context).store.session(sid);
+      nav.push(CupertinoPageRoute<void>(builder: (_) => sessionScreen(s, sid)));
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
