@@ -1465,14 +1465,17 @@ fn disk_value(mut v: Value) -> Option<Value> {
                         .and_then(|(_, r)| r.split_once(&format!("</{t}>")))
                         .map(|(s, _)| s.trim().to_owned())
                 };
-                v = serde_json::json!({
-                    "type": "system",
-                    "subtype": "task_notification",
-                    "tool_use_id": tag("tool-use-id"),
-                    "status": tag("status"),
-                    "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
-                    "uuid": v["uuid"],
-                });
+                // without a status it is a Monitor event, not an end: the driver draws its row
+                if let Some(status) = tag("status") {
+                    v = serde_json::json!({
+                        "type": "system",
+                        "subtype": "task_notification",
+                        "tool_use_id": tag("tool-use-id"),
+                        "status": status,
+                        "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
+                        "uuid": v["uuid"],
+                    });
+                }
             } else if !result && !text.starts_with("[Request interrupted") && v["notTyped"] != true
             {
                 v["isReplay"] = Value::Bool(true);
@@ -1923,6 +1926,14 @@ mod tests {
                 &Value::from("u1")
             ),
             "the stream's shape, so the driver ends the call's task"
+        );
+        let tick = line(serde_json::json!({"type":"user","uuid":"u2","message":{"content":
+            "<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick 1</event>\n</task-notification>"}}))
+        .unwrap();
+        assert_eq!(
+            (&tick["type"], &tick["isReplay"]),
+            (&Value::from("user"), &Value::Null),
+            "a Monitor event is no end and nothing typed: the driver's row"
         );
         let mode =
             line(serde_json::json!({"type":"permission-mode","permissionMode":"plan"})).unwrap();
