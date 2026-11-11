@@ -124,4 +124,65 @@ void main() {
       link.close();
     },
   );
+
+  testWidgets('a chat whose session closes says so and offers Close', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    ChatController.resetCaches();
+    final prefs = await Prefs.load();
+    final store = Store();
+    final link = Link(clientInstance: 1);
+    final nav = GlobalKey<NavigatorState>();
+    store.apply(
+      msg(
+        changes('Global', 10, [
+          {'Session': sessionJson()},
+        ]),
+      ),
+    );
+    await tester.pumpWidget(
+      Femme(
+        store: store,
+        link: link,
+        prefs: prefs,
+        child: CupertinoApp(
+          theme: femmeTheme(Brightness.light),
+          navigatorKey: nav,
+          home: const Text('home'),
+        ),
+      ),
+    );
+    openChat(nav.currentContext!, sid);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byType(ChatScreen), findsOneWidget);
+    expect(find.text('session closed'), findsNothing);
+    expect(find.byType(CupertinoTextField), findsWidgets); // the composer
+
+    store.apply(
+      msg(
+        changes('Global', 11, [
+          {
+            'Tombstone': {'entity': 'Session', 'id': sid, 'rev': 11},
+          },
+        ]),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('session closed'), findsOneWidget);
+    expect(find.text('loading…'), findsNothing);
+    expect(find.text('lovable-lesson'), findsOneWidget); // title kept
+    expect(find.byType(CupertinoTextField), findsNothing); // no composer
+
+    await tester.tap(find.text('Close'));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('home'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(store.isSubscribed(sid), isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+    link.close();
+  });
 }

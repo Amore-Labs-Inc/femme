@@ -103,6 +103,9 @@ class TermView extends ChangeNotifier {
   (int, int)? _rowsAsked;
   int? _wantTop;
 
+  bool _focused = false;
+  bool _toldFocus = false;
+
   /// Opens the stream (once; reconnection is automatic after).
   void start() {
     online?.addListener(_onLink);
@@ -205,6 +208,8 @@ class TermView extends ChangeNotifier {
       _queued.clear();
       q.forEach(_sendInput);
       _flushResize();
+      // A new stream has to be told again (desktop `terminal/bridge.rs` `Told`).
+      if (_toldFocus) port.send(TermUp.focus(_focused));
     }
     notifyListeners();
   }
@@ -273,6 +278,21 @@ class TermView extends ChangeNotifier {
     _sentSize = want;
     _port!.send(TermUp.resize(want.$1, want.$2));
   }
+
+  // ---- focus ----
+
+  /// The terminal gained or lost the keyboard (or the app went to the background / came back):
+  /// a program that asked (`CSI ? 1004 h`) hears it. Sent on a change only, as the desktop's
+  /// `terminal/pane.rs` `set_focus`; it starts unfocused.
+  void setFocus(bool on) {
+    if (_focused == on) return;
+    _focused = on;
+    _toldFocus = true;
+    if (live) _port!.send(TermUp.focus(on));
+  }
+
+  /// What the view last said about focus.
+  bool get focused => _focused;
 
   // ---- scrollback ----
 

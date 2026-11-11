@@ -149,12 +149,6 @@ class _FilesBrowserState extends State<FilesBrowser> {
         slivers: [
           CupertinoSliverNavigationBar(
             largeTitle: Text(_dir.isEmpty ? 'Files' : _dir.split('/').last),
-            trailing: CupertinoButton(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(44, 44),
-              onPressed: _refresh,
-              child: const Icon(CupertinoIcons.arrow_clockwise),
-            ),
           ),
           CupertinoSliverRefreshControl(onRefresh: _refresh),
           SliverToBoxAdapter(
@@ -254,7 +248,12 @@ class Crumbs extends StatelessWidget {
     return Container(
       height: 40,
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: ink, width: 1.2)),
+        border: Border(
+          bottom: BorderSide(
+            color: CupertinoColors.separator.resolveFrom(context),
+            width: 0,
+          ),
+        ),
       ),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
@@ -286,6 +285,10 @@ class Crumbs extends StatelessWidget {
   }
 }
 
+/// Where a [FileRow]'s name starts: [CupertinoListTile]'s 20 pt start padding, its 28 pt leading
+/// and the 16 pt gap to the title. The row separator starts here.
+const double fileRowTextInset = 20 + 28 + 16;
+
 /// One entry: icon, name (dot-files muted), size or chevron, and a `…` for the actions.
 class FileRow extends StatelessWidget {
   const FileRow({
@@ -306,54 +309,66 @@ class FileRow extends StatelessWidget {
     final hidden = isHidden(entry.name);
     return GestureDetector(
       onLongPress: () => onMore(context),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: FemmeColors.panelC.resolveFrom(context),
-              width: 1,
+      child: Stack(
+        children: [
+          CupertinoListTile(
+            onTap: onTap,
+            leading: Icon(
+              entry.dir ? CupertinoIcons.folder : CupertinoIcons.doc,
+              color: hidden ? muted : ink,
+            ),
+            title: Text(
+              entry.name,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: hidden ? muted : ink),
+            ),
+            additionalInfo: entry.dir
+                ? null
+                : Text(
+                    humanSize(entry.len),
+                    style: TextStyle(color: muted, fontSize: 13),
+                  ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(36, 44),
+                  onPressed: () => onMore(context),
+                  child: Icon(
+                    CupertinoIcons.ellipsis,
+                    size: 20,
+                    color: muted,
+                    semanticLabel: 'More actions',
+                  ),
+                ),
+                SizedBox(
+                  width: 14,
+                  child: entry.dir
+                      ? Icon(
+                          CupertinoIcons.chevron_forward,
+                          size: 14,
+                          color: muted,
+                        )
+                      : null,
+                ),
+              ],
             ),
           ),
-        ),
-        child: CupertinoListTile(
-          onTap: onTap,
-          leading: Icon(
-            entry.dir ? CupertinoIcons.folder : CupertinoIcons.doc,
-            color: hidden ? muted : ink,
-          ),
-          title: Text(
-            entry.name,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: hidden ? muted : ink),
-          ),
-          additionalInfo: entry.dir
-              ? null
-              : Text(
-                  humanSize(entry.len),
-                  style: TextStyle(color: muted, fontSize: 13),
-                ),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CupertinoButton(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(36, 44),
-                onPressed: () => onMore(context),
-                child: Icon(CupertinoIcons.ellipsis, size: 20, color: muted),
+          // The separator starts at the name, as in an inset grouped list.
+          PositionedDirectional(
+            start: fileRowTextInset,
+            end: 0,
+            bottom: 0,
+            child: SizedBox(
+              key: const ValueKey('file-row-separator'),
+              height: 1 / MediaQuery.devicePixelRatioOf(context),
+              child: ColoredBox(
+                color: CupertinoColors.separator.resolveFrom(context),
               ),
-              SizedBox(
-                width: 14,
-                child: entry.dir
-                    ? Icon(
-                        CupertinoIcons.chevron_forward,
-                        size: 14,
-                        color: muted,
-                      )
-                    : null,
-              ),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

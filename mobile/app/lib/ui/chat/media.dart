@@ -2,8 +2,11 @@
 library;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../state/chat.dart';
+import '../media/actions.dart';
 import '../media/lightbox.dart';
 import '../media/poster.dart';
 import '../theme.dart';
@@ -41,6 +44,63 @@ Future<void> openAttached(BuildContext context, String path) async {
   }
 }
 
+/// The long-press menu of a thumbnail or video tile: Open, Share, Save to Photos (not for an
+/// SVG, which Photos can't take), Copy image (a raster picture, where the platform can).
+Future<void> attachedMenu(BuildContext context, String path) async {
+  HapticFeedback.mediumImpact();
+  final video = isVideo(path);
+  final raster = isPicture(path) && !isSvg(path);
+  final name = fileName(path);
+  Rect? origin;
+  final box = context.findRenderObject();
+  if (box is RenderBox && box.hasSize) {
+    origin = box.localToGlobal(Offset.zero) & box.size;
+  }
+  final pick = await showCupertinoModalPopup<String>(
+    context: context,
+    builder: (ctx) => CupertinoActionSheet(
+      title: Text(name),
+      actions: [
+        for (final a in [
+          'Open',
+          'Share',
+          if (raster || video) 'Save to Photos',
+          if (raster && canCopyImage) 'Copy image',
+        ])
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, a),
+            child: Text(a),
+          ),
+      ],
+      cancelButton: CupertinoActionSheetAction(
+        onPressed: () => Navigator.pop(ctx),
+        child: const Text('Cancel'),
+      ),
+    ),
+  );
+  if (pick == null || !context.mounted) return;
+  if (pick == 'Open') return openAttached(context, path);
+  final c = ChatScope.of(context);
+  final Uint8List bytes;
+  try {
+    bytes = await c.readFile(path);
+  } catch (e) {
+    if (context.mounted) toast(context, "can't read $name: ${errorText(e)}");
+    return;
+  }
+  if (!context.mounted) return;
+  switch (pick) {
+    case 'Share':
+      await shareBytes(bytes, name, origin: origin);
+    case 'Save to Photos':
+      final why = await saveToPhotos(bytes, name, video: video);
+      if (context.mounted) toast(context, why ?? 'saved to Photos');
+    case 'Copy image':
+      final why = await copyImage(bytes);
+      if (context.mounted) toast(context, why ?? 'copied');
+  }
+}
+
 /// The files of a message: pictures as thumbnails ([size] square, or [wide] boxes), videos as
 /// ▶ tiles, anything else as a name chip.
 class AttachedFiles extends StatelessWidget {
@@ -67,7 +127,7 @@ class AttachedFiles extends StatelessWidget {
         alignment: alignEnd ? WrapAlignment.end : WrapAlignment.start,
         children: [
           for (final p in paths)
-            if (isPicture(p) && !isSvg(p))
+            if (isPicture(p))
               _Thumb(path: p, size: size, wide: wide)
             else if (isVideo(p))
               _VideoTile(path: p, size: size, wide: wide)
@@ -79,24 +139,58 @@ class AttachedFiles extends StatelessWidget {
   }
 }
 
-class _Thumb extends StatelessWidget {
+/// SVGs that failed to parse, by `sid\npath`: drawn as file chips from then on.
+final _badSvg = <String>{};
+
+class _Thumb extends StatefulWidget {
   const _Thumb({required this.path, required this.size, required this.wide});
   final String path;
   final double size;
   final bool wide;
 
   @override
+  State<_Thumb> createState() => _ThumbState();
+}
+
+class _ThumbState extends State<_Thumb> {
+  String get path => widget.path;
+
+  /// An SVG that does not parse turns into the file chip (after this frame).
+  Widget _svgFailed(String key) {
+    if (_badSvg.add(key)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }
+    return const SizedBox.shrink();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = ChatScope.of(context);
+    final key = '${c.sid}\n$path';
+    if (_badSvg.contains(key)) return _FileChip(path: path);
     final bytes = c.picture(path);
     final err = c.pictureError(path);
-    final w = wide ? double.infinity : size;
-    final h = wide ? 240.0 : size;
+    final wide = widget.wide;
+    final w = wide ? double.infinity : widget.size;
+    final h = wide ? 240.0 : widget.size;
+    final fit = wide ? BoxFit.contain : BoxFit.cover;
     Widget child;
-    if (bytes != null) {
+    if (bytes != null && isSvg(path)) {
+      child = SvgPicture.memory(
+        bytes,
+        fit: fit,
+        width: w,
+        height: h,
+        placeholderBuilder: (_) =>
+            const Center(child: CupertinoActivityIndicator()),
+        errorBuilder: (_, _, _) => _svgFailed(key),
+      );
+    } else if (bytes != null) {
       child = Image.memory(
         bytes,
-        fit: wide ? BoxFit.contain : BoxFit.cover,
+        fit: fit,
         width: w,
         height: h,
         errorBuilder: (_, _, _) => _broken(context, fileName(path)),
@@ -111,13 +205,15 @@ class _Thumb extends StatelessWidget {
     }
     return GestureDetector(
       onTap: bytes == null ? null : () => openAttached(context, path),
+      onLongPress: bytes == null ? null : () => attachedMenu(context, path),
       child: Container(
         width: w,
         height: h,
         constraints: wide ? const BoxConstraints(maxWidth: 360) : null,
+        clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
-          color: panel(context),
-          border: Border.all(color: ink(context), width: 1.2),
+          color: fill(context),
+          borderRadius: BorderRadius.circular(codeRadius),
         ),
         child: child,
       ),
@@ -168,6 +264,7 @@ class _VideoTile extends StatelessWidget {
     }
     return GestureDetector(
       onTap: () => openAttached(context, path),
+      onLongPress: () => attachedMenu(context, path),
       child: Container(
         width: wide ? double.infinity : size,
         height: wide ? 200 : size,
@@ -175,7 +272,7 @@ class _VideoTile extends StatelessWidget {
         clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
           color: FemmeColors.ink,
-          border: Border.all(color: ink(context), width: 1.2),
+          borderRadius: BorderRadius.circular(codeRadius),
         ),
         child: child,
       ),

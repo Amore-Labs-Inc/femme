@@ -40,7 +40,7 @@ void main() {
       'A.PNG': ViewerKind.image,
       'photo.JPEG': ViewerKind.image,
       'x.webp': ViewerKind.image,
-      'logo.svg': ViewerKind.text,
+      'logo.svg': ViewerKind.svg,
       'main.rs': ViewerKind.text,
       'README.md': ViewerKind.text,
       'data.json': ViewerKind.text,
@@ -82,16 +82,20 @@ void main() {
     test('boundaries', () {
       expect(maxRead, (16 << 20) - 4096);
       expect(planOpen(0), OpenPlan.read);
-      expect(planOpen(askAbove), OpenPlan.read, reason: '2 MiB is not over');
-      expect(planOpen(askAbove + 1), OpenPlan.ask);
+      expect(
+        planOpen(askAboveWifi),
+        OpenPlan.read,
+        reason: '8 MiB is not over',
+      );
+      expect(planOpen(askAboveWifi + 1), OpenPlan.ask);
       expect(planOpen(maxRead), OpenPlan.ask);
       expect(planOpen(maxRead + 1), OpenPlan.refuse);
-      expect(planOpen(askAbove + 1, confirmed: true), OpenPlan.read);
+      expect(planOpen(askAboveWifi + 1, confirmed: true), OpenPlan.read);
       expect(planOpen(maxRead + 1, confirmed: true), OpenPlan.refuse);
     });
     test('cache and reads in flight come first', () {
       expect(planOpen(maxRead + 1, cached: true), OpenPlan.show);
-      expect(planOpen(askAbove + 1, reading: true), OpenPlan.wait);
+      expect(planOpen(askAboveWifi + 1, reading: true), OpenPlan.wait);
     });
   });
 

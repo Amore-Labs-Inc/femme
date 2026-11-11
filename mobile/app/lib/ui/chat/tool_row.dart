@@ -12,6 +12,7 @@ import '../theme.dart';
 import 'look.dart';
 import 'markdown.dart';
 import 'media.dart';
+import 'rows.dart' show RetryLine;
 import 'subagent.dart';
 import 'tool_summary.dart';
 import 'turns.dart';
@@ -97,18 +98,15 @@ class ToolRow extends StatelessWidget {
               children: [
                 Expanded(child: summary),
                 if (hasSub)
-                  _Action('open ›', () {
-                    Navigator.of(context).push(
-                      CupertinoPageRoute<void>(
-                        builder: (_) => SubagentScreen(
-                          sid: c.sid,
-                          callId: call.itemId,
-                          title: line.hint.isEmpty ? 'agent' : line.hint,
-                          controller: c,
-                        ),
-                      ),
-                    );
-                  }),
+                  _Action(
+                    'open ›',
+                    () => openSubagent(
+                      context,
+                      c,
+                      call.itemId,
+                      line.hint.isEmpty ? 'agent' : line.hint,
+                    ),
+                  ),
                 if (line.backgroundable && call != null)
                   _Action('⇣ background', () async {
                     HapticFeedback.selectionClick();
@@ -176,12 +174,24 @@ class _Opened extends StatelessWidget {
         (entry.result?.body == null &&
             entry.result?.blobHash != null &&
             resBody == null);
+    final c = ChatScope.of(context);
+    final err = c.blobError(entry.call) ?? c.blobError(entry.result);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (waiting) const CupertinoActivityIndicator(),
+          if (waiting && err != null)
+            RetryLine(
+              err,
+              indent: 0,
+              onTap: () {
+                c.retryBlob(entry.call);
+                c.retryBlob(entry.result);
+              },
+            )
+          else if (waiting)
+            const CupertinoActivityIndicator(),
           if (line.linkUrl != null)
             CupertinoButton(
               padding: EdgeInsets.zero,
@@ -217,12 +227,11 @@ class CodeBlock extends StatelessWidget {
     },
     child: Container(
       margin: const EdgeInsets.only(top: 6),
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: panel(context),
-        border: Border.all(
-          color: red ? FemmeColors.bad : ink(context),
-          width: 1.2,
-        ),
+        color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+        borderRadius: BorderRadius.circular(codeRadius),
+        border: red ? Border.all(color: FemmeColors.bad, width: 1) : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

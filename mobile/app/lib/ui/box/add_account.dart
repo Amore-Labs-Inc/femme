@@ -164,7 +164,10 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                   ? null
                   : Text(
                       f.error!,
-                      style: const TextStyle(color: FemmeColors.bad),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: FemmeColors.bad,
+                      ),
                     ),
               children: [
                 Padding(

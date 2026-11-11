@@ -1,21 +1,22 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../net/rpc.dart';
 import '../../state/box.dart';
+import '../../state/box_watch.dart';
 import '../chat/markdown.dart';
 import '../femme.dart';
 import '../media/lightbox.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'poll.dart';
 import 'prs.dart';
 
-/// Where a merge stands after `PrMerge` answered.
-enum _Deploy { none, queued, deploying, deployed, timedOut }
-
-/// One pull request: its description, the demo, and merge / close / fix.
+/// One pull request: its description, the demo, and merge / close / fix. It reads its PR again
+/// every 10 s while shown, as the list does; a merge is followed by the app's [MergeWatch], so it
+/// goes on after the page closes.
 class PrDetailScreen extends StatefulWidget {
   const PrDetailScreen({super.key, required this.pr});
   final Pr pr;
@@ -24,19 +25,74 @@ class PrDetailScreen extends StatefulWidget {
   State<PrDetailScreen> createState() => _PrDetailScreenState();
 }
 
-class _PrDetailScreenState extends State<PrDetailScreen> {
+class _PrDetailScreenState extends State<PrDetailScreen> with Polling {
   bool _busy = false;
-  _Deploy _deploy = _Deploy.none;
-  String? _deployed;
-  Timer? _poll;
+  late Pr _pr = widget.pr;
+
+  /// The PR left the open list (merged or closed elsewhere).
+  bool _gone = false;
+
+  MergeWatch? _merges;
+
+  /// A watch of this page's own when the app has none (tests).
+  MergeWatch? _own;
+
+  @override
+  Duration get every => const Duration(seconds: 10);
+
+  @override
+  void didChangeDependencies() {
+    if (_merges == null) {
+      final f = Femme.of(context);
+      final m = f.boxWatch?.merges ?? (_own = MergeWatch(f.link.req));
+      m.prs.addListener(_onList);
+      m.states.addListener(_onMerge);
+      _merges = m;
+    }
+    super.didChangeDependencies();
+  }
 
   @override
   void dispose() {
-    _poll?.cancel();
+    _merges?.prs.removeListener(_onList);
+    _merges?.states.removeListener(_onMerge);
+    _own?.dispose();
     super.dispose();
   }
 
-  Pr get pr => widget.pr;
+  Pr get pr => _pr;
+
+  @override
+  Future<void> poll() async {
+    try {
+      final list = (await Femme.of(context).link.req(Req.prs)).prs;
+      if (mounted) _take(list);
+    } catch (_) {
+      // offline or restarting: keep what is shown, the next round asks again
+    }
+  }
+
+  void _onList() {
+    final list = _merges?.prs.value;
+    if (list != null && mounted) _take(list);
+  }
+
+  MergeState? _last;
+
+  void _onMerge() {
+    final s = _merges?.of(pr.number);
+    if (s is MergeDeployed && _last is! MergeDeployed) actionHaptic();
+    _last = s;
+    if (mounted) setState(() {});
+  }
+
+  void _take(List<Pr> list) {
+    final p = list.where((p) => p.number == pr.number).firstOrNull;
+    setState(() {
+      _gone = p == null;
+      if (p != null) _pr = p;
+    });
+  }
 
   Future<T?> _run<T>(String what, Future<T> Function() f) async {
     setState(() => _busy = true);
@@ -71,9 +127,11 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
 
   Future<void> _merge() async {
     final link = Femme.of(context).link;
+    final merges = _merges!;
+    final number = pr.number;
     final first = await confirmAction(
       context,
-      title: 'Merge #${pr.number}?',
+      title: 'Merge #$number?',
       message: pr.mergeable == false
           ? 'It conflicts with main: Claude resolves the conflicts first, then it merges and deploys by itself.'
           : 'It merges into main and deploys.',
@@ -90,45 +148,12 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
     if (!second || !mounted) return;
     actionHaptic();
     final before = await _run('Merge failed', () async {
-      String? deployed;
-      try {
-        deployed = (await link.req(Req.serverInfo)).serverInfo.deployed;
-      } catch (_) {
-        deployed = null;
-      }
-      await link.req(
-        Req.prMerge(pr.number),
-        timeout: const Duration(minutes: 2),
-      );
-      return deployed ?? '';
+      final from = await merges.deployed();
+      await link.req(Req.prMerge(number), timeout: const Duration(minutes: 2));
+      return (from,);
     });
-    if (before == null || !mounted) return;
-    if (pr.mergeable == false) {
-      setState(() => _deploy = _Deploy.queued);
-      return;
-    }
-    setState(() => _deploy = _Deploy.deploying);
-    final start = DateTime.now();
-    _poll = Timer.periodic(const Duration(seconds: 5), (t) async {
-      if (DateTime.now().difference(start) > const Duration(minutes: 10)) {
-        t.cancel();
-        if (mounted) setState(() => _deploy = _Deploy.timedOut);
-        return;
-      }
-      try {
-        final d = (await link.req(Req.serverInfo)).serverInfo.deployed;
-        if (d != null && d != before && mounted) {
-          t.cancel();
-          actionHaptic();
-          setState(() {
-            _deploy = _Deploy.deployed;
-            _deployed = d;
-          });
-        }
-      } catch (_) {
-        // the box restarts while it deploys; keep asking
-      }
-    });
+    if (before == null) return;
+    await merges.merged(number, before.$1);
   }
 
   Future<void> _close() async {
@@ -169,13 +194,9 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
   Widget build(BuildContext context) {
     final muted = FemmeColors.mutedC.resolveFrom(context);
     final badge = prBadge(pr);
-    final status = switch (_deploy) {
-      _Deploy.none => null,
-      _Deploy.queued => 'queued: Claude is resolving the conflicts; it merges and deploys by itself',
-      _Deploy.deploying => 'merged · deploying…',
-      _Deploy.deployed => 'deployed $_deployed',
-      _Deploy.timedOut => 'merged; no new deploy seen in 10 minutes',
-    };
+    final merge = _merges?.of(pr.number);
+    final line = merge == null ? null : mergeLine(merge, _merges!.poll);
+    final following = merge is MergeQueued || merge is MergeDeploying;
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         middle: Text('#${pr.number}'),
@@ -214,20 +235,28 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
                 ],
               ),
             ),
-            if (status != null)
+            if (_gone && !following && merge is! MergeDeployed)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                child: Text('no longer open', style: TextStyle(color: muted)),
+              ),
+            if (line != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                 child: Row(
                   children: [
-                    if (_deploy == _Deploy.deploying)
+                    if (following)
                       const Padding(
                         padding: EdgeInsets.only(right: 8),
                         child: CupertinoActivityIndicator(),
                       ),
                     Expanded(
                       child: Text(
-                        status,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        line.$1,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: line.$2 ? null : FemmeColors.bad,
+                        ),
                       ),
                     ),
                   ],
@@ -235,6 +264,19 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
               ),
             CupertinoListSection.insetGrouped(
               children: [
+                if (Uri.tryParse(pr.url)?.hasScheme ?? false)
+                  CupertinoListTile(
+                    leading: const Icon(CupertinoIcons.link),
+                    title: const Text('Open on GitHub'),
+                    subtitle: Text(pr.url, overflow: TextOverflow.ellipsis),
+                    onTap: () {
+                      tapHaptic();
+                      launchUrl(
+                        Uri.parse(pr.url),
+                        mode: LaunchMode.externalApplication,
+                      );
+                    },
+                  ),
                 if (pr.video != null)
                   CupertinoListTile(
                     leading: const Icon(CupertinoIcons.play_rectangle_fill),
@@ -250,7 +292,7 @@ class _PrDetailScreenState extends State<PrDetailScreen> {
                     'Merge & deploy',
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  onTap: _busy || pr.merging || _deploy != _Deploy.none
+                  onTap: _busy || pr.merging || following || _gone
                       ? null
                       : _merge,
                 ),

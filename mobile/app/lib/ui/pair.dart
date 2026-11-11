@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 
 import '../state/prefs.dart';
+import 'femme.dart';
 import 'me/pairing.dart';
 import 'theme.dart';
 
@@ -46,6 +47,44 @@ class PairScreen extends StatelessWidget {
           ),
           const PairForm(manual: true),
         ],
+      ),
+    ),
+  );
+}
+
+/// Pairs again from inside the app (the box refused this phone's token): the pairing form on the
+/// current navigator; saving it pops the page and reconnects at once, even when the host and
+/// token did not change (the box may have enrolled the same token again).
+Future<void> pushPairAgain(BuildContext context) {
+  final link = Femme.of(context).link;
+  return Navigator.of(context).push(
+    CupertinoPageRoute<void>(
+      builder: (c) => CupertinoPageScaffold(
+        backgroundColor: CupertinoColors.systemGroupedBackground,
+        navigationBar: const CupertinoNavigationBar(middle: Text('Pair again')),
+        child: SafeArea(
+          child: ListView(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: Text(
+                  'The box no longer knows this phone. Run `femmed pair` on your box and '
+                  'scan the code it prints.',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: FemmeColors.mutedC.resolveFrom(c),
+                  ),
+                ),
+              ),
+              PairForm(
+                onPaired: () {
+                  Navigator.of(c).pop();
+                  link.reconnect();
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     ),
   );

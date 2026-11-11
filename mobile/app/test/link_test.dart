@@ -236,7 +236,44 @@ void main() {
     link.connect('ws://127.0.0.1:${server.port}', 'nope');
     await until(() => link.state.value.retryAt != null);
     expect(link.state.value.phase, LinkPhase.offline);
-    expect(link.state.value.reason, isNotEmpty);
+    expect(link.state.value.reason, 'not enrolled');
+    expect(link.state.value.notEnrolled, isTrue);
+  });
+
+  test(
+    'a refused request is kept as the last failure across state changes',
+    () async {
+      server.answer = (_, _) => {
+        'Err': {'code': 'NotFound', 'msg': 'no such session'},
+      };
+      link.connect('ws://127.0.0.1:${server.port}', 'tok');
+      await until(() => link.isOnline);
+      await expectLater(
+        link.req(Req.sessionLabel(sid, 'x')),
+        throwsA(isA<FemmeError>()),
+      );
+      await until(() => link.state.value.lastFailed != null);
+      final f = link.state.value.lastFailed!;
+      expect(f.what, 'SessionLabel');
+      expect(f.why, 'NotFound: no such session');
+      expect(link.state.value.notEnrolled, isFalse);
+
+      await server.sockets.first.close();
+      await until(() => server.hellos.length == 2 && link.isOnline);
+      expect(link.state.value.lastFailed, f);
+    },
+  );
+
+  test('reconnect drops a live socket and dials at once', () async {
+    link.connect('ws://127.0.0.1:${server.port}', 'tok');
+    await until(() => link.isOnline);
+    link.reconnect();
+    expect(link.isOnline, isFalse);
+    await until(() => server.hellos.length == 2 && link.isOnline);
+    link.pause();
+    link.reconnect();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(server.hellos.length, 2, reason: 'paused: reconnect does nothing');
   });
 
   test('a term stream opens, sends Open and receives a frame', () async {
