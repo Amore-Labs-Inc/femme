@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 
 import '../net/link.dart';
@@ -16,9 +18,63 @@ const maxFrame = 16 << 20;
 /// offered.
 const maxRead = maxFrame - 4096;
 
-/// Files over this many bytes ask before they are read (the desktop asks over 8 MiB; a phone on
-/// cellular earlier).
-const askAbove = 2 << 20;
+/// Over Wi-Fi (and wired, and anything not cellular) files over this many bytes ask before they
+/// are read: the desktop's `BIG` (`desktop/src/files/plan.rs:7`).
+const askAboveWifi = 8 << 20;
+
+/// On cellular the phone asks earlier (PARITY §10 "lower the ask threshold on cellular"; the
+/// desktop has no cellular case).
+const askAboveCellular = 2 << 20;
+
+/// How the phone is online, as far as the size rules care.
+enum NetKind { wifi, cellular }
+
+/// The ask threshold for `net`.
+int askAboveFor(NetKind net) =>
+    net == NetKind.cellular ? askAboveCellular : askAboveWifi;
+
+/// Cellular when the only ways out are mobile ones; Wi-Fi, ethernet, VPN over them, or nothing
+/// known count as Wi-Fi.
+NetKind netKindOf(List<ConnectivityResult> results) {
+  const fast = {ConnectivityResult.wifi, ConnectivityResult.ethernet};
+  if (results.any(fast.contains)) return NetKind.wifi;
+  return results.contains(ConnectivityResult.mobile)
+      ? NetKind.cellular
+      : NetKind.wifi;
+}
+
+/// Asks the platform how the phone is online ([check] stands in for the plugin). Linux and tests
+/// count as Wi-Fi without asking; a missing plugin or any failure is Wi-Fi too.
+Future<NetKind> probeNet({
+  Future<List<ConnectivityResult>> Function()? check,
+}) async {
+  if (check == null) {
+    if (kIsWeb) return NetKind.wifi;
+    if (Platform.isLinux || Platform.environment.containsKey('FLUTTER_TEST')) {
+      return NetKind.wifi;
+    }
+  }
+  try {
+    return netKindOf(
+      await (check ?? () => Connectivity().checkConnectivity())(),
+    );
+  } catch (_) {
+    // MissingPluginException included.
+    return NetKind.wifi;
+  }
+}
+
+/// How the size rules learn the network; tests replace it.
+Future<NetKind> Function() netProbe = () => probeNet();
+
+/// The ask threshold for the network the phone is on now.
+Future<int> askAboveNow() async {
+  try {
+    return askAboveFor(await netProbe());
+  } catch (_) {
+    return askAboveWifi;
+  }
+}
 
 /// The text viewer takes files up to this size; bigger text goes to the hex view and share.
 const textMax = 8 << 20;
@@ -81,12 +137,13 @@ enum OpenPlan {
   read,
 }
 
-/// What to do for a file of `len` bytes (as listed).
+/// What to do for a file of `len` bytes (as listed); [askAbove] from [askAboveNow].
 OpenPlan planOpen(
   int len, {
   bool cached = false,
   bool reading = false,
   bool confirmed = false,
+  int askAbove = askAboveWifi,
 }) {
   if (cached) return OpenPlan.show;
   if (reading) return OpenPlan.wait;

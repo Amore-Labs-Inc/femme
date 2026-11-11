@@ -120,7 +120,21 @@ void main() {
     await t.pumpAndSettle();
   });
 
-  testWidgets('a file over 2 MiB asks first', (t) async {
+  testWidgets('on Wi-Fi a 3 MiB file opens without asking', (t) async {
+    final b = box()..files = {...box().files, 'mid.txt': 'ok'.codeUnits};
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('mid.txt'));
+    await t.pumpAndSettle();
+    expect(find.text('This file is 3.0 MiB.'), findsNothing);
+    expect(b.read, ['mid.txt']);
+    expect(find.text('ok'), findsOneWidget);
+  });
+
+  testWidgets('on cellular a file over 2 MiB asks first', (t) async {
+    netProbe = () async => NetKind.cellular;
+    addTearDown(() => netProbe = () => probeNet());
     final b = box()..files = {...box().files, 'mid.txt': 'ok'.codeUnits};
     final tree = FilesTree(requester: b, sid: 's1');
     await t.pumpWidget(app(tree));

@@ -65,16 +65,34 @@ class _FileViewerPageState extends State<FileViewerPage> {
   @override
   void initState() {
     super.initState();
+    final cached = widget.tree.cache.contains(widget.path);
+    final reading = widget.tree.reading(widget.path);
+    // Below the lowest threshold nothing depends on the network: plan now.
+    if (cached ||
+        reading ||
+        widget.len <= askAboveCellular ||
+        widget.len > maxRead) {
+      _plan(askAboveCellular);
+    } else {
+      askAboveNow().then((above) {
+        if (mounted) _plan(above);
+      });
+    }
+  }
+
+  /// The size rules with the ask threshold of the network the phone is on.
+  void _plan(int askAbove) {
     final plan = planOpen(
       widget.len,
       cached: widget.tree.cache.contains(widget.path),
       reading: widget.tree.reading(widget.path),
+      askAbove: askAbove,
     );
     switch (plan) {
       case OpenPlan.refuse:
-        _phase = _Phase.refused;
+        setState(() => _phase = _Phase.refused);
       case OpenPlan.ask:
-        _phase = _Phase.asking;
+        setState(() => _phase = _Phase.asking);
         WidgetsBinding.instance.addPostFrameCallback((_) => _ask());
       case OpenPlan.show || OpenPlan.wait || OpenPlan.read:
         _load();

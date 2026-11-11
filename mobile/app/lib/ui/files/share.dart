@@ -116,7 +116,10 @@ Future<void> shareFile(
   String path,
   int len,
 ) async {
-  final plan = planOpen(len, cached: tree.cache.contains(path));
+  final cached = tree.cache.contains(path);
+  final above = cached ? askAboveWifi : await askAboveNow();
+  if (!context.mounted) return;
+  final plan = planOpen(len, cached: cached, askAbove: above);
   if (plan == OpenPlan.refuse) {
     return showNote(context, 'Too big to share', refuseText(len));
   }
