@@ -124,6 +124,12 @@ abstract final class Req {
   static Object interrupt(String sid) => {
     'Interrupt': {'sid': sid},
   };
+
+  /// Stop right after sending: the newest prompt comes back (`Resp.takenBack`), or the turn is
+  /// only interrupted (`Ok`).
+  static Object takeBack(String sid) => {
+    'TakeBack': {'sid': sid},
+  };
   static Object background(String sid, {String? toolUseId}) => {
     'Background': {'sid': sid, 'tool_use_id': toolUseId},
   };
@@ -337,6 +343,9 @@ class Resp {
   List<String> get commands => (_m['names'] as List).cast<String>();
   List<Pr> get prs => listOf(value, Pr.fromJson);
   bool get prAutoFix => value as bool;
+
+  /// The text of the prompt a `TakeBack` brought back; null when it only interrupted.
+  String? get takenBack => variant == 'TakenBack' ? _m['text'] as String : null;
 
   @override
   String toString() => 'Resp.$variant';

@@ -319,6 +319,11 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Stop right after sending (`TakeBack`): the newest prompt's text when the agent gave it up
+  /// and its rows are gone, null when the turn was only interrupted.
+  Future<String?> takeBack() async =>
+      (await link.req(Req.takeBack(sid), resend: false)).takenBack;
+
   // ---- drafts ----
 
   static String _draftKey(String sid) => 'chat.draft.$sid';
