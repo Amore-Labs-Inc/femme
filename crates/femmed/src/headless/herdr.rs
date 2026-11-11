@@ -891,12 +891,16 @@ impl Tail {
             return;
         }
         let sid = self.sid;
+        let removed = super::removes(d, &puts);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
             }
             tx.set_spool_committed(sid, end)
         });
+        if let Some(before) = removed {
+            d.say_removed(sid, before);
+        }
         match r {
             Ok(()) => self.committed = end,
             Err(e) => {
@@ -1095,7 +1099,7 @@ fn ids_of(v: &Value) -> Vec<String> {
 fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
     let held = puts.iter().any(|p| match p {
         Put::Start(i) | Put::Done(i) => i.item_id == id && i.kind == ItemKind::UserMessage,
-        Put::Update(..) => false,
+        Put::Update(..) | Put::Remove(_) => false,
     });
     if held {
         return None;
@@ -1505,6 +1509,9 @@ fn disk_value(mut v: Value) -> Option<Value> {
 
 // ---- the way in ---------------------------------------------------------------------------------
 
+/// How long the TUI gets to put a message it took back into its input before that is cleared.
+const TAKE_BACK_SETTLE: Duration = Duration::from_millis(300);
+
 /// The session's head: a prompt is typed into the pane, an interrupt is its Escape, a screen
 /// question's answer is its option's number (or Escape). Transcript questions, models and
 /// takeovers are the pane's.
@@ -1594,6 +1601,26 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                 Cmd::Interrupt { reply } => {
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
                     let _ = reply.send(r.map(drop));
+                }
+                // Esc right after sending: the TUI stops the turn and puts the message back into
+                // its own input, where FEMME cannot see it. The input is cleared (Ctrl+U, a line at
+                // a time) and the text goes to whoever asked; the message's row leaves when the
+                // line sent in its place lands (the mirror driver's take-back rule).
+                // ponytail: the TUI is not asked whether it took the message back; one it only
+                // interrupted stays in the transcript, and the text is in the composer as well.
+                Cmd::TakeBack { reply } => {
+                    let esc = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
+                    let text = d.upgrade().and_then(|d| {
+                        let newest = d.store.write(|tx| crate::sent::newest(tx, sid));
+                        newest.ok().flatten().map(|(text, _)| text)
+                    });
+                    if let (Ok(_), Some(text)) = (&esc, &text) {
+                        tokio::time::sleep(TAKE_BACK_SETTLE).await;
+                        let mut args = vec!["pane", "send-keys", pane.as_str()];
+                        args.extend(text.lines().map(|_| "ctrl+u"));
+                        let _ = herdr(&bin, Some(&hs), &args).await;
+                    }
+                    let _ = reply.send(esc.map(|_| text));
                 }
                 // the TUI backgrounds its foreground task on Ctrl+B (every one: it has no per-call key)
                 Cmd::Background { reply, .. } => {
@@ -2427,6 +2454,67 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             std::fs::read_to_string(dir.path().join("prompts")).unwrap(),
             "wA:p1 /model claude-fable-5-2\nwA:p1 hello\n"
         );
+    }
+
+    /// Esc in the TUI right after sending (2.1.321) puts the message back into its input, and
+    /// the line sent in its place hangs off the same `parentUuid`: only that one is shown. From
+    /// FEMME the same Esc clears the TUI's input and answers with the text.
+    #[tokio::test]
+    async fn a_message_taken_back_in_the_pane_leaves_only_the_one_sent_in_its_place() {
+        let (d, dir) = daemon();
+        let bin = fake_herdr(dir.path());
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("u-1.jsonl");
+        let first = concat!(
+            r#"{"type":"user","uuid":"u1","parentUuid":"p0","message":{"role":"user","content":"perfect, merge this pls"}}"#,
+            "\n",
+            r#"{"type":"last-prompt","lastPrompt":"perfect, merge this pls"}"#,
+            "\n"
+        );
+        std::fs::write(&file, first).unwrap();
+        let mut tails = HashMap::new();
+        let mut panes = parse_panes("default", BLOCKED);
+        panes[0].status = "working".into();
+        sync(&d, &bin, &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        let shown = |d: &Daemon| {
+            let mut v = d
+                .store
+                .read(|c| store_items::page_items(c, sid, None, 100))
+                .unwrap();
+            v.reverse();
+            v.into_iter()
+                .filter(|i| matches!(i.kind, ItemKind::UserMessage | ItemKind::AssistantMessage))
+                .map(|i| i.item_id)
+                .collect::<Vec<_>>()
+        };
+        tails.get_mut(&sid).unwrap().tail(&d).await;
+        assert_eq!(shown(&d), ["u1"]);
+
+        let taken = d.sessions.head(sid).unwrap().take_back().await;
+        assert_eq!(taken, Ok(Some("perfect, merge this pls".into())));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("keys")).unwrap(),
+            "wA:p1 esc\nwA:p1 ctrl+u\n"
+        );
+        assert_eq!(shown(&d), ["u1"], "until the line sent in its place lands");
+
+        let second = concat!(
+            r#"{"type":"file-history-snapshot"}"#,
+            "\n",
+            r#"{"type":"user","uuid":"u2","parentUuid":"p0","message":{"role":"user","content":"perfect, merge this pls merge to main directly"}}"#,
+            "\n",
+            r#"{"type":"last-prompt","explicit":true}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u2","message":{"id":"m1","content":[{"type":"text","text":"merged"}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"turn_duration","durationMs":12}"#,
+            "\n"
+        );
+        std::fs::write(&file, format!("{first}{second}")).unwrap();
+        tails.get_mut(&sid).unwrap().tail(&d).await;
+        assert_eq!(shown(&d), ["u2", "m1:0"]);
     }
 
     #[tokio::test]

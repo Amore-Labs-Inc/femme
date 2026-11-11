@@ -153,6 +153,8 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Exited { .. } => "exited".into(),
             AgentEvent::Goal(g) => format!("goal:{:?}", g.state),
             AgentEvent::Raw(_) => "raw".into(),
+            AgentEvent::ItemRetracted { id } => format!("retracted:{id}"),
+            AgentEvent::TakenBack { prompt_id, .. } => format!("taken-back:{prompt_id}"),
         })
         .collect()
 }
