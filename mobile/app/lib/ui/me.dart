@@ -134,21 +134,30 @@ class _MeTabState extends State<MeTab> {
               CupertinoListSection.insetGrouped(
                 header: const Text('Appearance'),
                 children: [
+                  // Full row width, as Settings' appearance picker.
                   Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: CupertinoSlidingSegmentedControl<ThemePref>(
-                      groupValue: f.prefs.theme,
-                      onValueChanged: (t) {
-                        if (t != null) {
-                          tapHaptic();
-                          f.prefs.setTheme(t);
-                        }
-                      },
-                      children: const {
-                        ThemePref.system: Text('System'),
-                        ThemePref.light: Text('Light'),
-                        ThemePref.dark: Text('Dark'),
-                      },
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    // a tight width: the control fills it, in equal segments
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: CupertinoSlidingSegmentedControl<ThemePref>(
+                        key: const ValueKey('appearance'),
+                        groupValue: f.prefs.theme,
+                        onValueChanged: (t) {
+                          if (t != null) {
+                            tapHaptic();
+                            f.prefs.setTheme(t);
+                          }
+                        },
+                        children: const {
+                          ThemePref.system: Text('System'),
+                          ThemePref.light: Text('Light'),
+                          ThemePref.dark: Text('Dark'),
+                        },
+                      ),
                     ),
                   ),
                 ],
@@ -202,14 +211,14 @@ class _PushSection extends StatelessWidget {
         : (p.on ? 'Registering…' : null);
     return CupertinoListSection.insetGrouped(
       header: const Text('Notifications'),
-      footer: Text(
+      footer: sectionFooter(
+        context,
         p.on
             ? 'Install the ntfy app, open the link above and allow notifications: the box '
                   'posts to your topic when a session needs you or finishes. The topic name '
                   'is the secret; make a new one if it leaks.'
             : 'The box pushes through ntfy, so the lock screen tells you when a session '
                   'needs you or is done. No account needed: the ntfy app and a topic.',
-        style: TextStyle(color: muted),
       ),
       children: [
         CupertinoListTile(
