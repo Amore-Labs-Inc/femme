@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
+import '../../state/store.dart';
 import '../theme.dart';
 import 'attached.dart';
 import 'look.dart';
@@ -115,6 +116,46 @@ class DraftFiles extends ChangeNotifier {
 
   void _changed() {
     if (!_disposed) notifyListeners();
+  }
+}
+
+/// What the box says when a prompt names an upload it has swept since (`femmed`'s uploads.rs:
+/// blobs no item refers to go at start and daily).
+const uploadGone = 'its upload is gone';
+
+bool isUploadGone(Object e) => errorText(e).contains(uploadGone);
+
+/// Sends a prompt with the [sent] files' attachments. When the box answers that an upload is
+/// gone, the files go up again (`BlobPut`) and the prompt is sent once more in place of the
+/// failed bubble. Throws what the last send threw (the bubble then shows it).
+Future<void> sendWithFiles(
+  Store store,
+  Requester link,
+  String sid,
+  String text, {
+  PromptHow how = PromptHow.queue,
+  List<DraftFile> sent = const [],
+}) async {
+  final attachments = [for (final f in sent) Attachment(f.name, f.hash!)];
+  try {
+    await store.send(sid, text, how: how, attachments: attachments);
+  } catch (e) {
+    if (sent.isEmpty || !isUploadGone(e)) rethrow;
+    final again = <Attachment>[];
+    for (final f in sent) {
+      final r = await link.req(
+        Req.blobPut(f.name, f.bytes),
+        timeout: const Duration(minutes: 2),
+      );
+      f.hash = r.blobHash;
+      again.add(Attachment(f.name, f.hash!));
+    }
+    for (final o in store.outbox) {
+      if (o.sid == sid && identical(o.attachments, attachments)) {
+        store.discard(o.op);
+      }
+    }
+    await store.send(sid, text, how: how, attachments: again);
   }
 }
 
