@@ -395,6 +395,7 @@ Event texts that exist (exhaustive for what the code builds):
 | `Context compacted` / `Review started: …` / `Review finished: …` / hook prompt text / `Sub-agent <path> <kind>` | Codex items | `codex.rs:1454-1469` |
 | `Context compacted (<reason>), N tokens before`, `Compaction aborted`, `Compaction failed: …`, `Retries gave up: …`, pi `notify` (`<type>: <msg>`) | Pi | `pi.rs:1040-1060`, `:885-891` |
 | `<summary>: <status>` + `task` | Claude background task ended | `claude.rs:2169-2185`, `:589-594` |
+| `◷ <description> · <event>` (a longer event's other lines follow the first) | Claude Monitor event: a `<task-notification>` user line without `<status>` (one with a status is no item, the row above is its row) | `claude.rs` `user()`, `monitor_event` |
 | `[Request interrupted by user]` and other non-replayed user-line text | Claude markers | `claude.rs:1064-1067` |
 | output of a `/` command (`<local-command-stdout>`, ANSI stripped), e.g. ``Set model to `x` ``, `Goal set: …` | Claude | `claude.rs:1019-1045` |
 | `◎ goal not met yet · <reason>` | Claude `/goal` Stop-hook verdict | `claude.rs:1044-1046` |
@@ -415,7 +416,8 @@ mode (`Session.permission`), context size (`Session.context`), goal state incl. 
 
 Desktop rendering: an `Event` with `read` → a thin `↳ <first line>` that scrolls to the message,
 hidden when the message is the row right above (`rows.rs:422-465`); otherwise a muted mono line
-prefixed `· ` unless it starts with `◎` (`rows.rs:652-662`, `:1179-1186`). `task.call` ends an agent
+prefixed `· ` unless it starts with `◎` or `◷` (`rows.rs` `note_row`, `note_text`); a `◷` note of
+several lines shows its first line with ` …` and unfolds on a click. `task.call` ends an agent
 chip and clears a tool row's `in_background` (`agents.rs:43-46`, `:108-118`; `turns.rs:241-252`).
 
 ```json
