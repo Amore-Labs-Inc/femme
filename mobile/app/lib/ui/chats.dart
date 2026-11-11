@@ -73,14 +73,26 @@ List<Project> groupByProject(Iterable<Session> all, {String query = ''}) {
   ];
 }
 
-/// The row's second line: the agent (or a gateway model's provider) and how long ago it started.
+/// The session's lane in words, the same lanes as Now's sections and the status dot's colour:
+/// `needs you`, `done`, `working`, else its status (`idle`, `paused`, `failed`, ...).
+String statusWord(Session s) {
+  if (s.needsYou) return 'needs you';
+  if (s.attention == Attention.done) return 'done';
+  return switch (s.status) {
+    SessionStatus.working || SessionStatus.starting => 'working',
+    final st => st.name,
+  };
+}
+
+/// The row's second line: the status in words (the dot alone is colour), the agent (or a
+/// gateway model's provider) and how long ago it started.
 String sessionSubtitle(Session s, {DateTime? now}) {
   final model = s.model;
   final who = model != null && model.contains('/')
       ? model.split('/').first
       : s.agent.name;
   final when = ago(DateTime.fromMillisecondsSinceEpoch(s.created), now: now);
-  return '$who · $when';
+  return '${statusWord(s)} · $who · $when';
 }
 
 /// Every live session, grouped by project folder.
@@ -158,10 +170,11 @@ class _ChatsTabState extends State<ChatsTab> {
       title: 'Chats',
       status: '$count live · ${linkLine(link)}',
       dot: linkColor(link),
-      leading: CupertinoButton(
+      trailing: CupertinoButton(
         padding: EdgeInsets.zero,
+        minimumSize: const Size(44, 44),
         onPressed: () => openNewChat(context),
-        child: const Icon(CupertinoIcons.add),
+        child: const Icon(CupertinoIcons.add, semanticLabel: 'New chat'),
       ),
       slivers: [
         SliverToBoxAdapter(
@@ -213,12 +226,16 @@ class _ChatsTabState extends State<ChatsTab> {
                   CupertinoButton(
                     padding: EdgeInsets.zero,
                     sizeStyle: CupertinoButtonSize.small,
+                    minimumSize: const Size(44, 44),
                     onPressed: _starting.contains(p.dir)
                         ? null
                         : () => _startIn(p.dir),
                     child: _starting.contains(p.dir)
                         ? const CupertinoActivityIndicator()
-                        : const Icon(CupertinoIcons.add_circled),
+                        : Icon(
+                            CupertinoIcons.add_circled,
+                            semanticLabel: 'New chat in ${p.header}',
+                          ),
                   ),
                 ],
               ),
