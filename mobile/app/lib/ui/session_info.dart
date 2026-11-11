@@ -15,74 +15,81 @@ import 'files.dart';
 import 'terminal.dart';
 import 'theme.dart';
 
-/// Shows the sheet for [sid]; it follows the session live until closed.
+/// Shows the sheet for [sid] as an iOS sheet (card stack, grabber, swipe down to close); it
+/// follows the session live until closed.
 Future<void> showSessionInfo(BuildContext context, String sid) {
-  return showCupertinoModalPopup<void>(
-    context: context,
-    builder: (_) => _SessionSheet(sid: sid, outer: context),
+  // The route is pushed by hand: Flutter 3.47's `showCupertinoSheet` drops `showDragHandle`
+  // unless nested navigation is on, so the grabber never showed.
+  return Navigator.of(context, rootNavigator: true).push(
+    CupertinoSheetRoute<void>(
+      showDragHandle: true,
+      scrollableBuilder: (_, scroll) =>
+          _SessionSheet(sid: sid, outer: context, scroll: scroll),
+    ),
   );
 }
 
 class _SessionSheet extends StatelessWidget {
-  const _SessionSheet({required this.sid, required this.outer});
+  const _SessionSheet({
+    required this.sid,
+    required this.outer,
+    required this.scroll,
+  });
   final String sid;
 
   /// The context that opened the sheet (the chat screen): pages are pushed from it, and it is
   /// popped after the chat is closed.
   final BuildContext outer;
 
+  /// The sheet's scroll controller: dragging down at the top closes the sheet.
+  final ScrollController scroll;
+
   @override
   Widget build(BuildContext context) {
-    final mq = MediaQuery.of(context);
     final s = Femme.of(context).store.sessions[sid];
-    final bg = panel(context);
-    return MediaQuery.removePadding(
-      context: context,
-      removeTop: true,
-      child: Container(
-        height: mq.size.height - mq.padding.top - 12,
-        decoration: BoxDecoration(
-          color: bg,
-          border: Border(top: BorderSide(color: ink(context), width: 1.2)),
-        ),
-        child: CupertinoPageScaffold(
-          backgroundColor: bg,
-          navigationBar: CupertinoNavigationBar(
-            automaticallyImplyLeading: false,
-            transitionBetweenRoutes: false,
-            backgroundColor: bg,
-            middle: const Text('Session'),
-            trailing: CupertinoButton(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(44, 44),
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text(
-                'Done',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
-          ),
-          child: SafeArea(
-            top: false,
-            child: s == null
-                ? Center(
-                    child: Text(
-                      'this chat is gone',
-                      style: TextStyle(color: muted(context), fontSize: 16),
-                    ),
-                  )
-                : _Body(session: s, outer: outer),
+    final bg = CupertinoColors.systemGroupedBackground.resolveFrom(context);
+    return CupertinoPageScaffold(
+      backgroundColor: bg,
+      navigationBar: CupertinoNavigationBar(
+        automaticallyImplyLeading: false,
+        transitionBetweenRoutes: false,
+        backgroundColor: bg,
+        border: null,
+        middle: const Text('Session'),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: const Size(44, 44),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text(
+            'Done',
+            style: TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: s == null
+            ? Center(
+                child: Text(
+                  'this chat is gone',
+                  style: TextStyle(color: muted(context), fontSize: 16),
+                ),
+              )
+            : _Body(session: s, outer: outer, scroll: scroll),
       ),
     );
   }
 }
 
 class _Body extends StatelessWidget {
-  const _Body({required this.session, required this.outer});
+  const _Body({
+    required this.session,
+    required this.outer,
+    required this.scroll,
+  });
   final Session session;
   final BuildContext outer;
+  final ScrollController scroll;
 
   String get sid => session.id;
 
@@ -97,6 +104,7 @@ class _Body extends StatelessWidget {
         date.format(DateTime.fromMillisecondsSinceEpoch(ms).toLocal());
 
     return ListView(
+      controller: scroll,
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         _section(
@@ -203,7 +211,8 @@ class _Body extends StatelessWidget {
             _Action(
               icon: CupertinoIcons.chevron_left_slash_chevron_right,
               label: 'Terminal',
-              onTap: () => Navigator.of(outer).push(
+              onTap: () => _open(
+                context,
                 CupertinoPageRoute<void>(
                   builder: (_) => TerminalScreen(sid: sid),
                 ),
@@ -212,7 +221,8 @@ class _Body extends StatelessWidget {
             _Action(
               icon: CupertinoIcons.folder,
               label: 'Files',
-              onTap: () => Navigator.of(outer).push(
+              onTap: () => _open(
+                context,
                 CupertinoPageRoute<void>(builder: (_) => FilesScreen(sid: sid)),
               ),
             ),
@@ -227,6 +237,12 @@ class _Body extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  /// Closes the sheet, then pushes [route] on the chat screen (a page does not cover a sheet).
+  void _open(BuildContext context, Route<void> route) {
+    Navigator.of(context).pop();
+    if (outer.mounted) Navigator.of(outer).push(route);
   }
 
   static String _goalState(GoalState g) => switch (g) {
@@ -315,26 +331,14 @@ Widget _section(
   BuildContext context, {
   required Widget header,
   required List<Widget> children,
-}) => CupertinoListSection.insetGrouped(
-  header: header,
-  backgroundColor: panel(context),
-  decoration: BoxDecoration(
-    color: paper(context),
-    border: Border.all(color: ink(context), width: 1.2),
-  ),
-  separatorColor: panel(context),
-  children: children,
-);
+}) => CupertinoListSection.insetGrouped(header: header, children: children);
 
 class _Header extends StatelessWidget {
   const _Header(this.text);
   final String text;
 
   @override
-  Widget build(BuildContext context) => Text(
-    text.toUpperCase(),
-    style: TextStyle(color: muted(context), fontSize: 13),
-  );
+  Widget build(BuildContext context) => Text(text);
 }
 
 class _Square extends StatelessWidget {
@@ -345,10 +349,7 @@ class _Square extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: 12,
     height: 12,
-    decoration: BoxDecoration(
-      color: color,
-      border: Border.all(color: ink(context), width: 1.2),
-    ),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
   );
 }
 
@@ -404,7 +405,7 @@ class _Row extends StatelessWidget {
               SizedBox(
                 width: 112,
                 child: Text(
-                  label,
+                  _cap(label),
                   style: TextStyle(
                     color: muted(context),
                     fontSize: 16,
@@ -493,7 +494,10 @@ class _Action extends StatelessWidget {
               Icon(icon, size: 20, color: c),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(label, style: TextStyle(color: c, fontSize: 16)),
+                child: Text(
+                  _cap(label),
+                  style: TextStyle(color: c, fontSize: 16),
+                ),
               ),
               if (color == null)
                 Icon(
@@ -508,3 +512,6 @@ class _Action extends StatelessWidget {
     );
   }
 }
+
+/// `title` → `Title`: iOS row labels are capitalised.
+String _cap(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);

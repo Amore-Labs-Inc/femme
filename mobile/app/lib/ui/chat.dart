@@ -9,6 +9,7 @@ import '../state/chat.dart';
 import '../state/store.dart';
 import 'chat/composer.dart';
 import 'chat/header.dart';
+import 'chat/look.dart';
 import 'chat/media.dart';
 import 'chat/question.dart';
 import 'chat/strips.dart';
@@ -73,6 +74,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final f = Femme.of(context);
+    if (f.store.isClosed(widget.sid)) return _closed(context, f.store);
     final s = f.store.sessions[widget.sid];
     final items = f.store.items(widget.sid);
     final main = [
@@ -109,6 +111,63 @@ class _ChatScreenState extends State<ChatScreen> {
               GoalStrip(s?.goal),
               if (s != null && s.agent != Agent.shell) XpBar(s.context),
               SafeArea(top: false, child: Composer(sid: widget.sid)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The session closed while (or before) the chat showed: its transcript can still be read, the
+  /// composer gives way to a Close action (the desktop's `session closed` card, `frame.rs`).
+  Widget _closed(BuildContext context, Store store) {
+    final s = store.session(widget.sid);
+    final line = BorderSide(color: panel(context), width: 1);
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: Text(
+          s == null ? 'chat' : sessionTitle(s),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: ChatScope(
+          controller: _ctrl,
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                decoration: BoxDecoration(border: Border(bottom: line)),
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  'session closed',
+                  style: mono(context, size: 12, color: muted(context)),
+                ),
+              ),
+              Expanded(child: TranscriptView(sid: widget.sid)),
+              SafeArea(
+                top: false,
+                child: Container(
+                  decoration: BoxDecoration(border: Border(top: line)),
+                  padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'this session has ended',
+                          style: TextStyle(color: muted(context)),
+                        ),
+                      ),
+                      CupertinoButton(
+                        onPressed: () => Navigator.of(context).maybePop(),
+                        child: const Text('Close'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),

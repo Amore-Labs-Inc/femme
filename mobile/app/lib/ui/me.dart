@@ -101,7 +101,7 @@ class _MeTabState extends State<MeTab> {
                     additionalInfo: Text(
                       paired == null
                           ? 'instance ${f.prefs.clientInstance}'
-                          : 'paired ${ago(paired)} ago',
+                          : pairedAgo(paired),
                     ),
                   ),
                   CupertinoListTile(
@@ -134,21 +134,30 @@ class _MeTabState extends State<MeTab> {
               CupertinoListSection.insetGrouped(
                 header: const Text('Appearance'),
                 children: [
+                  // Full row width, as Settings' appearance picker.
                   Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: CupertinoSlidingSegmentedControl<ThemePref>(
-                      groupValue: f.prefs.theme,
-                      onValueChanged: (t) {
-                        if (t != null) {
-                          tapHaptic();
-                          f.prefs.setTheme(t);
-                        }
-                      },
-                      children: const {
-                        ThemePref.system: Text('System'),
-                        ThemePref.light: Text('Light'),
-                        ThemePref.dark: Text('Dark'),
-                      },
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    // a tight width: the control fills it, in equal segments
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: CupertinoSlidingSegmentedControl<ThemePref>(
+                        key: const ValueKey('appearance'),
+                        groupValue: f.prefs.theme,
+                        onValueChanged: (t) {
+                          if (t != null) {
+                            tapHaptic();
+                            f.prefs.setTheme(t);
+                          }
+                        },
+                        children: const {
+                          ThemePref.system: Text('System'),
+                          ThemePref.light: Text('Light'),
+                          ThemePref.dark: Text('Dark'),
+                        },
+                      ),
                     ),
                   ),
                 ],
@@ -159,11 +168,7 @@ class _MeTabState extends State<MeTab> {
                 children: [
                   CupertinoListTile(
                     title: const Text('FEMME for iPhone and Android'),
-                    additionalInfo: Text(
-                      _info == null
-                          ? '—'
-                          : '${_info!.version} (${_info!.buildNumber})',
-                    ),
+                    additionalInfo: Text(appVersionText(_info)),
                   ),
                   CupertinoListTile(
                     title: const Text('femmed'),
@@ -206,14 +211,14 @@ class _PushSection extends StatelessWidget {
         : (p.on ? 'Registering…' : null);
     return CupertinoListSection.insetGrouped(
       header: const Text('Notifications'),
-      footer: Text(
+      footer: sectionFooter(
+        context,
         p.on
             ? 'Install the ntfy app, open the link above and allow notifications: the box '
                   'posts to your topic when a session needs you or finishes. The topic name '
                   'is the secret; make a new one if it leaks.'
             : 'The box pushes through ntfy, so the lock screen tells you when a session '
                   'needs you or is done. No account needed: the ntfy app and a topic.',
-        style: TextStyle(color: muted),
       ),
       children: [
         CupertinoListTile(
@@ -301,4 +306,23 @@ class _PushSection extends StatelessWidget {
       ],
     );
   }
+}
+
+/// The commit this build was made from, passed by CI as `--dart-define=FEMME_SHA=<sha>`; empty
+/// in a local build.
+const femmeSha = String.fromEnvironment('FEMME_SHA');
+
+/// `1.0.0 (12) · a3ca099`: the app version, its build number and, when the build knows it, the
+/// commit (desktop `menu.rs` VERSION + COMMIT).
+String appVersionText(PackageInfo? info, {String sha = femmeSha}) {
+  if (info == null) return '—';
+  final short = sha.length > 7 ? sha.substring(0, 7) : sha;
+  final v = '${info.version} (${info.buildNumber})';
+  return short.isEmpty ? v : '$v · $short';
+}
+
+/// `paired just now`, else `paired 5m ago` (the `ago` helper says `now` under a minute).
+String pairedAgo(DateTime t, {DateTime? now}) {
+  final a = ago(t, now: now);
+  return a == 'now' ? 'paired just now' : 'paired $a ago';
 }

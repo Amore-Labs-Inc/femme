@@ -76,11 +76,8 @@ class QuestionRow extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: paper(context),
-          border: Border.all(color: ink(context), width: 1.2),
-          boxShadow: [
-            BoxShadow(color: ink(context), offset: const Offset(2, 2)),
-          ],
+          color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+          borderRadius: BorderRadius.circular(cardRadius),
         ),
         child: QuestionBody(item, all),
       ),
@@ -241,7 +238,10 @@ class _QuestionBodyState extends State<QuestionBody> {
                       final t = _text.text.trim();
                       if (t.isNotEmpty) send(Answer.text(t));
                     },
-              child: const Icon(CupertinoIcons.arrow_up_circle_fill),
+              child: const Icon(
+                CupertinoIcons.arrow_up_circle_fill,
+                semanticLabel: 'send answer',
+              ),
             ),
           ),
         ),
@@ -307,10 +307,11 @@ class _OptionButton extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: fill,
-            border: Border.all(color: ink(context), width: 1.2),
-            boxShadow: [
-              BoxShadow(color: ink(context), offset: const Offset(2, 2)),
-            ],
+            borderRadius: BorderRadius.circular(cardRadius),
+            border: Border.all(
+              color: separator(context),
+              width: hairline(context),
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -389,7 +390,9 @@ class _QuestionSheetState extends State<_QuestionSheet> {
       constraints: BoxConstraints(maxHeight: h * 0.85),
       decoration: BoxDecoration(
         color: paper(context),
-        border: Border(top: BorderSide(color: ink(context), width: 1.2)),
+        border: Border(
+          top: BorderSide(color: separator(context), width: hairline(context)),
+        ),
       ),
       child: SafeArea(
         top: false,
@@ -435,8 +438,8 @@ class BlockedCard extends StatelessWidget {
     child: Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: paper(context),
-        border: Border.all(color: FemmeColors.pause, width: 1.2),
+        color: FemmeColors.pause.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(cardRadius),
       ),
       child: Row(
         children: [
@@ -470,9 +473,6 @@ class StatusSquare extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: 10,
     height: 10,
-    decoration: BoxDecoration(
-      color: color,
-      border: Border.all(color: ink(context), width: 1.2),
-    ),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
   );
 }

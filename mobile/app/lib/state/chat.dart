@@ -129,7 +129,11 @@ class ChatController extends ChangeNotifier {
   static final _picErr = <String, String>{};
   static const _picCap = 60;
   static final _blobs = <String, String>{};
-  static final _blobErr = <String>{};
+  static final _blobErr = <String, ({String text, DateTime at})>{};
+
+  /// A failed blob fetch is asked again on the first draw after this long (or at once on a
+  /// tap of the row's `retry`).
+  static const blobRetryAfter = Duration(seconds: 30);
   static List<String>? _commands;
   static DateTime? _commandsAt;
 
@@ -173,19 +177,42 @@ class ChatController extends ChangeNotifier {
     final key = _hex(h);
     final got = _blobs[key];
     if (got != null) return got;
-    if (fetch && !_blobErr.contains(key) && _inflight.add('b:$key')) {
+    if (fetch && !_failedRecently(key) && _inflight.add('b:$key')) {
       _fetchBlob(h, key);
     }
     return null;
   }
 
+  bool _failedRecently(String key) {
+    final e = _blobErr[key];
+    if (e == null) return false;
+    if (DateTime.now().difference(e.at) < blobRetryAfter) return true;
+    _blobErr.remove(key);
+    return false;
+  }
+
+  /// Why the item's blob could not be fetched, while that failure stands; null otherwise.
+  String? blobError(Item? item) {
+    final h = item?.blobHash;
+    if (item == null || item.body != null || h == null) return null;
+    return _blobErr[_hex(h)]?.text;
+  }
+
+  /// Forgets the item's failed fetch; the next draw asks again.
+  void retryBlob(Item? item) {
+    final h = item?.blobHash;
+    if (h == null || _blobErr.remove(_hex(h)) == null) return;
+    _changed();
+  }
+
   Future<void> _fetchBlob(List<int> h, String key) async {
     try {
-      if (!link.isOnline) return;
+      if (!link.isOnline) throw const LinkLost('offline');
       final r = await link.req(Req.blobGet(h), resend: false);
       _blobs[key] = utf8.decode(r.blob, allowMalformed: true);
-    } catch (_) {
-      _blobErr.add(key);
+      _blobErr.remove(key);
+    } catch (e) {
+      _blobErr[key] = (text: errorText(e), at: DateTime.now());
     } finally {
       _inflight.remove('b:$key');
       _changed();

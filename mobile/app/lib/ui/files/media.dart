@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:video_player/video_player.dart';
 
 import '../theme.dart';
@@ -182,6 +183,7 @@ class _MediaViewState extends State<MediaView> {
                           ? CupertinoIcons.pause_fill
                           : CupertinoIcons.play_fill,
                       color: FemmeColors.darkInk,
+                      semanticLabel: v.isPlaying ? 'pause' : 'play',
                     ),
                   ),
                   Text(clock(Duration(milliseconds: at.round())), style: light),
@@ -209,4 +211,33 @@ class _MediaViewState extends State<MediaView> {
       ),
     );
   }
+}
+
+/// An SVG drawn on paper, fitted, pinch to zoom.
+class SvgView extends StatelessWidget {
+  const SvgView({super.key, required this.bytes});
+  final Uint8List bytes;
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: FemmeColors.paperC.resolveFrom(context),
+    child: InteractiveViewer(
+      maxScale: 8,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: SvgPicture.memory(
+            bytes,
+            fit: BoxFit.contain,
+            placeholderBuilder: (_) =>
+                const Center(child: CupertinoActivityIndicator()),
+            errorBuilder: (context, _, _) => Text(
+              'This SVG could not be drawn.',
+              style: TextStyle(color: FemmeColors.mutedC.resolveFrom(context)),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }

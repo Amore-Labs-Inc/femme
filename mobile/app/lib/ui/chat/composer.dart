@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
+import '../../net/link.dart';
 import '../../net/models.dart' hide Row;
 import '../../net/rpc.dart';
 import '../../state/chat.dart';
@@ -62,6 +63,7 @@ class _ComposerState extends State<Composer> {
   final _focus = FocusNode();
   late final DraftFiles _files;
   late final Store _store;
+  late final Requester _link;
   bool _hasFiles = false;
   Timer? _save;
   bool _loaded = false;
@@ -73,6 +75,7 @@ class _ComposerState extends State<Composer> {
       _hasFiles = true;
       final f = Femme.of(context);
       _store = f.store;
+      _link = f.link;
       _files = DraftFiles(f.link)..addListener(_rebuild);
     }
   }
@@ -125,11 +128,18 @@ class _ComposerState extends State<Composer> {
   Future<void> _sendText(
     String text,
     PromptHow how, {
-    List<Attachment> attachments = const [],
+    List<DraftFile> files = const [],
   }) async {
     final store = _store;
     try {
-      await store.send(widget.sid, text, how: how, attachments: attachments);
+      await sendWithFiles(
+        store,
+        _link,
+        widget.sid,
+        text,
+        how: how,
+        sent: files,
+      );
       // The daemon stores no message for a `/command`: drop its bubble once accepted.
       if (text.startsWith('/')) {
         for (final o in store.outbox) {
@@ -157,11 +167,15 @@ class _ComposerState extends State<Composer> {
         ? PromptHow.queue
         : PromptHow.steer;
     interrupt ? HapticFeedback.mediumImpact() : HapticFeedback.lightImpact();
-    final attachments = _files.ready;
+    // Kept with their bytes: an upload the box has swept since goes up again.
+    final sent = [
+      for (final f in _files.files)
+        if (f.state == UploadState.ready) f,
+    ];
     _files.clear();
     _text.clear();
     ChatController.saveDraft(widget.sid, '');
-    await _sendText(text, how, attachments: attachments);
+    await _sendText(text, how, files: sent);
   }
 
   Future<void> _pickModel(ModelChoice m, String? effort) async {
@@ -262,17 +276,25 @@ class _ComposerState extends State<Composer> {
       constraints: const BoxConstraints(maxHeight: 280),
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
       decoration: BoxDecoration(
-        color: paper(context),
-        border: Border.all(color: ink(context), width: 1.2),
-        boxShadow: const [
-          BoxShadow(color: FemmeColors.done, offset: Offset(3, 3)),
-        ],
+        color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+          context,
+        ),
+        borderRadius: BorderRadius.circular(cardRadius),
+        boxShadow: softShadow,
       ),
+      clipBehavior: Clip.antiAlias,
       child: ListView(
+        key: const ValueKey('slash-popup'),
         shrinkWrap: true,
         padding: EdgeInsets.zero,
         children: [
-          for (final (label, sub, tap) in rows)
+          for (final (i, (label, sub, tap)) in rows.indexed) ...[
+            if (i > 0)
+              Container(
+                margin: const EdgeInsets.only(left: 12),
+                height: hairline(context),
+                color: separator(context),
+              ),
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
@@ -299,6 +321,7 @@ class _ComposerState extends State<Composer> {
                 ),
               ),
             ),
+          ],
         ],
       ),
     );
@@ -318,14 +341,19 @@ class _ComposerState extends State<Composer> {
         Container(
           decoration: BoxDecoration(
             color: paper(context),
-            border: Border(top: BorderSide(color: ink(context), width: 1.2)),
+            border: Border(
+              top: BorderSide(
+                color: separator(context),
+                width: hairline(context),
+              ),
+            ),
           ),
           padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               _IconBtn(CupertinoIcons.add, shell ? null : _attach, 'attach'),
-              _IconBtn(CupertinoIcons.clock, _history, 'history'),
+              _IconBtn(CupertinoIcons.clock, _history, 'earlier prompts'),
               Expanded(
                 child: CupertinoTextField(
                   controller: _text,
@@ -337,13 +365,17 @@ class _ComposerState extends State<Composer> {
                   textCapitalization: TextCapitalization.sentences,
                   placeholder: _placeholder(f),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 10,
+                    horizontal: 14,
+                    vertical: 9,
                   ),
                   style: TextStyle(fontSize: 16, color: ink(context)),
                   decoration: BoxDecoration(
                     color: paper(context),
-                    border: Border.all(color: ink(context), width: 1.2),
+                    borderRadius: BorderRadius.circular(composerRadius),
+                    border: Border.all(
+                      color: separator(context),
+                      width: hairline(context),
+                    ),
                   ),
                 ),
               ),
@@ -351,7 +383,7 @@ class _ComposerState extends State<Composer> {
                 _IconBtn(
                   CupertinoIcons.stop_fill,
                   _interrupt,
-                  'stop',
+                  'interrupt',
                   color: FemmeColors.bad,
                 ),
               GestureDetector(
@@ -392,6 +424,7 @@ class _IconBtn extends StatelessWidget {
   Widget build(BuildContext context) => Semantics(
     label: label,
     button: true,
+    excludeSemantics: true,
     child: CupertinoButton(
       padding: EdgeInsets.zero,
       minimumSize: const Size(44, 44),

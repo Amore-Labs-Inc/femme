@@ -88,7 +88,8 @@ class _PairFormState extends State<PairForm> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         CupertinoListSection.insetGrouped(
-          footer: const Text(
+          footer: sectionFooter(
+            context,
             'Run `femmed pair --name <this phone>` on your box and scan the code it prints.',
           ),
           children: [
@@ -104,7 +105,10 @@ class _PairFormState extends State<PairForm> {
           header: const Text('Or paste the link'),
           footer: _error == null
               ? null
-              : Text(_error!, style: const TextStyle(color: FemmeColors.bad)),
+              : Text(
+                  _error!,
+                  style: const TextStyle(fontSize: 13, color: FemmeColors.bad),
+                ),
           children: [
             Padding(
               padding: const EdgeInsets.all(10),

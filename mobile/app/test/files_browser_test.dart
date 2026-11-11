@@ -12,6 +12,7 @@ FakeBox box() => FakeBox(
   dirs: {
     '': const [
       FsEntry('README.md', false, 12),
+      FsEntry('notes.txt', false, 11),
       FsEntry('src', true, 0),
       FsEntry('.env', false, 4),
       FsEntry('huge.bin', false, 20 << 20),
@@ -23,6 +24,7 @@ FakeBox box() => FakeBox(
   },
   files: {
     'README.md': 'hello\nworld\n'.codeUnits,
+    'notes.txt': 'hello\nworld'.codeUnits,
     'blob': [0, 1, 2],
   },
 );
@@ -67,9 +69,9 @@ void main() {
     final tree = FilesTree(requester: b, sid: 's1');
     await t.pumpWidget(app(tree));
     await t.pumpAndSettle();
-    await t.tap(find.text('README.md'));
+    await t.tap(find.text('notes.txt'));
     await t.pumpAndSettle();
-    expect(b.read, ['README.md']);
+    expect(b.read, ['notes.txt']);
     expect(find.byType(LinesView), findsOneWidget);
     expect(find.text('hello'), findsOneWidget);
     expect(find.text('world'), findsOneWidget);
@@ -118,7 +120,21 @@ void main() {
     await t.pumpAndSettle();
   });
 
-  testWidgets('a file over 2 MiB asks first', (t) async {
+  testWidgets('on Wi-Fi a 3 MiB file opens without asking', (t) async {
+    final b = box()..files = {...box().files, 'mid.txt': 'ok'.codeUnits};
+    final tree = FilesTree(requester: b, sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    await t.tap(find.text('mid.txt'));
+    await t.pumpAndSettle();
+    expect(find.text('This file is 3.0 MiB.'), findsNothing);
+    expect(b.read, ['mid.txt']);
+    expect(find.text('ok'), findsOneWidget);
+  });
+
+  testWidgets('on cellular a file over 2 MiB asks first', (t) async {
+    netProbe = () async => NetKind.cellular;
+    addTearDown(() => netProbe = () => probeNet());
     final b = box()..files = {...box().files, 'mid.txt': 'ok'.codeUnits};
     final tree = FilesTree(requester: b, sid: 's1');
     await t.pumpWidget(app(tree));
@@ -227,5 +243,31 @@ void main() {
       await t.pumpAndSettle();
       expect(find.text('under'), findsOneWidget);
     });
+  });
+
+  testWidgets('no refresh button (pull to refresh does it); separators '
+      'start at the name', (t) async {
+    final tree = FilesTree(requester: box(), sid: 's1');
+    await t.pumpWidget(app(tree));
+    await t.pumpAndSettle();
+    expect(find.byIcon(CupertinoIcons.arrow_clockwise), findsNothing);
+    expect(find.bySemanticsLabel('Refresh'), findsNothing);
+    expect(
+      find.byType(CupertinoSliverRefreshControl, skipOffstage: false),
+      findsOneWidget,
+    );
+
+    final row = find.ancestor(
+      of: find.text('notes.txt'),
+      matching: find.byType(FileRow),
+    );
+    final sep = find.descendant(
+      of: row,
+      matching: find.byKey(const ValueKey('file-row-separator')),
+    );
+    final name = t.getTopLeft(find.text('notes.txt')).dx;
+    expect(t.getTopLeft(sep).dx - t.getTopLeft(row).dx, fileRowTextInset);
+    expect(t.getTopLeft(sep).dx, name);
+    expect(t.getTopRight(sep).dx, t.getTopRight(row).dx);
   });
 }

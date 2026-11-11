@@ -309,6 +309,7 @@ class _RecordingLink extends Link {
     String? op,
     Duration? timeout,
     bool resend = true,
+    bool track = true,
   }) {
     if (req is Map && req.containsKey('AnswerQuestion')) sent.add(req);
     return Future.value(const Resp('Ok', 'Ok'));
