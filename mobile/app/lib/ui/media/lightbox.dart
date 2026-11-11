@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
@@ -207,12 +208,6 @@ class _LightboxState extends State<_Lightbox>
 
   Widget _content() {
     if (widget.video) return _VideoView(bytes: widget.bytes, name: widget.name);
-    if (_svg) {
-      return const _Note(
-        icon: CupertinoIcons.photo,
-        text: "can't preview svg here; share it to open it elsewhere",
-      );
-    }
     return GestureDetector(
       onTap: () => setState(() => _chrome = !_chrome),
       onDoubleTapDown: (d) => _tapAt = d.localPosition,
@@ -223,15 +218,27 @@ class _LightboxState extends State<_Lightbox>
         maxScale: 6,
         panEnabled: _wasZoomed,
         child: SizedBox.expand(
-          child: Image.memory(
-            widget.bytes,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
-            errorBuilder: (_, _, _) => const _Note(
-              icon: CupertinoIcons.exclamationmark_triangle,
-              text: "can't open this picture",
-            ),
-          ),
+          child: _svg
+              ? SvgPicture.memory(
+                  widget.bytes,
+                  fit: BoxFit.contain,
+                  placeholderBuilder: (_) => const Center(
+                    child: CupertinoActivityIndicator(color: _fg),
+                  ),
+                  errorBuilder: (_, _, _) => const _Note(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    text: "can't open this svg; share it to open it elsewhere",
+                  ),
+                )
+              : Image.memory(
+                  widget.bytes,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => const _Note(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    text: "can't open this picture",
+                  ),
+                ),
         ),
       ),
     );
