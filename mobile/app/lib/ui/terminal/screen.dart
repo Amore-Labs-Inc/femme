@@ -1,4 +1,5 @@
-/// The Terminal screen: one session's terminal panes (a segmented control when it has several),
+/// The Terminal screen: the terminal panes of every live session (a segmented control when there
+/// are several, oldest session first), opened on one session's first pane,
 /// the grid, the hidden keyboard field and the extra-keys row; `+` opens a shell pane.
 library;
 
@@ -25,6 +26,33 @@ List<Pane> terminalPanes(Store store, String sid) {
       .where((p) => !(s?.mode == Mode.headless && p.kind == PaneKind.agent))
       .toList()
     ..sort((a, b) => a.id.no.compareTo(b.id.no));
+}
+
+/// The panes that get a tab: those of live sessions, oldest session first (a new one lands at
+/// the right), then by number (desktop `net.rs` `tabs`). A headless agent's own pane is not one.
+List<Pane> terminalTabs(Store store) {
+  final v = <(Session, Pane)>[];
+  for (final p in store.panes.values) {
+    final s = store.sessions[p.id.sid];
+    if (s == null || sessionEnded(store, s.id)) continue;
+    if (s.mode == Mode.headless && p.kind == PaneKind.agent) continue;
+    v.add((s, p));
+  }
+  v.sort((a, b) {
+    final c = a.$1.created.compareTo(b.$1.created);
+    if (c != 0) return c;
+    final d = a.$1.id.compareTo(b.$1.id);
+    return d != 0 ? d : a.$2.id.no.compareTo(b.$2.id.no);
+  });
+  return [for (final (_, p) in v) p];
+}
+
+/// The tab on show: [picked] if it is in [tabs], else the one that took its place (position
+/// [ix], or the last), else null for no tabs (desktop `terminal/panel/tabs.rs` `on_show`).
+int? onShow(List<Pane> tabs, PaneId? picked, int ix) {
+  if (tabs.isEmpty) return null;
+  final at = tabs.indexWhere((p) => p.id == picked);
+  return at >= 0 ? at : ix.clamp(0, tabs.length - 1);
 }
 
 /// A pane's label: the program's title, else the pane's, else `<session> · <no>`; 28 chars.
@@ -85,7 +113,10 @@ class TerminalScreenBody extends StatefulWidget {
 class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   final _focus = FocusNode();
   final _mods = StickyMods();
-  int? _no;
+
+  /// The pane picked, and its position among the tabs when it was last shown.
+  PaneId? _picked;
+  int _ix = 0;
   TermView? _view;
   int _bells = 0;
   String? _toast;
@@ -94,7 +125,8 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   @override
   void initState() {
     super.initState();
-    _no = widget.pane;
+    final no = widget.pane;
+    if (no != null) _picked = PaneId(widget.sid, no);
   }
 
   @override
@@ -148,8 +180,9 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     setState(() => _opening = true);
     final f = Femme.of(context);
     try {
-      final r = await f.link.req(Req.paneOpen(widget.sid));
-      if (mounted) setState(() => _no = r.pane.no);
+      final sid = _picked?.sid ?? widget.sid;
+      final r = await f.link.req(Req.paneOpen(sid));
+      if (mounted) setState(() => _picked = r.pane);
     } catch (e) {
       _flash('could not open a shell: $e');
     } finally {
@@ -170,11 +203,11 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
       }
     }
     if (!mounted) return;
-    final rest = terminalPanes(f.store, widget.sid).where((p) => p.id != id);
+    final rest = terminalTabs(f.store).where((p) => p.id != id).toList();
     if (rest.isEmpty) {
       nav.maybePop();
     } else {
-      setState(() => _no = rest.first.id.no);
+      setState(() => _picked = rest[_ix.clamp(0, rest.length - 1)].id);
     }
   }
 
@@ -189,17 +222,27 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   @override
   Widget build(BuildContext context) {
     final f = Femme.of(context);
-    final panes = terminalPanes(f.store, widget.sid);
-    Pane? shown;
-    for (final p in panes) {
-      if (p.id.no == _no) shown = p;
+    final tabs = terminalTabs(f.store);
+    // Opened on a session: its first pane, until one is picked.
+    _picked ??= terminalPanes(f.store, widget.sid).firstOrNull?.id;
+    final picked = _picked;
+    PaneId? shown;
+    final cur = _view;
+    if (cur != null && cur.pane == picked && cur.exited != null) {
+      // An ended pane stays on show with its card until the user leaves it.
+      shown = picked;
+    } else if (picked != null && !sessionEnded(f.store, picked.sid)) {
+      final at = onShow(tabs, picked, _ix);
+      if (at != null) {
+        _ix = at;
+        shown = tabs[at].id;
+      }
     }
-    shown ??= panes.firstOrNull;
-    if (shown != null) _attach(shown.id);
+    if (shown != null) _attach(shown);
     final view = shown == null ? null : _view;
     final title = shown == null
         ? 'Terminal'
-        : paneLabel(f.store, shown.id, view?.grid.title);
+        : paneLabel(f.store, shown, view?.grid.title);
     final muted = FemmeColors.mutedC.resolveFrom(context);
 
     return CupertinoPageScaffold(
@@ -217,20 +260,20 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
         bottom: false,
         child: Column(
           children: [
-            if (panes.length > 1)
+            if (tabs.length > 1)
               _PaneTabs(
-                panes: panes,
-                selected: shown!.id.no,
+                panes: tabs,
+                selected: tabs.any((p) => p.id == shown) ? shown : null,
                 label: (p) => paneLabel(
                   f.store,
                   p.id,
                   p.id == view?.pane ? view?.grid.title : null,
                 ),
-                onSelect: (no) => setState(() => _no = no),
+                onSelect: (id) => setState(() => _picked = id),
               ),
             Expanded(
               child: view == null
-                  ? sessionEnded(f.store, widget.sid)
+                  ? sessionEnded(f.store, picked?.sid ?? widget.sid)
                         ? _ClosedCard(
                             title: 'session closed',
                             onBack: () => Navigator.of(context).maybePop(),
@@ -326,25 +369,25 @@ class _PaneTabs extends StatelessWidget {
     required this.onSelect,
   });
   final List<Pane> panes;
-  final int selected;
+  final PaneId? selected;
   final String Function(Pane) label;
-  final void Function(int no) onSelect;
+  final void Function(PaneId id) onSelect;
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
     child: SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: CupertinoSlidingSegmentedControl<int>(
+      child: CupertinoSlidingSegmentedControl<PaneId>(
         groupValue: selected,
-        onValueChanged: (no) {
-          if (no == null) return;
+        onValueChanged: (id) {
+          if (id == null) return;
           HapticFeedback.selectionClick();
-          onSelect(no);
+          onSelect(id);
         },
         children: {
           for (final p in panes)
-            p.id.no: Padding(
+            p.id: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Text(
                 label(p),

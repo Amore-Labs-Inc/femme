@@ -87,4 +87,49 @@ void main() {
     expect(find.text('pick another one in the list'), findsOneWidget);
     expect(find.text('Open a shell'), findsNothing);
   });
+
+  test('tabs: every live session\'s panes, oldest session first', () {
+    const sid3 = '01JD3Q8Z9X4K2M7N5P6R8S0T3X';
+    final store = Store();
+    put(store, session(sid, created: 300), [pane(sid, 2), pane(sid, 1)]);
+    put(store, session(sid2, agent: 'Claude', created: 100), [
+      pane(sid2, 1, kind: 'Agent'),
+      pane(sid2, 2),
+    ]);
+    put(store, session(sid3, created: 50, status: 'Closed', closed: 9), [
+      pane(sid3, 1),
+    ]);
+    expect(
+      [for (final p in terminalTabs(store)) p.id],
+      const [PaneId(sid2, 2), PaneId(sid, 1), PaneId(sid, 2)],
+    );
+  });
+
+  test('onShow keeps the pick, else the tab in its place, else the last', () {
+    final tabs = [pane(sid, 1), pane(sid, 2), pane(sid2, 1)];
+    expect(onShow(tabs, const PaneId(sid2, 1), 0), 2);
+    expect(onShow(tabs, const PaneId(sid, 9), 1), 1);
+    expect(onShow(tabs, const PaneId(sid, 9), 7), 2);
+    expect(onShow(const [], const PaneId(sid, 1), 0), isNull);
+  });
+
+  testWidgets('the tab strip lists the panes of other sessions too', (
+    tester,
+  ) async {
+    final store = Store();
+    put(store, session(sid, created: 100), [pane(sid, 1, title: 'zsh one')]);
+    put(store, session(sid2, created: 200), [pane(sid2, 1, title: 'vim two')]);
+    await show(tester, store, sid2);
+    expect(find.text('zsh one'), findsOneWidget);
+    // the open session's pane is on show: its label is the title too
+    expect(find.text('vim two'), findsNWidgets(2));
+    final strip = tester.widget<CupertinoSlidingSegmentedControl<PaneId>>(
+      find.byType(CupertinoSlidingSegmentedControl<PaneId>),
+    );
+    expect(strip.children.keys.toList(), const [
+      PaneId(sid, 1),
+      PaneId(sid2, 1),
+    ]);
+    expect(strip.groupValue, const PaneId(sid2, 1));
+  });
 }
