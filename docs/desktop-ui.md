@@ -41,12 +41,16 @@ Keep it current: when your module's public API changes, edit your section in the
   An `Artifact` call (Claude Code's page on claude.ai; FEMME's Claude chats run with
   `CLAUDE_CODE_ARTIFACT=1`) is one line, `artifact · <title> ↗`, whose title opens the page; a
   publish that changed an existing page adds `updated · v<N>`. Its folded body is the plain call.
-- **Compaction hand-off**: after `Conversation compacted`, Claude Code restarts the model with one
-  synthetic *user* message ("This session is being continued from a previous conversation…
-  Summary: …"). It arrives as `UserMessage` and is stored as one, but the transcript does not
-  draw it as the user's: the compact note and that message fold into one muted row
-  (`▸ · conversation compacted · summary`), a click shows the summary. Detection is the template's
-  prefix, display only.
+- **Compaction hand-off**: a compaction shows as one row, `· Conversation compacted`. Claude Code
+  restarts the model with a summary it writes itself ("This session is being continued from a
+  previous conversation… Summary: …", after an `<artifact-content-authored-by-others/>` preamble
+  when the conversation held artifact content): the summary is Claude's, not a message. Its
+  terminal never shows it, the stream of a FEMME chat never carries it, and the mirror of a herdr
+  pane drops the transcript line that holds it (`isCompactSummary` / `isVisibleInTranscriptOnly`).
+  A summary stored as a `UserMessage` before the mirror dropped them is still not drawn as the
+  user's: the compact note and that message fold into one muted row
+  (`▸ · conversation compacted · summary`), a click shows the summary. That detection is the
+  template's prefix, display only.
 - **A message from another Claude session**: Claude Code sessions on one machine message each
   other (`SendMessage` to a name `ListAgents` shows, 2.1.224+). The CLI delivers it as a *user*
   line with `origin.kind: "peer"`; the daemon stores it as `PeerMessage {from, text}` (the
