@@ -333,7 +333,7 @@ class AssistantRow extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (split.text.isNotEmpty) Md(split.text),
+            if (split.text.isNotEmpty) Md(split.text, streaming: live),
             if (live) const Cursor(),
             AttachedFiles(paths: split.paths, wide: true),
             if (item.status == ItemStatus.failed)
