@@ -138,9 +138,19 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   String? _toast;
   bool _opening = false;
 
+  late final AppLifecycleListener _life;
+  bool _foreground = true;
+
   @override
   void initState() {
     super.initState();
+    _focus.addListener(_syncFocus);
+    _life = AppLifecycleListener(
+      onStateChange: (st) {
+        _foreground = st == AppLifecycleState.resumed;
+        _syncFocus();
+      },
+    );
     final no = widget.pane;
     if (no != null) _picked = PaneId(widget.sid, no);
   }
@@ -149,6 +159,8 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
   void dispose() {
     _view?.removeListener(_onView);
     _view?.dispose();
+    _life.dispose();
+    _focus.removeListener(_syncFocus);
     _focus.dispose();
     super.dispose();
   }
@@ -163,7 +175,12 @@ class _TerminalScreenBodyState extends State<TerminalScreenBody> {
     _view = TermView.forLink(f.link, id)
       ..addListener(_onView)
       ..start();
+    _syncFocus();
   }
+
+  /// Tells the pane on show whether it has the keyboard and the app is in front (`TermUp::Focus`,
+  /// desktop `terminal/pane.rs`: focused and the window active).
+  void _syncFocus() => _view?.setFocus(_focus.hasFocus && _foreground);
 
   void _onView() {
     final v = _view;
