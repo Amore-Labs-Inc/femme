@@ -234,7 +234,7 @@ class _NowTabState extends State<NowTab> {
 
     Widget head(Session s, String trailing) => Row(
       children: [
-        StatusDot(statusColor(s)),
+        StatusDot(statusColor(s), label: statusWord(s)),
         const SizedBox(width: 10),
         Expanded(
           child: Text(
@@ -244,6 +244,7 @@ class _NowTabState extends State<NowTab> {
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
+        const SizedBox(width: 8),
         Text(trailing, style: _meta(context)),
       ],
     );

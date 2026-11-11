@@ -9,6 +9,7 @@ import 'package:femme_mobile/ui/app.dart';
 import 'package:femme_mobile/ui/chats.dart';
 import 'package:femme_mobile/ui/femme.dart';
 import 'package:femme_mobile/ui/now.dart';
+import 'package:femme_mobile/ui/widgets.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';

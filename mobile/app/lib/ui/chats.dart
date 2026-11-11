@@ -75,15 +75,6 @@ List<Project> groupByProject(Iterable<Session> all, {String query = ''}) {
 
 /// The session's lane in words, the same lanes as Now's sections and the status dot's colour:
 /// `needs you`, `done`, `working`, else its status (`idle`, `paused`, `failed`, ...).
-String statusWord(Session s) {
-  if (s.needsYou) return 'needs you';
-  if (s.attention == Attention.done) return 'done';
-  return switch (s.status) {
-    SessionStatus.working || SessionStatus.starting => 'working',
-    final st => st.name,
-  };
-}
-
 /// The row's second line: the status in words (the dot alone is colour), the agent (or a
 /// gateway model's provider) and how long ago it started.
 String sessionSubtitle(Session s, {DateTime? now}) {
@@ -253,7 +244,10 @@ class _ChatsTabState extends State<ChatsTab> {
                     SessionActions(
                       session: s,
                       child: CupertinoListTile(
-                        leading: StatusDot(statusColor(s)),
+                        leading: StatusDot(
+                          statusColor(s),
+                          label: statusWord(s),
+                        ),
                         leadingSize: 8,
                         title: Text(s.title),
                         subtitle: Text(sessionSubtitle(s)),

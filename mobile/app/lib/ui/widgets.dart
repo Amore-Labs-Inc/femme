@@ -75,7 +75,7 @@ class SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoListTile(
-    leading: StatusDot(statusColor(session)),
+    leading: StatusDot(statusColor(session), label: wireStatus(session)),
     leadingSize: 8,
     title: Text(session.title),
     subtitle: Text(
@@ -88,6 +88,17 @@ class SessionTile extends StatelessWidget {
 }
 
 String wireStatus(Session s) => s.needsYou ? 'needs you' : s.status.name;
+
+/// The status word a row shows and VoiceOver says: `needs you`, `done`, `working`, else the
+/// status name (`idle`, `paused`, `failed`, …).
+String statusWord(Session s) {
+  if (s.needsYou) return 'needs you';
+  if (s.attention == Attention.done) return 'done';
+  return switch (s.status) {
+    SessionStatus.working || SessionStatus.starting => 'working',
+    final st => st.name,
+  };
+}
 
 /// `ws 41 ms · femmed 0.9.1` (`online · …` before the first round-trip sample) / `connecting…` /
 /// `offline: <why>` / `not enrolled: pair again` (the box refused this phone's token; tapping the
