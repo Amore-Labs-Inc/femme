@@ -285,10 +285,19 @@ Apple developer account and a Firebase project, so it waits for the owner's say-
 Parity round 3 (2026-11-11, PR #59) closed the audit's 40 partial and missing rows: the
 re-audit of `PARITY.md` stands at 126 done, 1 partial (a closed chat does not move on to the
 newest live session by itself; optional on a phone), 0 missing, 14 n/a. Among them: code blocks
-with syntax colours, the context bar with its five notches and the level-up ring, new transcript
+with language labels (syntax colours in the Files viewer), the context bar with its five notches and the level-up ring, new transcript
 rows fading in, thumbnail long-press menu (Open, Share, Save to Photos, Copy image), clipboard
 paste into a chat, the token in the secure store, the commit sha in About, and the camera, photo
 library and microphone usage strings iOS needs before it lets the app ask.
+
+Polish round (2026-11-11, after an independent HIG review that found the chat's desktop-style
+hard look, a background seam, missing VoiceOver labels and sub-44 pt targets): system grouped
+backgrounds on every tab, round status dots with a spoken status and the status word in Chats
+rows, footnote footers, a full-width appearance picker, iOS bubbles and capsule chips in the
+chat, a rounded composer, rounded code blocks, the session sheet as a real sheet, labels on every
+icon-only button, 44 pt targets with hold-to-repeat cap steppers, pressed Now rows, cards that
+fade and sections that slide on a move, re-tap of the active tab to pop and scroll, and the
+closed-session follow-on. Light and dark smoke runs of the Linux build: zero exceptions.
 
 `Scope::Attention` is not built on purpose: Now subscribes only to the blocked sessions (a
 handful at a time), which is one small stream per open question; a merged scope would save
