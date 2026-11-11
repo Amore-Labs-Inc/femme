@@ -185,4 +185,9 @@ void main() {
     expect(find.text('hello'), findsOneWidget);
     expect(t.widget<LinesView>(find.byType(LinesView)).runs, isNull);
   });
+
+  testWidgets('the Share button is named for VoiceOver', (t) async {
+    await open(t, 'notes.txt', 'hello');
+    expect(find.bySemanticsLabel('share'), findsOneWidget);
+  });
 }

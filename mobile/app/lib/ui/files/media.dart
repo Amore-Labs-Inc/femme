@@ -183,6 +183,7 @@ class _MediaViewState extends State<MediaView> {
                           ? CupertinoIcons.pause_fill
                           : CupertinoIcons.play_fill,
                       color: FemmeColors.darkInk,
+                      semanticLabel: v.isPlaying ? 'pause' : 'play',
                     ),
                   ),
                   Text(clock(Duration(milliseconds: at.round())), style: light),
