@@ -8,10 +8,10 @@ import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../theme.dart';
+import 'actions.dart';
 
 /// Opens [bytes] (named [name]) full screen; a video when [video]. Dark whatever the theme.
 Future<void> showLightbox(
@@ -46,21 +46,6 @@ String _ext(String name) {
   if (dot < 0 || dot < name.lastIndexOf('/')) return '';
   return name.substring(dot).toLowerCase();
 }
-
-String _mime(String name) => switch (_ext(name)) {
-  '.png' => 'image/png',
-  '.jpg' || '.jpeg' => 'image/jpeg',
-  '.gif' => 'image/gif',
-  '.webp' => 'image/webp',
-  '.svg' => 'image/svg+xml',
-  '.bmp' => 'image/bmp',
-  '.heic' => 'image/heic',
-  '.mp4' || '.m4v' => 'video/mp4',
-  '.mov' => 'video/quicktime',
-  '.webm' => 'video/webm',
-  '.mkv' => 'video/x-matroska',
-  _ => 'application/octet-stream',
-};
 
 String _clock(Duration d) {
   final s = d.inSeconds;
@@ -185,23 +170,7 @@ class _LightboxState extends State<_Lightbox>
     if (box is RenderBox && box.hasSize) {
       origin = box.localToGlobal(Offset.zero) & box.size;
     }
-    try {
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [
-            XFile.fromData(
-              widget.bytes,
-              name: widget.name,
-              mimeType: _mime(widget.name),
-            ),
-          ],
-          fileNameOverrides: [widget.name],
-          sharePositionOrigin: origin,
-        ),
-      );
-    } catch (_) {
-      // the share sheet failed to open; nothing to undo
-    }
+    await shareBytes(widget.bytes, widget.name, origin: origin);
   }
 
   // ---- build ----
