@@ -193,7 +193,7 @@ fn every_connection_gets_the_pragmas() {
     let version: i64 = s
         .read(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
     // the file holds API keys: private from the first byte, and SQLite gives its side files the same mode
     for file in [
         path.clone(),
@@ -542,6 +542,7 @@ fn a_session_keeps_its_context_window() {
         used: 123_456,
         window: 1_000_000,
         compactions: 2,
+        compact_at: Some(501_643),
     };
     let up = s
         .write(|tx| tx.update_session(a.id, |s| s.context = Some(ctx)))
