@@ -1440,6 +1440,11 @@ fn disk_value(mut v: Value) -> Option<Value> {
     if v["isMeta"] == true && v["origin"]["kind"] != "peer" {
         return None;
     }
+    // the summary a compaction restarts the model with: a `user` line the terminal never shows
+    // (the `compact_boundary` before it is the "Conversation compacted" row), so not a message
+    if v["isCompactSummary"] == true || v["isVisibleInTranscriptOnly"] == true {
+        return None;
+    }
     match v["type"].as_str()? {
         "assistant" => {}
         "user" => {
@@ -1937,6 +1942,71 @@ mod tests {
         ] {
             assert_eq!(line(skipped), None);
         }
+    }
+
+    /// A compaction's summary (a `user` line marked `isCompactSummary`) is not a message: only the
+    /// `compact_boundary` before it reaches the driver, as the "Conversation compacted" row.
+    #[test]
+    fn a_compaction_summary_is_not_a_message() {
+        use femme_agents::Driver as _;
+        const PLAIN: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. x";
+        let summary = |text: String| {
+            serde_json::json!({"type":"user","uuid":"s1","isCompactSummary":true,
+                "isVisibleInTranscriptOnly":true,"message":{"role":"user","content":text}})
+        };
+        let artifact = format!("<artifact-content-authored-by-others/>\nThe summarized conversation included Artifact content.\n{PLAIN}");
+        for text in [PLAIN.to_owned(), artifact] {
+            assert_eq!(line(summary(text.clone())), None);
+            // either mark alone drops it
+            for mark in ["isCompactSummary", "isVisibleInTranscriptOnly"] {
+                let mut one = summary(text.clone());
+                one.as_object_mut().unwrap().retain(|k, _| {
+                    k == mark
+                        || !matches!(k.as_str(), "isCompactSummary" | "isVisibleInTranscriptOnly")
+                });
+                assert_eq!(line(one), None, "{mark}");
+            }
+            // a subagent's file holds them too
+            let mut side = summary(text);
+            side["isSidechain"] = Value::Bool(true);
+            assert_eq!(sub_line(side.to_string().as_bytes(), "toolu_A"), None);
+        }
+        let typed = line(
+            serde_json::json!({"type":"user","uuid":"u1","message":{"role":"user","content":PLAIN}}),
+        )
+        .expect("an ordinary typed entry still passes");
+        assert_eq!(typed["isReplay"], true);
+
+        // the boundary and its summary, as the file has them: one event row, no user message
+        let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","uuid":"c1",
+            "compactMetadata":{"trigger":"auto","preTokens":310172}});
+        let mut d = femme_agents::claude::ClaudeDriver::new();
+        let mut out = femme_agents::Out::default();
+        d.on_start(&femme_agents::Launch::default(), &mut out);
+        let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"femme-init","response":{}}}"#;
+        d.on_line(0, init, &mut out);
+        let mut kinds = Vec::new();
+        let mut compacted = None;
+        for (n, v) in [boundary, summary(PLAIN.to_owned())]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(l) = line(v) else { continue };
+            for e in d.on_line(n as u64 + 1, l.to_string().as_bytes(), &mut out) {
+                match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        kinds.push((kind, body["text"].clone()))
+                    }
+                    femme_agents::AgentEvent::Compacted { pre_tokens } => compacted = pre_tokens,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            kinds,
+            [(ItemKind::Event, Value::from("Conversation compacted"))]
+        );
+        assert_eq!(compacted, Some(310172));
     }
 
     /// A peer's message (SendMessage from another session) passes the `isMeta` drop, whether it
