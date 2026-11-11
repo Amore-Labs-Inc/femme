@@ -27,7 +27,8 @@ Future<void> _note(BuildContext context, String title, String body) =>
       ),
     );
 
-/// Fill = used / window (0 while the window is unknown), red from 90 %, level = compactions + 1.
+/// Fill = used / where the agent compacts (its window while it has not said; 0 while unknown), red
+/// from 90 %, level = compactions + 1.
 class XpBar extends StatelessWidget {
   const XpBar(this.context_, {super.key});
   final Context? context_;
@@ -43,11 +44,12 @@ class XpBar extends StatelessWidget {
       onTap: () => _note(
         context,
         'Context · level $level',
-        c == null || c.window == 0
+        c == null || c.full == 0
             ? 'The agent has not reported its context window yet.'
-            : 'current context ${grouped(c.used)} / ${grouped(c.window)}\n'
+            : 'current context ${grouped(c.used)} / ${c.window == 0 ? '?' : grouped(c.window)}\n'
+                  '${c.compactAt == null ? '' : 'compacts at ${grouped(c.compactAt!)}\n'}'
                   'used ${(frac * 100).toStringAsFixed(1)} %\n'
-                  'room left ${grouped(c.window - c.used)}\n'
+                  'room left ${grouped(c.full > c.used ? c.full - c.used : 0)}\n'
                   'compactions ${c.compactions}',
       ),
       child: Padding(
