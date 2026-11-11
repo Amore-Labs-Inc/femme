@@ -31,16 +31,21 @@ Future<void> _note(BuildContext context, String title, String body) =>
     );
 
 /// The XP bar's tap card, label and value, in the desktop's order (xp.rs rows); `?` while the
-/// window is unknown.
+/// window is unknown. Progress and room are measured against where the agent compacts
+/// ([Context.full]), which gets its own row once the agent said it.
 List<(String, String)> xpRows(Context c) {
-  final known = c.window > 0;
+  final known = c.full > 0;
   String or(String s) => known ? s : '?';
-  final frac = known ? (c.used / c.window).clamp(0.0, 1.0) : 0.0;
+  final frac = c.fraction ?? 0.0;
   final level = c.compactions + 1;
   return [
-    ('current context', '${grouped(c.used)} / ${or(grouped(c.window))}'),
+    (
+      'current context',
+      '${grouped(c.used)} / ${c.window > 0 ? grouped(c.window) : '?'}',
+    ),
+    if (c.compactAt != null) ('compacts at', grouped(c.compactAt!)),
     ('level progress', or('${(frac * 100).toStringAsFixed(1)}%')),
-    ('room left', or(grouped(c.window - c.used < 0 ? 0 : c.window - c.used))),
+    ('room left', or(grouped(c.full > c.used ? c.full - c.used : 0))),
     (
       'level',
       switch (c.compactions) {
@@ -52,9 +57,10 @@ List<(String, String)> xpRows(Context c) {
   ];
 }
 
-/// The context XP bar (desktop composer/xp.rs): fill = used / window (0 while the window is
-/// unknown), red from 90 %, a capsule cut into 5 segments by notches; level = compactions + 1, and a
-/// compaction seen while the chat is open plays a neon ring once around the bar.
+/// The context XP bar (desktop composer/xp.rs): fill = used / where the agent compacts (its window
+/// while it has not said; 0 while unknown), red from 90 %, a capsule cut into 5 segments by notches;
+/// level = compactions + 1, and a compaction seen while the chat is open plays a neon ring once
+/// around the bar.
 class XpBar extends StatefulWidget {
   const XpBar(this.context_, {super.key});
   final Context? context_;

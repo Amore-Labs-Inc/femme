@@ -8,7 +8,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::{Error, Result};
 
 /// Every migration, oldest first. Index + 1 is the `user_version` it leaves behind.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 // Notes on the shape (plan §7):
 // - STRICT: SQLite refuses a TEXT in a BLOB column and the like, so an encoding slip is an error
@@ -189,6 +189,9 @@ CREATE TABLE push (
     PRIMARY KEY (device, token)
 ) STRICT, WITHOUT ROWID;
 "#;
+
+/// Where the agent compacts by itself (`Context::compact_at`): NULL until the agent said.
+const V9: &str = "ALTER TABLE sessions ADD COLUMN ctx_compact_at INTEGER;";
 
 /// Brings the database up to [`MIGRATIONS`]'s last version. Safe to run from two processes at
 /// once: each script runs inside `BEGIN IMMEDIATE` after re-reading the version.

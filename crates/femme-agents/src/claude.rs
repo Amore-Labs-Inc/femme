@@ -87,6 +87,8 @@ use crate::{
 
 /// `request_id` of the `initialize` control request [`ClaudeDriver::on_start`] sends.
 const INIT_ID: &str = "femme-init";
+/// Request ids of our `get_context_usage` questions start with this (`control("ctx", ..)`).
+const CTX_ID: &str = "femme-ctx-";
 /// Tool that asks the user questions.
 const ASK: &str = "AskUserQuestion";
 /// Tool that proposes a plan for approval.
@@ -203,6 +205,9 @@ pub struct ClaudeDriver {
     permission: Option<String>,
     /// Tokens the main thread's latest model call read, once a call said.
     ctx_used: Option<u64>,
+    /// This driver talks to a running CLI (it started it, or sent it a prompt): the lines it
+    /// reads now are not a replay, so one may be answered with a question of ours.
+    live: bool,
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
@@ -273,6 +278,7 @@ impl ClaudeDriver {
             model: None,
             permission: None,
             ctx_used: None,
+            live: false,
             awaiting_init: false,
             exited: false,
             mirror: false,
@@ -453,6 +459,7 @@ impl ClaudeDriver {
         if self.exited {
             return Err(Error::State("claude has exited"));
         }
+        self.live = true;
 
         match h.how {
             // Written mid-turn the CLI folds a message into the running turn at the next tool
@@ -508,6 +515,41 @@ impl ClaudeDriver {
     fn control(&mut self, what: &str, request: Value, out: &mut Out) {
         self.seq += 1;
         out.line(&json!({"type":"control_request","request_id":format!("femme-{what}-{}", self.seq),"request":request}));
+    }
+
+    /// Asks the CLI where it compacts by itself (`autoCompactWindow` minus its buffer, which the
+    /// user moves with `/autocompact`): answered locally, no model call. Asked after `initialize`,
+    /// each turn's `result` and each `compact_boundary`. Not for a replayed line, and a transcript
+    /// read from disk has nobody to ask.
+    // ponytail: a driver attached after a daemon restart asks again from its first prompt on; the
+    // row keeps the stored point until then
+    fn ask_context(&mut self, out: &mut Out) {
+        if self.live {
+            self.control(
+                "ctx",
+                json!({"subtype":"get_context_usage","detail":"summary"}),
+                out,
+            );
+        }
+    }
+
+    /// The reply to [`Self::ask_context`]: the threshold while auto-compaction is on, with what
+    /// the last call read (the reply's own count for a new conversation, which no call has read
+    /// yet).
+    // ponytail: auto-compaction turned off mid-session says nothing, so the row keeps the old
+    // point; give `compact_at` a "none" word if that ever shows
+    fn context_usage(&mut self, r: &Value, ev: &mut Vec<AgentEvent>) {
+        let compact_at = r["autoCompactThreshold"]
+            .as_u64()
+            .filter(|t| *t > 0 && r["isAutoCompactEnabled"] == true);
+        let Some(used) = self.ctx_used.or(r["totalTokens"].as_u64()) else {
+            return;
+        };
+        ev.push(AgentEvent::Context {
+            used,
+            window: known_window(self.model.as_deref().or(r["model"].as_str())),
+            compact_at,
+        });
     }
 
     /// The CLI is not ready for a message that must run after everything before it: still
@@ -600,6 +642,10 @@ impl ClaudeDriver {
                         .as_u64()
                         .or_else(|| v["compactMetadata"]["preTokens"].as_u64()),
                 });
+                // what the last call read is gone and the bar is empty until the next call says.
+                // The CLI's own count still is the old one here (seen on 2.1.321: the bar filled
+                // up again right after the level up), so the reply to our question must not use it
+                self.ctx_used = Some(0);
             }
             "session_state_changed" => {
                 let state = v["state"].as_str().unwrap_or("");
@@ -695,6 +741,7 @@ impl ClaudeDriver {
             ev.push(AgentEvent::Context {
                 used,
                 window: known_window(self.model.as_deref()),
+                compact_at: None,
             });
         }
     }
@@ -1218,6 +1265,7 @@ impl ClaudeDriver {
             ev.push(AgentEvent::Context {
                 used,
                 window: Some(window),
+                compact_at: None,
             });
         }
         if self.turn {
@@ -1715,6 +1763,11 @@ impl ClaudeDriver {
             } else {
                 self.resolve(rid, ev);
             }
+        } else if rid.starts_with(CTX_ID) {
+            // an error is a CLI older than the request: the bar keeps filling against the window
+            if r["subtype"] == "success" {
+                self.context_usage(&r["response"], ev);
+            }
         } else if r["subtype"] == "error" {
             let why = r["error"].as_str().unwrap_or("unknown error");
             ev.push(event_item(
@@ -1801,6 +1854,7 @@ impl Driver for ClaudeDriver {
     fn on_start(&mut self, l: &Launch, out: &mut Out) {
         self.sid = l.resume.clone().or_else(|| Some(self.planned.clone()));
         self.awaiting_init = true;
+        self.live = true;
         out.line(&json!({"type":"control_request","request_id":INIT_ID,"request":{"subtype":"initialize"}}));
     }
 
@@ -1841,6 +1895,13 @@ impl Driver for ClaudeDriver {
             self.sync(&mut ev);
             return ev;
         }
+        let asks = match ty {
+            // a `result` that ends no turn of ours (a task notification's) changed nothing
+            "result" => self.turn,
+            "system" => v["subtype"] == "compact_boundary",
+            "control_response" => v["response"]["request_id"] == INIT_ID,
+            _ => false,
+        };
         match ty {
             "system" if v["subtype"] == "elicitation_complete" => {
                 self.elicitation_complete(&v, out, &mut ev)
@@ -1885,6 +1946,9 @@ impl Driver for ClaudeDriver {
             | "auth_status"
             | "update_environment_variables" => {}
             _ => ev.push(AgentEvent::Raw(v)),
+        }
+        if asks {
+            self.ask_context(out);
         }
         self.flush_one(out);
         self.sync(&mut ev);
@@ -2881,7 +2945,11 @@ mod tests {
     }
 
     fn ctx(used: u64, window: Option<u64>) -> AgentEvent {
-        AgentEvent::Context { used, window }
+        AgentEvent::Context {
+            used,
+            window,
+            compact_at: None,
+        }
     }
 
     /// `usage` as a call reports it: a fresh part, what it read from the cache, what it wrote.
@@ -3105,6 +3173,103 @@ mod tests {
                 pre_tokens: Some(310_172)
             })
         );
+    }
+
+    /// Claude 2.1.321: `get_context_usage` says where the CLI compacts by itself, far below the
+    /// window when the user lowered `autoCompactWindow`. Asked after `initialize`, each `result`
+    /// and each `compact_boundary`.
+    #[test]
+    fn the_driver_asks_where_claude_compacts_and_the_reply_is_the_contexts_compact_at() {
+        let asks = |out: &Out| {
+            let v: Value = serde_json::from_slice(last_line(out)).unwrap();
+            assert_eq!(v["type"], "control_request");
+            assert!(v["request_id"].as_str().unwrap().starts_with(CTX_ID));
+            assert_eq!(
+                v["request"],
+                json!({"subtype":"get_context_usage","detail":"summary"})
+            );
+            v["request_id"].as_str().unwrap().to_owned()
+        };
+        let reply = |rid: &str, r: Value| {
+            json!({"type":"control_response","response":{"subtype":"success","request_id":rid,"response":r}}).to_string()
+        };
+        let mut d = ClaudeDriver::new();
+        let mut out = Out::default();
+        d.on_start(&Launch::default(), &mut out);
+        let init = json!({"type":"control_response","response":{"subtype":"success","request_id":INIT_ID,"response":{}}});
+        d.on_line(0, init.to_string().as_bytes(), &mut out);
+        let rid = asks(&out);
+        // a new conversation: no call has read anything, the CLI's own count stands in
+        let on = json!({"autoCompactThreshold":501_643,"isAutoCompactEnabled":true,"maxTokens":534_643,
+            "totalTokens":25_604,"model":"claude-fable-5-2"});
+        assert_eq!(
+            d.on_line(1, reply(&rid, on.clone()).as_bytes(), &mut out),
+            [AgentEvent::Context {
+                used: 25_604,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // auto-compaction off: no point
+        let mut off = on.clone();
+        off["isAutoCompactEnabled"] = json!(false);
+        assert_eq!(
+            d.on_line(2, reply(&rid, off).as_bytes(), &mut out),
+            [AgentEvent::Context {
+                used: 25_604,
+                window: Some(1_000_000),
+                compact_at: None
+            }]
+        );
+        // what a call read wins over the CLI's count
+        d.on_line(
+            3,
+            message_start(usage(2, 40_000, 100), Value::Null)
+                .to_string()
+                .as_bytes(),
+            &mut out,
+        );
+        let ev = d.on_line(4, reply(&rid, on.clone()).as_bytes(), &mut out);
+        assert_eq!(
+            contexts(ev),
+            [AgentEvent::Context {
+                used: 40_102,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // asked again when the turn ends and when the conversation is compacted
+        let mut out = Out::default();
+        let done = result_line(usage(2, 40_000, 100), json!({}));
+        d.on_line(5, done.to_string().as_bytes(), &mut out);
+        asks(&out);
+        let mut out = Out::default();
+        let boundary =
+            json!({"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"c1"});
+        d.on_line(6, boundary.to_string().as_bytes(), &mut out);
+        let rid = asks(&out);
+        // after a compaction the bar is empty until the next call: the CLI's count is still the
+        // old one
+        let ev = d.on_line(7, reply(&rid, on).as_bytes(), &mut out);
+        assert_eq!(
+            contexts(ev),
+            [AgentEvent::Context {
+                used: 0,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // a CLI older than the request: no row, no context
+        let old = json!({"type":"control_response","response":{"subtype":"error","request_id":rid,
+            "error":"Unsupported control request subtype: get_context_usage"}});
+        assert!(d
+            .on_line(8, old.to_string().as_bytes(), &mut out)
+            .is_empty());
+        // a transcript read from disk has nobody to ask
+        let mut m = ClaudeDriver::mirror();
+        let mut out = Out::default();
+        m.on_line(0, boundary.to_string().as_bytes(), &mut out);
+        assert!(out.stdin.is_empty());
     }
 
     fn last_line(out: &Out) -> &[u8] {

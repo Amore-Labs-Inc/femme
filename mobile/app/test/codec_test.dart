@@ -23,6 +23,17 @@ void main() {
     expect(wire(s.toJson()), j);
   });
 
+  test('the context bar is full where the agent compacts, when it said', () {
+    final j = {'used': 451479, 'window': 1000000, 'compactions': 0};
+    expect(Context.fromJson(j).fraction, closeTo(0.451, 0.001));
+    final tuned = Context.fromJson({...j, 'compact_at': 501643});
+    expect(tuned.fraction, closeTo(0.9, 0.001));
+    expect(wire(tuned.toJson()), {...j, 'compact_at': 501643});
+    // the point alone is enough: the window may still be unknown
+    const early = Context(used: 25000, window: 0, compactAt: 50000);
+    expect(early.fraction, 0.5);
+  });
+
   test('Item round-trips and decodes its body', () {
     final j = itemJson(kind: 'Question', status: 'Pending', body: questionBody);
     final i = Item.fromJson(wire(j) as Json);

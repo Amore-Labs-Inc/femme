@@ -705,6 +705,53 @@ struct Tail {
     gone_since: Option<Instant>,
 }
 
+/// What Claude Code keeps free below its auto-compact window (2.1.321: a window of 534,643
+/// compacts at 501,643).
+const COMPACT_BUFFER: u64 = 33_000;
+/// The smallest auto-compact window Claude Code takes (2.1.321): a smaller one in a settings file
+/// is ignored, a smaller `CLAUDE_CODE_AUTO_COMPACT_WINDOW` counts as this.
+const COMPACT_WINDOW_MIN: u64 = 100_000;
+
+/// The settings files Claude Code reads in `cwd`, the one that wins first; a missing or broken
+/// file is skipped.
+fn claude_settings(home: &Path, cwd: &Path) -> Vec<Value> {
+    [
+        cwd.join(".claude/settings.local.json"),
+        cwd.join(".claude/settings.json"),
+        home.join(".claude/settings.json"),
+    ]
+    .iter()
+    .filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok())
+    .collect()
+}
+
+/// Where a Claude pane compacts by itself, in tokens, as its settings say (`files`, the one that
+/// wins first): `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`env`), then the model's
+/// `modelSettings.<model>.autoCompactWindow`, then `autoCompactWindow`, capped at the model's
+/// `window` (0: unknown), minus the buffer. `None` when nothing sets it or auto-compaction is off.
+// ponytail: with nothing set the CLI compacts at the window minus the buffer; the bar then fills
+// against the window as before, 3% off on a 1M model
+fn compact_at(env: Option<&str>, files: &[Value], model: Option<&str>, window: u64) -> Option<u64> {
+    if files.iter().find_map(|f| f["autoCompactEnabled"].as_bool()) == Some(false) {
+        return None;
+    }
+    // the row's model may carry the size suffix (`opus[1m]`), the settings key may not
+    let names = model.map(|m| [m, m.split('[').next().unwrap_or(m)]);
+    let valid = |v: &Value| v.as_u64().filter(|w| *w >= COMPACT_WINDOW_MIN);
+    let of_model = |f: &Value| {
+        names?
+            .iter()
+            .find_map(|m| valid(&f["modelSettings"][m]["autoCompactWindow"]))
+    };
+    let set = env
+        .and_then(|e| e.trim().parse::<u64>().ok())
+        .map(|w| w.max(COMPACT_WINDOW_MIN))
+        .or_else(|| files.iter().find_map(of_model))
+        .or_else(|| files.iter().find_map(|f| valid(&f["autoCompactWindow"])))?;
+    let capped = if window > 0 { set.min(window) } else { set };
+    Some(capped.saturating_sub(COMPACT_BUFFER)).filter(|n| *n > 0)
+}
+
 /// A subagent's transcript, read on from where it was read.
 struct SubTail {
     /// The `Agent` tool call that spawned it.
@@ -931,8 +978,18 @@ impl Tail {
             // ponytail: a file rewritten under us is read again from its start and its
             // compactions counted again (the level overstates); keep the count in the row's
             // store if that ever shows
+            // a pane has no control channel to ask: the point is what its settings say, read
+            // again at every write (`/autocompact` rewrites them)
+            let files = d
+                .session(sid)
+                .map(|s| claude_settings(&d.cfg.home, Path::new(&s.cwd)))
+                .unwrap_or_default();
+            let env = std::env::var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").ok();
             let _ = d.update(sid, |s| {
-                s.context = super::with_context(s.context, used, window, compacted);
+                s.context = super::with_context(s.context, used, window, None, compacted);
+                if let Some(c) = &mut s.context {
+                    c.compact_at = compact_at(env.as_deref(), &files, s.model.as_deref(), c.window);
+                }
             });
         }
     }
@@ -2475,6 +2532,77 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(d.pending_question(sid).unwrap().is_none());
     }
 
+    #[test]
+    fn a_panes_compaction_point_is_what_its_settings_say() {
+        use serde_json::json;
+        let user = json!({"autoCompactWindow":534_643,"autoCompactEnabled":true});
+        let m = Some("claude-fable-5-2");
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 1_000_000),
+            Some(501_643)
+        );
+        // the model's own setting wins over the top-level key, whichever file holds it
+        let per = json!({"modelSettings":{"claude-fable-5-2":{"autoCompactWindow":300_000}}});
+        let both = [user.clone(), per];
+        assert_eq!(compact_at(None, &both, m, 1_000_000), Some(267_000));
+        assert_eq!(
+            compact_at(None, &both, Some("claude-fable-5-2[1m]"), 1_000_000),
+            Some(267_000)
+        );
+        assert_eq!(
+            compact_at(None, &both, Some("claude-opus-5-5"), 1_000_000),
+            Some(501_643)
+        );
+        // the env var wins over both
+        assert_eq!(
+            compact_at(Some("200000"), &both, m, 1_000_000),
+            Some(167_000)
+        );
+        // the project's file is listed before the user's
+        let project = json!({"autoCompactWindow":120_000});
+        assert_eq!(
+            compact_at(None, &[project, user.clone()], m, 1_000_000),
+            Some(87_000)
+        );
+        // a window under the CLI's minimum is ignored in a file and raised in the env var
+        let small = json!({"autoCompactWindow":80_000});
+        assert_eq!(
+            compact_at(None, &[small, user.clone()], m, 1_000_000),
+            Some(501_643)
+        );
+        assert_eq!(compact_at(Some("80000"), &[], m, 1_000_000), Some(67_000));
+        // never past the model's window; an unknown window caps nothing
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 200_000),
+            Some(167_000)
+        );
+        assert_eq!(compact_at(None, &[user], m, 0), Some(501_643));
+        // nothing set, or auto-compaction off: the bar fills against the window
+        assert_eq!(compact_at(None, &[], m, 1_000_000), None);
+        let off = json!({"autoCompactWindow":534_643,"autoCompactEnabled":false});
+        assert_eq!(compact_at(None, &[off], m, 1_000_000), None);
+    }
+
+    #[test]
+    fn claude_settings_reads_the_projects_files_before_the_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, cwd) = (dir.path().join("home"), dir.path().join("w"));
+        for (root, text) in [
+            (&home, r#"{"autoCompactWindow":1}"#),
+            (&cwd, r#"{"autoCompactWindow":2}"#),
+        ] {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            std::fs::write(root.join(".claude/settings.json"), text).unwrap();
+        }
+        std::fs::write(cwd.join(".claude/settings.local.json"), "not json").unwrap();
+        let files = claude_settings(&home, &cwd);
+        let windows: Vec<_> = files
+            .iter()
+            .map(|f| f["autoCompactWindow"].as_u64())
+            .collect();
+        assert_eq!(windows, [Some(2), Some(1)]);
+    }
+
     /// herdr reads the plan dialog as idle (its question wraps on a wide pane): the transcript's
     /// ExitPlanMode call with no result yet says the pane is on it.
     #[tokio::test]
@@ -2564,7 +2692,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             Some(femme_proto::state::Context {
                 used: 40_502,
                 window: 1_000_000,
-                compactions: 1
+                compactions: 1,
+                compact_at: None
             })
         );
         // read again: nothing new, nothing written twice

@@ -90,7 +90,9 @@ context bar, permission mode, cwd, agent sid, close/end).
 
 ### 2. Chat (a session)
 - Header: label (tap = session info), status dot, context bar (the desktop's XP bar, 4 px, under
-  the header; pink → red past 90 %; a compaction pulses it once).
+  the header; pink → red past 90 %; a compaction pulses it once). Full is where Claude compacts by
+  itself (`Context.compact_at`, its `autoCompactWindow` minus a buffer) when the session says it,
+  else the window; the tap note and session info add `compacts at`.
 - Transcript: the desktop's `Item` rows re-laid for 360 px:
   - user messages right-aligned in the accent border, attachments as 96 px thumbnails (tap = viewer);
   - assistant markdown full-width, code blocks horizontally scrollable with a copy button, never

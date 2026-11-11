@@ -118,7 +118,18 @@ impl S {
         let line = serde_json::to_vec(&v).unwrap();
         self.spool.extend_from_slice(&line);
         self.spool.push(b'\n');
-        self.d.on_line(off, &line, &mut self.out)
+        let ev = self.d.on_line(off, &line, &mut self.out);
+        // the `get_context_usage` questions (after the handshake, a turn, a compaction) have
+        // their own test in `claude.rs`: these look at everything else the driver writes
+        self.out.stdin = self
+            .out
+            .stdin
+            .split_inclusive(|b| *b == b'\n')
+            .filter(|l| !String::from_utf8_lossy(l).contains("get_context_usage"))
+            .flatten()
+            .copied()
+            .collect();
+        ev
     }
 
     /// Offset the next line will start at.
