@@ -11,6 +11,7 @@
 #   bgtask headless only: a Bash call run as a foreground task (`task_started`) for 5 s; a
 #          `background_tasks` control request moves it to the background (claude 2.1.319): the
 #          result says so, the turn ends, and 1 s later the task's notification starts a turn
+#   (a `rewind_conversation` control request answers `rewound` with the named message's text)
 #   quit   exits 0 mid-turn        crash   exits 1 with text on stderr
 #   <any>  replies "echo: <any>", with a 100 ms pause mid-turn
 import json
@@ -217,6 +218,9 @@ def pause(secs, interruptible):
             return False
 
 
+PROMPTS = {}  # the user messages taken, by uuid: what `rewind_conversation` gives back
+
+
 def control(v):
     """Serves a control request between turns or mid-turn; queues anything else. Returns the subtype served."""
     if v.get("type") == "control_request":
@@ -232,6 +236,14 @@ def control(v):
             MODEL = req.get("model", MODEL)
             control_ok(rid)
             user_text(f"<local-command-stdout>Set model to `{MODEL}`</local-command-stdout>")
+        elif sub == "rewind_conversation":
+            # claude 2.1.321: the conversation goes back to before that message, whose text returns
+            target = req.get("target_message_uuid")
+            if target in PROMPTS:
+                control_ok(rid, {"rewound": True, "targetMessageUuid": target, "prefillText": PROMPTS[target],
+                                 "precedingAssistantUuid": None})
+            else:
+                control_ok(rid, {"rewound": False, "reason": "target_not_found"})
         else:
             out({"type": "control_response", "response": {"subtype": "error", "request_id": rid, "error": f"unknown subtype {sub}"}})
         return sub
@@ -326,6 +338,7 @@ def bgtask(u):
 def turn(v):
     u = v.get("uuid") or uid()
     text = "".join(b.get("text", "") for b in v.get("message", {}).get("content", []) if b.get("type") == "text")
+    PROMPTS[u] = text
     word = text.split("\n", 1)[0].strip()  # the daemon appends standing orders: the first line is the cue
     lifecycle(u, "queued")
     system("session_state_changed", state="running", sdk_host_only=True)

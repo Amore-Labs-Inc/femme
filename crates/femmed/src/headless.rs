@@ -1127,8 +1127,10 @@ impl Actor {
             self.row(d, &row);
         }
         // after the rows are gone: the client puts the text back into an input with no bubble
-        if let (Some(text), Some(reply)) = (f.taken_back, self.taking.take()) {
-            let _ = reply.send(Ok(Some(text)));
+        if let Some(text) = f.taken_back {
+            if let Some(reply) = self.taking.take() {
+                let _ = reply.send(Ok(Some(text)));
+            }
         }
     }
 
@@ -2381,7 +2383,7 @@ impl Daemon {
     /// `Req::TakeBack`: the session's newest message back as text (`Some`), its turn stopped and
     /// its rows gone; `None` when the turn was only interrupted (a terminal, an agent that cannot
     /// forget a message, a message that is not the one it works on).
-    pub(crate) async fn take_back(&self, sid: Sid) -> Result<Option<String>, CoreError> {
+    pub async fn take_back(&self, sid: Sid) -> Result<Option<String>, CoreError> {
         let s = self.session(sid)?;
         if s.agent != Agent::Claude || s.mode == Mode::Tui {
             return self.interrupt_session(sid).await.map(|()| None);
