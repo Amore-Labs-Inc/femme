@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
 
+import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/box.dart';
 import '../../state/box_flows.dart';
@@ -43,6 +44,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   @override
   Duration get every => const Duration(seconds: 10);
+
+  /// The link caps are sent on, kept here so the flush in [dispose] needs no context lookup
+  /// (`Femme.of` on a deactivated element asserts).
+  late Link _link;
+
+  @override
+  void didChangeDependencies() {
+    _link = Femme.of(context).link;
+    super.didChangeDependencies();
+  }
 
   @override
   void dispose() {
@@ -135,7 +146,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   void _flush() {
     if (_pending.isEmpty) return;
-    final link = Femme.of(context).link;
+    final link = _link;
     final todo = Map.of(_pending);
     _pending.clear();
     for (final e in todo.entries) {
