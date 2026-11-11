@@ -13,7 +13,7 @@ ipa=$1; link=$2; out=${3:-devicefarm-ios-out}
 region=us-west-2
 here=$(cd "$(dirname "$0")" && pwd)
 aws() { command aws --region "$region" --output json "$@"; }
-j() { python3 -c "import sys,json; print(eval('json.load(sys.stdin)$1'))"; }
+j() { python3 -c "import sys,json; print(eval('json.load(sys.stdin)'+sys.argv[1]))" "$1"; }
 pick() { python3 -c "
 import sys,json; xs=json.load(sys.stdin)['$1']; print(next((x['arn'] for x in xs if x['name']$2),''))"; }
 
