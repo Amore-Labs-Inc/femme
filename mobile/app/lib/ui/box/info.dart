@@ -63,7 +63,7 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
       header: const Text('Box'),
       footer: _checkedAt == null
           ? null
-          : Text(switch (ago(_checkedAt!)) {
+          : sectionFooter(context, switch (ago(_checkedAt!)) {
               'now' => 'checked just now',
               final a => 'checked $a ago',
             }),
@@ -75,7 +75,8 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
           additionalInfo: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              StatusDot(linkColor(f.link.state.value)),
+              // the phase word beside it says it
+              ExcludeSemantics(child: StatusDot(linkColor(f.link.state.value))),
               const SizedBox(width: 6),
               Text(f.link.state.value.phase.name),
             ],
@@ -112,7 +113,10 @@ class _BoxInfoSectionState extends State<BoxInfoSection> with Polling {
           title: const Text('Check'),
           trailing: _checking
               ? const CupertinoActivityIndicator()
-              : const Icon(CupertinoIcons.arrow_clockwise),
+              : const Icon(
+                  CupertinoIcons.arrow_clockwise,
+                  semanticLabel: 'check the box now',
+                ),
           onTap: _checking
               ? null
               : () {

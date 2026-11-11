@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
 
+import '../../net/link.dart';
 import '../../net/rpc.dart';
 import '../../state/box.dart';
 import '../../state/box_flows.dart';
@@ -31,6 +32,9 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   /// What `/api/meta` says: the default cap and the scheduler's word (the footer).
   BoxMeta? _meta;
 
+  /// Who the box's AWS CLI runs as; null until the first read.
+  AwsIdentity? _aws;
+
   /// The link of a Claude sign-in in progress on the box.
   String? _loginLink;
 
@@ -40,6 +44,16 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   @override
   Duration get every => const Duration(seconds: 10);
+
+  /// The link caps are sent on, kept here so the flush in [dispose] needs no context lookup
+  /// (`Femme.of` on a deactivated element asserts).
+  late Link _link;
+
+  @override
+  void didChangeDependencies() {
+    _link = Femme.of(context).link;
+    super.didChangeDependencies();
+  }
 
   @override
   void dispose() {
@@ -60,6 +74,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
           _accounts = parsed.accounts ?? _accounts;
           _error = parsed.error;
           _loginLink = parseLoginLink(body);
+          _aws = parseAws(body);
         });
       }
     } catch (e) {
@@ -122,8 +137,8 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
     return (c?.fiveHour, c?.weekly);
   }
 
+  /// The stepper has already clicked ([CapStepper] haptics each step).
   void _setCap(int account, (int?, int?) v) {
-    tapHaptic();
     setState(() => _pending[account] = v);
     _send?.cancel();
     _send = Timer(const Duration(milliseconds: 500), _flush);
@@ -131,7 +146,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
 
   void _flush() {
     if (_pending.isEmpty) return;
-    final link = Femme.of(context).link;
+    final link = _link;
     final todo = Map.of(_pending);
     _pending.clear();
     for (final e in todo.entries) {
@@ -154,7 +169,8 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
       header: const Text('Accounts'),
       footer: _meta == null && !_capsKnown
           ? null
-          : Text(
+          : sectionFooter(
+              context,
               [
                 if (_meta != null) '${schedulerLine(_meta!)}.',
                 if (_capsKnown)
@@ -190,7 +206,46 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
             ),
             onTap: _switching == null ? _add : null,
           ),
+        if (_aws != null) _AwsTile(_aws!),
       ],
+    );
+  }
+}
+
+/// AWS: who the box's CLI runs as, with the green bar when it has an identity (desktop
+/// `accounts/view.rs` `aws_card`).
+class _AwsTile extends StatelessWidget {
+  const _AwsTile(this.aws);
+  final AwsIdentity aws;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    final small = TextStyle(color: muted, fontSize: 13);
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(width: 4, color: aws.active ? FemmeColors.work : null),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'AWS',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text(aws.line, style: small),
+                  if (!aws.active && aws.detail != null)
+                    Text(aws.detail!, style: small),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -242,6 +297,7 @@ class _AccountTile extends StatelessWidget {
                     : CupertinoButton(
                         sizeStyle: CupertinoButtonSize.small,
                         padding: const EdgeInsets.only(left: 8),
+                        minimumSize: const Size(44, 44),
                         onPressed: onSwitch,
                         child: const Text('Switch'),
                       ),
@@ -250,10 +306,10 @@ class _AccountTile extends StatelessWidget {
           if (a.fiveHour != null) _Bar('5 h', a.fiveHour!, now),
           if (a.sevenDay != null) _Bar('7 d', a.sevenDay!, now),
           for (final s in a.scoped) _Bar(s.name!.toLowerCase(), s, now),
-          if (a.reason != null)
-            Text(
-              '${a.reason}${a.stale ? ' · last good reading shown' : ''}',
-              style: TextStyle(color: muted, fontSize: 13),
+          if (a.note(now) case final note? when note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(note, style: TextStyle(color: muted, fontSize: 13)),
             ),
           if (sign != null)
             Padding(
@@ -324,21 +380,7 @@ class _Bar extends StatelessWidget {
             child: Text(label, style: TextStyle(fontSize: 13, color: muted)),
           ),
           Expanded(
-            child: Container(
-              height: 8,
-              decoration: BoxDecoration(
-                color: FemmeColors.panelC.resolveFrom(context),
-                border: Border.all(
-                  color: FemmeColors.inkC.resolveFrom(context),
-                  width: 1,
-                ),
-              ),
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: fill,
-                child: ColoredBox(color: color),
-              ),
-            ),
+            child: UsageTrack(fill: fill, color: color),
           ),
           const SizedBox(width: 8),
           Text(usage.text(now), style: TextStyle(fontSize: 13, color: muted)),
@@ -348,8 +390,35 @@ class _Bar extends StatelessWidget {
   }
 }
 
-/// A 50–99 % stepper; empty (null) means the box default, shown greyed.
-class CapStepper extends StatelessWidget {
+/// A plain rounded progress track: system fill under, [color] over the first [fill] of it.
+class UsageTrack extends StatelessWidget {
+  const UsageTrack({super.key, required this.fill, required this.color});
+  final double fill;
+  final Color color;
+
+  static const radius = BorderRadius.all(Radius.circular(4));
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: radius,
+    child: Container(
+      height: 8,
+      color: CupertinoColors.systemFill.resolveFrom(context),
+      alignment: Alignment.centerLeft,
+      child: FractionallySizedBox(
+        widthFactor: fill.clamp(0, 1).toDouble(),
+        heightFactor: 1,
+        child: DecoratedBox(
+          decoration: BoxDecoration(color: color, borderRadius: radius),
+        ),
+      ),
+    ),
+  );
+}
+
+/// A 50–99 % stepper; empty (null) means the box default, shown greyed. Each step clicks; holding
+/// − or + repeats after [repeatDelay], one step every [repeatEvery], so 80 → 97 is one hold.
+class CapStepper extends StatefulWidget {
   const CapStepper({
     super.key,
     required this.label,
@@ -362,58 +431,135 @@ class CapStepper extends StatelessWidget {
   final int? fallback;
   final void Function(int?) onChanged;
 
+  static const repeatDelay = Duration(milliseconds: 400);
+  static const repeatEvery = Duration(milliseconds: 80);
+
+  @override
+  State<CapStepper> createState() => _CapStepperState();
+}
+
+class _CapStepperState extends State<CapStepper> {
+  Timer? _hold;
+
+  @override
+  void dispose() {
+    _hold?.cancel();
+    super.dispose();
+  }
+
+  /// The value one step of [dir] (−1 / +1) moves to from the current one, null at the end of
+  /// the range. The first step from "default" lands on the default itself.
+  int? _next(int dir) {
+    final v = widget.value;
+    final base = v ?? widget.fallback ?? 80;
+    if (dir < 0 ? base <= capMin : base >= capMax) return null;
+    return v == null ? base : base + dir;
+  }
+
+  void _step(int dir) {
+    final n = _next(dir);
+    if (n == null) {
+      _stop();
+      return;
+    }
+    tapHaptic();
+    widget.onChanged(n);
+  }
+
+  void _start(int dir) {
+    _step(dir);
+    _hold?.cancel();
+    _hold = Timer(CapStepper.repeatDelay, () {
+      _hold = Timer.periodic(CapStepper.repeatEvery, (_) {
+        if (mounted) _step(dir);
+      });
+    });
+  }
+
+  void _stop() {
+    _hold?.cancel();
+    _hold = null;
+  }
+
+  /// A 44 × 44 target around a small glyph; holding repeats.
+  Widget _button(IconData icon, int dir, String what) {
+    final enabled = _next(dir) != null;
+    final color = enabled
+        ? CupertinoTheme.of(context).primaryColor
+        : CupertinoColors.tertiaryLabel.resolveFrom(context);
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: '$what ${widget.label}',
+      onTap: enabled ? () => _step(dir) : null,
+      excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: enabled ? (_) => _start(dir) : null,
+        onTapUp: (_) => _stop(),
+        onTapCancel: _stop,
+        child: SizedBox.square(
+          dimension: 44,
+          child: Icon(icon, size: 22, color: color),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final muted = FemmeColors.mutedC.resolveFrom(context);
-    final v = value;
-    final base = v ?? fallback ?? 80;
-    Widget btn(IconData icon, int? next) => CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: const Size(32, 32),
-      onPressed: next == null ? null : () => onChanged(next),
-      child: Icon(icon, size: 22),
-    );
-    return Container(
+    final v = widget.value;
+    return DecoratedBox(
       decoration: BoxDecoration(
-        border: Border.all(color: FemmeColors.panelC.resolveFrom(context)),
+        color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+        borderRadius: const BorderRadius.all(Radius.circular(10)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
         children: [
-          btn(
-            CupertinoIcons.minus_circle,
-            base > capMin ? (v == null ? base : base - 1) : null,
-          ),
+          _button(CupertinoIcons.minus_circle, -1, 'lower'),
           Expanded(
             child: GestureDetector(
-              onLongPress: v == null ? null : () => onChanged(null),
+              onLongPress: v == null ? null : () => widget.onChanged(null),
               child: Column(
                 children: [
-                  Text(label, style: TextStyle(fontSize: 11, color: muted)),
                   Text(
-                    v == null ? 'default' : '$v %',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: v == null ? muted : null,
+                    widget.label,
+                    style: TextStyle(fontSize: 11, color: muted),
+                  ),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      v == null ? 'default' : '$v%',
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: v == null ? muted : null,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           ),
-          btn(
-            CupertinoIcons.plus_circle,
-            base < capMax ? (v == null ? base : base + 1) : null,
-          ),
+          _button(CupertinoIcons.plus_circle, 1, 'raise'),
           if (v != null)
-            CupertinoButton(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(28, 32),
-              onPressed: () => onChanged(null),
-              child: Icon(
-                CupertinoIcons.clear_circled_solid,
-                size: 18,
-                color: muted,
+            Semantics(
+              button: true,
+              label: 'clear ${widget.label}',
+              excludeSemantics: true,
+              child: CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(44, 44),
+                onPressed: () {
+                  tapHaptic();
+                  widget.onChanged(null);
+                },
+                child: Icon(
+                  CupertinoIcons.clear_circled_solid,
+                  size: 18,
+                  color: muted,
+                ),
               ),
             ),
         ],

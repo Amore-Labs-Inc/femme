@@ -315,7 +315,7 @@ impl Transcript {
             ItemKind::Event => match (read, warning) {
                 (Some(id), _) => self.read_row(seq, &id, sel, cx),
                 (None, Some(detail)) => self.warning_row(seq, &detail, sel, cx),
-                (None, None) => self.note_row(seq, sel),
+                (None, None) => self.note_row(seq, sel, cx),
             },
             ItemKind::TurnEnd => self.end_row(seq, sel),
             ItemKind::ToolCall | ItemKind::TurnStart => div().into_any_element(),
@@ -430,7 +430,7 @@ impl Transcript {
     /// message. Nothing when the message is the row right above (it was read at once).
     fn read_row(&mut self, seq: u64, read: &str, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let Some(orig) = self.items.by_id(read).map(|e| e.item.seq) else {
-            return self.note_row(seq, sel);
+            return self.note_row(seq, sel, cx);
         };
         let rows = &self.layout.rows;
         let here = rows.iter().position(|r| r.key == Key::Item(seq));
@@ -658,14 +658,30 @@ impl Transcript {
     }
 
     /// A status line the agent or the daemon put among the messages.
-    fn note_row(&self, seq: u64, sel: &Sel) -> AnyElement {
+    fn note_row(&self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let (text, _) = self.text_of(seq);
+        let text = note_text(&text);
+        let folded = note_folded(&text);
+        let shown = match &folded {
+            Some(line) if !self.open.contains(&seq) => line.clone(),
+            _ => text,
+        };
         column(
             div()
+                .id(("note", seq))
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .text_color(muted())
-                .child(Selectable::new(sel.slot(), note_text(&text))),
+                .child(Selectable::new(sel.slot(), shown))
+                .when(folded.is_some(), |d| {
+                    d.cursor_pointer()
+                        .hover(|s| s.bg(panel()))
+                        .on_click(cx.listener(move |this, click, _, cx| {
+                            if select::plain_click(click) {
+                                this.toggle(seq, cx);
+                            }
+                        }))
+                }),
         )
     }
 
@@ -1241,11 +1257,17 @@ fn action(id: String, label: &'static str, enabled: bool) -> gpui::Stateful<Div>
 /// unless it brings its own mark (`◎ goal not met yet · …`).
 fn note_text(text: &str) -> String {
     let text = text.trim_end();
-    if text.starts_with('◎') {
+    if text.starts_with(['◎', '◷']) {
         text.to_owned()
     } else {
         format!("· {text}")
     }
+}
+
+/// The one line a Monitor event (`◷`) of several lines shows until its row is clicked.
+fn note_folded(text: &str) -> Option<String> {
+    let (first, _) = text.split_once('\n').filter(|_| text.starts_with('◷'))?;
+    Some(format!("{first} …"))
 }
 
 #[cfg(test)]
@@ -1281,6 +1303,17 @@ mod tests {
             warning_of(&item(r#"{"text":"Conversation compacted"}"#)),
             None
         );
+    }
+
+    #[test]
+    fn a_monitor_event_keeps_its_mark_and_folds_to_its_first_line() {
+        assert_eq!(note_text("◷ ticks · tick 1"), "◷ ticks · tick 1");
+        assert_eq!(note_folded("◷ ticks · tick 1"), None);
+        assert_eq!(
+            note_folded("◷ log · one\ntwo").as_deref(),
+            Some("◷ log · one …")
+        );
+        assert_eq!(note_folded("· one\ntwo"), None, "other notes stay whole");
     }
 
     #[test]

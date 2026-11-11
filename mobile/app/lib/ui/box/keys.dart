@@ -26,7 +26,7 @@ class _KeysSectionState extends State<KeysSection> with Polling {
   Map<String, KeyGithub> _github = const {};
 
   @override
-  Duration get every => const Duration(minutes: 1);
+  Duration get every => const Duration(seconds: 10);
 
   Future<Resp> _req(Object r) => Femme.of(context).link.req(r);
 
@@ -249,7 +249,8 @@ class _NewKeySheetState extends State<_NewKeySheet> {
       child: ListView(
         children: [
           CupertinoListSection.insetGrouped(
-            footer: const Text(
+            footer: sectionFooter(
+              context,
               'Name: lowercase letters, digits and -, up to 32. The GitHub token is optional: '
               'without one its clones push as the box.',
             ),

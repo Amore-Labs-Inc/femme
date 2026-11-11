@@ -19,7 +19,7 @@ use crate::{all, blob_id, enum_col, exists, id_blob, one, Error, Result, Tx};
 
 macro_rules! session_cols {
     () => {
-        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission, ctx_used, ctx_window, compactions, effort, goal"
+        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission, ctx_used, ctx_window, compactions, effort, goal, ctx_compact_at"
     };
 }
 macro_rules! pane_cols {
@@ -48,7 +48,7 @@ pub(crate) fn session_from_row(r: &Row<'_>) -> Result<Session> {
         created: r.get(13)?,
         closed: r.get(14)?,
         permission: r.get(15)?,
-        context: context_cols(r.get(16)?, r.get(17)?, r.get(18)?),
+        context: context_cols(r.get(16)?, r.get(17)?, r.get(18)?, r.get(21)?),
         effort: r.get(19)?,
         goal: goal_col(r.get(20)?),
     })
@@ -64,16 +64,18 @@ fn goal_json(g: Option<&Goal>) -> Option<String> {
     g.map(|g| serde_json::to_string(g).unwrap_or_default())
 }
 
-/// Three nullable columns make one `Context`: NULL `ctx_used` means the agent never said.
+/// Four nullable columns make one `Context`: NULL `ctx_used` means the agent never said.
 fn context_cols(
     used: Option<i64>,
     window: Option<i64>,
     compactions: Option<i64>,
+    compact_at: Option<i64>,
 ) -> Option<Context> {
     Some(Context {
         used: used? as u64,
         window: window.unwrap_or(0) as u64,
         compactions: compactions.unwrap_or(0) as u32,
+        compact_at: compact_at.map(|n| n as u64),
     })
 }
 
@@ -261,7 +263,7 @@ impl Tx<'_> {
         self.prepare_cached(concat!(
             "INSERT INTO sessions (",
             session_cols!(),
-            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
+            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"
         ))?
         .execute(params![
             id_blob(s.id),
@@ -285,6 +287,7 @@ impl Tx<'_> {
             s.context.map(|c| i64::from(c.compactions)),
             s.effort,
             goal_json(s.goal.as_ref()),
+            s.context.and_then(|c| c.compact_at).map(|n| n as i64),
         ])?;
         self.clear_tombstone(Entity::Session, &s.id.to_string())?; // an explicit id may come back (restore)
         Ok(s)
@@ -315,7 +318,7 @@ impl Tx<'_> {
         self.prepare_cached(
             "UPDATE sessions SET rev = ?2, name = ?3, owner = ?4, agent = ?5, mode = ?6, cwd = ?7, label = ?8,
                     agent_sid = ?9, model = ?10, status = ?11, attention = ?12, closed = ?13,
-                    permission = ?14, ctx_used = ?15, ctx_window = ?16, compactions = ?17, effort = ?18, goal = ?19
+                    permission = ?14, ctx_used = ?15, ctx_window = ?16, compactions = ?17, effort = ?18, goal = ?19, ctx_compact_at = ?20
              WHERE id = ?1",
         )?
         .execute(params![
@@ -338,6 +341,7 @@ impl Tx<'_> {
             after.context.map(|c| i64::from(c.compactions)),
             after.effort,
             goal_json(after.goal.as_ref()),
+            after.context.and_then(|c| c.compact_at).map(|n| n as i64),
         ])?;
         Ok(after)
     }

@@ -77,21 +77,21 @@ void main() {
     final now = DateTime.fromMillisecondsSinceEpoch(3 * 3600 * 1000 + 10);
     expect(
       sessionSubtitle(s('A', cwd: '/x', created: 10), now: now),
-      'claude · 3h',
+      'idle · claude · 3h',
     );
     expect(
       sessionSubtitle(
         s('B', cwd: '/x', created: 10, model: 'deepseek/deepseek-v4.1'),
         now: now,
       ),
-      'deepseek · 3h',
+      'idle · deepseek · 3h',
     );
     expect(
       sessionSubtitle(
         s('C', cwd: '/x', created: 10, model: null, agent: 'Shell'),
         now: now,
       ),
-      'shell · 3h',
+      'idle · shell · 3h',
     );
   });
 

@@ -19,6 +19,9 @@ import 'term_models.dart';
 
 enum LinkPhase { connecting, online, offline }
 
+/// The last request that failed: which one (`SessionLabel`), why, and when.
+typedef FailedReq = ({String what, String why, DateTime at});
+
 @immutable
 class LinkState {
   const LinkState(
@@ -27,11 +30,19 @@ class LinkState {
     this.serverVersion,
     this.retryAt,
     this.rtt,
+    this.notEnrolled = false,
+    this.lastFailed,
   });
   final LinkPhase phase;
 
   /// Why the link is offline (the last error), or null.
   final String? reason;
+
+  /// The box refused this device's token (the handshake answered 401): pairing again is the fix.
+  final bool notEnrolled;
+
+  /// The last request the box refused or that got no answer; kept across reconnects.
+  final FailedReq? lastFailed;
 
   /// The server's version from its last `Welcome`.
   final String? serverVersion;
@@ -127,6 +138,7 @@ class Link implements Requester {
   WebSocket? _ws;
   int _gen = 0;
   bool _paused = false;
+  bool _closed = false;
   Duration? _backoff;
   Completer<void>? _wake;
   int _nextStream = 1;
@@ -162,6 +174,14 @@ class Link implements Requester {
     _setState(LinkPhase.offline, reason: 'paused');
   }
 
+  /// Drops the socket and dials again now (the link sheet's Reconnect, a network change): a socket
+  /// on a network the phone left would otherwise wait for its pings to time out. Requests marked
+  /// `resend` go out again on the new connection. Does nothing while paused or never connected.
+  void reconnect() {
+    if (_url == null || _paused) return;
+    _restart();
+  }
+
   /// Reconnects at once after [pause], or skips the wait of a pending retry.
   void resume() {
     if (_url == null) return;
@@ -173,6 +193,7 @@ class Link implements Requester {
 
   /// Stops for good: fails every pending request and closes [events].
   Future<void> close() async {
+    _closed = true;
     _paused = true;
     _gen++;
     _wakeUp();
@@ -191,12 +212,16 @@ class Link implements Requester {
   /// [resend] is sent again on the next connection with the same [op] (the server dedups it); one
   /// without fails with [LinkLost]. Connection-scoped requests (`Subscribe`) must not be resent:
   /// the dedup would answer them without subscribing the new connection.
+  ///
+  /// A refusal or timeout is kept as [LinkState.lastFailed] unless [track] is false (the link's
+  /// own round-trip probes).
   @override
   Future<Resp> req(
     Object req, {
     String? op,
     Duration? timeout,
     bool resend = true,
+    bool track = true,
   }) {
     op ??= Ulid.next();
     final existing = _pending[op];
@@ -207,7 +232,32 @@ class Link implements Requester {
       _fail(p, TimeoutException('no answer to $op', timeout ?? reqTimeout));
     });
     if (isOnline) _sendReq(p);
+    if (track) {
+      p.completer.future.then<void>(
+        (_) {},
+        onError: (Object e) {
+          // A lost link already shows as the link's phase; only refusals and timeouts count.
+          if (e is LinkLost) return;
+          _noteFailed(
+            _reqName(req),
+            e is FemmeError ? e.toString() : _describe(e),
+          );
+        },
+      );
+    }
     return p.completer.future;
+  }
+
+  /// `SessionLabel` for `{"SessionLabel": …}`, `ServerInfo` for `"ServerInfo"`.
+  static String _reqName(Object req) => switch (req) {
+    String s => s,
+    Map<String, Object?> m when m.length == 1 => m.keys.first,
+    _ => 'request',
+  };
+
+  void _noteFailed(String what, String why) {
+    if (_closed) return;
+    state.value = _with(lastFailed: (what: what, why: why, at: DateTime.now()));
   }
 
   /// Attaches a terminal pane: opens a Term stream and sends `TermUp::Open`. The stream ends when
@@ -247,8 +297,17 @@ class Link implements Requester {
     while (gen == _gen && !_paused) {
       _setState(LinkPhase.connecting);
       String reason;
+      var refused = false;
       try {
         reason = await _session(gen);
+      } on WebSocketException catch (e) {
+        reason = _describe(e);
+        if (e.httpStatusCode == 401) {
+          // femmed answers 401 to an unknown or revoked device token: retrying cannot help.
+          reason = 'not enrolled';
+          refused = true;
+          _backoff = maxBackoff;
+        }
       } on FemmeError catch (e) {
         reason = e.toString();
         _backoff = maxBackoff; // refused (unsupported protocol, unauthorized): no fast loop
@@ -263,6 +322,7 @@ class Link implements Requester {
         LinkPhase.offline,
         reason: reason,
         retryAt: DateTime.now().add(wait),
+        notEnrolled: refused,
       );
       final wake = _wake = Completer<void>();
       final timer = Timer(wait, () {
@@ -437,18 +497,17 @@ class Link implements Requester {
     _rttBusy = true;
     final sw = Stopwatch()..start();
     try {
-      await req(Req.serverInfo, resend: false, timeout: helloTimeout);
+      await req(
+        Req.serverInfo,
+        resend: false,
+        timeout: helloTimeout,
+        track: false,
+      );
       if (gen != _gen || !isOnline) return;
       final sample = sw.elapsed;
       final prev = state.value.rtt;
       final rtt = prev == null ? sample : prev * 0.7 + sample * 0.3;
-      state.value = LinkState(
-        state.value.phase,
-        reason: state.value.reason,
-        retryAt: state.value.retryAt,
-        serverVersion: state.value.serverVersion,
-        rtt: rtt,
-      );
+      state.value = _with(rtt: rtt);
     } catch (_) {
       // A lost link or a slow answer: the reconnect loop deals with it.
     } finally {
@@ -501,6 +560,7 @@ class Link implements Requester {
     String? reason,
     DateTime? retryAt,
     String? serverVersion,
+    bool notEnrolled = false,
   }) {
     state.value = LinkState(
       phase,
@@ -508,6 +568,22 @@ class Link implements Requester {
       retryAt: retryAt,
       serverVersion: serverVersion ?? state.value.serverVersion,
       rtt: state.value.rtt,
+      notEnrolled: notEnrolled,
+      lastFailed: state.value.lastFailed,
+    );
+  }
+
+  /// The current state with [rtt] or [lastFailed] replaced.
+  LinkState _with({Duration? rtt, FailedReq? lastFailed}) {
+    final s = state.value;
+    return LinkState(
+      s.phase,
+      reason: s.reason,
+      retryAt: s.retryAt,
+      serverVersion: s.serverVersion,
+      rtt: rtt ?? s.rtt,
+      notEnrolled: s.notEnrolled,
+      lastFailed: lastFailed ?? s.lastFailed,
     );
   }
 

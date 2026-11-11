@@ -73,10 +73,23 @@ class _NowTabState extends State<NowTab> {
   final _held = <String>{};
   final _answering = <String>{};
 
+  /// Per row, whether a finger is on it; shared with the copy the long-press menu lifts.
+  final _pressed = <String, ValueNotifier<bool>>{};
+
   /// Per waiting session, the chat's question state, for the multi-select card.
   final _chats = <String, ChatController>{};
   Timer? _tick;
   Store? _store;
+
+  /// False on the tab's first frame: what is there at launch shows at once, only later
+  /// arrivals fade in.
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _shown = true);
+  }
 
   /// When this app first saw a session working, for the elapsed time before its items load.
   static final _workingSince = <String, DateTime>{};
@@ -134,6 +147,9 @@ class _NowTabState extends State<NowTab> {
   @override
   void dispose() {
     _tick?.cancel();
+    for (final p in _pressed.values) {
+      p.dispose();
+    }
     for (final c in _chats.values) {
       c.dispose();
     }
@@ -196,24 +212,29 @@ class _NowTabState extends State<NowTab> {
     final nothingWaits = sections[0].$2.isEmpty;
     final any = sections.any((x) => x.$2.isNotEmpty);
 
-    Widget row(Session s, Widget body) => SessionActions(
-      session: s,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () {
-          tapHaptic();
-          pushChat(context, s.id);
-        },
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-          child: body,
+    Widget row(Session s, Widget body) => EnterFade(
+      key: ValueKey('now-${s.id}'),
+      animate: _shown,
+      child: SessionActions(
+        session: s,
+        child: PressRow(
+          key: ValueKey('now-row-${s.id}'),
+          pressed: _pressed.putIfAbsent(s.id, () => ValueNotifier(false)),
+          onTap: () {
+            tapHaptic();
+            pushChat(context, s.id);
+          },
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: body,
+          ),
         ),
       ),
     );
 
     Widget head(Session s, String trailing) => Row(
       children: [
-        StatusDot(statusColor(s)),
+        StatusDot(statusColor(s), label: statusWord(s)),
         const SizedBox(width: 10),
         Expanded(
           child: Text(
@@ -223,6 +244,7 @@ class _NowTabState extends State<NowTab> {
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
+        const SizedBox(width: 8),
         Text(trailing, style: _meta(context)),
       ],
     );
@@ -288,6 +310,7 @@ class _NowTabState extends State<NowTab> {
                   padding: const EdgeInsets.only(top: 4, left: 18),
                   child: CupertinoButton(
                     sizeStyle: CupertinoButtonSize.small,
+                    minimumSize: const Size(44, 44),
                     onPressed: () => pushChat(context, s.id),
                     child: const Text('Other…'),
                   ),
@@ -318,8 +341,9 @@ class _NowTabState extends State<NowTab> {
                 ),
                 CupertinoButton(
                   sizeStyle: CupertinoButtonSize.small,
+                  minimumSize: const Size(44, 44),
                   onPressed: () => _ok(s),
-                  child: const Text('👍 ok'),
+                  child: const Text('OK'),
                 ),
               ],
             ),
@@ -357,8 +381,9 @@ class _NowTabState extends State<NowTab> {
       onRefresh: _refresh,
       trailing: CupertinoButton(
         padding: EdgeInsets.zero,
+        minimumSize: const Size(44, 44),
         onPressed: () => openNewChat(context),
-        child: const Icon(CupertinoIcons.add),
+        child: const Icon(CupertinoIcons.add, semanticLabel: 'New chat'),
       ),
       slivers: [
         if (nothingWaits)
@@ -378,10 +403,10 @@ class _NowTabState extends State<NowTab> {
               ),
             ),
           ),
-        section('Needs you', [for (final s in sections[0].$2) needsCard(s)]),
-        section('Done', [for (final s in sections[1].$2) doneRow(s)]),
-        section('Working', [for (final s in sections[2].$2) workingRow(s)]),
-        section('Idle', [for (final s in sections[3].$2) idleRow(s)]),
+        _section('Needs you', [for (final s in sections[0].$2) needsCard(s)]),
+        _section('Done', [for (final s in sections[1].$2) doneRow(s)]),
+        _section('Working', [for (final s in sections[2].$2) workingRow(s)]),
+        _section('Idle', [for (final s in sections[3].$2) idleRow(s)]),
         if (!any)
           SliverToBoxAdapter(
             child: Center(
@@ -398,3 +423,93 @@ class _NowTabState extends State<NowTab> {
 
 TextStyle _meta(BuildContext context) =>
     TextStyle(fontSize: 13, color: FemmeColors.mutedC.resolveFrom(context));
+
+/// The app's one motion: 180 ms, iOS's sheet curve, nothing bounces (DESIGN.md, Motion).
+const _motion = Duration(milliseconds: 180);
+const _motionCurve = Cubic(0.32, 0.72, 0, 1);
+
+/// A Now section whose height follows its rows: a card that leaves or arrives slides the
+/// sections below instead of jumping them. Nothing at all when [children] is empty.
+Widget _section(String header, List<Widget> children) => SliverToBoxAdapter(
+  child: AnimatedSize(
+    duration: _motion,
+    curve: _motionCurve,
+    alignment: Alignment.topCenter,
+    child: children.isEmpty
+        ? const SizedBox(width: double.infinity)
+        : CupertinoListSection.insetGrouped(
+            header: Text(header),
+            children: children,
+          ),
+  ),
+);
+
+/// Fades its child in once, when it first appears (a card arriving in a section); shows it at
+/// once when [animate] is false.
+class EnterFade extends StatefulWidget {
+  const EnterFade({super.key, required this.child, this.animate = true});
+  final Widget child;
+  final bool animate;
+
+  @override
+  State<EnterFade> createState() => _EnterFadeState();
+}
+
+class _EnterFadeState extends State<EnterFade>
+    with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(
+    vsync: this,
+    duration: _motion,
+    value: widget.animate ? 0 : 1,
+  )..forward();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: CurvedAnimation(parent: _c, curve: _motionCurve),
+    child: widget.child,
+  );
+}
+
+/// A tappable row that greys while pressed, as a `CupertinoListTile` does, and lets the grey go
+/// on the app's curve; for rows whose body is more than a tile's title and subtitle. [pressed]
+/// lives outside the row so the copy `CupertinoContextMenu` lifts over a held row greys too.
+class PressRow extends StatelessWidget {
+  const PressRow({
+    super.key,
+    required this.pressed,
+    required this.onTap,
+    required this.child,
+  });
+  final ValueNotifier<bool> pressed;
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final fill = CupertinoColors.systemFill.resolveFrom(context);
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => pressed.value = true,
+      onTapUp: (_) => pressed.value = false,
+      onTapCancel: () => pressed.value = false,
+      onTap: onTap,
+      child: ValueListenableBuilder(
+        valueListenable: pressed,
+        builder: (context, down, child) => AnimatedContainer(
+          key: const ValueKey('press-bg'),
+          duration: down ? Duration.zero : _motion,
+          curve: _motionCurve,
+          color: down ? fill : fill.withValues(alpha: 0),
+          child: child,
+        ),
+        child: child,
+      ),
+    );
+  }
+}

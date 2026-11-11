@@ -75,20 +75,34 @@ class Context {
     required this.used,
     required this.window,
     this.compactions = 0,
+    this.compactAt,
   });
   final int used;
   final int window;
   final int compactions;
 
+  /// Tokens at which the agent compacts by itself (Claude's `autoCompactWindow` minus its
+  /// buffer); null until it said.
+  final int? compactAt;
+
   factory Context.fromJson(Json j) => Context(
     used: j['used'] as int,
     window: j['window'] as int,
     compactions: j['compactions'] as int? ?? 0,
+    compactAt: j['compact_at'] as int?,
   );
-  Json toJson() => {'used': used, 'window': window, 'compactions': compactions};
+  Json toJson() => {
+    'used': used,
+    'window': window,
+    'compactions': compactions,
+    if (compactAt != null) 'compact_at': compactAt,
+  };
 
-  /// 0..1, or null before the agent reported its window.
-  double? get fraction => window == 0 ? null : (used / window).clamp(0.0, 1.0);
+  /// What fills the bar: where the agent compacts by itself when it said, else the window.
+  int get full => (compactAt ?? 0) > 0 ? compactAt! : window;
+
+  /// 0..1 on the way to the next compaction, or null before the agent reported a size.
+  double? get fraction => full == 0 ? null : (used / full).clamp(0.0, 1.0);
 }
 
 class Goal {
@@ -152,12 +166,14 @@ class Session {
   final String? effort;
   final Goal? goal;
 
-  /// What lists show: the label, else the name, else the folder.
+  /// What a session is called, as the desktop (`desktop/src/net.rs` `title`): its name, else its
+  /// label, else the last component of its folder, else its handle.
   String get title {
-    if (label != null && label!.isNotEmpty) return label!;
     if (name != null && name!.isNotEmpty) return name!;
-    final parts = cwd.split('/').where((p) => p.isNotEmpty);
-    return parts.isEmpty ? cwd : parts.last;
+    if (label != null && label!.isNotEmpty) return label!;
+    final trimmed = cwd.replaceFirst(RegExp(r'/+$'), '');
+    final tail = trimmed.substring(trimmed.lastIndexOf('/') + 1);
+    return tail.isNotEmpty ? tail : handle;
   }
 
   bool get needsYou =>

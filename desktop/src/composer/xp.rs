@@ -1,6 +1,8 @@
 //! The context XP bar above the composer's `send`: how full the Claude session's context window
 //! is, drawn like a World of Warcraft experience bar (a thin notched bar that fills up) with the
-//! numbers in its tooltip. A compaction empties the bar and is the level up: the level is the
+//! numbers in its tooltip. When the session says where Claude compacts by itself (its
+//! `autoCompactWindow`, often far below the window), the bar is full there, not at the window. A
+//! compaction empties the bar and is the level up: the level is the
 //! number of compactions plus one, and a neon ring pulses once around the bar when it happens,
 //! nothing bigger than that. The numbers and the level-up bookkeeping are pure, so they are
 //! tested without a window.
@@ -29,12 +31,19 @@ const WARN: f32 = 0.9;
 /// How long the level-up ring plays.
 const RING: Duration = Duration::from_millis(700);
 
-/// How full the window is, 0 to 1; 0 while the window size is unknown.
+/// What fills the bar: the point where the agent compacts by itself when it said one, else the
+/// window; 0 while neither is known.
+fn full(c: &Context) -> u64 {
+    c.compact_at.filter(|n| *n > 0).unwrap_or(c.window)
+}
+
+/// How far the context is on its way to the next compaction, 0 to 1; 0 while that is unknown.
 pub fn fill(c: &Context) -> f32 {
-    if c.window == 0 {
+    let full = full(c);
+    if full == 0 {
         return 0.;
     }
-    (c.used as f32 / c.window as f32).clamp(0., 1.)
+    (c.used as f32 / full as f32).clamp(0., 1.)
 }
 
 /// The level: one more than the compactions.
@@ -51,31 +60,39 @@ pub fn color(c: &Context) -> Rgba {
     }
 }
 
-/// The tooltip's rows, label and value, in the game's order: the numbers, the share, what is
-/// left, the level. `?` while the window size is unknown.
+/// The tooltip's rows, label and value, in the game's order: the numbers, where Claude compacts
+/// (when it said), the share, what is left until then, the level. `?` while a size is unknown.
 pub fn rows(c: &Context) -> Vec<(String, String)> {
-    let known = c.window > 0;
-    let or = |s: String| if known { s } else { "?".to_owned() };
+    let full = full(c);
+    let or = |known: bool, s: String| if known { s } else { "?".to_owned() };
     let level = match c.compactions {
         0 => format!("{} (never compacted)", level(c)),
         1 => format!("{} (1 compaction)", level(c)),
         n => format!("{} ({n} compactions)", level(c)),
     };
-    vec![
-        (
-            "current context".into(),
-            format!("{} / {}", thousands(c.used), or(thousands(c.window))),
+    let mut rows = vec![(
+        "current context".into(),
+        format!(
+            "{} / {}",
+            thousands(c.used),
+            or(c.window > 0, thousands(c.window))
         ),
+    )];
+    if let Some(at) = c.compact_at.filter(|n| *n > 0) {
+        rows.push(("compacts at".into(), thousands(at)));
+    }
+    rows.extend([
         (
             "level progress".into(),
-            or(format!("{:.1}%", fill(c) * 100.)),
+            or(full > 0, format!("{:.1}%", fill(c) * 100.)),
         ),
         (
             "room left".into(),
-            or(thousands(c.window.saturating_sub(c.used))),
+            or(full > 0, thousands(full.saturating_sub(c.used))),
         ),
         ("level".into(), level),
-    ]
+    ]);
+    rows
 }
 
 /// `1234567` as `1,234,567`.
@@ -200,7 +217,42 @@ mod tests {
             used,
             window,
             compactions,
+            compact_at: None,
         }
+    }
+
+    /// The same, for a session that said where Claude compacts.
+    fn ctx_at(used: u64, window: u64, compact_at: u64) -> Context {
+        Context {
+            compact_at: Some(compact_at),
+            ..ctx(used, window, 0)
+        }
+    }
+
+    #[test]
+    fn the_bar_is_full_where_claude_compacts_not_at_the_window() {
+        // 451,479 of a 1M window: not half full, yet 90% of the way to the compaction
+        let plain = ctx(451_479, 1_000_000, 0);
+        assert_eq!((fill(&plain) * 100.).round(), 45.);
+        assert_eq!(color(&plain), accent_text());
+        let tuned = ctx_at(451_479, 1_000_000, 501_643);
+        assert_eq!((fill(&tuned) * 1000.).round(), 900.);
+        assert_eq!(color(&tuned), bad());
+        assert_eq!(fill(&ctx_at(600_000, 1_000_000, 501_643)), 1.);
+        // the point alone is enough: the window may still be unknown
+        assert_eq!(fill(&ctx_at(25_000, 0, 50_000)), 0.5);
+        let rows = rows(&tuned);
+        let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (&**k, &**v)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("current context", "451,479 / 1,000,000"),
+                ("compacts at", "501,643"),
+                ("level progress", "90.0%"),
+                ("room left", "50,164"),
+                ("level", "1 (never compacted)"),
+            ]
+        );
     }
 
     #[test]

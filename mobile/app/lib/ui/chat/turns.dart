@@ -77,6 +77,16 @@ class FoldEntry extends Entry {
   String get key => 'fold:${inner.first.key}';
 }
 
+/// When the row's item was made (unix ms): a fold's first row, a tool row's call.
+int entryTs(Entry e) => switch (e) {
+  ItemEntry(:final item) ||
+  CompactionEntry(:final item) ||
+  TurnEndEntry(:final item) => item.ts,
+  ToolEntry(:final call, :final result) => (call ?? result!).ts,
+  ReadEntry(:final event) => event.ts,
+  FoldEntry(:final inner) => entryTs(inner.first),
+};
+
 /// The id of the call a result answers: its body's `call_id`, else the id minus `:result`.
 String? callIdOf(Item result, Json? body) {
   final c = body?['call_id'];
@@ -286,29 +296,203 @@ Set<String> endedTasksOf(List<Item> items, Json? Function(Item) body) => {
       if (body(i)?['task'] case {'call': final String c}) c,
 };
 
-/// The working line's verb from the last item: `Thinking`, `Writing`, `Running a tool`.
-String workingVerb(List<Item> items) {
-  for (final i in items.reversed) {
-    switch (i.kind) {
-      case ItemKind.thinking:
-        return 'Thinking';
-      case ItemKind.assistantMessage:
-        return 'Writing';
-      case ItemKind.toolCall || ItemKind.toolResult:
-        return 'Running a tool';
-      case ItemKind.userMessage:
-        return 'Thinking';
-      default:
-        continue;
-    }
-  }
-  return 'Working';
+/// Whether a task the turn waits for (a running foreground Bash or Agent call) could move to
+/// the background: the gate of `Background all` (desktop live.rs `background(None)`).
+bool hasForegroundTask(List<Item> items, Json? Function(Item) body) {
+  final answered = <String>{
+    for (final i in items)
+      if (i.kind == ItemKind.toolResult) ?callIdOf(i, body(i)),
+  };
+  return items.any(
+    (i) =>
+        i.kind == ItemKind.toolCall &&
+        !answered.contains(i.itemId) &&
+        toolLine(call: i, callBody: body(i)).backgroundable,
+  );
 }
 
-/// Unix ms of the last user message (the working line counts from it).
-int? lastUserTs(List<Item> items) {
-  for (final i in items.reversed) {
-    if (i.kind == ItemKind.userMessage) return i.ts;
+/// Index of the message that opened the turn (the last user or peer message), or -1.
+int _turnStart(List<Item> items) => items.lastIndexWhere(
+  (i) => i.kind == ItemKind.userMessage || i.kind == ItemKind.peerMessage,
+);
+
+/// The working line's verb (desktop working.rs): the newest item of the turn still in progress
+/// says what is happening (`Writing`, `Running a tool`); between items it is `Thinking`.
+String workingVerb(List<Item> items) {
+  final turn = items.sublist(_turnStart(items) + 1);
+  for (final i in turn.reversed) {
+    if (i.status != ItemStatus.inProgress) continue;
+    return switch (i.kind) {
+      ItemKind.assistantMessage => 'Writing',
+      ItemKind.toolCall || ItemKind.toolResult => 'Running a tool',
+      _ => 'Thinking',
+    };
   }
-  return null;
+  return 'Thinking';
+}
+
+/// Unix ms of the message that opened the turn (a user's, or a peer's): the working line counts
+/// from it.
+int? lastUserTs(List<Item> items) {
+  final n = _turnStart(items);
+  return n < 0 ? null : items[n].ts;
+}
+
+/// UTF-8 bytes of [s], without encoding it.
+int utf8Length(String s) {
+  var n = 0;
+  for (final u in s.codeUnits) {
+    n += u < 0x80
+        ? 1
+        : u < 0x800
+        ? 2
+        : (u >= 0xD800 && u < 0xE000)
+        ? 2 // each half of a surrogate pair: 4 bytes for the two
+        : 3;
+  }
+  return n;
+}
+
+/// Bytes the agent has produced this turn: its text, thoughts and tool calls ([textOf] is the
+/// text shown, streaming included).
+int turnBytes(List<Item> items, String Function(Item) textOf) {
+  var n = 0;
+  for (final i in items.skip(_turnStart(items) + 1)) {
+    if (i.kind == ItemKind.assistantMessage ||
+        i.kind == ItemKind.thinking ||
+        i.kind == ItemKind.toolCall) {
+      n += utf8Length(textOf(i));
+    }
+  }
+  return n;
+}
+
+/// `850`, `15.0k`: about four bytes to a token.
+String tokenCount(int bytes) {
+  final t = bytes ~/ 4;
+  return t < 1000 ? '$t' : '${(t / 1000).toStringAsFixed(1)}k';
+}
+
+/// `42s`, `5m 42s`, `1h 3m`.
+String workingElapsed(int secs) {
+  final s = secs < 0 ? 0 : secs;
+  if (s < 60) return '${s}s';
+  if (s < 3600) return '${s ~/ 60}m ${s % 60}s';
+  return '${s ~/ 3600}h ${s % 3600 ~/ 60}m';
+}
+
+const _stars = ['·', '✢', '✳', '✶', '✻', '✽'];
+
+/// `✻ Thinking… (5m 42s · ↓ 15.0k tokens)` at [now] (unix ms); the star turns once a second.
+String workingText(String verb, int? since, int bytes, int now) {
+  final secs = since == null ? null : (now - since) ~/ 1000;
+  final star = _stars[(secs ?? 0) % _stars.length];
+  final facts = [
+    if (secs != null) workingElapsed(secs),
+    if (bytes > 0) '↓ ${tokenCount(bytes)} tokens',
+  ];
+  return facts.isEmpty ? '$star $verb…' : '$star $verb… (${facts.join(' · ')})';
+}
+
+/// One subagent on show in the strip above the transcript (desktop agents.rs `Chip`).
+class AgentChip {
+  AgentChip({
+    required this.id,
+    required this.label,
+    required this.running,
+    required this.since,
+  });
+
+  /// The `Agent` call's id: the `parent` of the subagent's items.
+  final String id;
+
+  /// What it was asked to do (the call's `description`), else its kind.
+  final String label;
+
+  /// Its call has no result yet, or it runs in the background and has not been said to stop.
+  bool running;
+
+  /// Unix ms of the call.
+  final int since;
+  bool _background = false;
+  bool _earlier = false;
+}
+
+/// The subagents on show, oldest first: the `Agent` / `Task` calls of the current turn, and the
+/// background ones of earlier turns until an `Event` says they stopped. [items] are all the
+/// session's items in order (a subagent's own items mark a background one as at work).
+List<AgentChip> agentChips(List<Item> items, Json? Function(Item) body) {
+  final out = <AgentChip>[];
+  AgentChip? find(String id) => out.where((c) => c.id == id).firstOrNull;
+  for (final i in items) {
+    final p = i.parent;
+    if (p != null) {
+      final c = find(p);
+      if (c != null && c._background) c.running = true;
+      continue;
+    }
+    switch (i.kind) {
+      case ItemKind.turnEnd:
+        out.removeWhere((c) => !c.running);
+        for (final c in out) {
+          c._earlier = true;
+        }
+      case ItemKind.toolCall:
+        final b = body(i);
+        final line = toolLine(call: i, callBody: b);
+        if (line.name != 'Agent' && line.name != 'Task') continue;
+        final input = b?['input'];
+        String label;
+        if (input is Map) {
+          final d = input['description'];
+          final t = input['subagent_type'];
+          label = d is String && d.trim().isNotEmpty
+              ? d
+              : (t is String ? t : 'agent');
+        } else {
+          // a long prompt makes the body a blob: the preview is `Agent <description>`
+          label = line.hint.isEmpty ? 'agent' : line.hint;
+        }
+        out.add(
+          AgentChip(
+            id: i.itemId,
+            label: label,
+            running: i.status != ItemStatus.failed,
+            since: i.ts,
+          ),
+        );
+      case ItemKind.toolResult:
+        final b = body(i);
+        final id = callIdOf(i, b);
+        final c = id == null ? null : find(id);
+        if (c == null) continue;
+        final out0 = b?['output'];
+        final text = out0 is String ? out0 : i.preview;
+        c._background =
+            i.status != ItemStatus.failed &&
+            b?['is_error'] != true &&
+            text.startsWith('Async agent launched');
+        c.running = c._background;
+      case ItemKind.event:
+        if (body(i)?['task'] case {'call': final String id}) {
+          final c = find(id);
+          if (c == null) continue;
+          if (c._earlier) {
+            out.remove(c);
+          } else {
+            c.running = false;
+          }
+        }
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+/// `4s`, `1m 12s`: how long a subagent has run (desktop agents.rs `elapsed`).
+String agentElapsed(int since, int now) {
+  final s = ((now - since) ~/ 1000).clamp(0, 1 << 31);
+  if (s < 60) return '${s}s';
+  return '${s ~/ 60}m ${(s % 60).toString().padLeft(2, '0')}s';
 }

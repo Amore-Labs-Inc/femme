@@ -7,10 +7,11 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:video_player/video_player.dart';
 
 import '../theme.dart';
+import 'actions.dart';
 
 /// Opens [bytes] (named [name]) full screen; a video when [video]. Dark whatever the theme.
 Future<void> showLightbox(
@@ -45,21 +46,6 @@ String _ext(String name) {
   if (dot < 0 || dot < name.lastIndexOf('/')) return '';
   return name.substring(dot).toLowerCase();
 }
-
-String _mime(String name) => switch (_ext(name)) {
-  '.png' => 'image/png',
-  '.jpg' || '.jpeg' => 'image/jpeg',
-  '.gif' => 'image/gif',
-  '.webp' => 'image/webp',
-  '.svg' => 'image/svg+xml',
-  '.bmp' => 'image/bmp',
-  '.heic' => 'image/heic',
-  '.mp4' || '.m4v' => 'video/mp4',
-  '.mov' => 'video/quicktime',
-  '.webm' => 'video/webm',
-  '.mkv' => 'video/x-matroska',
-  _ => 'application/octet-stream',
-};
 
 String _clock(Duration d) {
   final s = d.inSeconds;
@@ -184,35 +170,13 @@ class _LightboxState extends State<_Lightbox>
     if (box is RenderBox && box.hasSize) {
       origin = box.localToGlobal(Offset.zero) & box.size;
     }
-    try {
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [
-            XFile.fromData(
-              widget.bytes,
-              name: widget.name,
-              mimeType: _mime(widget.name),
-            ),
-          ],
-          fileNameOverrides: [widget.name],
-          sharePositionOrigin: origin,
-        ),
-      );
-    } catch (_) {
-      // the share sheet failed to open; nothing to undo
-    }
+    await shareBytes(widget.bytes, widget.name, origin: origin);
   }
 
   // ---- build ----
 
   Widget _content() {
     if (widget.video) return _VideoView(bytes: widget.bytes, name: widget.name);
-    if (_svg) {
-      return const _Note(
-        icon: CupertinoIcons.photo,
-        text: "can't preview svg here; share it to open it elsewhere",
-      );
-    }
     return GestureDetector(
       onTap: () => setState(() => _chrome = !_chrome),
       onDoubleTapDown: (d) => _tapAt = d.localPosition,
@@ -223,15 +187,27 @@ class _LightboxState extends State<_Lightbox>
         maxScale: 6,
         panEnabled: _wasZoomed,
         child: SizedBox.expand(
-          child: Image.memory(
-            widget.bytes,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
-            errorBuilder: (_, _, _) => const _Note(
-              icon: CupertinoIcons.exclamationmark_triangle,
-              text: "can't open this picture",
-            ),
-          ),
+          child: _svg
+              ? SvgPicture.memory(
+                  widget.bytes,
+                  fit: BoxFit.contain,
+                  placeholderBuilder: (_) => const Center(
+                    child: CupertinoActivityIndicator(color: _fg),
+                  ),
+                  errorBuilder: (_, _, _) => const _Note(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    text: "can't open this svg; share it to open it elsewhere",
+                  ),
+                )
+              : Image.memory(
+                  widget.bytes,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => const _Note(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    text: "can't open this picture",
+                  ),
+                ),
         ),
       ),
     );
@@ -396,6 +372,19 @@ class _Note extends StatelessWidget {
 
 // ---- video ----
 
+/// Sound off in the lightbox's videos; the choice holds for the rest of the app run.
+bool _muted = false;
+
+@visibleForTesting
+bool get lightboxMuted => _muted;
+@visibleForTesting
+set lightboxMuted(bool v) => _muted = v;
+
+/// Makes the player for a video's temp file; tests hand a fake.
+@visibleForTesting
+VideoPlayerController Function(File file) lightboxPlayer =
+    VideoPlayerController.file;
+
 /// Plays the bytes from a temp file (video_player cannot play from memory); the file goes
 /// with the view.
 class _VideoView extends StatefulWidget {
@@ -436,11 +425,12 @@ class _VideoViewState extends State<_VideoView> {
         _cleanup();
         return;
       }
-      final c = VideoPlayerController.file(f);
+      final c = lightboxPlayer(f);
       _c = c;
       await c.initialize();
       if (_disposed) return;
       c.addListener(_tick);
+      await c.setVolume(_muted ? 0 : 1);
       await c.play();
       if (mounted) setState(() {});
     } catch (e) {
@@ -486,6 +476,12 @@ class _VideoViewState extends State<_VideoView> {
     }
   }
 
+  void _toggleSound() {
+    HapticFeedback.selectionClick();
+    setState(() => _muted = !_muted);
+    _c?.setVolume(_muted ? 0 : 1);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
@@ -525,7 +521,7 @@ class _VideoViewState extends State<_VideoView> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
           child: Row(
             children: [
               _IconButton(
@@ -571,6 +567,13 @@ class _VideoViewState extends State<_VideoView> {
                   fontFeatures: [FontFeature.tabularFigures()],
                   decoration: TextDecoration.none,
                 ),
+              ),
+              _IconButton(
+                icon: _muted
+                    ? CupertinoIcons.speaker_slash_fill
+                    : CupertinoIcons.speaker_2_fill,
+                label: _muted ? 'Sound on' : 'Mute',
+                onTap: _toggleSound,
               ),
             ],
           ),

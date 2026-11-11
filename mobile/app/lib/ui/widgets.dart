@@ -8,37 +8,64 @@ import '../state/box.dart';
 import 'chat.dart';
 import 'femme.dart';
 import 'files.dart';
+import 'follow.dart';
+import 'link_status.dart';
 import 'terminal.dart';
 import 'theme.dart';
 
+/// The desktop's lanes (`desktop/src/sidebar.rs` `Lane::of`): working, needs you (amber), idle
+/// or starting (queue), failed (interrupted, paused, crashed, failed: red), closed.
 Color statusColor(Session s) {
+  if (s.status == SessionStatus.working) return FemmeColors.work;
   if (s.needsYou) return FemmeColors.pause;
   return switch (s.status) {
-    SessionStatus.working || SessionStatus.starting => FemmeColors.work,
-    SessionStatus.failed || SessionStatus.crashed => FemmeColors.bad,
-    SessionStatus.closed || SessionStatus.interrupted => FemmeColors.done,
+    SessionStatus.interrupted ||
+    SessionStatus.paused ||
+    SessionStatus.failed ||
+    SessionStatus.crashed => FemmeColors.bad,
+    SessionStatus.closed => FemmeColors.done,
     _ => FemmeColors.queue,
   };
 }
 
-/// The status dot: an 8 px ink-bordered square in the lane colour.
+/// The status dot: an 8 px filled circle in the lane colour, with a hairline a shade darker so
+/// the pale idle grey still reads on a white card. VoiceOver says [label], or the lane's word.
 class StatusDot extends StatelessWidget {
-  const StatusDot(this.color, {super.key});
+  const StatusDot(this.color, {super.key, this.label});
   final Color color;
 
+  /// What VoiceOver says; null: the lane's word for [color] ([laneWord]).
+  final String? label;
+
   @override
-  Widget build(BuildContext context) => Container(
-    width: 8,
-    height: 8,
-    decoration: BoxDecoration(
-      color: color,
-      border: Border.all(
-        color: FemmeColors.inkC.resolveFrom(context),
-        width: 1.2,
+  Widget build(BuildContext context) => Semantics(
+    label: label ?? laneWord(color),
+    child: Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Color.lerp(color, const Color(0xFF000000), .25)!,
+          width: .5,
+        ),
       ),
     ),
   );
 }
+
+/// The word for a lane colour ([statusColor]): `working`, `needs you`, `idle`, `failed`,
+/// `closed`, `pull request`; `status` for any other colour.
+String laneWord(Color c) => switch (c) {
+  FemmeColors.work => 'working',
+  FemmeColors.pause => 'needs you',
+  FemmeColors.queue => 'idle',
+  FemmeColors.bad => 'failed',
+  FemmeColors.done => 'closed',
+  FemmeColors.pr => 'pull request',
+  _ => 'status',
+};
 
 class SessionTile extends StatelessWidget {
   const SessionTile(this.session, {super.key, this.subtitle, this.onTap});
@@ -48,7 +75,7 @@ class SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoListTile(
-    leading: StatusDot(statusColor(session)),
+    leading: StatusDot(statusColor(session), label: wireStatus(session)),
     leadingSize: 8,
     title: Text(session.title),
     subtitle: Text(
@@ -62,9 +89,22 @@ class SessionTile extends StatelessWidget {
 
 String wireStatus(Session s) => s.needsYou ? 'needs you' : s.status.name;
 
+/// The status word a row shows and VoiceOver says: `needs you`, `done`, `working`, else the
+/// status name (`idle`, `paused`, `failed`, …).
+String statusWord(Session s) {
+  if (s.needsYou) return 'needs you';
+  if (s.attention == Attention.done) return 'done';
+  return switch (s.status) {
+    SessionStatus.working || SessionStatus.starting => 'working',
+    final st => st.name,
+  };
+}
+
 /// `ws 41 ms · femmed 0.9.1` (`online · …` before the first round-trip sample) / `connecting…` /
-/// `offline: <why>`.
+/// `offline: <why>` / `not enrolled: pair again` (the box refused this phone's token; tapping the
+/// line opens the pairing screen).
 String linkLine(LinkState s) => switch (s.phase) {
+  LinkPhase.offline when s.notEnrolled => 'not enrolled: pair again',
   LinkPhase.online =>
     '${s.rtt == null ? 'online' : 'ws ${rttText(s.rtt!)}'}'
         '${s.serverVersion == null ? '' : ' · femmed ${s.serverVersion}'}',
@@ -88,7 +128,7 @@ Color linkColor(LinkState s) => switch (s.phase) {
   LinkPhase.offline => FemmeColors.bad,
 };
 
-/// A tab's page: large title, the link line under it, then [slivers].
+/// A tab's page: large title, the link line under it (tap: [openLinkStatus]), then [slivers].
 class TabPage extends StatelessWidget {
   const TabPage({
     super.key,
@@ -112,6 +152,9 @@ class TabPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CupertinoPageScaffold(
+    // Grouped grey under everything, nav bar included, as in Settings: the inset sections keep
+    // their own cards, and no seam shows under the large title.
+    backgroundColor: groupedBackground(context),
     child: CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
@@ -119,27 +162,37 @@ class TabPage extends StatelessWidget {
           largeTitle: Text(title),
           leading: leading,
           trailing: trailing,
+          backgroundColor: groupedBackground(context),
         ),
         if (onRefresh != null)
           CupertinoSliverRefreshControl(onRefresh: onRefresh),
         SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
-            child: Row(
-              children: [
-                if (dot != null) ...[StatusDot(dot!), const SizedBox(width: 8)],
-                Expanded(
-                  child: Text(
-                    status,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: FemmeColors.mutedC.resolveFrom(context),
+          child: GestureDetector(
+            key: const ValueKey('link-line'),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => openLinkStatus(context),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+              child: Row(
+                children: [
+                  if (dot != null) ...[
+                    // the line beside it says the same in words
+                    ExcludeSemantics(child: StatusDot(dot!)),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      status,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: FemmeColors.mutedC.resolveFrom(context),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -149,6 +202,21 @@ class TabPage extends StatelessWidget {
     ),
   );
 }
+
+/// The page colour of a tab: the system grouped grey (white cards sit on it).
+Color groupedBackground(BuildContext context) =>
+    CupertinoColors.systemGroupedBackground.resolveFrom(context);
+
+/// A section footer as iOS sets it: footnote (13 pt), secondary label colour. Pass it as an
+/// inset grouped section's `footer`, which already gives it the side margins.
+Widget sectionFooter(BuildContext context, String text) => Text(
+  text,
+  style: TextStyle(
+    fontSize: 13,
+    height: 1.25,
+    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+  ),
+);
 
 /// A titled list section, or nothing when [children] is empty.
 Widget section(String header, List<Widget> children, {Widget? footer}) =>
@@ -172,10 +240,25 @@ Widget emptyLine(String text) => SliverFillRemaining(
 
 // ---- small helpers ----
 
-/// Opens a session's chat on the current tab's navigator.
-Future<void> pushChat(BuildContext context, String sid) =>
-    Navigator.of(context)
-        .push(CupertinoPageRoute<void>(builder: (_) => ChatScreen(sid: sid)));
+/// A shell, or an agent run in its TUI: its centre is the terminal, not the chat
+/// (`desktop/src/app.rs` shows a `TerminalView` for these).
+bool opensTerminal(Session? s) =>
+    s != null && (s.agent == Agent.shell || s.mode == Mode.tui);
+
+/// What tapping a session opens: [TerminalScreen] for a shell or TUI session, else [ChatScreen]
+/// (also while the store has not seen the session yet).
+Widget sessionScreen(Session? s, String sid) => Following(
+  sid: sid,
+  child: opensTerminal(s) ? TerminalScreen(sid: sid) : ChatScreen(sid: sid),
+);
+
+/// Opens a session on the current tab's navigator: the terminal for a shell or TUI session, the
+/// chat otherwise.
+Future<void> pushChat(BuildContext context, String sid) {
+  final s = Femme.of(context).store.session(sid);
+  return Navigator.of(context)
+      .push(CupertinoPageRoute<void>(builder: (_) => sessionScreen(s, sid)));
+}
 
 void tapHaptic() => HapticFeedback.selectionClick();
 void actionHaptic() => HapticFeedback.mediumImpact();
@@ -369,8 +452,8 @@ Future<bool> closeSession(BuildContext context, Session s) async {
   }
 }
 
-/// A session row: tap opens the chat, swipe left closes (confirmed), long-press opens a menu
-/// (Rename, Terminal, Files, Close).
+/// A session row: tap opens the chat (the terminal for a shell / TUI session), swipe left closes
+/// (confirmed), long-press opens a menu (Rename, Terminal or Chat, Files, Close).
 class SessionActions extends StatelessWidget {
   const SessionActions({super.key, required this.session, required this.child});
   final Session session;
@@ -412,11 +495,19 @@ class SessionActions extends StatelessWidget {
             },
             child: const Text('Rename'),
           ),
-          CupertinoContextMenuAction(
-            trailingIcon: CupertinoIcons.chevron_left_slash_chevron_right,
-            onPressed: () => go(TerminalScreen(sid: s.id)),
-            child: const Text('Terminal'),
-          ),
+          // The tap opens one of chat / terminal; the menu reaches the other.
+          if (opensTerminal(s))
+            CupertinoContextMenuAction(
+              trailingIcon: CupertinoIcons.bubble_left,
+              onPressed: () => go(ChatScreen(sid: s.id)),
+              child: const Text('Chat'),
+            )
+          else
+            CupertinoContextMenuAction(
+              trailingIcon: CupertinoIcons.chevron_left_slash_chevron_right,
+              onPressed: () => go(TerminalScreen(sid: s.id)),
+              child: const Text('Terminal'),
+            ),
           CupertinoContextMenuAction(
             trailingIcon: CupertinoIcons.folder,
             onPressed: () => go(FilesScreen(sid: s.id)),
