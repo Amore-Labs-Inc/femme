@@ -8,6 +8,7 @@ import '../state/box.dart';
 import 'chat.dart';
 import 'femme.dart';
 import 'files.dart';
+import 'link_status.dart';
 import 'terminal.dart';
 import 'theme.dart';
 
@@ -68,8 +69,10 @@ class SessionTile extends StatelessWidget {
 String wireStatus(Session s) => s.needsYou ? 'needs you' : s.status.name;
 
 /// `ws 41 ms · femmed 0.9.1` (`online · …` before the first round-trip sample) / `connecting…` /
-/// `offline: <why>`.
+/// `offline: <why>` / `not enrolled: pair again` (the box refused this phone's token; tapping the
+/// line opens the pairing screen).
 String linkLine(LinkState s) => switch (s.phase) {
+  LinkPhase.offline when s.notEnrolled => 'not enrolled: pair again',
   LinkPhase.online =>
     '${s.rtt == null ? 'online' : 'ws ${rttText(s.rtt!)}'}'
         '${s.serverVersion == null ? '' : ' · femmed ${s.serverVersion}'}',
@@ -93,7 +96,7 @@ Color linkColor(LinkState s) => switch (s.phase) {
   LinkPhase.offline => FemmeColors.bad,
 };
 
-/// A tab's page: large title, the link line under it, then [slivers].
+/// A tab's page: large title, the link line under it (tap: [openLinkStatus]), then [slivers].
 class TabPage extends StatelessWidget {
   const TabPage({
     super.key,
@@ -128,23 +131,31 @@ class TabPage extends StatelessWidget {
         if (onRefresh != null)
           CupertinoSliverRefreshControl(onRefresh: onRefresh),
         SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
-            child: Row(
-              children: [
-                if (dot != null) ...[StatusDot(dot!), const SizedBox(width: 8)],
-                Expanded(
-                  child: Text(
-                    status,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: FemmeColors.mutedC.resolveFrom(context),
+          child: GestureDetector(
+            key: const ValueKey('link-line'),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => openLinkStatus(context),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+              child: Row(
+                children: [
+                  if (dot != null) ...[
+                    StatusDot(dot!),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      status,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: FemmeColors.mutedC.resolveFrom(context),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
