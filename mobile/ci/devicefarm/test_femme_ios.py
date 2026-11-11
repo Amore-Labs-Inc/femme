@@ -18,6 +18,7 @@ from appium.webdriver.common.appiumby import AppiumBy
 from selenium.common.exceptions import StaleElementReferenceException
 
 HERE = pathlib.Path(__file__).parent
+BUNDLE = "org.exposureai.femmeMobile"
 SHOTS = pathlib.Path(os.environ.get("DEVICEFARM_SCREENSHOT_PATH", "shots"))
 LOG = pathlib.Path(os.environ.get("DEVICEFARM_LOG_DIR", "."))
 
@@ -106,6 +107,16 @@ def test_femme_on_iphone():
         tap(W * 7 // 8, tab_y); d.get_screenshot_as_file(str(SHOTS / "06-me.png"))
         tap(W * 1 // 8, tab_y)
         tap(W // 2, int(H * 0.40), 8); d.get_screenshot_as_file(str(SHOTS / "07-chat.png"))
+        # the home screen (app icon), then a cold launch caught early for the launch screen
+        d.execute_script("mobile: pressButton", {"name": "home"})
+        time.sleep(3)
+        d.get_screenshot_as_file(str(SHOTS / "08-home-screen.png"))
+        d.terminate_app(BUNDLE)
+        d.activate_app(BUNDLE)
+        time.sleep(0.3)
+        d.get_screenshot_as_file(str(SHOTS / "09-launch.png"))
+        time.sleep(6)
+        d.get_screenshot_as_file(str(SHOTS / "10-relaunched.png"))
         note("done")
     finally:
         d.quit()

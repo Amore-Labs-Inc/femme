@@ -285,7 +285,15 @@ Device Farm, paired itself with the live box through its `femme://pair` link, wa
 and opened a chat with no crash in logcat; the box's device list shows the Pixel. A later run
 opened `femme://session/<sid>` (the click link a "needs you" push carries) three ways on the
 same Pixel: app in the foreground, from the background, and from a cold start after a kill; all
-three landed in that chat. The recipe is
+three landed in that chat.
+
+**Icon and launch screen** (PR #69): the app shipped Flutter's default "F" icon and a blank white
+launch window until now. The icon is FEMME's mark (`assets/logo.svg`: ink tile, sunset disc, four
+slats) rendered by `mobile/ci/brand.py` into `mobile/app/assets/brand`: iOS light plus the iOS 18
+dark and tinted variants, an Android adaptive icon (ink background, inset foreground, monochrome
+layer for themed icons) and legacy mipmaps. The launch screen shows the mark on paper (light) or
+ink (dark) on iOS, Android and the Android 12 splash API. Both are generated from `pubspec.yaml`
+by `flutter_launcher_icons` and `flutter_native_splash`. The recipe is
 `mobile/ci/devicefarm.sh <apk> '<pair link>'`. The unsigned ipa ran the same day on a physical
 Apple iPhone 16 (iOS 18) there too: Device Farm re-signs it with its own profile, the Appium test
 typed the host and token into the pairing screen, tapped Connect, and walked the tabs paired

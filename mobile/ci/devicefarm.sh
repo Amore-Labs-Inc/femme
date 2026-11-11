@@ -31,7 +31,7 @@ set -x
 S="\$DEVICEFARM_SCREENSHOT_PATH"; mkdir -p "\$S"; L="\$DEVICEFARM_LOG_DIR"
 pkg=org.exposureai.femme_mobile
 shot() { adb exec-out screencap -p > "\$S/\$1.png"; }
-adb shell monkey -p \$pkg -c android.intent.category.LAUNCHER 1; sleep 10; shot 01-first-run
+adb shell monkey -p \$pkg -c android.intent.category.LAUNCHER 1; sleep 0.6; shot 00-splash; sleep 10; shot 01-first-run
 adb shell am start -a android.intent.action.VIEW -d "'$link'"; sleep 15; shot 02-now
 read W H < <(adb shell wm size | sed 's/.*: //; s/x/ /')
 tab() { adb shell input tap \$((W*\$1/8)) \$((H*94/100)); sleep 5; }
@@ -46,6 +46,7 @@ if [ -n "$sid" ]; then
   adb shell am force-stop \$pkg; sleep 2
   adb shell am start -a android.intent.action.VIEW -d "femme://session/$sid"; sleep 15; shot 09-session-link-cold
 fi
+adb shell input keyevent KEYCODE_HOME; sleep 2; adb shell input swipe \$((W/2)) \$((H*85/100)) \$((W/2)) \$((H*20/100)) 300; sleep 3; shot 10-app-drawer
 adb logcat -d > "\$L/logcat.txt"
 adb shell getprop ro.product.model > "\$L/device.txt"; adb shell getprop ro.build.version.release >> "\$L/device.txt"
 exit 0
