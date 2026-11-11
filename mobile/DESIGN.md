@@ -171,25 +171,32 @@ Taken into FEMME mobile:
 
 ## Visual language
 
-The desktop's, one-to-one (`desktop/src/theme.rs`; the tokens are copied into
-`prototype/index.html` `:root`):
+Apple's structure and components, FEMME's colours and type on top (an independent HIG review on
+2026-11-11 found the first draft, which copied the desktop's hard style into the chat, "reads as
+two different apps"; the desktop's 0-radius, hard-shadow rule is the desktop's, not the phone's):
 
-- **Paper and ink**: paper `#FEFEFE` / ink `#1E1E1E` (dark: `#1E1E1E` / `#ECECEC`), panel
-  `#E5E5E5`, muted `#5C5C5C`. The desk pink `#F386A1` only as the gutter behind cards.
-- **Pink is "you"**: accent `#D45BB6` fills the selected row and your own bubbles' border; neon
-  `#FF4FB4` is pressed/focus and the working spinner; never a resting fill.
-- **Status is a dot, not a glyph**: an 8 px ink-bordered square filled with the lane colour,
-  working `#03AA5C`, blocked `#F2B33D`, idle `#DEDEDE`, failed `#D93036`, closed `#858585`; PR
-  teal `#09AEA1`. The transcript's working line spins `· ✢ ✳ ✶ ✻ ✽`.
-- **Flat and hard**: 1.2 px ink borders, 0 radius, shadows with zero blur (`2px 2px 0 ink` under
-  buttons and cards, `3px 3px 0` dim under the composer and dialogs); a pressed button loses its
-  shadow and moves 2 px.
-- **Type**: VT323 for titles (22 px) and buttons (20 px), Schibsted Grotesk 14 px for body,
-  JetBrains Mono 13 px for code and 12 px for meta, Kaushan Script for the wordmark. On the phone
-  body goes to 16 px and follows the OS text size; mono stays 13.
-- **Motion**: one curve, 180 ms `cubic-bezier(.32,.72,0,1)`, nothing over 200 ms, nothing
-  bounces: a card leaving Now, the context bar pulsing once on a compaction, the `↓ new` pill.
-- Touch targets 44 px. Red only for *not received* and past-90 % context.
+- **System surfaces**: every tab is a grouped screen on `systemGroupedBackground`, nav bar
+  included, with inset grouped sections (white / dark cards, 10 pt radius); footers are footnote
+  (13 pt, secondary); sheets are real sheets (`showCupertinoSheet`: grabber, swipe-down, card
+  stack) with Cancel / Done.
+- **Pink is "you"**: accent `#D45BB6` fills your own bubbles (white text, 18 pt radius) and the
+  selected tab; neon `#FF4FB4` is pressed/focus and the working spinner; never a resting fill.
+  Assistant text sits unbubbled on the page, as Messages and the Claude app do.
+- **Status is a dot and a word**: a filled 8 pt circle in the lane colour, working `#03AA5C`,
+  blocked `#F2B33D`, idle `#DEDEDE`, failed `#D93036`, closed `#858585`, PR teal `#09AEA1`,
+  with a VoiceOver label and the status word in the row's subtitle, so colour is never the only
+  signal. The transcript's working line spins `· ✢ ✳ ✶ ✻ ✽`.
+- **Chips and fields**: capsule chips on `tertiarySystemFill` for mode / model / permission; the
+  composer is a rounded field with a hairline border; code blocks are rounded on
+  `secondarySystemBackground`; no 1.2 px ink borders, no offset shadows.
+- **Type**: the system font at the HIG scale (large title, headline, body 17, footnote 13,
+  caption 12), following the OS text size; JetBrains-style mono 13 for code and 12 for meta.
+- **Motion**: one curve, 180 ms ease-out, nothing over 200 ms, nothing bounces: a card leaving
+  Now, rows fading in, the context bar pulsing once on a compaction, the `↓ new` pill.
+- **Touch**: 44 pt targets everywhere (a compact glyph may sit in a larger hit area); haptics on
+  send, answer, interrupt and destructive confirms; every icon-only button has a VoiceOver
+  label; re-tapping the active tab pops to its root, then scrolls to the top.
+- Red only for *not received*, past-90 % context, and destructive actions.
 
 ## Architecture
 
