@@ -1,5 +1,6 @@
 import 'package:femme_mobile/net/models.dart';
 import 'package:femme_mobile/ui/chat/attached.dart';
+import 'package:femme_mobile/ui/chat/rows.dart';
 import 'package:femme_mobile/ui/chat/turns.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -135,6 +136,25 @@ void main() {
       ),
     ]);
     expect(rows.whereType<ReadEntry>().map((r) => r.target), ['u2']);
+  });
+
+  test('a model fallback is a warning event', () {
+    final warn = it(
+      'u-f',
+      ItemKind.event,
+      body: {
+        'text': 'fable 5.2 → opus 4.8 · x',
+        'warning': true,
+        'detail': 'd',
+      },
+    );
+    expect(eventWarning(warn), isTrue);
+    expect(
+      eventWarning(
+        it('e', ItemKind.event, body: {'text': 'Conversation compacted'}),
+      ),
+      isFalse,
+    );
   });
 
   test('compaction: the summary folds, its event is hidden', () {

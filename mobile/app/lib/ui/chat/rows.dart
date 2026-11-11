@@ -407,9 +407,12 @@ class PlanRow extends StatelessWidget {
 
 /// A muted centred note.
 class NoteLine extends StatelessWidget {
-  const NoteLine(this.text, {super.key, this.red = false});
+  const NoteLine(this.text, {super.key, this.red = false, this.warn = false});
   final String text;
   final bool red;
+
+  /// A warning (the model fell back): amber.
+  final bool warn;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -421,12 +424,19 @@ class NoteLine extends StatelessWidget {
         style: mono(
           context,
           size: 12,
-          color: red ? FemmeColors.bad : muted(context),
+          color: red
+              ? FemmeColors.bad
+              : warn
+              ? FemmeColors.warnTextC.resolveFrom(context)
+              : muted(context),
         ),
       ),
     ),
   );
 }
+
+/// Whether an `Event` is a warning (its body's `warning`).
+bool eventWarning(Item item) => item.bodyJson?['warning'] == true;
 
 class EventRow extends StatelessWidget {
   const EventRow(this.item, {super.key});
@@ -438,6 +448,16 @@ class EventRow extends StatelessWidget {
         .text(item, Femme.of(context).store.textOf);
     final t = text.trim();
     final red = item.status == ItemStatus.failed;
+    // A warning (Claude answers with a fallback model): `⚠`, amber; the agent's own words
+    // (`detail`) are in what a long press copies.
+    if (eventWarning(item)) {
+      final detail = item.bodyJson?['detail'] as String?;
+      return GestureDetector(
+        onLongPress: () =>
+            messageMenu(context, detail == null ? t : '$t\n\n$detail'),
+        child: NoteLine('⚠ $t', warn: true),
+      );
+    }
     return GestureDetector(
       onLongPress: () => messageMenu(context, t),
       child: NoteLine(t.startsWith('◎') ? t : '· $t', red: red),
