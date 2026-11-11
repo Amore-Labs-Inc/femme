@@ -32,6 +32,11 @@ pub fn decide(prev: Attention, next: Attention) -> Option<(&'static str, u8)> {
     }
 }
 
+/// The deep link a phone's push opens: the session's chat in the FEMME app.
+pub fn session_link(sid: Sid) -> String {
+    format!("femme://session/{sid}")
+}
+
 /// Whether a phone with `rules` is pushed that session `sid` became `next`, at local hour `hour`.
 /// Pure.
 pub fn wants(rules: &PushRules, sid: Sid, next: Attention, hour: u8) -> bool {
@@ -143,8 +148,16 @@ impl Notifier {
             .filter(|r| r.platform == PushPlatform::Ntfy && wants(&r.rules, sid, next, hour))
             .map(|r| r.token.clone())
             .collect();
+        // A phone's push opens the session when tapped (the app registers the `femme` scheme).
+        let click = session_link(sid);
         for topic in topics {
-            self.post(topic, title.clone(), message.clone(), prio);
+            self.post_to(
+                topic,
+                title.clone(),
+                message.clone(),
+                prio,
+                Some(click.clone()),
+            );
         }
     }
 
@@ -154,14 +167,25 @@ impl Notifier {
             tracing::info!(%title, %message, "ntfy (no topic): not sent");
             return;
         };
-        self.post(topic, title, message, priority);
+        self.post_to(topic, title, message, priority, None);
     }
 
-    /// Posts one push in its own task: a failure is logged and touches no other push.
-    fn post(&self, topic: String, title: String, message: String, priority: u8) {
+    /// Posts one push in its own task: a failure is logged and touches no other push. `click`
+    /// is ntfy's tap target.
+    fn post_to(
+        &self,
+        topic: String,
+        title: String,
+        message: String,
+        priority: u8,
+        click: Option<String>,
+    ) {
         let (client, base) = (self.client.clone(), self.base.clone());
         tokio::spawn(async move {
-            let body = serde_json::json!({ "topic": topic, "title": title, "message": message, "priority": priority });
+            let mut body = serde_json::json!({ "topic": topic, "title": title, "message": message, "priority": priority });
+            if let Some(click) = click {
+                body["click"] = serde_json::Value::String(click);
+            }
             if let Err(e) = client
                 .post(&base)
                 .json(&body)
@@ -359,9 +383,16 @@ mod tests {
         topics.sort();
         // `broken` was answered 500, and the others were posted all the same
         assert_eq!(topics, ["all", "broken", "owner"]);
+        // a phone's push opens the session when tapped; the owner's topic has no click
         assert_eq!(
             got["all"],
             serde_json::json!({"topic": "all", "title": "fix-ci",
+                "message": "needs you (fix-ci)", "priority": 5,
+                "click": format!("femme://session/{sid}")})
+        );
+        assert_eq!(
+            got["owner"],
+            serde_json::json!({"topic": "owner", "title": "fix-ci",
                 "message": "needs you (fix-ci)", "priority": 5})
         );
 
