@@ -7,13 +7,11 @@ planned daemon additions are in `PROTOCOL.md`.
 
 ## Status (2026-11-11)
 
-Re-audited 2026-11-11 after parity round 3 (141 rows in §1–16; the `phone` column of each table holds the verdict): **124 done, 3 partial, 0 missing, 14 n/a.** Paths in the `phone` column are relative to `mobile/app/lib/`.
+Re-audited 2026-11-11 after parity round 3 (141 rows in §1–16; the `phone` column of each table holds the verdict): **126 done, 1 partial, 0 missing, 14 n/a.** Paths in the `phone` column are relative to `mobile/app/lib/`.
 
 Still partial:
 
 - §1 Current session follows closes (partial, optional on phone): a closed chat says `session closed` with a Close button; it does not move on by itself to the newest live session, and a new Claude session does not take over from a shell
-- §5 Thumbnail menu (partial): the long-press menu (Open, Share, Save to Photos, Copy image) works in Dart, but ios/Runner/Info.plist has no `NSPhotoLibraryAddUsageDescription` (iOS kills the app on Save to Photos) and the Android manifest has no `WRITE_EXTERNAL_STORAGE` (maxSdkVersion 29) for Android ≤ 9
-- §6 Attach files (partial): camera, Photos, Files and Paste are there, but ios/Runner/Info.plist has no `NSCameraUsageDescription` (iOS kills the app when the camera opens); Android `content://` clipboard files are skipped
 
 Earlier audit (2026-11-11, before round 3): 87 done, 36 partial, 4 missing, 14 n/a.
 
@@ -122,7 +120,7 @@ Code-verified absences, so nobody builds a phone screen to match a desktop featu
 | Video still | ffmpeg poster frame off the UI thread | `desktop/src/transcript/live.rs:615-639` | local | Phone: AVFoundation / MediaMetadataRetriever. | done · ui/media/poster.dart |
 | `femmed show` media | `Attached:` lines inside an AssistantMessage = files the agent showed; bigger boxes | `desktop/src/transcript/rows.rs:503-534`, `thumb.rs:1-10` | appended by `Req::Show` `rpc.rs:218-225` | | done · ui/chat/rows.dart AssistantRow (wide boxes) |
 | Hover preview, lightbox | hover = larger preview; click = full-window lightbox (picture fitted; video player) | `desktop/src/transcript/thumb.rs:1-10,190-200` | local | | done · ui/chat/media.dart openAttached, ui/media/lightbox.dart (tap; no hover on a phone) |
-| Thumbnail menu | right-click: `copy image`, `open` | `desktop/src/transcript/thumb.rs:220-230,244-...` | local | Share sheet / save to Photos. | partial: long-press menu on picture and video thumbnails with Open, Share, Save to Photos (gal), Copy image (ui/chat/media.dart attachedMenu, ui/media/actions.dart); missing: `NSPhotoLibraryAddUsageDescription` in ios/Runner/Info.plist (iOS kills the app on Save to Photos without it) and `WRITE_EXTERNAL_STORAGE` (maxSdkVersion 29) for Android ≤ 9 |
+| Thumbnail menu | right-click: `copy image`, `open` | `desktop/src/transcript/thumb.rs:220-230,244-...` | local | Share sheet / save to Photos. | done: long-press menu on picture and video thumbnails with Open, Share, Save to Photos (gal), Copy image (ui/chat/media.dart attachedMenu, ui/media/actions.dart); `NSPhotoLibraryAddUsageDescription` in ios/Runner/Info.plist and `WRITE_EXTERNAL_STORAGE` (maxSdkVersion 29) in the Android manifest |
 
 ## 6. Composer
 
@@ -137,7 +135,7 @@ Code-verified absences, so nobody builds a phone screen to match a desktop featu
 | After send | text and sent chips cleared only on success; text typed meanwhile stays; error stays under the input; an expired upload (`its upload is gone`) re-uploads | `desktop/src/composer.rs:712-770`, `draft.rs:221-223` | — | | done · ui/chat/attachments.dart sendWithFiles, ui/chat/composer.dart (text and chips clear at once; `its upload is gone` re-uploads the kept bytes and sends again; failed send → outbox bubble with retry) |
 | Drafts | per session; survive restarts in `$XDG_STATE_HOME/femme/drafts/<sid>.txt` (text only) | `desktop/src/composer.rs:201-218`, `composer/disk.rs:1-6` | local only | Persist per sid. | done · state/chat.dart loadDraft / saveDraft (per sid, shared_preferences) |
 | Prompt history | Up on the first row recalls earlier prompts of the session (from replicated `UserMessage`s + unechoed local sends), Down goes forward, Esc ends | `desktop/src/composer/history.rs:1-120`, `composer.rs:330-376` | local only | | done · ui/chat/composer.dart promptHistory (clock button → sheet) |
-| Attach files | `+` (file picker, multiple), drag-and-drop, paste images or copied files | `desktop/src/composer.rs:794-889,1076-1078,1140-1164` | `Req::BlobPut{name, data}` → `Resp::BlobHash` `rpc.rs:189-194,338`, then `Attachment{name, blob}` in `Prompt` | Camera, Photos, Files. | partial: camera, Photos, Files, and Paste in the attach sheet (clipboard picture or copied local files) (ui/chat/attachments.dart pickInto, pasteInto); missing: `NSCameraUsageDescription` in ios/Runner/Info.plist (iOS kills the app when the camera opens without it); Android `content://` clipboard files are skipped |
+| Attach files | `+` (file picker, multiple), drag-and-drop, paste images or copied files | `desktop/src/composer.rs:794-889,1076-1078,1140-1164` | `Req::BlobPut{name, data}` → `Resp::BlobHash` `rpc.rs:189-194,338`, then `Attachment{name, blob}` in `Prompt` | Camera, Photos, Files. | done: camera, Photos, Files, and Paste in the attach sheet (clipboard picture or copied local files) (ui/chat/attachments.dart pickInto, pasteInto); camera, photo library and microphone usage strings in ios/Runner/Info.plist. Known limit: Android `content://` clipboard files are skipped (use Files) |
 | Attachment limits | ≤ 8 MiB per file (`MAX_BLOB_PUT`), ≤ 16 files per prompt, empty files and directories refused; duplicate names become `name (2).ext`; pasted pictures `paste-<n>.png` | `crates/femme-proto/src/rpc.rs:301-302`, `desktop/src/composer/draft.rs:47-104,279-322` | — | | done · ui/chat/attachments.dart (8 MiB, 16 files, empty refused, `name (2).ext`) |
 | Chip states | uploading (spinner) / ready (size, pixel size) / failed (reason on hover, retry, remove); hover preview | `desktop/src/composer/chips.rs:1-6,80-100,255-300`, `draft.rs:19-45,333-391` | `BlobPut` again on retry | | done · ui/chat/attachments.dart _FileChip (uploading, size · W×H, failed · retry, remove, 40 px thumbnail incl. SVG) |
 | Chip menu | right-click: `copy image` (raster only), `open`, `remove` | `desktop/src/composer/chips.rs:140-150,420-432` | local | | done · ui/chat/attachments.dart chipMenu (Preview → lightbox, Copy image for raster pictures, Remove) |
