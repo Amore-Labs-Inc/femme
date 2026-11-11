@@ -534,8 +534,8 @@ impl ClaudeDriver {
     }
 
     /// The reply to [`Self::ask_context`]: the threshold while auto-compaction is on, with what
-    /// the last call read (the reply's own count for a conversation no call has read yet: a new
-    /// one, or one just compacted).
+    /// the last call read (the reply's own count for a new conversation, which no call has read
+    /// yet).
     // ponytail: auto-compaction turned off mid-session says nothing, so the row keeps the old
     // point; give `compact_at` a "none" word if that ever shows
     fn context_usage(&mut self, r: &Value, ev: &mut Vec<AgentEvent>) {
@@ -642,8 +642,10 @@ impl ClaudeDriver {
                         .as_u64()
                         .or_else(|| v["compactMetadata"]["preTokens"].as_u64()),
                 });
-                // what the last call read is gone: the next call (or the CLI's own count) says
-                self.ctx_used = None;
+                // what the last call read is gone and the bar is empty until the next call says.
+                // The CLI's own count still is the old one here (seen on 2.1.321: the bar filled
+                // up again right after the level up), so the reply to our question must not use it
+                self.ctx_used = Some(0);
             }
             "session_state_changed" => {
                 let state = v["state"].as_str().unwrap_or("");
@@ -3210,14 +3212,13 @@ mod tests {
             json!({"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"c1"});
         d.on_line(6, boundary.to_string().as_bytes(), &mut out);
         let rid = asks(&out);
-        // after a compaction the last call's number is stale: the CLI's count again
-        let mut small = on;
-        small["totalTokens"] = json!(9_000);
-        let ev = d.on_line(7, reply(&rid, small).as_bytes(), &mut out);
+        // after a compaction the bar is empty until the next call: the CLI's count is still the
+        // old one
+        let ev = d.on_line(7, reply(&rid, on).as_bytes(), &mut out);
         assert_eq!(
             contexts(ev),
             [AgentEvent::Context {
-                used: 9_000,
+                used: 0,
                 window: Some(1_000_000),
                 compact_at: Some(501_643)
             }]
