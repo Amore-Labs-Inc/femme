@@ -526,11 +526,15 @@ class _CapStepperState extends State<CapStepper> {
                     widget.label,
                     style: TextStyle(fontSize: 11, color: muted),
                   ),
-                  Text(
-                    v == null ? 'default' : '$v %',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: v == null ? muted : null,
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      v == null ? 'default' : '$v%',
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: v == null ? muted : null,
+                      ),
                     ),
                   ),
                 ],
