@@ -383,6 +383,8 @@ comes because the driver writes nothing until all parts are in (`crates/femmed/s
 | `text` | string | always | `items.rs:114-120` |
 | `task` | `{call, status}` | a background task stopped (Claude `task_notification`) | `items.rs:117-131`, `claude.rs:2169-2185` |
 | `read` | string (item_id) | the echo of a saved prompt: names the `UserMessage` row it read | `crates/femmed/src/sent.rs:253-266`, `:315-319` |
+| `warning` | bool (absent = false) | the line is a warning: Claude answers with a fallback model, or a refusal had none | `items.rs` `Event`, `claude.rs` `fallback` |
+| `detail` | string | the agent's own longer wording of a warning (Claude's banner, with its link) | same |
 
 Status is `Completed`, except Codex `error` notices that will not retry: `Failed` (`codex.rs:474-487`,
 `:1089-1099`).
@@ -398,6 +400,7 @@ Event texts that exist (exhaustive for what the code builds):
 | `[Request interrupted by user]` and other non-replayed user-line text | Claude markers | `claude.rs:1064-1067` |
 | output of a `/` command (`<local-command-stdout>`, ANSI stripped), e.g. ``Set model to `x` ``, `Goal set: …` | Claude | `claude.rs:1019-1045` |
 | `◎ goal not met yet · <reason>` | Claude `/goal` Stop-hook verdict | `claude.rs:1044-1046` |
+| `<original> → <fallback> · <reason>` + `warning`, `detail` (`fable 5.2 → opus 4.8 · safeguards flagged this message (cyber)`; reason also `usage-credit gate` or the trigger, `overloaded`); the first line of Claude's text when a refusal has no fallback | Claude `model_refusal_fallback`, `model_consent_fallback`, `model_fallback`, `model_refusal_no_fallback` (2.1.321). The items of the refused reply are deleted (item tombstones); a session-scoped switch sets `Session.model` | `claude.rs` `fallback` |
 | `claude failed before it ran a turn: <why>` | Claude | `claude.rs:1234-1247` |
 | `Claude asked something FEMME cannot answer: <subtype>` (once per subtype) | Claude unknown control request | `claude.rs:1623-1646` |
 | `claude rejected a control request: <why>` | Claude | `claude.rs:1704-1711` |
@@ -417,6 +420,9 @@ Desktop rendering: an `Event` with `read` → a thin `↳ <first line>` that scr
 hidden when the message is the row right above (`rows.rs:422-465`); otherwise a muted mono line
 prefixed `· ` unless it starts with `◎` (`rows.rs:652-662`, `:1179-1186`). `task.call` ends an agent
 chip and clears a tool row's `in_background` (`agents.rs:43-46`, `:108-118`; `turns.rs:241-252`).
+A `warning` → `⚠ <text>` in `warn_text` (amber), which unfolds to `detail` as markdown
+(`rows.rs` `warning_row`); on the phone the same amber line, `detail` in what a long press copies
+(unfolding it there is a follow-up).
 
 ```json
 {"read":"01JC9W6K7Q2R3S4T5V6W7X8Y9Z","text":"Claude read your message"}
