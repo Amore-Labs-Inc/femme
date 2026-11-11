@@ -153,7 +153,10 @@ class _FilesBrowserState extends State<FilesBrowser> {
               padding: EdgeInsets.zero,
               minimumSize: const Size(44, 44),
               onPressed: _refresh,
-              child: const Icon(CupertinoIcons.arrow_clockwise),
+              child: const Icon(
+                CupertinoIcons.arrow_clockwise,
+                semanticLabel: 'Refresh',
+              ),
             ),
           ),
           CupertinoSliverRefreshControl(onRefresh: _refresh),
@@ -254,7 +257,12 @@ class Crumbs extends StatelessWidget {
     return Container(
       height: 40,
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: ink, width: 1.2)),
+        border: Border(
+          bottom: BorderSide(
+            color: CupertinoColors.separator.resolveFrom(context),
+            width: 0,
+          ),
+        ),
       ),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
@@ -310,8 +318,8 @@ class FileRow extends StatelessWidget {
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-              color: FemmeColors.panelC.resolveFrom(context),
-              width: 1,
+              color: CupertinoColors.separator.resolveFrom(context),
+              width: 0,
             ),
           ),
         ),
@@ -339,7 +347,12 @@ class FileRow extends StatelessWidget {
                 padding: EdgeInsets.zero,
                 minimumSize: const Size(36, 44),
                 onPressed: () => onMore(context),
-                child: Icon(CupertinoIcons.ellipsis, size: 20, color: muted),
+                child: Icon(
+                  CupertinoIcons.ellipsis,
+                  size: 20,
+                  color: muted,
+                  semanticLabel: 'More actions',
+                ),
               ),
               SizedBox(
                 width: 14,
