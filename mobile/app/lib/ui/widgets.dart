@@ -11,12 +11,17 @@ import 'files.dart';
 import 'terminal.dart';
 import 'theme.dart';
 
+/// The desktop's lanes (`desktop/src/sidebar.rs` `Lane::of`): working, needs you (amber), idle
+/// or starting (queue), failed (interrupted, paused, crashed, failed: red), closed.
 Color statusColor(Session s) {
+  if (s.status == SessionStatus.working) return FemmeColors.work;
   if (s.needsYou) return FemmeColors.pause;
   return switch (s.status) {
-    SessionStatus.working || SessionStatus.starting => FemmeColors.work,
-    SessionStatus.failed || SessionStatus.crashed => FemmeColors.bad,
-    SessionStatus.closed || SessionStatus.interrupted => FemmeColors.done,
+    SessionStatus.interrupted ||
+    SessionStatus.paused ||
+    SessionStatus.failed ||
+    SessionStatus.crashed => FemmeColors.bad,
+    SessionStatus.closed => FemmeColors.done,
     _ => FemmeColors.queue,
   };
 }
