@@ -359,6 +359,10 @@ pub enum AgentEvent {
         used: u64,
         /// The window in tokens, when the agent said (Claude: the turn's `result`).
         window: Option<u64>,
+        /// Tokens at which the agent compacts by itself, when the event says (Claude: the reply
+        /// to `get_context_usage`). `None` is no word: what was said before stays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compact_at: Option<u64>,
     },
     /// The conversation was compacted: the context shrinks, the desktop's level goes up.
     Compacted {
