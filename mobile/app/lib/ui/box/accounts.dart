@@ -297,6 +297,7 @@ class _AccountTile extends StatelessWidget {
                     : CupertinoButton(
                         sizeStyle: CupertinoButtonSize.small,
                         padding: const EdgeInsets.only(left: 8),
+                        minimumSize: const Size(44, 44),
                         onPressed: onSwitch,
                         child: const Text('Switch'),
                       ),
