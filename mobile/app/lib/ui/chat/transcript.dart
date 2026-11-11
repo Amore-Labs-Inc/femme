@@ -13,6 +13,7 @@ import '../theme.dart';
 import 'look.dart';
 import 'media.dart';
 import 'rows.dart';
+import 'subagent.dart';
 import 'turns.dart';
 
 const motion = Cubic(.32, .72, 0, 1);
@@ -123,6 +124,7 @@ class _TranscriptViewState extends State<TranscriptView> {
         if (i.parent == widget.parent) i,
     ];
     final entries = layout(view, body: body, endedTasks: c.endedTasks);
+    final chips = agentChips(all, body);
     _count = entries.length;
     if (widget.parent == null) _fillCheck();
 
@@ -148,7 +150,7 @@ class _TranscriptViewState extends State<TranscriptView> {
         if (rows[i].key != null) rows[i].key!: rows.length - 1 - i,
     };
 
-    return Stack(
+    final list = Stack(
       children: [
         CupertinoScrollbar(
           controller: _scroll,
@@ -192,6 +194,13 @@ class _TranscriptViewState extends State<TranscriptView> {
               ),
             ),
           ),
+      ],
+    );
+    if (chips.isEmpty && widget.parent == null) return list;
+    return Column(
+      children: [
+        AgentStrip(chips: chips, view: widget.parent),
+        Expanded(child: list),
       ],
     );
   }

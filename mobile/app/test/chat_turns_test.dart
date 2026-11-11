@@ -1,4 +1,5 @@
 import 'package:femme_mobile/net/models.dart';
+import 'package:femme_mobile/net/wire.dart';
 import 'package:femme_mobile/ui/chat/attached.dart';
 import 'package:femme_mobile/ui/chat/turns.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -185,5 +186,79 @@ void main() {
     ];
     expect(workingVerb(items), 'Running a tool');
     expect(lastUserTs(items), 42);
+  });
+
+  group('subagent chips', () {
+    Json? b(Item i) => i.bodyJson;
+    Item agent(String id, String desc) =>
+        call(id, 'Agent', {'description': desc, 'prompt': '…'});
+    Item ended(String id, String callId) => it(
+      id,
+      ItemKind.event,
+      body: {
+        'text': 'done: completed',
+        'task': {'call': callId, 'status': 'completed'},
+      },
+    );
+    Item turnEnd(String id) =>
+        it(id, ItemKind.turnEnd, body: {'stop': 'EndTurn'});
+    List<(String, bool)> on(List<AgentChip> c) => [
+      for (final x in c) (x.id, x.running),
+    ];
+
+    test("the turn's Agent calls are chips until the turn ends", () {
+      final c = agentChips([
+        agent('t1', 'old'),
+        result('t1', 'done'),
+        turnEnd('e1'),
+        it('u2', ItemKind.userMessage, body: {'text': 'go'}),
+        agent('t2', 'bench the strip'),
+        result('t2', 'done'),
+        // a big prompt: no body at hand, read from the preview
+        it('t3', ItemKind.toolCall, preview: 'Agent review the diff'),
+        call('t4', 'Bash', {'command': 'ls'}),
+      ], b);
+      expect(
+        [for (final x in c) (x.id, x.label, x.running)],
+        [('t2', 'bench the strip', false), ('t3', 'review the diff', true)],
+      );
+      expect(agentElapsed(5000, 77500), '1m 12s');
+      expect(agentElapsed(5000, 9000), '4s');
+      expect(agentElapsed(5000, 4000), '0s');
+    });
+
+    test('a background agent stays on show until it is said to stop', () {
+      final items = [
+        agent('b1', 'bench in the background'),
+        result('b1', 'Async agent launched successfully'),
+        agent('f1', 'in the foreground'),
+        it('f1u', ItemKind.userMessage, parent: 'f1'),
+        result('f1', 'done'),
+        turnEnd('e1'),
+        it('u2', ItemKind.userMessage, body: {'text': 'go'}),
+        it('b1c', ItemKind.toolCall, preview: 'Bash ls', parent: 'b1'),
+      ];
+      expect(on(agentChips(items, b)), [('b1', true)]);
+      items.add(ended('n9', 'b1'));
+      expect(agentChips(items, b), isEmpty);
+      items.addAll([
+        agent('b2', 'again'),
+        result('b2', 'Async agent launched successfully'),
+        ended('n12', 'b2'),
+      ]);
+      expect(on(agentChips(items, b)), [('b2', false)]);
+      items.add(turnEnd('e2'));
+      expect(agentChips(items, b), isEmpty);
+    });
+
+    test(
+      'Task is the old name; the subagent type stands in for a description',
+      () {
+        final c = agentChips([
+          call('k1', 'Task', {'subagent_type': 'Explore', 'prompt': 'x'}),
+        ], b);
+        expect(c.single.label, 'Explore');
+      },
+    );
   });
 }

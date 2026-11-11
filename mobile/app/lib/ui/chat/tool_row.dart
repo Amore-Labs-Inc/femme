@@ -98,18 +98,15 @@ class ToolRow extends StatelessWidget {
               children: [
                 Expanded(child: summary),
                 if (hasSub)
-                  _Action('open ›', () {
-                    Navigator.of(context).push(
-                      CupertinoPageRoute<void>(
-                        builder: (_) => SubagentScreen(
-                          sid: c.sid,
-                          callId: call.itemId,
-                          title: line.hint.isEmpty ? 'agent' : line.hint,
-                          controller: c,
-                        ),
-                      ),
-                    );
-                  }),
+                  _Action(
+                    'open ›',
+                    () => openSubagent(
+                      context,
+                      c,
+                      call.itemId,
+                      line.hint.isEmpty ? 'agent' : line.hint,
+                    ),
+                  ),
                 if (line.backgroundable && call != null)
                   _Action('⇣ background', () async {
                     HapticFeedback.selectionClick();
