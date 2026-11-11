@@ -48,7 +48,7 @@ The app scans it (or takes the link pasted) and keeps the token in the Keychain 
 | permission | `CyclePermission{sid}` for the mode; allow/deny of one call is an `AnswerQuestion` on the permission item (the holder's `permission-prompt-tool=stdio` already turns it into one) | Ctrl |
 | Chat | `Subscribe{Session(sid)}` → `Changes{rows: Item…}` + `Delta{sid, item_id, offset, text}`; older history `TranscriptPage{sid, before_seq, limit}`; pictures `BlobGet{hash}` / `FsRead` for `Attached:` paths | Events, Bulk |
 | send | `BlobPut{name, data ≤ 8 MiB}` per attachment → `Prompt{sid, text, attachments, how: Queue \| Steer \| InterruptThenSend}`; the bubble's state is the `user_message` item's status (`Pending` = queued, `Completed`+`read_at` = read, `Failed` = not received → `Resend{sid, item_id}`) | Ctrl |
-| interrupt | `Interrupt{sid}`; `Background{sid, tool_use_id}` | Ctrl |
+| interrupt | `Interrupt{sid}`; `Background{sid, tool_use_id}`; `TakeBack{sid}` while the newest main-thread row (notes aside) is still the user's message: answered `TakenBack{text}` (the prompt is out of Claude's conversation and the transcript, the text goes back into the input) or `Ok` (it could only interrupt) | Ctrl |
 | `/` sheet | `Commands` → names; `SetModel`, effort/goal as typed commands in `Prompt` | Ctrl |
 | Terminal | `PaneOpen{sid}` → `Pane(id)`, then a `Term(pane)` stream for rows and keys; `PaneClose` on leave | Term |
 | Files | `FsList{sid, path}`, `FsRead{sid, path}` (ask above 8 MiB) | Bulk |
