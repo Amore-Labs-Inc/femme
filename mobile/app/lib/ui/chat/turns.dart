@@ -77,6 +77,16 @@ class FoldEntry extends Entry {
   String get key => 'fold:${inner.first.key}';
 }
 
+/// When the row's item was made (unix ms): a fold's first row, a tool row's call.
+int entryTs(Entry e) => switch (e) {
+  ItemEntry(:final item) ||
+  CompactionEntry(:final item) ||
+  TurnEndEntry(:final item) => item.ts,
+  ToolEntry(:final call, :final result) => (call ?? result!).ts,
+  ReadEntry(:final event) => event.ts,
+  FoldEntry(:final inner) => entryTs(inner.first),
+};
+
 /// The id of the call a result answers: its body's `call_id`, else the id minus `:result`.
 String? callIdOf(Item result, Json? body) {
   final c = body?['call_id'];

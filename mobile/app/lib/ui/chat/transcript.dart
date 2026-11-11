@@ -181,7 +181,11 @@ class _TranscriptViewState extends State<TranscriptView> {
       for (final e in entries)
         KeyedSubtree(
           key: ValueKey(e.key),
-          child: _Anchor(e.key, _built, child: entryRow(e, all)),
+          child: _Anchor(
+            e.key,
+            _built,
+            child: FadeIn(ts: entryTs(e), child: entryRow(e, all)),
+          ),
         ),
       ...widget.footer,
       const SizedBox(height: 8),
@@ -331,4 +335,46 @@ class _AnchorState extends State<_Anchor> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// A row made less than a second ago fades in and rises 4 px when first built (desktop
+/// rows.rs fade_in, 180 ms); history, and rows built again on scrolling, show as they are.
+class FadeIn extends StatefulWidget {
+  const FadeIn({super.key, required this.ts, required this.child});
+
+  /// When the row's item was made, unix ms.
+  final int ts;
+  final Widget child;
+
+  static const fresh = Duration(seconds: 1);
+  static const length = Duration(milliseconds: 180);
+
+  @override
+  State<FadeIn> createState() => _FadeInState();
+}
+
+class _FadeInState extends State<FadeIn> {
+  late final bool _fresh =
+      DateTime.now().millisecondsSinceEpoch - widget.ts <
+      FadeIn.fresh.inMilliseconds;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_fresh || MediaQuery.disableAnimationsOf(context)) {
+      return widget.child;
+    }
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: FadeIn.length,
+      curve: Curves.easeOut,
+      child: widget.child,
+      builder: (_, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+          offset: Offset(0, 4 * (1 - t)),
+          child: child,
+        ),
+      ),
+    );
+  }
 }
