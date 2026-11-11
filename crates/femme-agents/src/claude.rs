@@ -1017,6 +1017,18 @@ impl ClaudeDriver {
             return;
         }
         let id = item_id(v, offset);
+        if v["origin"]["kind"] == "task-notification"
+            || text.trim_start().starts_with("<task-notification>")
+        {
+            // the CLI's own report of background work, queued as a user line (and replayed since
+            // 2.1.319): it starts a turn and is never the user's message. A task's end is the
+            // `task_notification` row already; a Monitor event gets its own row.
+            self.activity(offset, ev);
+            if let Some(row) = monitor_event(&text) {
+                ev.push(event_item(id, &row));
+            }
+            return;
+        }
         let text = command_line(&text).unwrap_or(text);
         if let Some(out) = text.strip_prefix("<local-command-stdout>") {
             // output of a slash command the host sent, e.g. set_model's "Set model to `x`"
@@ -2226,6 +2238,30 @@ fn peer_message(origin: &Value, text: &str) -> PeerMessage {
 fn tag<'a>(text: &'a str, t: &str) -> Option<&'a str> {
     let (_, rest) = text.split_once(&format!("<{t}>"))?;
     rest.split_once(&format!("</{t}>")).map(|(v, _)| v.trim())
+}
+
+/// The row of a `<task-notification>` that is not a task's end (no `<status>`), i.e. a Monitor
+/// event: `◷ <description> · <event>`. The first line is the row, a longer event's other lines
+/// follow it; the note to the model after `</event>` is left out. Public for the daemon, which
+/// reads from the transcript on disk the events the stream does not replay.
+pub fn monitor_event(text: &str) -> Option<String> {
+    if tag(text, "status").is_some() {
+        return None;
+    }
+    let summary = tag(text, "summary").unwrap_or("background task");
+    let what = summary
+        .strip_prefix("Monitor event:")
+        .map_or(summary, |d| d.trim().trim_matches('"'));
+    // up to the last `</event>`: the event is a command's output and may say the tag itself
+    let event = text
+        .split_once("<event>")
+        .and_then(|(_, r)| r.rsplit_once("</event>"))
+        .map_or("", |(e, _)| e.trim());
+    Some(if event.is_empty() {
+        format!("◷ {what}")
+    } else {
+        format!("◷ {what} · {event}")
+    })
 }
 
 /// Text without its ANSI escape sequences (`ESC [ ... letter`).

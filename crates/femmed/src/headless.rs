@@ -386,9 +386,15 @@ struct Actor {
     /// Claude's `/goal` is on (set, or judged not met yet): the transcript on disk is followed for
     /// the checker's verdicts, which the stream never carries (see [`GoalTail`]).
     goal: Option<GoalTail>,
+    /// Claude called `Monitor`: the transcript on disk is followed for the events that start a
+    /// turn of their own, which the stream does not replay (it replays those taken mid-turn).
+    // ponytail: followed from then on, not until the Monitor ends; close it on the
+    // Monitor's task end if the read per chunk ever shows
+    monitor: Option<GoalTail>,
 }
 
-/// The transcript on disk of a session with a `/goal`, read from where the goal was set.
+/// The transcript on disk of a session with a `/goal` (or a `Monitor`), read from where the goal
+/// was set (the Monitor called).
 struct GoalTail {
     path: Option<PathBuf>,
     read: u64,
@@ -445,6 +451,7 @@ impl Actor {
             switching: false,
             stop: false,
             goal: None,
+            monitor: None,
         }
     }
 
@@ -642,6 +649,11 @@ impl Actor {
     /// sentinel of the goal being set comes after). No file yet (a session's first prompt): it is
     /// looked up again on the next chunk.
     fn open_goal_tail(&mut self, d: &Daemon) {
+        self.goal = Some(self.tail_from_now(d));
+    }
+
+    /// The transcript on disk, to be read from its end now.
+    fn tail_from_now(&self, d: &Daemon) -> GoalTail {
         let path = d
             .session(self.sid)
             .ok()
@@ -651,7 +663,7 @@ impl Actor {
             .as_ref()
             .and_then(|p| std::fs::metadata(p).ok())
             .map_or(0, |m| m.len());
-        self.goal = Some(GoalTail { path, read });
+        GoalTail { path, read }
     }
 
     /// The goal verdicts the transcript on disk gained since the last look: the newest goes to the
@@ -660,35 +672,34 @@ impl Actor {
         let Some(t) = &mut self.goal else {
             return;
         };
-        if t.path.is_none() {
-            t.path = d
-                .session(self.sid)
-                .ok()
-                .and_then(|s| s.agent_sid)
-                .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
-        }
-        let Some(path) = t.path.clone() else {
+        let Some(data) = tail_read(t, d, self.sid).await else {
             return;
         };
-        let at = t.read;
-        let data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
-            Ok(Ok(Some(data))) => data,
-            Ok(Ok(None)) => {
-                t.read = 0; // rewritten: start over
-                return;
-            }
-            _ => return,
-        };
-        let Some(end) = data.iter().rposition(|b| *b == b'\n') else {
-            return;
-        };
-        t.read += end as u64 + 1;
-        let last = data[..end].split(|b| *b == b'\n').rev().find_map(goal_line);
+        let last = data.split(|b| *b == b'\n').rev().find_map(goal_line);
         if let Some(g) = last {
             if matches!(g.state, GoalState::Met | GoalState::Cleared) {
                 self.goal = None;
             }
             self.update(d, None, |s| s.goal = Some(g));
+        }
+    }
+
+    /// The Monitor events the transcript on disk gained since the last look, each as its row. The
+    /// row's id is the line's own, so a line read twice is one row.
+    async fn tail_monitor(&mut self, d: &Daemon) {
+        let Some(t) = &mut self.monitor else {
+            return;
+        };
+        let Some(data) = tail_read(t, d, self.sid).await else {
+            return;
+        };
+        for (id, text) in data.split(|b| *b == b'\n').filter_map(monitor_line) {
+            let item = event_item(self.sid, id, &text, now_ms());
+            if let Err(e) =
+                d.write_items(|tx, _, published| put(tx, self.sid, &Put::Done(item), published))
+            {
+                tracing::warn!(sid = %self.sid, %e, "monitor event not stored");
+            }
         }
     }
 
@@ -885,6 +896,8 @@ impl Actor {
     // ---- the spool ------------------------------------------------------------------------------
 
     async fn on_chunk(&mut self, d: &Daemon, offset: u64, data: Bytes) {
+        // first: an event that starts a turn is in the file before the turn's first line here
+        self.tail_monitor(d).await;
         self.ingest(d, offset, data).await;
         self.replay_check(d).await;
         self.tail_goal(d).await;
@@ -1002,6 +1015,9 @@ impl Actor {
     async fn apply(&mut self, d: &Daemon, src: Src, events: Vec<AgentEvent>) {
         let replay = self.replay_until.is_some();
         let live_line = !replay && matches!(src, Src::Line(_));
+        if live_line && self.monitor.is_none() && events.iter().any(calls_monitor) {
+            self.monitor = Some(self.tail_from_now(d));
+        }
         let base = match src {
             Src::Line(at) => format!("d{at}"),
             Src::Exit => format!("x{}", Id::new()),
@@ -1597,6 +1613,51 @@ fn goal_switch(text: &str) -> Option<Goal> {
         state,
         reason: None,
     })
+}
+
+/// The whole lines `t`'s file gained since the last look, which are then read. `None` when there
+/// are none, or no file yet (it is looked up again next time).
+async fn tail_read(t: &mut GoalTail, d: &Daemon, sid: Sid) -> Option<Vec<u8>> {
+    if t.path.is_none() {
+        t.path = d
+            .session(sid)
+            .ok()
+            .and_then(|s| s.agent_sid)
+            .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+    }
+    let path = t.path.clone()?;
+    let at = t.read;
+    let mut data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
+        Ok(Ok(Some(data))) => data,
+        Ok(Ok(None)) => {
+            t.read = 0; // rewritten: start over
+            return None;
+        }
+        _ => return None,
+    };
+    let end = data.iter().rposition(|b| *b == b'\n')?;
+    t.read += end as u64 + 1;
+    data.truncate(end);
+    Some(data)
+}
+
+/// The agent opened a `Monitor` call (Claude names the tool in the item's preview).
+fn calls_monitor(e: &AgentEvent) -> bool {
+    matches!(e, AgentEvent::ItemStarted { kind: ItemKind::ToolCall, preview, .. } if preview == "Monitor")
+}
+
+/// A transcript line that is a Monitor event starting a turn of its own (a `user` line; one taken
+/// mid-turn is a `queued_command` attachment there, and the stream replays it): its id and row.
+fn monitor_line(line: &[u8]) -> Option<(String, String)> {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    if v["type"] != "user" || v["origin"]["kind"] != "task-notification" {
+        return None;
+    }
+    let text = v["message"]["content"].as_str()?;
+    Some((
+        v["uuid"].as_str()?.to_owned(),
+        femme_agents::claude::monitor_event(text)?,
+    ))
 }
 
 /// A transcript line's goal verdict (`{"type":"attachment","attachment":{"type":"goal_status"..}}`).
@@ -2906,6 +2967,24 @@ mod tests {
             Some((GoalState::Met, Some("r".into())))
         );
         assert_eq!(goal_line(br#"{"type":"user"}"#), None);
+        let tick = |kind: &str, status: &str| {
+            json!({"type":kind,"uuid":"u1","origin":{"kind":"task-notification"},"message":{"content":
+                format!("<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n{status}<event>tick 2</event>\n</task-notification>")}})
+            .to_string()
+        };
+        assert_eq!(
+            monitor_line(tick("user", "").as_bytes()),
+            Some(("u1".into(), "◷ ticks · tick 2".into()))
+        );
+        assert_eq!(monitor_line(tick("user", "<status>completed</status>").as_bytes()), None);
+        assert_eq!(monitor_line(tick("attachment", "").as_bytes()), None);
+        assert_eq!(monitor_line(br#"{"type":"user","message":{"content":"hi"}}"#), None);
+        assert!(calls_monitor(&AgentEvent::ItemStarted {
+            id: "t1".into(),
+            kind: ItemKind::ToolCall,
+            preview: "Monitor".into(),
+            parent: None,
+        }));
         assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
         assert_eq!(effort_switch("/effort"), None);
         assert_eq!(effort_switch("/effort a b"), None);

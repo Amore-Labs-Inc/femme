@@ -89,7 +89,9 @@ Keep it current: when your module's public API changes, edit your section in the
   shows the whole condition and the checker's last reason; a click keeps them under the strip
   until the next click or verdict. Each "not yet" is also a muted row in the transcript,
   `◎ goal not met yet · <the checker's reason, whole>` (a note row shows all its lines now, not the
-  first). The daemon reads the verdicts from the session's transcript on disk
+  first). A Monitor event (Claude's `<task-notification>` line, never a "you" bubble) is such a
+  row too, `◷ <description> · <event>`: one of several lines shows the first and unfolds on a click.
+  The daemon reads the verdicts from the session's transcript on disk
   (`~/.claude/projects/*/<session>.jsonl`, `goal_status` attachment lines), the only place Claude
   writes them: a headless chat's actor follows that file while a goal is set, a session mirrored
   from a herdr pane reads it anyway. `Session::goal` (femme-proto) carries condition, state and
