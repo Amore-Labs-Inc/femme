@@ -278,6 +278,12 @@ an Android emulator and a simulator build on an iPhone, pairs both with the box 
 the tabs (`.github/workflows/mobile.yml`, artifacts `femme-android-screens`, `femme-ios-screens`);
 the device ipa is built unsigned on the same macOS runner (Xcode 26).
 
+Physical device (2026-11-11): the release APK ran on a Google Pixel 8 (Android 14) in AWS
+Device Farm, paired itself with the live box through its `femme://pair` link, walked the tabs
+and opened a chat with no crash in logcat; the box's device list shows the Pixel. The recipe is
+`mobile/ci/devicefarm.sh <apk> '<pair link>'`. An iPhone needs a signed ipa, so it waits for the
+Apple developer account.
+
 Push: the box posts to a per-phone ntfy topic (`Req::PushRegister{platform: Ntfy}`, Me tab),
 and the ntfy app shows it on the lock screen; push straight into this app (APNs/FCM) needs an
 Apple developer account and a Firebase project, so it waits for the owner's say-so.
