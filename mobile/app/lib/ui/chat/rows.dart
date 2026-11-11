@@ -18,6 +18,7 @@ import 'markdown.dart';
 import 'media.dart';
 import 'question.dart';
 import 'tool_row.dart';
+import 'transcript.dart' show TranscriptJump;
 import 'turns.dart';
 
 const _side = 16.0;
@@ -510,24 +511,31 @@ class ReadRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = ChatScope.of(context)
         .text(entry.event, Femme.of(context).store.textOf);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(_side, 2, _side, 2),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              height: 1,
-              color: muted(context).withValues(alpha: 0.4),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.selectionClick();
+        TranscriptJump.of(context)?.jump(entry.target);
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(_side, 8, _side, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 1,
+                color: muted(context).withValues(alpha: 0.4),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(
-              '↳ ${text.split('\n').first}',
-              style: mono(context, size: 11, color: muted(context)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                '↳ ${text.split('\n').first}',
+                style: mono(context, size: 11, color: muted(context)),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
