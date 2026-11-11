@@ -219,6 +219,44 @@ class Account {
   );
 }
 
+/// Who the box's AWS CLI runs as (desktop `accounts/model.rs` `Aws`).
+class AwsIdentity {
+  const AwsIdentity(this.line, {this.detail, this.active = false});
+
+  /// `123456789012 · assumed-role/femme-box/i-0example`, or why there is none.
+  final String line;
+
+  /// The full ARN, or the CLI's error, for a second line.
+  final String? detail;
+
+  /// The CLI has an identity (the green bar).
+  final bool active;
+}
+
+/// The `aws` part of a `GET /api/accounts` body.
+AwsIdentity parseAws(String body) {
+  Object? v;
+  try {
+    v = jsonDecode(body);
+  } on FormatException {
+    v = null;
+  }
+  final root = v is Map && v['cswap'] == null && v['accounts'] is Map
+      ? v['accounts']
+      : v;
+  final a = _obj(root, 'aws');
+  if (a == null) return const AwsIdentity('checking');
+  final arn = _text(a, 'Arn');
+  if (arn == null) {
+    return AwsIdentity('no AWS access', detail: _text(a, 'error'));
+  }
+  return AwsIdentity(
+    '${_text(a, 'Account') ?? '?'} · ${arn.split(':').last}',
+    detail: arn,
+    active: true,
+  );
+}
+
 class ApiKey {
   const ApiKey(this.name, this.hint, this.account, this.created, this.error);
   final String name;

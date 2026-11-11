@@ -26,4 +26,16 @@ void main() {
     expect(a[2].note(now), 'last read 3h ago · usage unavailable (http-429)');
     expect(a[3].note(now), 'token expired');
   });
+  test('AWS: account and role, or why not', () {
+    final ok = parseAws(
+      '{"cswap":null,"aws":{"Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/femme-box/i-0example"}}',
+    );
+    expect(ok.line, '123456789012 · assumed-role/femme-box/i-0example');
+    expect(ok.active, isTrue);
+    final none = parseAws('{"aws":{"error":"Unable to locate credentials"}}');
+    expect(none.line, 'no AWS access');
+    expect(none.detail, 'Unable to locate credentials');
+    expect(none.active, isFalse);
+    expect(parseAws('{"aws":null}').line, 'checking');
+  });
 }

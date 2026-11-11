@@ -31,6 +31,9 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
   /// What `/api/meta` says: the default cap and the scheduler's word (the footer).
   BoxMeta? _meta;
 
+  /// Who the box's AWS CLI runs as; null until the first read.
+  AwsIdentity? _aws;
+
   /// The link of a Claude sign-in in progress on the box.
   String? _loginLink;
 
@@ -60,6 +63,7 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
           _accounts = parsed.accounts ?? _accounts;
           _error = parsed.error;
           _loginLink = parseLoginLink(body);
+          _aws = parseAws(body);
         });
       }
     } catch (e) {
@@ -190,7 +194,46 @@ class _AccountsSectionState extends State<AccountsSection> with Polling {
             ),
             onTap: _switching == null ? _add : null,
           ),
+        if (_aws != null) _AwsTile(_aws!),
       ],
+    );
+  }
+}
+
+/// AWS: who the box's CLI runs as, with the green bar when it has an identity (desktop
+/// `accounts/view.rs` `aws_card`).
+class _AwsTile extends StatelessWidget {
+  const _AwsTile(this.aws);
+  final AwsIdentity aws;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = FemmeColors.mutedC.resolveFrom(context);
+    final small = TextStyle(color: muted, fontSize: 13);
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(width: 4, color: aws.active ? FemmeColors.work : null),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'AWS',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text(aws.line, style: small),
+                  if (!aws.active && aws.detail != null)
+                    Text(aws.detail!, style: small),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
