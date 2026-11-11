@@ -1246,6 +1246,78 @@ fn a_prompt_echo_without_origin_stays_a_user_message() {
         AgentEvent::ItemCompleted { kind: ItemKind::UserMessage, body, .. } if body["text"] == "hi")));
 }
 
+// ---- `<task-notification>` lines: the CLI's report of background work, never a user message ------
+
+fn note_line(inner: &str, origin: bool) -> Value {
+    let text = format!("<task-notification>\n{inner}\n</task-notification>");
+    let mut v = json!({"type":"user","uuid":"n1","isReplay":true,"message":{"role":"user","content":text}});
+    if origin {
+        v["origin"] = json!({"kind":"task-notification","producer":"session-task"});
+    }
+    v
+}
+
+fn items(ev: &[AgentEvent]) -> Vec<(ItemKind, String)> {
+    ev.iter()
+        .filter_map(|e| match e {
+            AgentEvent::ItemCompleted { kind, body, .. } => {
+                Some((*kind, body["text"].as_str().unwrap_or("").to_owned()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A background command's end is replayed as a user line (2.1.319+): no item, the stream's
+/// `system/task_notification` is its one row.
+#[test]
+fn a_task_end_replay_is_no_item_and_the_task_notification_is_its_one_row() {
+    let mut s = S::ready();
+    let mut ev = s.feed(json!({"type":"system","subtype":"task_notification","task_id":"b1",
+        "tool_use_id":"toolu_1","status":"completed",
+        "summary":"Background command \"sleep\" completed (exit code 0)"}));
+    ev.extend(s.feed(note_line(
+        "<task-id>b1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>completed</status>\n<summary>Background command \"sleep\" completed (exit code 0)</summary>",
+        true,
+    )));
+    assert_eq!(
+        items(&ev),
+        [(
+            ItemKind::Event,
+            "Background command \"sleep\" completed (exit code 0): completed".to_owned()
+        )],
+        "{ev:?}"
+    );
+    assert_eq!(s.d.status(), AgentStatus::Working, "the line starts a turn");
+}
+
+/// A Monitor event is one muted row, with or without `origin` (a transcript line has none); the
+/// note to the model about PushNotification is left out, a longer event keeps its lines.
+#[test]
+fn a_monitor_event_is_one_event_row() {
+    for origin in [true, false] {
+        let mut s = S::ready();
+        let ev = s.feed(note_line(
+            "<task-id>m1</task-id>\n<summary>Monitor event: \"demo ticks\"</summary>\n<event>tick 2</event>\nIf this event is something the user would act on now, send a PushNotification.",
+            origin,
+        ));
+        assert_eq!(
+            items(&ev),
+            [(ItemKind::Event, "◷ demo ticks · tick 2".to_owned())],
+            "{ev:?}"
+        );
+    }
+    let mut s = S::ready();
+    let ev = s.feed(note_line(
+        "<summary>Monitor event: \"log\"</summary>\n<event>one\ntwo </event> three</event>",
+        true,
+    ));
+    assert_eq!(
+        items(&ev),
+        [(ItemKind::Event, "◷ log · one\ntwo </event> three".to_owned())]
+    );
+}
+
 // ---- mid-turn steer: written at once, ended by the turn's one result ----------------------------
 
 /// A Steer mid-turn is written at once (the CLI folds it into the running turn at its next tool
