@@ -12,6 +12,7 @@ import '../theme.dart';
 import 'look.dart';
 import 'markdown.dart';
 import 'media.dart';
+import 'rows.dart' show RetryLine;
 import 'subagent.dart';
 import 'tool_summary.dart';
 import 'turns.dart';
@@ -176,12 +177,24 @@ class _Opened extends StatelessWidget {
         (entry.result?.body == null &&
             entry.result?.blobHash != null &&
             resBody == null);
+    final c = ChatScope.of(context);
+    final err = c.blobError(entry.call) ?? c.blobError(entry.result);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (waiting) const CupertinoActivityIndicator(),
+          if (waiting && err != null)
+            RetryLine(
+              err,
+              indent: 0,
+              onTap: () {
+                c.retryBlob(entry.call);
+                c.retryBlob(entry.result);
+              },
+            )
+          else if (waiting)
+            const CupertinoActivityIndicator(),
           if (line.linkUrl != null)
             CupertinoButton(
               padding: EdgeInsets.zero,

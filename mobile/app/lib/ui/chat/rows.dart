@@ -24,19 +24,22 @@ const _side = 16.0;
 
 /// The widget for [e]. [all] are the session's items (for plan approvals and permission calls).
 Widget entryRow(Entry e, List<Item> all) => switch (e) {
-  ItemEntry(:final item) => switch (item.kind) {
-    ItemKind.userMessage => UserBubble(item),
-    ItemKind.peerMessage => PeerCard(item),
-    ItemKind.assistantMessage => AssistantRow(item),
-    ItemKind.thinking => ThinkingRow(item, ms: e.ms),
-    ItemKind.plan => PlanRow(item, all),
-    ItemKind.question => QuestionRow(item, all),
-    ItemKind.event => EventRow(item),
-    _ => const SizedBox.shrink(),
-  },
+  ItemEntry(:final item) => BlobRetry(
+    item,
+    child: switch (item.kind) {
+      ItemKind.userMessage => UserBubble(item),
+      ItemKind.peerMessage => PeerCard(item),
+      ItemKind.assistantMessage => AssistantRow(item),
+      ItemKind.thinking => ThinkingRow(item, ms: e.ms),
+      ItemKind.plan => PlanRow(item, all),
+      ItemKind.question => QuestionRow(item, all),
+      ItemKind.event => EventRow(item),
+      _ => const SizedBox.shrink(),
+    },
+  ),
   ToolEntry() => ToolRow(e),
-  ReadEntry() => ReadRow(e),
-  CompactionEntry() => CompactionRow(e.item),
+  ReadEntry() => BlobRetry(e.event, child: ReadRow(e)),
+  CompactionEntry() => BlobRetry(e.item, child: CompactionRow(e.item)),
   TurnEndEntry() => NoteLine(e.text, red: e.red),
   FoldEntry() => FoldRow(e, all),
 };
@@ -90,6 +93,60 @@ Future<void> messageMenu(
     ),
   ),
 );
+
+/// A row whose long body (a blob) could not be fetched: `couldn't load · retry` under it, and a
+/// tap asks again.
+class BlobRetry extends StatelessWidget {
+  const BlobRetry(this.item, {super.key, required this.child});
+  final Item item;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ChatScope.of(context);
+    final err = c.blobError(item);
+    if (err == null) return child;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        child,
+        RetryLine(err, onTap: () => c.retryBlob(item)),
+      ],
+    );
+  }
+}
+
+/// `couldn't load · retry` in red; the reason comes up on a long press.
+class RetryLine extends StatelessWidget {
+  const RetryLine(
+    this.reason, {
+    super.key,
+    required this.onTap,
+    this.indent = _side,
+  });
+  final String reason;
+  final VoidCallback onTap;
+  final double indent;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: () {
+      HapticFeedback.selectionClick();
+      onTap();
+    },
+    onLongPress: () => toast(context, reason),
+    child: Container(
+      constraints: const BoxConstraints(minHeight: 44),
+      alignment: Alignment.centerLeft,
+      padding: EdgeInsets.symmetric(horizontal: indent),
+      child: Text(
+        "couldn't load · retry",
+        style: mono(context, size: 12, color: FemmeColors.bad),
+      ),
+    ),
+  );
+}
 
 /// The streaming cursor after text still being written.
 class Cursor extends StatelessWidget {
