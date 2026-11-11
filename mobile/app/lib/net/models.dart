@@ -152,12 +152,14 @@ class Session {
   final String? effort;
   final Goal? goal;
 
-  /// What lists show: the label, else the name, else the folder.
+  /// What a session is called, as the desktop (`desktop/src/net.rs` `title`): its name, else its
+  /// label, else the last component of its folder, else its handle.
   String get title {
-    if (label != null && label!.isNotEmpty) return label!;
     if (name != null && name!.isNotEmpty) return name!;
-    final parts = cwd.split('/').where((p) => p.isNotEmpty);
-    return parts.isEmpty ? cwd : parts.last;
+    if (label != null && label!.isNotEmpty) return label!;
+    final trimmed = cwd.replaceFirst(RegExp(r'/+$'), '');
+    final tail = trimmed.substring(trimmed.lastIndexOf('/') + 1);
+    return tail.isNotEmpty ? tail : handle;
   }
 
   bool get needsYou =>
