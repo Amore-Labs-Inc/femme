@@ -13,7 +13,7 @@ set -euo pipefail
 apk=$1; link=$2; out=${3:-devicefarm-out}; sid=${4:-}
 region=us-west-2
 aws() { command aws --region "$region" --output json "$@"; }
-j() { python3 -c "import sys,json; print(eval('json.load(sys.stdin)$1'))"; }
+j() { python3 -c "import sys,json; print(eval('json.load(sys.stdin)'+sys.argv[1]))" "$1"; }
 
 project=$(aws devicefarm list-projects | j "['projects']" | python3 -c "
 import sys,ast; ps=ast.literal_eval(sys.stdin.read()); print(next((p['arn'] for p in ps if p['name']=='femme-mobile'),''))")
