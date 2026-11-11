@@ -1054,6 +1054,7 @@ impl Actor {
             // when its line is live
             ctx_used: f.ctx_used,
             ctx_window: f.ctx_window,
+            ctx_compact_at: f.ctx_compact_at,
             compacted: if live_line { f.compacted } else { 0 },
             goal: f.goal,
         };
@@ -1074,6 +1075,7 @@ impl Actor {
             && fx.permission.is_none()
             && fx.ctx_used.is_none()
             && fx.ctx_window.is_none()
+            && fx.ctx_compact_at.is_none()
             && fx.compacted == 0
             && fx.goal.is_none()
             && !fx.ready
@@ -1108,7 +1110,13 @@ impl Actor {
                 s.status = status;
                 s.attention = attention;
             }
-            s.context = with_context(s.context, fx.ctx_used, fx.ctx_window, fx.compacted);
+            s.context = with_context(
+                s.context,
+                fx.ctx_used,
+                fx.ctx_window,
+                fx.ctx_compact_at,
+                fx.compacted,
+            );
         });
     }
 
@@ -1489,16 +1497,18 @@ fn row_first(state: Option<(SessionStatus, Attention)>) -> bool {
     )
 }
 
-/// The row's context window after a batch: the agent's latest word on what it has read and on its
-/// window (kept when a batch does not repeat it), and the compactions the batch adds. An agent that
+/// The row's context window after a batch: the agent's latest word on what it has read, on its
+/// window and on where it compacts by itself (each kept when a batch does not repeat it), and the
+/// compactions the batch adds. An agent that
 /// never says leaves `None`; a window of 0 is "not said yet".
 fn with_context(
     old: Option<Context>,
     used: Option<u64>,
     window: Option<u64>,
+    compact_at: Option<u64>,
     compacted: u32,
 ) -> Option<Context> {
-    if used.is_none() && window.is_none() && compacted == 0 {
+    if used.is_none() && window.is_none() && compact_at.is_none() && compacted == 0 {
         return old;
     }
     let mut c = old.unwrap_or_default();
@@ -1508,6 +1518,7 @@ fn with_context(
     if let Some(w) = window {
         c.window = w;
     }
+    c.compact_at = compact_at.or(c.compact_at);
     c.compactions = c.compactions.saturating_add(compacted);
     Some(c)
 }
@@ -1724,6 +1735,8 @@ struct Folded {
     ctx_used: Option<u64>,
     /// The agent's context window in tokens, when the batch said.
     ctx_window: Option<u64>,
+    /// Where the agent compacts by itself, when the batch said.
+    ctx_compact_at: Option<u64>,
     /// How many times the batch says the conversation was compacted.
     compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
@@ -1750,6 +1763,7 @@ struct RowFx {
     permission: Option<String>,
     ctx_used: Option<u64>,
     ctx_window: Option<u64>,
+    ctx_compact_at: Option<u64>,
     /// Compactions to count: only those of a live line. A restart replays the lines of the turn
     /// that was running, and the row counted them the first time; the lines the agent wrote while
     /// the daemon was away are read as that same replay, so they are not counted either.
@@ -1944,9 +1958,14 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 st.done = false;
                 f.state = Some((SessionStatus::Idle, attention));
             }
-            AgentEvent::Context { used, window } => {
+            AgentEvent::Context {
+                used,
+                window,
+                compact_at,
+            } => {
                 f.ctx_used = Some(used);
                 f.ctx_window = window.or(f.ctx_window);
+                f.ctx_compact_at = compact_at.or(f.ctx_compact_at);
             }
             // The bar empties at the level up; the next model call says the new size.
             AgentEvent::Compacted { .. } => {
@@ -2606,7 +2625,11 @@ mod tests {
     }
 
     fn say(used: u64, window: Option<u64>) -> AgentEvent {
-        AgentEvent::Context { used, window }
+        AgentEvent::Context {
+            used,
+            window,
+            compact_at: None,
+        }
     }
 
     fn compacted() -> AgentEvent {
@@ -2620,6 +2643,7 @@ mod tests {
             used,
             window,
             compactions,
+            compact_at: None,
         })
     }
 
@@ -2629,7 +2653,7 @@ mod tests {
         let mut row = None;
         for (i, events) in batches.into_iter().enumerate() {
             let f = fold(&mut st, SID, &format!("d{i}"), events, 1);
-            row = with_context(row, f.ctx_used, f.ctx_window, f.compacted);
+            row = with_context(row, f.ctx_used, f.ctx_window, f.ctx_compact_at, f.compacted);
         }
         row
     }
@@ -2691,8 +2715,23 @@ mod tests {
             used: 1,
             window: 2,
             compactions: 3,
+            compact_at: Some(4),
         };
-        assert_eq!(with_context(Some(kept), None, None, 0), Some(kept));
+        assert_eq!(with_context(Some(kept), None, None, None, 0), Some(kept));
+        // where the agent compacts stays until it is said again
+        assert_eq!(
+            with_context(Some(kept), Some(5), None, None, 0)
+                .unwrap()
+                .compact_at,
+            Some(4)
+        );
+        let said = AgentEvent::Context {
+            used: 5,
+            window: None,
+            compact_at: Some(9),
+        };
+        let row = context_after(vec![vec![said], vec![say(6, None)]]).unwrap();
+        assert_eq!((row.used, row.compact_at), (6, Some(9)));
     }
 
     #[test]
@@ -2719,7 +2758,7 @@ mod tests {
             store
                 .write(|tx| {
                     tx.update_session(sid, |s| {
-                        s.context = with_context(s.context, used, window, compacted)
+                        s.context = with_context(s.context, used, window, None, compacted)
                     })
                 })
                 .unwrap()
