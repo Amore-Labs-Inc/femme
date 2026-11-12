@@ -186,6 +186,8 @@ class _Body extends StatelessWidget {
                 color: ctx.used / ctx.window > 0.9 ? FemmeColors.bad : null,
               ),
             if (ctx != null) ...[
+              if (ctx.compactAt != null)
+                _Row('compacts at', grouped(ctx.compactAt!)),
               _Row('compactions', '${ctx.compactions}'),
               _Row('level', '${ctx.compactions + 1}'),
             ],

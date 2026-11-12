@@ -111,6 +111,10 @@ pub struct Context {
     pub window: u64,
     /// Times the conversation was compacted. The XP bar's level is one more than this.
     pub compactions: u32,
+    /// Tokens at which the agent compacts by itself (Claude: its `autoCompactWindow` minus its
+    /// buffer), far below `window` when the user lowered it. `None` until the agent said.
+    #[serde(default)]
+    pub compact_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

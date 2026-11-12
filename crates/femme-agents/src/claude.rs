@@ -94,6 +94,8 @@ use crate::{
 
 /// `request_id` of the `initialize` control request [`ClaudeDriver::on_start`] sends.
 const INIT_ID: &str = "femme-init";
+/// Request ids of our `get_context_usage` questions start with this (`control("ctx", ..)`).
+const CTX_ID: &str = "femme-ctx-";
 /// Tool that asks the user questions.
 const ASK: &str = "AskUserQuestion";
 /// Tool that proposes a plan for approval.
@@ -228,6 +230,9 @@ pub struct ClaudeDriver {
     permission: Option<String>,
     /// Tokens the main thread's latest model call read, once a call said.
     ctx_used: Option<u64>,
+    /// This driver talks to a running CLI (it started it, or sent it a prompt): the lines it
+    /// reads now are not a replay, so one may be answered with a question of ours.
+    live: bool,
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
@@ -278,6 +283,9 @@ pub struct ClaudeDriver {
     /// A mirror's last typed line, while no assistant line follows it: its `parentUuid` and its
     /// item id.
     typed: Option<(Value, String)>,
+    /// The items built from each wire line of the open turn, by the line's uuid: what a
+    /// `model_refusal_fallback` retracts.
+    lines: BTreeMap<String, Vec<String>>,
 }
 
 /// A running task (a Bash command or a subagent) of a tool call.
@@ -304,6 +312,7 @@ impl ClaudeDriver {
             model: None,
             permission: None,
             ctx_used: None,
+            live: false,
             awaiting_init: false,
             exited: false,
             mirror: false,
@@ -332,6 +341,7 @@ impl ClaudeDriver {
             turn_items: BTreeSet::new(),
             take: None,
             typed: None,
+            lines: BTreeMap::new(),
         }
     }
 
@@ -487,6 +497,7 @@ impl ClaudeDriver {
         if self.exited {
             return Err(Error::State("claude has exited"));
         }
+        self.live = true;
 
         match h.how {
             // Written mid-turn the CLI folds a message into the running turn at the next tool
@@ -598,6 +609,41 @@ impl ClaudeDriver {
         }
     }
 
+    /// Asks the CLI where it compacts by itself (`autoCompactWindow` minus its buffer, which the
+    /// user moves with `/autocompact`): answered locally, no model call. Asked after `initialize`,
+    /// each turn's `result` and each `compact_boundary`. Not for a replayed line, and a transcript
+    /// read from disk has nobody to ask.
+    // ponytail: a driver attached after a daemon restart asks again from its first prompt on; the
+    // row keeps the stored point until then
+    fn ask_context(&mut self, out: &mut Out) {
+        if self.live {
+            self.control(
+                "ctx",
+                json!({"subtype":"get_context_usage","detail":"summary"}),
+                out,
+            );
+        }
+    }
+
+    /// The reply to [`Self::ask_context`]: the threshold while auto-compaction is on, with what
+    /// the last call read (the reply's own count for a new conversation, which no call has read
+    /// yet).
+    // ponytail: auto-compaction turned off mid-session says nothing, so the row keeps the old
+    // point; give `compact_at` a "none" word if that ever shows
+    fn context_usage(&mut self, r: &Value, ev: &mut Vec<AgentEvent>) {
+        let compact_at = r["autoCompactThreshold"]
+            .as_u64()
+            .filter(|t| *t > 0 && r["isAutoCompactEnabled"] == true);
+        let Some(used) = self.ctx_used.or(r["totalTokens"].as_u64()) else {
+            return;
+        };
+        ev.push(AgentEvent::Context {
+            used,
+            window: known_window(self.model.as_deref().or(r["model"].as_str())),
+            compact_at,
+        });
+    }
+
     /// The CLI is not ready for a message that must run after everything before it: still
     /// starting, running a turn, or holding a message of ours it has not finished yet (between
     /// our write and its `started` frame there is no turn, but there is a `cmds` entry).
@@ -688,6 +734,10 @@ impl ClaudeDriver {
                         .as_u64()
                         .or_else(|| v["compactMetadata"]["preTokens"].as_u64()),
                 });
+                // what the last call read is gone and the bar is empty until the next call says.
+                // The CLI's own count still is the old one here (seen on 2.1.321: the bar filled
+                // up again right after the level up), so the reply to our question must not use it
+                self.ctx_used = Some(0);
             }
             "session_state_changed" => {
                 let state = v["state"].as_str().unwrap_or("");
@@ -705,8 +755,72 @@ impl ClaudeDriver {
                     );
                 }
             }
+            sub @ ("model_refusal_fallback"
+            | "model_consent_fallback"
+            | "model_fallback"
+            | "model_refusal_no_fallback") => self.fallback(sub, offset, v, ev),
             // hooks, tasks, thinking_tokens, other session states, ...: nothing the transcript needs
             _ => {}
+        }
+    }
+
+    /// The CLI answers with another model (`sub` says why: the model's safeguards refused the
+    /// reply, the usage-credit gate, or the model was overloaded, retired or blocked), or says a
+    /// refusal has no fallback. A warning row; the session's model follows a switch that lasts;
+    /// the refused partial reply and its tool results leave the transcript. The stream spells the
+    /// fields in snake_case, the transcript on disk in camelCase.
+    fn fallback(&mut self, sub: &str, offset: u64, v: &Value, ev: &mut Vec<AgentEvent>) {
+        let s = |snake: &str, camel: &str| v[snake].as_str().or_else(|| v[camel].as_str());
+        let content = v["content"].as_str().unwrap_or("").trim();
+        let to = s("fallback_model", "fallbackModel");
+        let reason = match sub {
+            "model_consent_fallback" => "usage-credit gate".to_owned(),
+            "model_fallback" => v["trigger"].as_str().unwrap_or("fallback").to_owned(),
+            _ => match s("api_refusal_category", "apiRefusalCategory") {
+                Some(c) => format!("safeguards flagged this message ({c})"),
+                None => "safeguards flagged this message".to_owned(),
+            },
+        };
+        let text = match (s("original_model", "originalModel"), to) {
+            (Some(from), Some(to)) if sub != "model_refusal_no_fallback" => {
+                format!("{} → {} · {reason}", model_name(from), model_name(to))
+            }
+            _ => match content.lines().next() {
+                Some(l) => l.to_owned(),
+                None => reason,
+            },
+        };
+        ev.push(done(
+            item_id(v, offset),
+            ItemKind::Event,
+            ItemStatus::Completed,
+            body(&Event {
+                detail: (!content.is_empty() && content != text).then(|| content.to_owned()),
+                text,
+                warning: true,
+                task: None,
+            }),
+        ));
+        // a refusal or the credit gate swaps the session's model unless it covers one reply
+        // (`local`: a subagent's, a /btw's); `model_fallback` lasts the turn
+        let lasts = matches!(sub, "model_refusal_fallback" | "model_consent_fallback")
+            && v["scope"].as_str().unwrap_or("session") == "session";
+        if let Some(to) = to.filter(|to| lasts && self.model.as_deref() != Some(*to)) {
+            self.model = Some(to.to_owned());
+            ev.push(AgentEvent::ModelChanged(to.to_owned()));
+        }
+        let retracted = v["retracted_message_uuids"]
+            .as_array()
+            .or_else(|| v["retractedMessageUuids"].as_array());
+        for u in retracted.into_iter().flatten().filter_map(Value::as_str) {
+            for id in self.lines.remove(u).unwrap_or_default() {
+                // a block still streaming must not come back as `Failed` when its stream is closed
+                // ponytail: a subagent's open blocks are in its own thread and are not looked at
+                self.blocks.retain(|_, b| b.id != id);
+                self.calls.remove(&id);
+                self.off.item_close(&id);
+                ev.push(AgentEvent::ItemRetracted { id });
+            }
         }
     }
 
@@ -783,6 +897,7 @@ impl ClaudeDriver {
             ev.push(AgentEvent::Context {
                 used,
                 window: known_window(self.model.as_deref()),
+                compact_at: None,
             });
         }
     }
@@ -1042,6 +1157,14 @@ impl ClaudeDriver {
         self.ord.insert(mid.clone(), first + content.len());
         for (i, b) in content.iter().enumerate() {
             let bid = format!("{mid}:{}", first + i);
+            if let Some(u) = v["uuid"].as_str() {
+                let id = match b["type"].as_str() {
+                    Some("tool_use" | "server_tool_use" | "mcp_tool_use") => b["id"].as_str(),
+                    _ => None,
+                };
+                let made = self.lines.entry(u.to_owned()).or_default();
+                made.push(id.map_or_else(|| bid.clone(), str::to_owned));
+            }
             match b["type"].as_str() {
                 Some("tool_use" | "server_tool_use" | "mcp_tool_use") => {
                     let id = b["id"].as_str().map_or(bid, str::to_owned);
@@ -1108,6 +1231,18 @@ impl ClaudeDriver {
             return;
         }
         let id = item_id(v, offset);
+        if v["origin"]["kind"] == "task-notification"
+            || text.trim_start().starts_with("<task-notification>")
+        {
+            // the CLI's own report of background work, queued as a user line (and replayed since
+            // 2.1.319): it starts a turn and is never the user's message. A task's end is the
+            // `task_notification` row already; a Monitor event gets its own row.
+            self.activity(offset, ev);
+            if let Some(row) = monitor_event(&text) {
+                ev.push(event_item(id, &row));
+            }
+            return;
+        }
         let text = command_line(&text).unwrap_or(text);
         if let Some(out) = text.strip_prefix("<local-command-stdout>") {
             // output of a slash command the host sent, e.g. set_model's "Set model to `x`"
@@ -1175,6 +1310,10 @@ impl ClaudeDriver {
         let output = flatten(&b["content"]);
         let call = self.calls.remove(id);
         self.off.item_close(id);
+        if let Some(u) = line["uuid"].as_str() {
+            let made = self.lines.entry(u.to_owned()).or_default();
+            made.push(format!("{id}:result"));
+        }
         let asked = self.take_pending(id, is_error, &output, &line["tool_use_result"], ev);
         // the Question/Plan items are the record of this call; a hidden call nobody asked about (a
         // mirror's ExitPlanMode) has no ToolCall item, and one would overwrite its Plan item
@@ -1305,6 +1444,7 @@ impl ClaudeDriver {
             ev.push(AgentEvent::Context {
                 used,
                 window: Some(window),
+                compact_at: None,
             });
         }
         if self.turn {
@@ -1323,6 +1463,7 @@ impl ClaudeDriver {
             self.close_open("the turn ended before it was answered", ev);
             self.streamed.clear();
             self.ord.clear();
+            self.lines.clear();
             ev.push(AgentEvent::TurnEnded {
                 stop: stop_reason(v),
                 usage: usage_of(&v["usage"]),
@@ -1822,6 +1963,11 @@ impl ClaudeDriver {
             } else {
                 self.resolve(rid, ev);
             }
+        } else if rid.starts_with(CTX_ID) {
+            // an error is a CLI older than the request: the bar keeps filling against the window
+            if r["subtype"] == "success" {
+                self.context_usage(&r["response"], ev);
+            }
         } else if r["subtype"] == "error" {
             let why = r["error"].as_str().unwrap_or("unknown error");
             ev.push(event_item(
@@ -1908,6 +2054,7 @@ impl Driver for ClaudeDriver {
     fn on_start(&mut self, l: &Launch, out: &mut Out) {
         self.sid = l.resume.clone().or_else(|| Some(self.planned.clone()));
         self.awaiting_init = true;
+        self.live = true;
         out.line(&json!({"type":"control_request","request_id":INIT_ID,"request":{"subtype":"initialize"}}));
     }
 
@@ -1950,6 +2097,13 @@ impl Driver for ClaudeDriver {
             self.track(was, &ev);
             return ev;
         }
+        let asks = match ty {
+            // a `result` that ends no turn of ours (a task notification's) changed nothing
+            "result" => self.turn,
+            "system" => v["subtype"] == "compact_boundary",
+            "control_response" => v["response"]["request_id"] == INIT_ID,
+            _ => false,
+        };
         match ty {
             "system" if v["subtype"] == "elicitation_complete" => {
                 self.elicitation_complete(&v, out, &mut ev)
@@ -1997,6 +2151,9 @@ impl Driver for ClaudeDriver {
         }
         self.track(was, &ev);
         self.take_step(out);
+        if asks {
+            self.ask_context(out);
+        }
         self.flush_one(out);
         self.sync(&mut ev);
         ev
@@ -2316,7 +2473,7 @@ fn event_item(id: String, text: &str) -> AgentEvent {
         ItemStatus::Completed,
         body(&Event {
             text: text.to_owned(),
-            task: None,
+            ..Event::default()
         }),
     )
 }
@@ -2336,6 +2493,7 @@ fn task_end(id: String, v: &Value) -> AgentEvent {
                 call: call.to_owned(),
                 status: status.to_owned(),
             }),
+            ..Event::default()
         }),
     )
 }
@@ -2383,6 +2541,30 @@ fn peer_message(origin: &Value, text: &str) -> PeerMessage {
 fn tag<'a>(text: &'a str, t: &str) -> Option<&'a str> {
     let (_, rest) = text.split_once(&format!("<{t}>"))?;
     rest.split_once(&format!("</{t}>")).map(|(v, _)| v.trim())
+}
+
+/// The row of a `<task-notification>` that is not a task's end (no `<status>`), i.e. a Monitor
+/// event: `◷ <description> · <event>`. The first line is the row, a longer event's other lines
+/// follow it; the note to the model after `</event>` is left out. Public for the daemon, which
+/// reads from the transcript on disk the events the stream does not replay.
+pub fn monitor_event(text: &str) -> Option<String> {
+    if tag(text, "status").is_some() {
+        return None;
+    }
+    let summary = tag(text, "summary").unwrap_or("background task");
+    let what = summary
+        .strip_prefix("Monitor event:")
+        .map_or(summary, |d| d.trim().trim_matches('"'));
+    // up to the last `</event>`: the event is a command's output and may say the tag itself
+    let event = text
+        .split_once("<event>")
+        .and_then(|(_, r)| r.rsplit_once("</event>"))
+        .map_or("", |(e, _)| e.trim());
+    Some(if event.is_empty() {
+        format!("◷ {what}")
+    } else {
+        format!("◷ {what} · {event}")
+    })
 }
 
 /// Text without its ANSI escape sequences (`ESC [ ... letter`).
@@ -2442,6 +2624,22 @@ fn context_of(u: &Value) -> Option<u64> {
         .saturating_add(n("cache_read_input_tokens"))
         .saturating_add(n("cache_creation_input_tokens"));
     (u.is_object() && used > 0).then_some(used)
+}
+
+/// A model id as people say it: `claude-opus-4-8` is `opus 4.8`, `claude-fable-5-2[1m]` is
+/// `fable 5.2`. The desktop composer's `model_name`, which this crate cannot reach.
+fn model_name(id: &str) -> String {
+    let id = base_model(id);
+    let id = id.rsplit('/').next().unwrap_or(id);
+    match id
+        .strip_prefix("claude-")
+        .map(|r| r.split('-').collect::<Vec<_>>())
+    {
+        Some(parts) if parts.len() >= 2 && parts[1..].iter().all(|p| p.parse::<u32>().is_ok()) => {
+            format!("{} {}", parts[0], parts[1..].join("."))
+        }
+        _ => id.to_owned(),
+    }
 }
 
 /// A model id without the context-size suffix the CLI takes on `--model` (`opus[1m]`).
@@ -3002,7 +3200,11 @@ mod tests {
     }
 
     fn ctx(used: u64, window: Option<u64>) -> AgentEvent {
-        AgentEvent::Context { used, window }
+        AgentEvent::Context {
+            used,
+            window,
+            compact_at: None,
+        }
     }
 
     /// `usage` as a call reports it: a fresh part, what it read from the cache, what it wrote.
@@ -3228,6 +3430,103 @@ mod tests {
         );
     }
 
+    /// Claude 2.1.321: `get_context_usage` says where the CLI compacts by itself, far below the
+    /// window when the user lowered `autoCompactWindow`. Asked after `initialize`, each `result`
+    /// and each `compact_boundary`.
+    #[test]
+    fn the_driver_asks_where_claude_compacts_and_the_reply_is_the_contexts_compact_at() {
+        let asks = |out: &Out| {
+            let v: Value = serde_json::from_slice(last_line(out)).unwrap();
+            assert_eq!(v["type"], "control_request");
+            assert!(v["request_id"].as_str().unwrap().starts_with(CTX_ID));
+            assert_eq!(
+                v["request"],
+                json!({"subtype":"get_context_usage","detail":"summary"})
+            );
+            v["request_id"].as_str().unwrap().to_owned()
+        };
+        let reply = |rid: &str, r: Value| {
+            json!({"type":"control_response","response":{"subtype":"success","request_id":rid,"response":r}}).to_string()
+        };
+        let mut d = ClaudeDriver::new();
+        let mut out = Out::default();
+        d.on_start(&Launch::default(), &mut out);
+        let init = json!({"type":"control_response","response":{"subtype":"success","request_id":INIT_ID,"response":{}}});
+        d.on_line(0, init.to_string().as_bytes(), &mut out);
+        let rid = asks(&out);
+        // a new conversation: no call has read anything, the CLI's own count stands in
+        let on = json!({"autoCompactThreshold":501_643,"isAutoCompactEnabled":true,"maxTokens":534_643,
+            "totalTokens":25_604,"model":"claude-fable-5-2"});
+        assert_eq!(
+            d.on_line(1, reply(&rid, on.clone()).as_bytes(), &mut out),
+            [AgentEvent::Context {
+                used: 25_604,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // auto-compaction off: no point
+        let mut off = on.clone();
+        off["isAutoCompactEnabled"] = json!(false);
+        assert_eq!(
+            d.on_line(2, reply(&rid, off).as_bytes(), &mut out),
+            [AgentEvent::Context {
+                used: 25_604,
+                window: Some(1_000_000),
+                compact_at: None
+            }]
+        );
+        // what a call read wins over the CLI's count
+        d.on_line(
+            3,
+            message_start(usage(2, 40_000, 100), Value::Null)
+                .to_string()
+                .as_bytes(),
+            &mut out,
+        );
+        let ev = d.on_line(4, reply(&rid, on.clone()).as_bytes(), &mut out);
+        assert_eq!(
+            contexts(ev),
+            [AgentEvent::Context {
+                used: 40_102,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // asked again when the turn ends and when the conversation is compacted
+        let mut out = Out::default();
+        let done = result_line(usage(2, 40_000, 100), json!({}));
+        d.on_line(5, done.to_string().as_bytes(), &mut out);
+        asks(&out);
+        let mut out = Out::default();
+        let boundary =
+            json!({"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"c1"});
+        d.on_line(6, boundary.to_string().as_bytes(), &mut out);
+        let rid = asks(&out);
+        // after a compaction the bar is empty until the next call: the CLI's count is still the
+        // old one
+        let ev = d.on_line(7, reply(&rid, on).as_bytes(), &mut out);
+        assert_eq!(
+            contexts(ev),
+            [AgentEvent::Context {
+                used: 0,
+                window: Some(1_000_000),
+                compact_at: Some(501_643)
+            }]
+        );
+        // a CLI older than the request: no row, no context
+        let old = json!({"type":"control_response","response":{"subtype":"error","request_id":rid,
+            "error":"Unsupported control request subtype: get_context_usage"}});
+        assert!(d
+            .on_line(8, old.to_string().as_bytes(), &mut out)
+            .is_empty());
+        // a transcript read from disk has nobody to ask
+        let mut m = ClaudeDriver::mirror();
+        let mut out = Out::default();
+        m.on_line(0, boundary.to_string().as_bytes(), &mut out);
+        assert!(out.stdin.is_empty());
+    }
+
     fn last_line(out: &Out) -> &[u8] {
         out.stdin
             .split(|b| *b == b'\n')
@@ -3411,6 +3710,8 @@ mod tests {
             .iter()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .filter(|v| v["type"] == "control_request" && v["request_id"] != INIT_ID)
+            // the context question after `initialize` and each result is not the take-back's
+            .filter(|v| v["request"]["subtype"] != "get_context_usage")
             .collect()
     }
 
@@ -3591,5 +3892,192 @@ mod tests {
         assert!(retracted(&f.line(typed("u3", "p0", "again"))).is_empty());
         // a reply's own line never does it
         assert!(retracted(&f.line(typed("u4", "u3", "and this"))).is_empty());
+    }
+
+    // ---- model fallbacks (shapes of claude 2.1.321) -------------------------------------------
+
+    /// A session on Fable 5.2 whose partial reply (line `u-p`) is on the transcript.
+    fn refused() -> Feed {
+        let mut f = Feed::new();
+        f.line(
+            json!({"type":"system","subtype":"init","session_id":"s","model":"claude-fable-5-2"}),
+        );
+        f.line(
+            json!({"type":"assistant","message":{"id":"m1","type":"message","role":"assistant",
+            "model":"claude-fable-5-2","content":[{"type":"text","text":"Step one is"}]},
+            "session_id":"s","parent_tool_use_id":null,"uuid":"u-p"}),
+        );
+        f
+    }
+
+    fn refusal_line(scope: &str) -> Value {
+        json!({"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry",
+            "scope":scope,"original_model":"claude-fable-5-2","fallback_model":"claude-opus-4-8",
+            "api_refusal_category":"cyber","retracted_message_uuids":["u-p"],
+            "refused_user_message_uuid":"u-user",
+            "content":"Fable 5.2's safeguards flagged this message. … Switched to Opus 4.8.",
+            "uuid":"u-f","session_id":"s"})
+    }
+
+    /// The warning rows of `ev`: `(id, text, detail)`.
+    fn warnings(ev: &[AgentEvent]) -> Vec<(String, String, Option<String>)> {
+        ev.iter()
+            .filter_map(|e| match e {
+                AgentEvent::ItemCompleted {
+                    id,
+                    kind: ItemKind::Event,
+                    body,
+                    ..
+                } if body["warning"] == true => Some((
+                    id.clone(),
+                    body["text"].as_str().unwrap().to_owned(),
+                    body["detail"].as_str().map(str::to_owned),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn retracted(ev: &[AgentEvent]) -> Vec<&str> {
+        ev.iter()
+            .filter_map(|e| match e {
+                AgentEvent::ItemRetracted { id } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn model_changes(ev: &[AgentEvent]) -> Vec<&str> {
+        ev.iter()
+            .filter_map(|e| match e {
+                AgentEvent::ModelChanged(m) => Some(m.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_refusal_fallback_warns_switches_the_model_and_retracts_the_partial() {
+        let mut f = refused();
+        let ev = f.line(refusal_line("session"));
+        assert_eq!(
+            warnings(&ev),
+            [(
+                "u-f".to_owned(),
+                "fable 5.2 → opus 4.8 · safeguards flagged this message (cyber)".to_owned(),
+                Some(
+                    "Fable 5.2's safeguards flagged this message. … Switched to Opus 4.8."
+                        .to_owned()
+                ),
+            )]
+        );
+        assert_eq!(model_changes(&ev), ["claude-opus-4-8"]);
+        assert_eq!(retracted(&ev), ["m1:0"], "the 'Step one is' item");
+        assert_eq!(f.d.model.as_deref(), Some("claude-opus-4-8"));
+        // an absent scope is the session's; a uuid nobody holds (retracted already) is a no-op
+        let mut line = refusal_line("session");
+        line.as_object_mut().unwrap().remove("scope");
+        let mut f = refused();
+        assert_eq!(model_changes(&f.line(line.clone())), ["claude-opus-4-8"]);
+        let again = f.line(line);
+        assert!(retracted(&again).is_empty() && model_changes(&again).is_empty());
+    }
+
+    /// A partial still streaming when it is retracted does not come back `Failed` when the retry's
+    /// stream closes its blocks.
+    #[test]
+    fn a_retracted_block_still_streaming_stays_gone() {
+        let mut f = Feed::new();
+        let se = |e: Value| json!({"type":"stream_event","event":e,"session_id":"s","parent_tool_use_id":null});
+        f.line(se(json!({"type":"message_start","message":{"id":"m1"}})));
+        f.line(se(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})));
+        f.line(se(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Step one is"}})));
+        f.line(json!({"type":"assistant","message":{"id":"m1","role":"assistant",
+            "content":[{"type":"text","text":"Step one is"}]},"parent_tool_use_id":null,"uuid":"u-p"}));
+        assert_eq!(retracted(&f.line(refusal_line("session"))), ["m1:0"]);
+        let ev = f.line(se(json!({"type":"message_start","message":{"id":"m2"}})));
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, AgentEvent::ItemCompleted { .. })),
+            "{ev:?}"
+        );
+        assert_eq!(f.d.resume_offset(), 0, "only the turn is open");
+    }
+
+    #[test]
+    fn a_local_or_turn_scoped_fallback_warns_and_keeps_the_model() {
+        let mut f = refused();
+        let ev = f.line(refusal_line("local"));
+        assert_eq!(warnings(&ev).len(), 1);
+        assert!(model_changes(&ev).is_empty());
+        assert_eq!(retracted(&ev), ["m1:0"]);
+
+        let ev = f.line(json!({"type":"system","subtype":"model_fallback","trigger":"overloaded",
+            "original_model":"claude-fable-5-2","fallback_model":"claude-opus-4-8",
+            "content":"Fable 5.2 is overloaded. Using Opus 4.8 for this turn.","uuid":"u-o","session_id":"s"}));
+        assert_eq!(warnings(&ev)[0].1, "fable 5.2 → opus 4.8 · overloaded");
+        assert!(model_changes(&ev).is_empty());
+
+        let ev = f.line(json!({"type":"system","subtype":"model_consent_fallback",
+            "original_model":"claude-fable-5-2","fallback_model":"claude-opus-4-8",
+            "content":"Fable needs usage credits.","uuid":"u-c","session_id":"s"}));
+        assert_eq!(
+            warnings(&ev)[0].1,
+            "fable 5.2 → opus 4.8 · usage-credit gate"
+        );
+        assert_eq!(model_changes(&ev), ["claude-opus-4-8"]);
+
+        let ev = f.line(
+            json!({"type":"system","subtype":"model_refusal_no_fallback",
+            "content":"Fable 5.2's safeguards flagged this message.\nEdit it and try again.",
+            "uuid":"u-n","session_id":"s"}),
+        );
+        assert_eq!(
+            warnings(&ev),
+            [(
+                "u-n".to_owned(),
+                "Fable 5.2's safeguards flagged this message.".to_owned(),
+                Some(
+                    "Fable 5.2's safeguards flagged this message.\nEdit it and try again."
+                        .to_owned()
+                ),
+            )]
+        );
+        assert!(model_changes(&ev).is_empty());
+    }
+
+    /// The transcript on disk (a herdr mirror reads it) spells the fields in camelCase: the line
+    /// Claude Code 2.1.302 wrote for a real refusal, ids replaced. It retracts an assistant line
+    /// and the tool result under it.
+    #[test]
+    fn a_transcripts_camel_case_fallback_reads_the_same() {
+        let mut f = Feed::new();
+        f.d.mirror = true;
+        f.line(json!({"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-fable-5-1",
+            "content":[{"type":"thinking","thinking":"hm"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]},
+            "uuid":"u-a"}));
+        f.line(json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"t1","content":"x"}]},"uuid":"u-r"}));
+        let ev = f.line(json!({"parentUuid":"u-0","isSidechain":false,"type":"system",
+            "subtype":"model_refusal_fallback",
+            "content":"Fable 5.1's safeguards flagged this message. Our intentionally broad safeguards allow us to deliver more capabilities faster, but can sometimes flag legitimate coding and cybersecurity tasks. Switched to Opus 4.8. Send feedback with /feedback or learn more: https://support.claude.com/en/articles/15363606\n\nDetails: `[cyber]`",
+            "level":"warning","trigger":"refusal","direction":"retry","scope":"session",
+            "originalModel":"claude-fable-5-1","fallbackModel":"claude-opus-4-8",
+            "apiRefusalCategory":"cyber",
+            "apiRefusalExplanation":"This request triggered restrictions on violative cyber content and was blocked under Anthropic's Usage Policy.",
+            "retractedMessageUuids":["u-a","u-r","u-unknown"],"refusedUserMessageUuid":"u-user",
+            "isMeta":false,"uuid":"u-f","sessionId":"s","version":"2.1.302"}));
+        let w = warnings(&ev);
+        assert_eq!(
+            w[0].1,
+            "fable 5.1 → opus 4.8 · safeguards flagged this message (cyber)"
+        );
+        assert!(w[0]
+            .2
+            .as_deref()
+            .unwrap()
+            .contains("https://support.claude.com/"));
+        assert_eq!(model_changes(&ev), ["claude-opus-4-8"]);
+        assert_eq!(retracted(&ev), ["m1:0", "t1", "t1:result"]);
     }
 }

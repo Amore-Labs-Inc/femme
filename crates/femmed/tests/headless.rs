@@ -456,7 +456,8 @@ async fn the_context_window_follows_the_agent_and_a_restart_does_not_count_a_com
         Some(Context {
             used: 2,
             window: 200_000,
-            compactions: 0
+            compactions: 0,
+            compact_at: None
         })
     );
 
@@ -494,7 +495,8 @@ async fn the_context_window_follows_the_agent_and_a_restart_does_not_count_a_com
         Some(Context {
             used: 2,
             window: 200_000,
-            compactions: 1
+            compactions: 1,
+            compact_at: None
         }),
         "one compaction, however often its line was read"
     );

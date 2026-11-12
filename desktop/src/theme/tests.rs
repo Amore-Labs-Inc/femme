@@ -77,6 +77,12 @@ fn text_is_readable_on_its_fills() {
             ),
             ("achieved goal on paper", p.goal_met, p.paper),
             ("achieved goal on panel grey", p.goal_met, p.panel),
+            (
+                "warning note on paper (a model fallback)",
+                p.warn_text,
+                p.paper,
+            ),
+            ("warning note on panel grey (hovered)", p.warn_text, p.panel),
         ];
         for (name, fg, bg) in pairs {
             let c = contrast(fg, bg);

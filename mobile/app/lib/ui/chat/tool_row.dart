@@ -166,7 +166,12 @@ class _Opened extends StatelessWidget {
   Widget build(BuildContext context) {
     final input = inputText(callBody?['input']);
     final out = resBody?['output'];
-    final outText = out is String ? out : entry.result?.preview ?? '';
+    // a push femmed sent to the phone: its word, not Claude Code's "Mobile push not sent"
+    final outText = callBody?['push'] == pushSent
+        ? line.result ?? ''
+        : out is String
+        ? out
+        : entry.result?.preview ?? '';
     final waiting =
         (entry.call?.body == null &&
             entry.call?.blobHash != null &&

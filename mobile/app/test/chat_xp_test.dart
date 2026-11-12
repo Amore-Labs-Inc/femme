@@ -28,6 +28,17 @@ void main() {
       xpRows(const Context(used: 1, window: 2, compactions: 1))[3].$2,
       '2 (1 compaction)',
     );
+    // once the agent says where it compacts, progress and room are measured against that
+    expect(
+      xpRows(const Context(used: 25000, window: 200000, compactAt: 50000)),
+      [
+        ('current context', '25,000 / 200,000'),
+        ('compacts at', '50,000'),
+        ('level progress', '50.0%'),
+        ('room left', '25,000'),
+        ('level', '1 (never compacted)'),
+      ],
+    );
   });
 
   testWidgets('five segments: four notches', (tester) async {

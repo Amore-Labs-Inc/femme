@@ -414,9 +414,17 @@ struct Actor {
     /// Claude's `/goal` is on (set, or judged not met yet): the transcript on disk is followed for
     /// the checker's verdicts, which the stream never carries (see [`GoalTail`]).
     goal: Option<GoalTail>,
+    /// Claude called `Monitor`: the transcript on disk is followed for the events that start a
+    /// turn of their own, which the stream does not replay (it replays those taken mid-turn).
+    // ponytail: followed from then on, not until the Monitor ends; close it on the
+    // Monitor's task end if the read per chunk ever shows
+    monitor: Option<GoalTail>,
+    /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
+    pushes: HashMap<String, String>,
 }
 
-/// The transcript on disk of a session with a `/goal`, read from where the goal was set.
+/// The transcript on disk of a session with a `/goal` (or a `Monitor`), read from where the goal
+/// was set (the Monitor called).
 struct GoalTail {
     path: Option<PathBuf>,
     read: u64,
@@ -474,6 +482,8 @@ impl Actor {
             switching: false,
             stop: false,
             goal: None,
+            monitor: None,
+            pushes: HashMap::new(),
         }
     }
 
@@ -672,6 +682,11 @@ impl Actor {
     /// sentinel of the goal being set comes after). No file yet (a session's first prompt): it is
     /// looked up again on the next chunk.
     fn open_goal_tail(&mut self, d: &Daemon) {
+        self.goal = Some(self.tail_from_now(d));
+    }
+
+    /// The transcript on disk, to be read from its end now.
+    fn tail_from_now(&self, d: &Daemon) -> GoalTail {
         let path = d
             .session(self.sid)
             .ok()
@@ -681,7 +696,7 @@ impl Actor {
             .as_ref()
             .and_then(|p| std::fs::metadata(p).ok())
             .map_or(0, |m| m.len());
-        self.goal = Some(GoalTail { path, read });
+        GoalTail { path, read }
     }
 
     /// The goal verdicts the transcript on disk gained since the last look: the newest goes to the
@@ -690,35 +705,34 @@ impl Actor {
         let Some(t) = &mut self.goal else {
             return;
         };
-        if t.path.is_none() {
-            t.path = d
-                .session(self.sid)
-                .ok()
-                .and_then(|s| s.agent_sid)
-                .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
-        }
-        let Some(path) = t.path.clone() else {
+        let Some(data) = tail_read(t, d, self.sid).await else {
             return;
         };
-        let at = t.read;
-        let data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
-            Ok(Ok(Some(data))) => data,
-            Ok(Ok(None)) => {
-                t.read = 0; // rewritten: start over
-                return;
-            }
-            _ => return,
-        };
-        let Some(end) = data.iter().rposition(|b| *b == b'\n') else {
-            return;
-        };
-        t.read += end as u64 + 1;
-        let last = data[..end].split(|b| *b == b'\n').rev().find_map(goal_line);
+        let last = data.split(|b| *b == b'\n').rev().find_map(goal_line);
         if let Some(g) = last {
             if matches!(g.state, GoalState::Met | GoalState::Cleared) {
                 self.goal = None;
             }
             self.update(d, None, |s| s.goal = Some(g));
+        }
+    }
+
+    /// The Monitor events the transcript on disk gained since the last look, each as its row. The
+    /// row's id is the line's own, so a line read twice is one row.
+    async fn tail_monitor(&mut self, d: &Daemon) {
+        let Some(t) = &mut self.monitor else {
+            return;
+        };
+        let Some(data) = tail_read(t, d, self.sid).await else {
+            return;
+        };
+        for (id, text) in data.split(|b| *b == b'\n').filter_map(monitor_line) {
+            let item = event_item(self.sid, id, &text, now_ms());
+            if let Err(e) =
+                d.write_items(|tx, _, published| put(tx, self.sid, &Put::Done(item), published))
+            {
+                tracing::warn!(sid = %self.sid, %e, "monitor event not stored");
+            }
         }
     }
 
@@ -946,6 +960,8 @@ impl Actor {
     // ---- the spool ------------------------------------------------------------------------------
 
     async fn on_chunk(&mut self, d: &Daemon, offset: u64, data: Bytes) {
+        // first: an event that starts a turn is in the file before the turn's first line here
+        self.tail_monitor(d).await;
         self.ingest(d, offset, data).await;
         self.replay_check(d).await;
         self.tail_goal(d).await;
@@ -1060,9 +1076,21 @@ impl Actor {
     /// Stores and publishes what the driver reported. The session row goes first when the agent is
     /// starting work or asking (a client sees `working` before the first item of the turn), last
     /// when it is done (a client that hears `done` finds the whole answer).
-    async fn apply(&mut self, d: &Daemon, src: Src, events: Vec<AgentEvent>) {
+    async fn apply(&mut self, d: &Daemon, src: Src, mut events: Vec<AgentEvent>) {
         let replay = self.replay_until.is_some();
         let live_line = !replay && matches!(src, Src::Line(_));
+        if live_line {
+            let title = || {
+                d.session(self.sid)
+                    .map_or_else(|_| String::new(), |s| push_title(&s))
+            };
+            let (n, done) = (&d.notifier, &mut self.pushes);
+            forward_pushes(n, self.sid, title, &events, done, false).await;
+        }
+        stamp_pushes(&mut events, &self.pushes);
+        if live_line && self.monitor.is_none() && events.iter().any(calls_monitor) {
+            self.monitor = Some(self.tail_from_now(d));
+        }
         let base = match src {
             Src::Line(at) => format!("d{at}"),
             Src::Exit => format!("x{}", Id::new()),
@@ -1115,6 +1143,7 @@ impl Actor {
             // when its line is live
             ctx_used: f.ctx_used,
             ctx_window: f.ctx_window,
+            ctx_compact_at: f.ctx_compact_at,
             compacted: if live_line { f.compacted } else { 0 },
             goal: f.goal,
         };
@@ -1141,6 +1170,7 @@ impl Actor {
             && fx.permission.is_none()
             && fx.ctx_used.is_none()
             && fx.ctx_window.is_none()
+            && fx.ctx_compact_at.is_none()
             && fx.compacted == 0
             && fx.goal.is_none()
             && !fx.ready
@@ -1175,7 +1205,13 @@ impl Actor {
                 s.status = status;
                 s.attention = attention;
             }
-            s.context = with_context(s.context, fx.ctx_used, fx.ctx_window, fx.compacted);
+            s.context = with_context(
+                s.context,
+                fx.ctx_used,
+                fx.ctx_window,
+                fx.ctx_compact_at,
+                fx.compacted,
+            );
         });
     }
 
@@ -1560,16 +1596,18 @@ fn row_first(state: Option<(SessionStatus, Attention)>) -> bool {
     )
 }
 
-/// The row's context window after a batch: the agent's latest word on what it has read and on its
-/// window (kept when a batch does not repeat it), and the compactions the batch adds. An agent that
+/// The row's context window after a batch: the agent's latest word on what it has read, on its
+/// window and on where it compacts by itself (each kept when a batch does not repeat it), and the
+/// compactions the batch adds. An agent that
 /// never says leaves `None`; a window of 0 is "not said yet".
 fn with_context(
     old: Option<Context>,
     used: Option<u64>,
     window: Option<u64>,
+    compact_at: Option<u64>,
     compacted: u32,
 ) -> Option<Context> {
-    if used.is_none() && window.is_none() && compacted == 0 {
+    if used.is_none() && window.is_none() && compact_at.is_none() && compacted == 0 {
         return old;
     }
     let mut c = old.unwrap_or_default();
@@ -1579,6 +1617,7 @@ fn with_context(
     if let Some(w) = window {
         c.window = w;
     }
+    c.compact_at = compact_at.or(c.compact_at);
     c.compactions = c.compactions.saturating_add(compacted);
     Some(c)
 }
@@ -1668,6 +1707,152 @@ fn goal_switch(text: &str) -> Option<Goal> {
         state,
         reason: None,
     })
+}
+
+/// The whole lines `t`'s file gained since the last look, which are then read. `None` when there
+/// are none, or no file yet (it is looked up again next time).
+async fn tail_read(t: &mut GoalTail, d: &Daemon, sid: Sid) -> Option<Vec<u8>> {
+    if t.path.is_none() {
+        t.path = d
+            .session(sid)
+            .ok()
+            .and_then(|s| s.agent_sid)
+            .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+    }
+    let path = t.path.clone()?;
+    let at = t.read;
+    let mut data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
+        Ok(Ok(Some(data))) => data,
+        Ok(Ok(None)) => {
+            t.read = 0; // rewritten: start over
+            return None;
+        }
+        _ => return None,
+    };
+    let end = data.iter().rposition(|b| *b == b'\n')?;
+    t.read += end as u64 + 1;
+    data.truncate(end);
+    Some(data)
+}
+
+/// Claude Code's tool for telling the user's phone something (2.1.322).
+const PUSH_TOOL: &str = "PushNotification";
+/// What Claude Code answers the tool when its own push went nowhere: it only delivers through
+/// Remote Control ("Mobile push not sent (Remote Control inactive).").
+const PUSH_NOT_SENT: &str = "Mobile push not sent";
+/// The outcome of a push that arrived, as the call's body says it (`push`); any other is the reason.
+const PUSH_SENT: &str = "sent";
+
+/// The `PushNotification` call an event holds, once its input is final: its id and message.
+fn push_call(e: &AgentEvent) -> Option<(&str, &str)> {
+    let (id, body) = match e {
+        AgentEvent::ItemUpdated { id, body } => (id, body),
+        AgentEvent::ItemCompleted {
+            id,
+            kind: ItemKind::ToolCall,
+            body,
+            ..
+        } => (id, body),
+        _ => return None,
+    };
+    let message = body["input"]["message"].as_str()?;
+    (body["name"] == PUSH_TOOL && !message.trim().is_empty()).then_some((id, message))
+}
+
+/// Whether `events` hold call `id`'s result, and it says Claude Code's own push went nowhere.
+fn push_unsent(events: &[AgentEvent], id: &str) -> bool {
+    events.iter().any(|e| {
+        matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::ToolResult, body, .. }
+            if body["call_id"] == id
+                && body["output"].as_str().is_some_and(|o| o.contains(PUSH_NOT_SENT)))
+    })
+}
+
+/// What a session is called in Claude's push: its label or name, else its folder.
+pub(crate) fn push_title(s: &Session) -> String {
+    let folder = || {
+        let dir = std::path::Path::new(&s.cwd).file_name()?;
+        Some(dir.to_string_lossy().into_owned())
+    };
+    (s.label.clone())
+        .or_else(|| s.name.clone())
+        .or_else(folder)
+        .unwrap_or_else(|| label(s))
+}
+
+/// Sends the phone what Claude's `PushNotification` calls in `events` say, once per call, and
+/// keeps each outcome in `done` by call id. `needs_result`: only a call whose result is among the
+/// events and says Claude Code's own push went nowhere (a terminal pane, where Claude Code may
+/// have delivered it, or held it back because the user is at the terminal).
+// ponytail: the caller waits for ntfy (10 s at worst) so the outcome is on the row when the call
+// shows; spawn it and update the item later if a slow ntfy ever stalls a chat
+pub(crate) async fn forward_pushes(
+    n: &crate::notify::Notifier,
+    sid: Sid,
+    title: impl FnOnce() -> String,
+    events: &[AgentEvent],
+    done: &mut HashMap<String, String>,
+    needs_result: bool,
+) {
+    let calls: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(push_call)
+        .filter(|(id, _)| !done.contains_key(*id) && (!needs_result || push_unsent(events, id)))
+        .collect();
+    if calls.is_empty() {
+        return;
+    }
+    let title = title();
+    for (id, message) in calls {
+        if done.contains_key(id) {
+            continue; // twice among the events
+        }
+        let outcome = match n.claude_push(sid, &title, message).await {
+            Ok(()) => PUSH_SENT,
+            Err(why) => why,
+        };
+        done.insert(id.to_owned(), outcome.to_owned());
+    }
+}
+
+/// Writes the outcome of each forwarded push on its call's body (`push`), for the clients' row.
+// ponytail: `done` lives in memory, so a call replayed after a daemon restart loses its outcome
+// and the row shows Claude Code's own answer again
+pub(crate) fn stamp_pushes(events: &mut [AgentEvent], done: &HashMap<String, String>) {
+    for e in events {
+        let (id, body) = match e {
+            AgentEvent::ItemUpdated { id, body } => (id, body),
+            AgentEvent::ItemCompleted {
+                id,
+                kind: ItemKind::ToolCall,
+                body,
+                ..
+            } => (id, body),
+            _ => continue,
+        };
+        if let (Some(outcome), Some(body)) = (done.get(id.as_str()), body.as_object_mut()) {
+            body.insert("push".into(), Value::String(outcome.clone()));
+        }
+    }
+}
+
+/// The agent opened a `Monitor` call (Claude names the tool in the item's preview).
+fn calls_monitor(e: &AgentEvent) -> bool {
+    matches!(e, AgentEvent::ItemStarted { kind: ItemKind::ToolCall, preview, .. } if preview == "Monitor")
+}
+
+/// A transcript line that is a Monitor event starting a turn of its own (a `user` line; one taken
+/// mid-turn is a `queued_command` attachment there, and the stream replays it): its id and row.
+fn monitor_line(line: &[u8]) -> Option<(String, String)> {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    if v["type"] != "user" || v["origin"]["kind"] != "task-notification" {
+        return None;
+    }
+    let text = v["message"]["content"].as_str()?;
+    Some((
+        v["uuid"].as_str()?.to_owned(),
+        femme_agents::claude::monitor_event(text)?,
+    ))
 }
 
 /// A transcript line's goal verdict (`{"type":"attachment","attachment":{"type":"goal_status"..}}`).
@@ -1807,6 +1992,8 @@ struct Folded {
     ctx_used: Option<u64>,
     /// The agent's context window in tokens, when the batch said.
     ctx_window: Option<u64>,
+    /// Where the agent compacts by itself, when the batch said.
+    ctx_compact_at: Option<u64>,
     /// How many times the batch says the conversation was compacted.
     compacted: u32,
     /// Prompts the process dropped without running them: sent again to the next one.
@@ -1835,6 +2022,7 @@ struct RowFx {
     permission: Option<String>,
     ctx_used: Option<u64>,
     ctx_window: Option<u64>,
+    ctx_compact_at: Option<u64>,
     /// Compactions to count: only those of a live line. A restart replays the lines of the turn
     /// that was running, and the row counted them the first time; the lines the agent wrote while
     /// the daemon was away are read as that same replay, so they are not counted either.
@@ -2042,9 +2230,14 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 st.done = false;
                 f.state = Some((SessionStatus::Idle, attention));
             }
-            AgentEvent::Context { used, window } => {
+            AgentEvent::Context {
+                used,
+                window,
+                compact_at,
+            } => {
                 f.ctx_used = Some(used);
                 f.ctx_window = window.or(f.ctx_window);
+                f.ctx_compact_at = compact_at.or(f.ctx_compact_at);
             }
             // The bar empties at the level up; the next model call says the new size.
             AgentEvent::Compacted { .. } => {
@@ -2732,7 +2925,11 @@ mod tests {
     }
 
     fn say(used: u64, window: Option<u64>) -> AgentEvent {
-        AgentEvent::Context { used, window }
+        AgentEvent::Context {
+            used,
+            window,
+            compact_at: None,
+        }
     }
 
     fn compacted() -> AgentEvent {
@@ -2746,6 +2943,7 @@ mod tests {
             used,
             window,
             compactions,
+            compact_at: None,
         })
     }
 
@@ -2755,7 +2953,7 @@ mod tests {
         let mut row = None;
         for (i, events) in batches.into_iter().enumerate() {
             let f = fold(&mut st, SID, &format!("d{i}"), events, 1);
-            row = with_context(row, f.ctx_used, f.ctx_window, f.compacted);
+            row = with_context(row, f.ctx_used, f.ctx_window, f.ctx_compact_at, f.compacted);
         }
         row
     }
@@ -2817,8 +3015,23 @@ mod tests {
             used: 1,
             window: 2,
             compactions: 3,
+            compact_at: Some(4),
         };
-        assert_eq!(with_context(Some(kept), None, None, 0), Some(kept));
+        assert_eq!(with_context(Some(kept), None, None, None, 0), Some(kept));
+        // where the agent compacts stays until it is said again
+        assert_eq!(
+            with_context(Some(kept), Some(5), None, None, 0)
+                .unwrap()
+                .compact_at,
+            Some(4)
+        );
+        let said = AgentEvent::Context {
+            used: 5,
+            window: None,
+            compact_at: Some(9),
+        };
+        let row = context_after(vec![vec![said], vec![say(6, None)]]).unwrap();
+        assert_eq!((row.used, row.compact_at), (6, Some(9)));
     }
 
     #[test]
@@ -2845,7 +3058,7 @@ mod tests {
             store
                 .write(|tx| {
                     tx.update_session(sid, |s| {
-                        s.context = with_context(s.context, used, window, compacted)
+                        s.context = with_context(s.context, used, window, None, compacted)
                     })
                 })
                 .unwrap()
@@ -3150,6 +3363,30 @@ mod tests {
             Some((GoalState::Met, Some("r".into())))
         );
         assert_eq!(goal_line(br#"{"type":"user"}"#), None);
+        let tick = |kind: &str, status: &str| {
+            json!({"type":kind,"uuid":"u1","origin":{"kind":"task-notification"},"message":{"content":
+                format!("<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n{status}<event>tick 2</event>\n</task-notification>")}})
+            .to_string()
+        };
+        assert_eq!(
+            monitor_line(tick("user", "").as_bytes()),
+            Some(("u1".into(), "◷ ticks · tick 2".into()))
+        );
+        assert_eq!(
+            monitor_line(tick("user", "<status>completed</status>").as_bytes()),
+            None
+        );
+        assert_eq!(monitor_line(tick("attachment", "").as_bytes()), None);
+        assert_eq!(
+            monitor_line(br#"{"type":"user","message":{"content":"hi"}}"#),
+            None
+        );
+        assert!(calls_monitor(&AgentEvent::ItemStarted {
+            id: "t1".into(),
+            kind: ItemKind::ToolCall,
+            preview: "Monitor".into(),
+            parent: None,
+        }));
         assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
         assert_eq!(effort_switch("/effort"), None);
         assert_eq!(effort_switch("/effort a b"), None);
@@ -3596,5 +3833,85 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((after.blob_hash, after.ts), (Some(hash), 2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claudes_push_call_is_sent_to_the_phone_once() {
+        let (base, rx) = crate::notify::tests::stub();
+        let n = crate::notify::Notifier::new(Some("owner".into())).with_base(base);
+        let call = |id: &str| AgentEvent::ItemUpdated {
+            id: id.into(),
+            body: json!({"name": "PushNotification", "call_id": id,
+                "input": {"message": "tests green", "status": "proactive"}}),
+        };
+        let mut done = HashMap::new();
+        // the call opens without its input: nothing to send yet
+        let opened = [AgentEvent::ItemStarted {
+            id: "t1".into(),
+            kind: ItemKind::ToolCall,
+            preview: "PushNotification".into(),
+            parent: None,
+        }];
+        forward_pushes(&n, SID, || "fix-ci".into(), &opened, &mut done, false).await;
+        assert!(done.is_empty());
+
+        let mut events = vec![call("t1")];
+        forward_pushes(&n, SID, || "fix-ci".into(), &events, &mut done, false).await;
+        stamp_pushes(&mut events, &done);
+        let got = crate::notify::tests::drain(&rx);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["owner"]["title"], "fix-ci");
+        assert_eq!(got["owner"]["message"], "tests green");
+        let AgentEvent::ItemUpdated { body, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "sent");
+
+        // the same call again (its task state, its end): not pushed again, the outcome stays on it
+        let mut again = vec![
+            call("t1"),
+            AgentEvent::ItemCompleted {
+                id: "t1".into(),
+                kind: ItemKind::ToolCall,
+                status: ItemStatus::Completed,
+                body: json!({"name": "PushNotification", "call_id": "t1",
+                    "input": {"message": "tests green", "status": "proactive"}}),
+                parent: None,
+            },
+        ];
+        forward_pushes(&n, SID, || "fix-ci".into(), &again, &mut done, false).await;
+        stamp_pushes(&mut again, &done);
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        let AgentEvent::ItemCompleted { body, .. } = &again[1] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "sent");
+
+        // another tool's call is nobody's push
+        let other = [AgentEvent::ItemUpdated {
+            id: "t2".into(),
+            body: json!({"name": "Bash", "call_id": "t2", "input": {"message": "x"}}),
+        }];
+        forward_pushes(&n, SID, || "fix-ci".into(), &other, &mut done, false).await;
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+
+        // no topic and no phone: the reason is the outcome
+        let none = crate::notify::Notifier::new(None);
+        let mut events = vec![call("t3")];
+        forward_pushes(&none, SID, || "fix-ci".into(), &events, &mut done, false).await;
+        stamp_pushes(&mut events, &done);
+        let AgentEvent::ItemUpdated { body, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "no phone registered");
+    }
+
+    #[test]
+    fn a_push_is_titled_by_the_sessions_label_or_its_folder() {
+        let mut s = session_row(SID, Mode::Headless, SessionStatus::Working);
+        s.cwd = "/home/u/femme".into();
+        assert_eq!(push_title(&s), "femme");
+        s.label = Some("fix-ci".into());
+        assert_eq!(push_title(&s), "fix-ci");
     }
 }

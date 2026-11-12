@@ -19,6 +19,11 @@ const hintKeys = [
   'description',
 ];
 
+/// Claude Code's tool for telling the user's phone something, and the `push` a call's body
+/// carries once femmed sent it there itself.
+const pushTool = 'PushNotification';
+const pushSent = 'sent';
+
 class ToolLine {
   const ToolLine({
     required this.name,
@@ -112,6 +117,22 @@ ToolLine toolLine({
     hint = '· ${link['title'] ?? url} ↗';
     final v = link['version'];
     res = link['updated'] == true && v != null ? 'updated · v$v' : null;
+  }
+
+  // Claude's push to the phone: `🔔 push · <what it says>`. When femmed sent it itself
+  // (`push` on the call), its word stands for Claude Code's "Mobile push not sent".
+  if (name == pushTool) {
+    name = '🔔 push';
+    final m = callBody?['input'];
+    if (m is Map && m['message'] is String) {
+      hint = '· ${firstLine(m['message'] as String)}';
+    }
+    final push = callBody?['push'];
+    if (push == pushSent) {
+      res = 'sent to your phone';
+    } else if (push is String) {
+      res = 'not sent: $push';
+    }
   }
 
   return ToolLine(

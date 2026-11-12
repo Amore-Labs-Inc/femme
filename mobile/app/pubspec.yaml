@@ -64,6 +64,8 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -93,3 +95,30 @@ flutter:
     - family: Kaushan Script
       fonts:
         - asset: assets/fonts/kaushan-script/KaushanScript-Regular.ttf
+
+# App icon and launch screen from assets/brand (FEMME's mark, rendered from assets/logo.svg by
+# the brand.py in mobile/ci). Regenerate with `dart run flutter_launcher_icons` and
+# `dart run flutter_native_splash:create`.
+flutter_launcher_icons:
+  image_path: assets/brand/icon.png
+  android: true
+  min_sdk_android: 21
+  adaptive_icon_background: "#1E1E1E"
+  adaptive_icon_foreground: assets/brand/icon-fg.png
+  adaptive_icon_monochrome: assets/brand/icon-mono.png
+  ios: true
+  remove_alpha_ios: true
+  image_path_ios_dark_transparent: assets/brand/icon-dark.png
+  image_path_ios_tinted_grayscale: assets/brand/icon-tinted.png
+
+flutter_native_splash:
+  color: "#FEFEFE"
+  color_dark: "#1E1E1E"
+  image: assets/brand/splash.png
+  ios: true
+  android: true
+  web: false
+  android_12:
+    color: "#FEFEFE"
+    color_dark: "#1E1E1E"
+    image: assets/brand/splash-a12.png
