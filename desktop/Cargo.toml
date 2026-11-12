@@ -16,6 +16,8 @@ build = "build.rs"
 bench = ["gpui/profiler"]
 
 [dependencies]
+# the hash of a file as read, so a save does not write over a file changed meanwhile (files/edit.rs)
+sha2 = "0.10"
 # gpui-component 0.8.1 depends on the crates.io snapshot `gpui-pre =0.3.10` (not a Zed git rev), so we
 # take exactly that one: a second gpui in the graph would make every gpui type mismatch.
 gpui = { version = "=0.3.10", package = "gpui-pre" }
