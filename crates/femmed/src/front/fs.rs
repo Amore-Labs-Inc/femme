@@ -8,13 +8,15 @@
 //! the answer is no oracle for the rest of the box. All the I/O runs on the blocking pool.
 //!
 //! `FsWrite` saves a file under the same rules, checked on the folder it goes in (the file itself
-//! may not exist yet), in pieces: see [`write_piece`].
+//! may not exist yet), in pieces: see [`write_piece`]. `FsZip` sends a folder as a zip archive:
+//! see [`zip_dir`].
 //!
 //! `Folders` looks the same way at home alone, before any session runs there: the desktop picks
 //! a project's folder with it, and may have it made.
 
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -218,6 +220,14 @@ pub(crate) struct Piece {
 pub(crate) async fn write(d: &Daemon, sid: Sid, piece: Piece) -> Result<Resp, WireErr> {
     let scope = scope(d, sid)?;
     blocking(move || write_piece(&scope, piece)).await
+}
+
+/// `FsZip`: a folder as a zip archive, at most [`READ_MAX`] bytes of it.
+pub(crate) async fn zip(d: &Daemon, sid: Sid, path: String) -> Result<Resp, WireErr> {
+    let scope = scope(d, sid)?;
+    blocking(move || zip_dir(&scope.resolve(&path)?))
+        .await
+        .map(Resp::FsData)
 }
 
 /// `Folders`: the folders in a folder of home, for picking a project's folder. `~`, `~/` and a
@@ -478,6 +488,92 @@ fn land(part: &Path, dest: &Path, replace: bool, was: Option<[u8; 32]>) -> Resul
         Err(_) => return std::fs::rename(part, dest).map_err(io_err),
     }
     std::fs::remove_file(part).map_err(io_err)
+}
+
+/// Folders `FsZip` leaves out wherever they are: history, build output and installed packages,
+/// all made again from the rest.
+const ZIP_SKIP: [&str; 3] = [".git", "target", "node_modules"];
+
+/// The archive in memory, refusing to grow past [`READ_MAX`]: a folder too big is found out as
+/// soon as its archive is, not after all of it was read.
+struct Capped<'a> {
+    out: Cursor<Vec<u8>>,
+    over: &'a Cell<bool>,
+}
+
+impl Write for Capped<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.out.position() + buf.len() as u64 > READ_MAX {
+            self.over.set(true);
+            return Err(std::io::Error::other("the archive is too big"));
+        }
+        self.out.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for Capped<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.out.seek(pos)
+    }
+}
+
+/// The folder `root` as a deflated zip archive, its entries named relative to it. Plain files and
+/// folders only: a symlink is left out (it could lead out of scope, or round in a loop), and so
+/// are pipes, sockets and devices, the [`ZIP_SKIP`] folders, names that are not UTF-8, and what
+/// cannot be read. `Bad` "over 16 MiB zipped" when the archive outgrows [`READ_MAX`].
+fn zip_dir(root: &Path) -> Result<Vec<u8>, WireErr> {
+    use zip::write::SimpleFileOptions;
+    if !std::fs::metadata(root).map_err(io_err)?.is_dir() {
+        return Err(bad("not a folder"));
+    }
+    let over = Cell::new(false);
+    let fail = |e: &dyn std::fmt::Display| {
+        if over.get() {
+            bad("over 16 MiB zipped")
+        } else {
+            bad(format!("cannot zip that folder: {e}"))
+        }
+    };
+    let mut zip = zip::ZipWriter::new(Capped {
+        out: Cursor::new(Vec::new()),
+        over: &over,
+    });
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut todo = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = todo.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = read.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let (Ok(kind), Ok(name)) = (entry.file_type(), entry.file_name().into_string()) else {
+                continue;
+            };
+            let inner = format!("{prefix}{name}");
+            if kind.is_dir() && !ZIP_SKIP.contains(&name.as_str()) {
+                zip.add_directory(inner.as_str(), options)
+                    .map_err(|e| fail(&e))?;
+                todo.push((entry.path(), inner + "/"));
+            } else if kind.is_file() {
+                let Ok(mut file) = File::open(entry.path()) else {
+                    continue;
+                };
+                let mode = file.metadata().map_or(0o644, |m| {
+                    std::os::unix::fs::PermissionsExt::mode(&m.permissions())
+                });
+                zip.start_file(inner, options.unix_permissions(mode & 0o777))
+                    .map_err(|e| fail(&e))?;
+                std::io::copy(&mut file, &mut zip).map_err(|e| fail(&e))?;
+            }
+        }
+    }
+    let capped = zip.finish().map_err(|e| fail(&e))?;
+    Ok(capped.out.into_inner())
 }
 
 #[cfg(test)]
@@ -869,5 +965,79 @@ mod tests {
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
         // Without `replace` a link is a taken name like any other: the new file goes beside it.
         assert_eq!(landed(&s, piece("leak", 0, 1, b"x")).0, "leak (2)");
+    }
+
+    #[test]
+    fn a_zip_holds_the_folders_files_but_not_git_links_or_build_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("proj"), dir.path().join("outside"));
+        for d in [
+            "src/deep",
+            ".git/objects",
+            "target/debug",
+            "web/node_modules/x",
+            "empty",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), "s").unwrap();
+        std::fs::write(root.join("README"), "read me").unwrap();
+        std::fs::write(root.join("src/deep/lib.rs"), "fn f() {}").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref").unwrap();
+        std::fs::write(root.join("target/debug/bin"), "elf").unwrap();
+        std::fs::write(root.join("web/node_modules/x/i.js"), "js").unwrap();
+        symlink(outside.join("secret"), root.join("leak")).unwrap();
+        symlink(&outside, root.join("out")).unwrap();
+
+        let bytes = zip_dir(&root).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut names: Vec<String> = archive
+            .file_names()
+            .map(|n| n.unwrap().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "README",
+                "empty/",
+                "src/",
+                "src/deep/",
+                "src/deep/lib.rs",
+                "web/"
+            ]
+        );
+        let mut text = String::new();
+        archive
+            .by_name("src/deep/lib.rs")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "fn f() {}");
+        assert_eq!(
+            zip_dir(&root.join("README")).unwrap_err().code,
+            ErrCode::Bad
+        );
+    }
+
+    #[test]
+    fn a_zip_past_the_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // Random bytes do not deflate: a file past the cap makes an archive past it.
+        let mut noise = vec![0u8; READ_MAX as usize + 1];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for b in &mut noise {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *b = x as u8;
+        }
+        std::fs::write(dir.path().join("noise"), &noise).unwrap();
+        let e = zip_dir(dir.path()).unwrap_err();
+        assert_eq!(
+            (e.code, e.msg.as_str()),
+            (ErrCode::Bad, "over 16 MiB zipped")
+        );
     }
 }

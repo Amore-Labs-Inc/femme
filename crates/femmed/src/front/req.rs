@@ -61,6 +61,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::BlobPut { .. }
             | Req::FsList { .. }
             | Req::FsRead { .. }
+            | Req::FsZip { .. }
             | Req::Folders { make: false, .. }
             | Req::Caps
             | Req::ServerInfo
@@ -200,7 +201,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             };
             super::fs::write(d, sid, piece).await
         }
-        Req::FsZip { .. } => Err(unsupported("not yet")),
+        Req::FsZip { sid, path } => super::fs::zip(d, sid, path).await,
         Req::Folders { path, make } => super::fs::folders(d, path, make).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
