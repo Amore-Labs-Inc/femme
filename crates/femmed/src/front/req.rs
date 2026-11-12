@@ -135,6 +135,11 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             )
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
+        Req::TakeBack { sid } => match d.take_back(sid).await {
+            Ok(Some(text)) => Ok(Resp::TakenBack { text }),
+            Ok(None) => Ok(Resp::Ok),
+            Err(e) => Err(wire(e)),
+        },
         Req::Background { sid, tool_use_id } => {
             done(d.background(sid, tool_use_id.as_deref()).await)
         }

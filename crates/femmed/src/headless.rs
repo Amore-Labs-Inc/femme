@@ -91,6 +91,14 @@ impl Saved {
 // ---- the handle ---------------------------------------------------------------------------------
 
 type Reply = oneshot::Sender<Result<(), CoreError>>;
+/// Where a take-back's outcome goes: the message's text, or `None` when the turn was only
+/// interrupted.
+type Taken = oneshot::Sender<Result<Option<String>, CoreError>>;
+
+/// How long a take-back waits for the agent to give the message up.
+// ponytail: an agent that refuses the rewind says nothing the driver passes on, so the request
+// is answered "only interrupted" after this; make the driver say it if the wait ever shows.
+const TAKE_BACK_WAIT: Duration = Duration::from_secs(20);
 
 enum Cmd {
     Prompt {
@@ -102,6 +110,11 @@ enum Cmd {
     },
     Interrupt {
         reply: Reply,
+    },
+    /// Esc right after sending: the newest message comes back (`Some`: its text), or the turn is
+    /// only interrupted (`None`).
+    TakeBack {
+        reply: Taken,
     },
     /// Ctrl+B: the foreground task of the call (or every one) goes to the background.
     Background {
@@ -174,6 +187,19 @@ impl Head {
 
     pub(crate) async fn interrupt(&self) -> Result<(), CoreError> {
         self.call(|reply| Cmd::Interrupt { reply }).await
+    }
+
+    /// The session's newest message back as text, or `None` when its turn was only interrupted.
+    pub(crate) async fn take_back(&self) -> Result<Option<String>, CoreError> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Cmd::TakeBack { reply })
+            .await
+            .map_err(|_| gone())?;
+        match tokio::time::timeout(TAKE_BACK_WAIT, answer).await {
+            Ok(r) => r.map_err(|_| gone())?,
+            Err(_) => Ok(None),
+        }
     }
 
     pub(crate) async fn background(&self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
@@ -368,6 +394,8 @@ struct Actor {
     // ponytail: unbounded while the store keeps failing, each batch is only a few KiB; cap it (and
     // fail the session) if a store that stays broken is ever seen.
     pending_puts: Vec<Put>,
+    /// Who waits for the take-back under way.
+    taking: Option<Taken>,
     /// What the agent said about the saved messages, for the next commit ([`sent::settle`]).
     missed: Vec<sent::Gone>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
@@ -442,6 +470,7 @@ impl Actor {
             boot_acts: Vec::new(),
             fold: FoldState::default(),
             pending_puts: Vec::new(),
+            taking: None,
             missed: Vec::new(),
             resend: Vec::new(),
             restart_at: None,
@@ -541,6 +570,7 @@ impl Actor {
                 let r = self.interrupt().await;
                 let _ = reply.send(r);
             }
+            Cmd::TakeBack { reply } => self.take_back(d, reply).await,
             Cmd::Background { tool_use_id, reply } => {
                 let r = self.background(tool_use_id.as_deref()).await;
                 let _ = reply.send(r);
@@ -711,6 +741,37 @@ impl Actor {
         self.driver.interrupt(&mut self.out).map_err(driver_err)?;
         self.flush().await;
         Ok(())
+    }
+
+    /// Asks the driver to take the session's newest message back; `reply` hears the text when the
+    /// agent has given it up ([`Actor::apply`]). A message that cannot be taken back (not saved
+    /// under an id of ours, not the one the agent works on, an agent that cannot) is an interrupt.
+    async fn take_back(&mut self, d: &Daemon, reply: Taken) {
+        let asked = self.ready().and_then(|()| {
+            let newest = d.store.write(|tx| sent::newest(tx, self.sid));
+            let (_, echo) = newest
+                .map_err(crate::daemon::core_err)?
+                .ok_or(CoreError::Busy)?;
+            let echo = echo.ok_or(CoreError::Busy)?;
+            self.driver
+                .take_back(&echo, &mut self.out)
+                .map_err(driver_err)
+        });
+        match asked {
+            Ok(events) => {
+                self.flush().await;
+                self.taking = Some(reply);
+                if !events.is_empty() {
+                    // a message the driver still held: it is back already
+                    self.apply(d, Src::Exit, events).await;
+                }
+            }
+            Err(e) => {
+                tracing::debug!(sid = %self.sid, %e, "not taken back: interrupting");
+                let r = self.interrupt().await;
+                let _ = reply.send(r.map(|()| None));
+            }
+        }
     }
 
     async fn background(&mut self, tool_use_id: Option<&str>) -> Result<(), CoreError> {
@@ -1093,6 +1154,12 @@ impl Actor {
         self.commit(d, f.puts).await;
         if !first {
             self.row(d, &row);
+        }
+        // after the rows are gone: the client puts the text back into an input with no bubble
+        if let Some(text) = f.taken_back {
+            if let Some(reply) = self.taking.take() {
+                let _ = reply.send(Ok(Some(text)));
+            }
         }
     }
 
@@ -1882,6 +1949,8 @@ struct FoldState {
     streams: HashMap<String, String>,
     /// A turn ended (not interrupted) since the agent was last working: its idle is `done`.
     done: bool,
+    /// The `TurnEnd` item of the turn that ended last: a take-back removes it with the turn.
+    last_end: Option<String>,
 }
 
 /// One write to the transcript.
@@ -1937,6 +2006,8 @@ struct Folded {
     goal: Option<Goal>,
     /// A prompt of the main thread landed (a mirrored pane's typed line).
     prompted: bool,
+    /// The agent gave a prompt back: its text.
+    taken_back: Option<String>,
 }
 
 /// The session row's share of a batch.
@@ -2030,9 +2101,11 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                     usage,
                     duration_ms,
                 });
+                let id = next_id();
+                st.last_end = Some(id.clone());
                 f.puts.push(Put::Done(new_item(
                     sid,
-                    next_id(),
+                    id,
                     ItemKind::TurnEnd,
                     ItemStatus::Completed,
                     Some(&b),
@@ -2060,6 +2133,13 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
             AgentEvent::ItemRetracted { id } => {
                 st.streams.remove(&id);
                 f.puts.push(Put::Remove(id));
+            }
+            // The driver retracts the turn's items; the turn's end row and the saved message are
+            // the daemon's own.
+            AgentEvent::TakenBack { prompt_id, text } => {
+                f.puts.push(Put::Remove(prompt_id));
+                f.puts.extend(st.last_end.take().map(Put::Remove));
+                f.taken_back = Some(text);
             }
             AgentEvent::ItemCompleted {
                 id,
@@ -2239,11 +2319,19 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
             item.blob_hash = None;
             published.push(tx.put_item(&item)?);
         }
-        Put::Remove(id) => {
-            if store_items::get_item(tx, sid, id)?.is_some() {
+        // A message goes with the mark that says it was read, or, not echoed yet, by the id
+        // its echo would have had.
+        Put::Remove(id) => match store_items::get_item(tx, sid, id)? {
+            Some(old) => {
+                if let Some(row) = sent::read_row(&old) {
+                    if store_items::get_item(tx, sid, &row)?.is_some() {
+                        tx.delete_item(sid, &row)?;
+                    }
+                }
                 tx.delete_item(sid, id)?;
             }
-        }
+            None => sent::unsend(tx, sid, id)?,
+        },
     }
     Ok(())
 }
@@ -2482,6 +2570,21 @@ impl Daemon {
             .head(sid)
             .ok_or(CoreError::Busy)?
             .interrupt()
+            .await
+    }
+
+    /// `Req::TakeBack`: the session's newest message back as text (`Some`), its turn stopped and
+    /// its rows gone; `None` when the turn was only interrupted (a terminal, an agent that cannot
+    /// forget a message, a message that is not the one it works on).
+    pub async fn take_back(&self, sid: Sid) -> Result<Option<String>, CoreError> {
+        let s = self.session(sid)?;
+        if s.agent != Agent::Claude || s.mode == Mode::Tui {
+            return self.interrupt_session(sid).await.map(|()| None);
+        }
+        self.sessions
+            .head(sid)
+            .ok_or(CoreError::Busy)?
+            .take_back()
             .await
     }
 
@@ -3017,6 +3120,76 @@ mod tests {
             matches!(&rows[..], [femme_proto::state::Row::Tombstone { id, .. }] if *id == format!("{sid}/m1:0")),
             "{rows:?}"
         );
+    }
+
+    /// The agent gave a prompt back (`TakenBack` and the driver's retractions): the saved message,
+    /// the mark that says it was read, the interrupt marker and the turn's end all leave the
+    /// transcript, and the text goes to whoever asked.
+    #[test]
+    fn a_prompt_taken_back_leaves_no_row_of_its_turn() {
+        const ECHO: &str = "c8eed47b-e7a7-4739-8260-f78e891051e8";
+        let (store, sid) = store_with_session();
+        let mut saved = item(ItemKind::UserMessage, ItemStatus::Pending, "1 to 300");
+        saved.sid = sid;
+        saved.item_id = "01JC0SAVED".into();
+        saved.body = Some(json!({"text": "1 to 300", "echo": ECHO}).to_string());
+        apply_puts(&store, sid, vec![Put::Done(saved)]);
+        let newest = store.write(|tx| sent::newest(tx, sid)).unwrap();
+        assert_eq!(newest, Some(("1 to 300".into(), Some(ECHO.into()))));
+
+        // the turn as the driver reports it: the echo, the marker, the end
+        let mut st = FoldState::default();
+        let done = |id: &str, kind, text: &str| AgentEvent::ItemCompleted {
+            id: id.into(),
+            kind,
+            status: ItemStatus::Completed,
+            body: json!({ "text": text }),
+            parent: None,
+        };
+        let turn = vec![
+            AgentEvent::TurnStarted,
+            done(ECHO, ItemKind::UserMessage, "1 to 300"),
+            done("marker", ItemKind::Event, "[Request interrupted by user]"),
+            AgentEvent::TurnEnded {
+                stop: StopReason::Interrupted,
+                usage: None,
+                duration_ms: None,
+            },
+        ];
+        apply_puts(&store, sid, fold(&mut st, sid, "d5", turn, 2).puts);
+        let all = |store: &Store| {
+            let got = store.read(|c| store_items::page_items(c, sid, None, 10));
+            got.unwrap()
+        };
+        assert_eq!(all(&store).len(), 4, "message, read mark, marker, turn end");
+
+        let back = vec![
+            AgentEvent::TakenBack {
+                prompt_id: ECHO.into(),
+                text: "1 to 300".into(),
+            },
+            AgentEvent::ItemRetracted { id: ECHO.into() },
+            AgentEvent::ItemRetracted {
+                id: "marker".into(),
+            },
+        ];
+        let f = fold(&mut st, sid, "d9", back, 3);
+        assert_eq!(f.taken_back.as_deref(), Some("1 to 300"));
+        assert!(apply_puts(&store, sid, f.puts).is_empty());
+        assert_eq!(all(&store), [], "nothing of the turn is left");
+
+        // a message the driver still held was never echoed: it goes by its echo id
+        let mut held = item(ItemKind::UserMessage, ItemStatus::Pending, "held");
+        held.sid = sid;
+        held.item_id = "01JC0HELD".into();
+        held.body = Some(json!({"text": "held", "echo": "e2"}).to_string());
+        apply_puts(&store, sid, vec![Put::Done(held)]);
+        let back = AgentEvent::TakenBack {
+            prompt_id: "e2".into(),
+            text: "held".into(),
+        };
+        apply_puts(&store, sid, fold(&mut st, sid, "x1", vec![back], 4).puts);
+        assert_eq!(all(&store), []);
     }
 
     #[test]

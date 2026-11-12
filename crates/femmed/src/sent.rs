@@ -220,6 +220,41 @@ pub(crate) fn is_read_mark(i: &Item) -> bool {
             .is_some_and(|b| b.get("read").is_some())
 }
 
+/// The saved row a read mark stands for.
+pub(crate) fn read_row(i: &Item) -> Option<String> {
+    if i.kind != ItemKind::Event {
+        return None;
+    }
+    let b: Value = serde_json::from_str(i.body.as_deref()?).ok()?;
+    b["read"].as_str().map(str::to_owned)
+}
+
+/// Deletes the saved row that still waits for the echo `echo` (the agent gave the message back
+/// before it echoed it).
+pub(crate) fn unsend(tx: &mut Tx<'_>, sid: Sid, echo: &str) -> femme_store::Result<()> {
+    let rows = waiting(tx, sid, &[ItemStatus::Pending, ItemStatus::Failed])?;
+    if let Some((row, _)) = rows.iter().find(|(_, b)| b["echo"].as_str() == Some(echo)) {
+        tx.delete_item(sid, &row.item_id)?;
+    }
+    Ok(())
+}
+
+/// The session's newest message of the user's own: its text, and the id the agent echoes it under
+/// when it was saved with one.
+pub(crate) fn newest(
+    tx: &Tx<'_>,
+    sid: Sid,
+) -> femme_store::Result<Option<(String, Option<String>)>> {
+    let statuses = [ItemStatus::Pending, ItemStatus::Completed];
+    let rows = store_items::items_with_status(tx, sid, ItemKind::UserMessage, &statuses)?;
+    let Some(last) = rows.into_iter().rfind(|i| i.parent.is_none()) else {
+        return Ok(None);
+    };
+    let b = body_of(tx, &last)?;
+    let echo = b["echo"].as_str().map(str::to_owned);
+    Ok(Some((text_of(&b).to_owned(), echo)))
+}
+
 /// Pairs a new echo (a top-level `UserMessage` the store does not hold yet) with the saved row it
 /// is: the row is read at the echo's time, and the echo is stored as the `Event` that says so.
 /// `false` (nothing written) when it is no saved row's.

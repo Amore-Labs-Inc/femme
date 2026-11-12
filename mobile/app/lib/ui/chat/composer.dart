@@ -36,6 +36,20 @@ List<String> promptHistory(List<Item> items, {int max = 20}) {
   return out;
 }
 
+/// Whether stop takes the prompt back (the desktop's Esc rule, Claude Code's own): the newest
+/// main-thread row that is not a note is still the user's message, so nothing of a reply has shown.
+bool takesBack(List<Item> items) {
+  for (final i in items.reversed) {
+    if (i.parent != null ||
+        i.kind == ItemKind.event ||
+        i.kind == ItemKind.turnStart) {
+      continue;
+    }
+    return i.kind == ItemKind.userMessage && i.status != ItemStatus.failed;
+  }
+  return false;
+}
+
 class Composer extends StatefulWidget {
   const Composer({super.key, required this.sid});
   final String sid;
@@ -174,7 +188,22 @@ class _ComposerState extends State<Composer> {
 
   Future<void> _interrupt() async {
     HapticFeedback.mediumImpact();
-    final err = await ChatScope.of(context).run(Req.interrupt(widget.sid));
+    final chat = ChatScope.of(context);
+    final items = Femme.of(context).store.items(widget.sid);
+    if (_session?.agent == Agent.claude && takesBack(items)) {
+      try {
+        // the prompt comes back to edit; a daemon that only interrupted answers no text
+        final text = await chat.takeBack();
+        if (text != null && mounted) {
+          final had = _text.text;
+          _setText(had.isEmpty ? text : '$text\n$had');
+        }
+        return;
+      } catch (_) {
+        // an older daemon does not know the request: interrupt as before
+      }
+    }
+    final err = await chat.run(Req.interrupt(widget.sid));
     if (err != null && mounted) toast(context, 'interrupt failed: $err');
   }
 

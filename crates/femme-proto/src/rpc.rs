@@ -276,6 +276,14 @@ pub enum Req {
     PushUnregister {
         token: String,
     },
+    /// Esc right after sending, before the agent has shown any reply: takes the session's newest
+    /// message back. The turn is stopped, the agent forgets the message and what it did for it,
+    /// and the message's rows leave the transcript. Answered with `Resp::TakenBack` (the text, for
+    /// the input it goes back into), or with `Resp::Ok` when the turn could only be interrupted
+    /// (not a Claude session, or Claude did not give the message up): then it is `Interrupt`.
+    TakeBack {
+        sid: Sid,
+    },
 }
 
 /// Where a phone's pushes are delivered.
@@ -386,6 +394,10 @@ pub enum Resp {
     Prs(Vec<Pr>),
     /// Whether merges start fixes for the pull requests they leave conflicting.
     PrAutoFix(bool),
+    /// The answer to `TakeBack` when the message came back: its text.
+    TakenBack {
+        text: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

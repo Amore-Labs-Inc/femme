@@ -14,6 +14,7 @@ mod history;
 mod permission;
 mod slash;
 mod sniff;
+mod takeback;
 mod xp;
 
 use std::collections::HashMap;
@@ -103,12 +104,28 @@ pub struct Composer {
     history: HashMap<Sid, history::History>,
     /// Where Up and Down have got to in the selected session's history.
     browse: history::Browse,
+    /// Per session, whether its newest row is still the user's prompt: Esc then takes it back.
+    fresh: HashMap<Sid, takeback::Fresh>,
+    /// The last prompt sent in each session, kept so that a take-back restores it as it was.
+    last_sent: HashMap<Sid, LastSent>,
     _subs: Vec<Subscription>,
+}
+
+/// A prompt the daemon has: what Esc puts back when it is taken back.
+struct LastSent {
+    /// What went out ([`Outgoing::text`]).
+    body: String,
+    /// The text as typed.
+    text: String,
+    /// Its attachment chips, uploaded.
+    chips: Vec<Chip>,
 }
 
 /// A prompt on its way: what to clear once the daemon has it.
 struct Pending {
     sid: Sid,
+    /// What goes out, trimmed ([`Outgoing::text`]).
+    body: String,
     /// The text as typed (not trimmed), to tell whether the input still holds it.
     text: String,
     ids: Vec<ChipId>,
@@ -145,17 +162,28 @@ impl Composer {
             }));
             // The session's own `UserMessage` rows, which the transcript's subscription brings in.
             subs.push(
-                cx.subscribe(net, |this, _, ev: &ClientEvent, _| match &ev.0 {
+                cx.subscribe(net, |this, _, ev: &ClientEvent, cx| match &ev.0 {
                     Event::Changes {
                         scope: Scope::Session(sid),
                         rows,
                         ..
                     } => {
                         let h = this.history.entry(*sid).or_default();
+                        let fresh = this.fresh.entry(*sid).or_default();
+                        let mut changed = false;
                         for row in rows {
-                            if let Row::Item(item) = row {
-                                h.item(item);
+                            match row {
+                                Row::Item(item) => {
+                                    h.item(item);
+                                    changed |= fresh.item(item);
+                                }
+                                Row::Tombstone { .. } => changed |= fresh.forget(),
+                                _ => {}
                             }
+                        }
+                        // the placeholder says whether Esc takes the prompt back
+                        if changed && this.session == Some(*sid) {
+                            cx.notify();
                         }
                     }
                     Event::Reset {
@@ -164,6 +192,7 @@ impl Composer {
                         if let Some(h) = this.history.get_mut(sid) {
                             h.reset();
                         }
+                        this.fresh.remove(sid);
                     }
                     _ => {}
                 }),
@@ -195,6 +224,8 @@ impl Composer {
             menu_shown: false,
             history: HashMap::new(),
             browse: history::Browse::default(),
+            fresh: HashMap::new(),
+            last_sent: HashMap::new(),
             _subs: subs,
         }
     }
@@ -257,8 +288,21 @@ impl Composer {
             .flatten()
     }
 
-    /// The placeholder for the selected session: `message opus 5.5 · high` for a Claude one.
+    /// What Esc sends now: `TakeBack` while the selected Claude session works and has shown
+    /// nothing of a reply, `Interrupt` later in the turn, nothing when it does not work.
+    fn esc_req(&self, cx: &App) -> Option<Req> {
+        let sid = self.session?;
+        let fresh = self.fresh.get(&sid).is_some_and(takeback::Fresh::is);
+        let claude = self.target(cx) == Target::Agent(Agent::Claude);
+        takeback::esc(sid, self.working(cx), claude, fresh)
+    }
+
+    /// The placeholder for the selected session: `message opus 5.5 · high` for a Claude one, and
+    /// while Esc would take the prompt just sent back, that.
     fn hint(&self, cx: &App) -> String {
+        if matches!(self.esc_req(cx), Some(Req::TakeBack { .. })) {
+            return takeback::HINT.to_owned();
+        }
         let session = self
             .net
             .as_ref()
@@ -602,9 +646,10 @@ impl Composer {
         ))
     }
 
-    /// Esc interrupts a working session; otherwise it is left for whoever else binds it.
-    fn on_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.interrupt(cx) {
+    /// Esc interrupts a working session, or takes the prompt back when nothing of a reply has
+    /// shown yet; otherwise it is left for whoever else binds it.
+    fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.interrupt(window, cx) {
             cx.propagate();
         }
     }
@@ -618,24 +663,67 @@ impl Composer {
             .is_some_and(|s| s.status == SessionStatus::Working)
     }
 
-    fn interrupt(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Sends what Esc means now ([`Composer::esc_req`]); false when that is nothing. The daemon
+    /// answers a `TakeBack` with the prompt's text, which goes back into the input, or with a
+    /// plain `Ok` when it could only interrupt.
+    fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let (Some(net), Some(sid)) = (self.net.clone(), self.session) else {
             return false;
         };
-        if !self.working(cx) {
+        let Some(req) = self.esc_req(cx) else {
             return false;
-        }
-        let answer = request(&net, Req::Interrupt { sid }, cx);
-        cx.spawn(async move |this, cx| {
-            if let Err(why) = answer.await {
-                this.update(cx, |this, cx| {
-                    this.notice(sid, format!("interrupt failed: {why}"), cx)
-                })
-                .ok();
-            }
+        };
+        let answer = request(&net, req, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await;
+            this.update_in(cx, |this, window, cx| match answer {
+                Ok(Resp::TakenBack { text }) => this.take_back(sid, &text, window, cx),
+                Ok(_) => {}
+                Err(why) => this.notice(sid, format!("interrupt failed: {why}"), cx),
+            })
+            .ok();
         })
         .detach();
         true
+    }
+
+    /// The daemon took `sid`'s prompt back (`taken`: its text): it returns to the input, caret at
+    /// its end, with the chips it went out with when this composer sent it.
+    fn take_back(&mut self, sid: Sid, taken: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let last = self.last_sent.remove(&sid);
+        let here = self.session == Some(sid) && !self.reload;
+        let current = match (&self.input, here) {
+            (Some(input), true) => input.read(cx).value().to_string(),
+            _ => self.drafts.text(sid).to_owned(),
+        };
+        let sent = last.as_ref().map(|l| (l.body.as_str(), l.text.as_str()));
+        let (text, mine) = takeback::restored(taken, sent, &current);
+        let draft = self.drafts.entry(sid);
+        draft.notice = None;
+        match (last, mine) {
+            (Some(last), true) => drop(draft.chips.splice(0..0, last.chips)),
+            (Some(last), false) => {
+                for chip in &last.chips {
+                    forget(&self.previews, chip, cx);
+                }
+            }
+            (None, _) => {}
+        }
+        self.keep(sid, &text);
+        match (&self.input, here) {
+            (Some(input), true) => {
+                input.update(cx, |input, cx| {
+                    input.set_value(text.clone(), window, cx);
+                    let end = input.text().len();
+                    input.set_selected_range(end..end, cx);
+                });
+                // `set_value` sends no `Change`; a `/command` taken back does not open the menu.
+                self.input_empty = text.is_empty();
+                self.menu_off = true;
+            }
+            _ => self.drafts.park(sid, text),
+        }
+        cx.notify();
     }
 
     /// Sends the input's text and the ready chips as a prompt, `how` per [`slash::how_for`]: in a
@@ -685,7 +773,7 @@ impl Composer {
             shown,
             Req::Prompt {
                 sid,
-                text: body,
+                text: body.clone(),
                 attachments,
                 how,
             },
@@ -693,6 +781,7 @@ impl Composer {
         );
         let pending = Pending {
             sid,
+            body,
             text,
             ids,
             shown,
@@ -717,6 +806,7 @@ impl Composer {
     ) {
         let Pending {
             sid,
+            body,
             text,
             ids,
             shown,
@@ -756,8 +846,16 @@ impl Composer {
                 if draft.text == text {
                     draft.text.clear();
                 }
-                for chip in &gone {
-                    forget(&self.previews, chip, cx);
+                // Kept until the next prompt goes: Esc may take this one back, chips and all.
+                let last = LastSent {
+                    body,
+                    text: text.clone(),
+                    chips: gone,
+                };
+                if let Some(old) = self.last_sent.insert(sid, last) {
+                    for chip in &old.chips {
+                        forget(&self.previews, chip, cx);
+                    }
                 }
                 // Only what was sent goes: text typed while the prompt was on its way stays.
                 if let (true, Some(input)) = (self.session == Some(sid), &self.input) {
