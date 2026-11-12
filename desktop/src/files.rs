@@ -46,6 +46,7 @@ use crate::video::{self, Clip};
 use crate::viewer::FileView;
 
 pub mod cache;
+pub mod edit;
 pub mod plan;
 pub mod size;
 pub mod source;
@@ -54,6 +55,7 @@ pub mod tree;
 pub mod zip;
 
 use cache::FileCache;
+use edit::{Editing, Saved};
 use plan::{plan, Plan};
 use size::fmt_size;
 use source::{Piece, Source, MAX_READ};
@@ -108,16 +110,20 @@ enum Dest {
 /// A file on show in the viewer page.
 struct Opened {
     name: String,
+    /// Relative to the session's directory: what a save writes.
+    path: String,
     size: usize,
     view: Entity<FileView>,
+    /// The file in the editor instead of the view (`edit` in the bar).
+    edit: Option<Editing>,
 }
 
 /// What the panel shows.
 enum Page {
     /// The tree.
     Tree,
-    /// One file.
-    Viewer(Opened),
+    /// One file (boxed: the tree variant is small).
+    Viewer(Box<Opened>),
 }
 
 /// The files tab: the directory of one session as a tree, and a viewer page for the file picked.
@@ -219,7 +225,15 @@ impl FilesPanel {
 
     /// Leaves the viewer page for the tree (where it was left).
     pub fn back(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.page, Page::Viewer(_)) {
+        if let Page::Viewer(open) = &mut self.page {
+            // unsaved edits stay on the page: save or discard first
+            if let Some(e) = &mut open.edit {
+                if e.modified(cx) {
+                    e.error = Some("unsaved edits: save or discard".into());
+                    cx.notify();
+                    return;
+                }
+            }
             self.page = Page::Tree;
             cx.notify();
         }
@@ -312,7 +326,7 @@ impl FilesPanel {
                 if let Some(data) = cached {
                     self.notice = None;
                     self.reading = None;
-                    self.show_file(name, data, cx);
+                    self.show_file(name, path, data, cx);
                 }
                 return;
             }
@@ -349,7 +363,7 @@ impl FilesPanel {
                         let data = Arc::new(data);
                         t.files.put(&path, data.clone());
                         t.notice = None;
-                        t.show_file(name, data, cx);
+                        t.show_file(name, path, data, cx);
                     }
                     Err(why) => {
                         t.notice = Some(Notice::Error(format!("can't read {name}: {why}")));
@@ -366,7 +380,13 @@ impl FilesPanel {
 
     /// Switches to the viewer page with `data`. A picture or a video opens in the lightbox
     /// instead.
-    fn show_file(&mut self, name: String, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+    fn show_file(
+        &mut self,
+        name: String,
+        path: String,
+        data: Arc<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(format) = crate::transcript::attach::image_format(&name, &data) {
             let image = Arc::new(gpui::Image::from_bytes(format, data.to_vec()));
             Lightbox::show(&name, image, cx);
@@ -383,8 +403,97 @@ impl FilesPanel {
         let size = data.len();
         let view = cx.new(|cx| FileView::new(name.clone(), data.to_vec(), cx));
         self.view_scroll = ScrollHandle::new();
-        self.page = Page::Viewer(Opened { name, size, view });
+        self.page = Page::Viewer(Box::new(Opened {
+            name,
+            path,
+            size,
+            view,
+            edit: None,
+        }));
         cx.notify();
+    }
+
+    /// Puts the open text file in the editor (`edit` in the bar).
+    fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Page::Viewer(open) = &self.page else {
+            return;
+        };
+        let (path, name) = (open.path.clone(), open.name.clone());
+        let Some(data) = self.files.get(&path) else {
+            return;
+        };
+        let Some(e) = Editing::new(path, &data, window, cx) else {
+            self.notice = Some(Notice::Note(format!("{name} is not text")));
+            cx.notify();
+            return;
+        };
+        e.focus(window, cx);
+        if let Page::Viewer(open) = &mut self.page {
+            open.edit = Some(e);
+        }
+        cx.notify();
+    }
+
+    /// Leaves the editor for the view, dropping what was not saved.
+    fn stop_edit(&mut self, cx: &mut Context<Self>) {
+        if let Page::Viewer(open) = &mut self.page {
+            open.edit = None;
+            cx.notify();
+        }
+    }
+
+    /// Saves the editor's text over the file (Ctrl-S); `overwrite` after a conflict.
+    fn save_edit(&mut self, overwrite: bool, cx: &mut Context<Self>) {
+        let (source, sid) = (self.source.clone(), self.session);
+        let Page::Viewer(open) = &mut self.page else {
+            return;
+        };
+        let Some(e) = &mut open.edit else {
+            return;
+        };
+        if e.saving {
+            return;
+        }
+        let task = e.save(&source, sid, overwrite, cx);
+        self.ensure_ticker(cx);
+        cx.spawn(async move |this, cx| {
+            let (text, r) = task.await;
+            this.update(cx, |t, cx| t.saved_edit(text, r, cx)).ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// A save ended: the view, the cache and the listing follow a saved file.
+    fn saved_edit(&mut self, text: String, r: Saved, cx: &mut Context<Self>) {
+        let Page::Viewer(open) = &mut self.page else {
+            return;
+        };
+        let Some(e) = &mut open.edit else {
+            return;
+        };
+        let ok = matches!(r, Saved::Ok(_));
+        e.finish(text.clone(), r);
+        if ok {
+            let data = Arc::new(text.into_bytes());
+            open.size = data.len();
+            let name = open.name.clone();
+            open.view = cx.new(|cx| FileView::new(name, data.to_vec(), cx));
+            self.files.put(&open.path.clone(), data);
+            self.relist(cx);
+        }
+        cx.notify();
+    }
+
+    /// Reads the file again after a conflict: the editor shows what is on disk now.
+    fn reload_edit(&mut self, cx: &mut Context<Self>) {
+        let Page::Viewer(open) = &self.page else {
+            return;
+        };
+        let (path, len) = (open.path.clone(), open.size as u64);
+        self.files.forget(&path);
+        self.page = Page::Tree;
+        self.open_file(path, len, true, cx);
     }
 
     /// Whether something is on its way (the spinner turns).
@@ -790,6 +899,14 @@ impl FilesPanel {
     fn on_key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
         let m = &k.modifiers;
+        // Ctrl-S saves the editor
+        if matches!(&self.page, Page::Viewer(open) if open.edit.is_some()) {
+            if (m.control || m.platform) && !m.alt && !m.shift && k.key == "s" {
+                self.save_edit(false, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         // Ctrl-V uploads what was copied, Ctrl-C copies the line's file out; other chords belong
         // to the shell.
         if (m.control || m.platform) && !m.alt && !m.shift && matches!(self.page, Page::Tree) {
@@ -1233,6 +1350,12 @@ impl FilesPanel {
 
     /// The viewer page: a black title bar (`‹ back`, name, size) over the file.
     fn viewer_page(&self, open: &Opened, cx: &mut Context<Self>) -> Div {
+        let small = |b: Stateful<Div>| b.h(px(26.));
+        let text = matches!(open.view.read(cx).kind(), crate::viewer::Kind::Text);
+        let (modified, saving) = open
+            .edit
+            .as_ref()
+            .map_or((false, false), |e| (e.modified(cx), e.saving));
         let bar = div()
             .flex_none()
             .flex()
@@ -1266,22 +1389,82 @@ impl FilesPanel {
                     .text_size(META_SIZE)
                     .text_color(bar_dim())
                     .child(fmt_size(open.size as u64)),
-            );
-        // The scrollbar is a sibling of what scrolls: inside it, it would scroll away.
-        let body = div()
-            .flex_1()
-            .min_h_0()
-            .relative()
-            .child(
-                div()
-                    .id("files-view")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.view_scroll)
-                    .child(open.view.clone()),
             )
-            .child(Scrollbar::vertical(&self.view_scroll));
-        div().size_full().flex().flex_col().child(bar).child(body)
+            .when(text && open.edit.is_none(), |bar| {
+                bar.child(
+                    small(button("files-edit", "edit"))
+                        .on_click(cx.listener(|t, _, window, cx| t.start_edit(window, cx))),
+                )
+            })
+            .when(open.edit.is_some(), |bar| {
+                bar.when(modified, |bar| bar.child(st("●", neon())))
+                    .when(saving, |bar| {
+                        bar.child(spinner(self.spin()))
+                            .child(st("saving", bar_dim()))
+                    })
+                    .when(!saving, |bar| {
+                        bar.child(
+                            small(button("files-save", "save"))
+                                .on_click(cx.listener(|t, _, _, cx| t.save_edit(false, cx))),
+                        )
+                        .child(
+                            small(button(
+                                "files-done",
+                                if modified { "discard" } else { "done" },
+                            ))
+                            .on_click(cx.listener(|t, _, _, cx| t.stop_edit(cx))),
+                        )
+                    })
+            });
+        // what a save ran into, under the bar
+        let trouble = open.edit.as_ref().and_then(|e| {
+            if e.conflict {
+                Some(
+                    strip(panel())
+                        .child(st("changed on disk", bad()))
+                        .child(div().flex_1().child("the file is not the one you opened"))
+                        .child(
+                            small(button("files-reload", "reload"))
+                                .on_click(cx.listener(|t, _, _, cx| t.reload_edit(cx))),
+                        )
+                        .child(
+                            small(button("files-overwrite", "overwrite"))
+                                .on_click(cx.listener(|t, _, _, cx| t.save_edit(true, cx))),
+                        ),
+                )
+            } else {
+                e.error.as_ref().map(|why| {
+                    strip(panel())
+                        .child(st("not saved", bad()))
+                        .child(div().flex_1().min_w_0().child(why.clone()))
+                })
+            }
+        });
+        // The scrollbar is a sibling of what scrolls: inside it, it would scroll away.
+        let body = match &open.edit {
+            // the editor scrolls by itself
+            Some(e) => div().flex_1().min_h_0().child(e.element()),
+            None => div()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .child(
+                    div()
+                        .id("files-view")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.view_scroll)
+                        .child(open.view.clone()),
+                )
+                .child(Scrollbar::vertical(&self.view_scroll)),
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(bar)
+            .children(trouble)
+            .child(body)
     }
 }
 
