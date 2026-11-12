@@ -171,6 +171,26 @@ pub enum Req {
         sid: Sid,
         path: String,
     },
+    /// Writes `data` at `offset` of the file `path` names (the path rules of `FsRead`), in pieces
+    /// of at most [`MAX_FS_WRITE`] bytes: the first piece (`offset` 0) makes `<name>.part`, the
+    /// one that reaches `total` renames it into place. A name already taken gets a ` (2)` suffix
+    /// unless `replace`; with `replace`, `was` (the sha256 of the file as it was read) refuses the
+    /// write with `Conflict` when the file changed meanwhile. Answered with `Resp::FsWritten`.
+    FsWrite {
+        sid: Sid,
+        path: String,
+        offset: u64,
+        total: u64,
+        data: Vec<u8>,
+        replace: bool,
+        was: Option<[u8; 32]>,
+    },
+    /// A folder as a zip archive (the path rules of `FsRead`, the size cap of `FsRead` on the
+    /// archive): `Resp::FsData` holds the bytes.
+    FsZip {
+        sid: Sid,
+        path: String,
+    },
     /// The folders inside `path`, for picking a project's folder before any session runs there:
     /// `~` and a relative path mean the home folder, and the folder must lie under it. With
     /// `make` a missing folder is created first. Answered with `Resp::Folders`.
@@ -300,6 +320,8 @@ pub struct FsEntry {
 
 /// The most a `BlobPut` carries: an attachment, not a transfer (M5 brings `Upload`).
 pub const MAX_BLOB_PUT: usize = 8 << 20;
+/// The most one `FsWrite` carries: a transfer goes in pieces of this.
+pub const MAX_FS_WRITE: usize = 4 << 20;
 
 /// One account's rotation caps, in percent of the window; `None` means the box's default.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +346,13 @@ pub enum Resp {
     UploadStream(u64),
     FsEntries(Vec<FsEntry>),
     FsData(Vec<u8>),
+    /// An `FsWrite` landed: the path written (relative, as asked, with the suffix a taken name
+    /// got), the bytes of it so far, and whether the file is whole (renamed into place).
+    FsWritten {
+        path: String,
+        written: u64,
+        done: bool,
+    },
     /// The answer to `Folders`: the folder as an absolute path, and the names of the folders in it.
     Folders {
         path: String,

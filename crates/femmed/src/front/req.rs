@@ -4,7 +4,9 @@
 
 use std::path::Path;
 
-use femme_proto::rpc::{Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT};
+use femme_proto::rpc::{
+    Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT, MAX_FS_WRITE,
+};
 use femme_proto::state::{Agent, Mode};
 use femme_proto::{OpId, Sid};
 use femme_store::{items, sessions};
@@ -74,6 +76,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
 pub(crate) fn body_max(req: &Req) -> usize {
     match req {
         Req::BlobPut { .. } => MAX_BLOB_PUT + BODY_MAX,
+        Req::FsWrite { .. } => MAX_FS_WRITE + BODY_MAX,
         _ => BODY_MAX,
     }
 }
@@ -178,6 +181,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::IssueDelete { id } => done(d.issue_delete(id).await),
         Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
         Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
+        Req::FsWrite { .. } | Req::FsZip { .. } => Err(unsupported("not yet")),
         Req::Folders { path, make } => super::fs::folders(d, path, make).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
