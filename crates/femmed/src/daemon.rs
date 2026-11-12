@@ -65,7 +65,9 @@ impl Daemon {
         }));
         let sessions = Sessions::new(&cfg);
         sessions.write_hook_files()?;
-        let notifier = Notifier::new(Some(cfg.ntfy_topic.clone())).with_store(store.clone());
+        let notifier = Notifier::new(Some(cfg.ntfy_topic.clone()))
+            .with_base(cfg.ntfy_url.clone())
+            .with_store(store.clone());
         Ok(Arc::new_cyclic(|me| Daemon {
             cfg,
             store,
