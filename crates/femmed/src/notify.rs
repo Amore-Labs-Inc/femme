@@ -6,6 +6,9 @@
 //! topic (`Req::PushRegister`) whose rules let it through ([`wants`]). The registrations are read
 //! from the store again before each fan-out: `femmed devices revoke` runs in another process, and
 //! a revoked phone must stop getting pushes at once.
+//!
+//! Claude's own words go the same way ([`Notifier::claude_push`]): Claude Code's `PushNotification`
+//! tool only delivers through Remote Control, which a FEMME chat does not have.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -57,6 +60,9 @@ fn quiet((from, to): (u8, u8), hour: u8) -> bool {
     }
 }
 
+/// The longest message of Claude's that is pushed, in chars.
+const CLAUDE_PUSH_MAX: usize = 300;
+
 pub struct Notifier {
     topic: Option<String>,
     /// The ntfy server, ending in `/`.
@@ -85,9 +91,12 @@ impl Notifier {
         }
     }
 
-    /// Posts to another ntfy server than ntfy.sh (a test's stub).
+    /// Posts to another ntfy server than ntfy.sh (`NTFY_URL`, a test's stub). Empty keeps ntfy.sh.
     pub fn with_base(mut self, base: impl Into<String>) -> Notifier {
-        self.base = base.into();
+        let base: String = base.into();
+        if !base.is_empty() {
+            self.base = format!("{}/", base.trim_end_matches('/'));
+        }
         self
     }
 
@@ -161,6 +170,58 @@ impl Notifier {
         }
     }
 
+    /// Pushes what Claude asked to tell the user (its `PushNotification` call in session `sid`):
+    /// `title` names the session, `message` is Claude's text. Goes to the box's topic and to every
+    /// phone that would hear this session is blocked (its mute and quiet hours hold). Never
+    /// debounced: the caller sends one per call. `Err` says why nothing arrived.
+    pub async fn claude_push(
+        &self,
+        sid: Sid,
+        title: &str,
+        message: &str,
+    ) -> Result<(), &'static str> {
+        let hour = chrono::Local::now().hour() as u8;
+        self.claude_push_at(sid, title, message, hour).await
+    }
+
+    /// [`Notifier::claude_push`] at local hour `hour`.
+    pub(crate) async fn claude_push_at(
+        &self,
+        sid: Sid,
+        title: &str,
+        message: &str,
+        hour: u8,
+    ) -> Result<(), &'static str> {
+        self.reload();
+        let (phones, wanting): (usize, Vec<String>) = {
+            let regs = self.regs.lock().unwrap();
+            let ntfy = regs.iter().filter(|r| r.platform == PushPlatform::Ntfy);
+            (
+                ntfy.clone().count(),
+                ntfy.filter(|r| wants(&r.rules, sid, Attention::Blocked, hour))
+                    .map(|r| r.token.clone())
+                    .collect(),
+            )
+        };
+        let topics: Vec<String> = self.topic.iter().cloned().chain(wanting).collect();
+        if topics.is_empty() {
+            return Err(if phones == 0 {
+                "no phone registered"
+            } else {
+                "muted or quiet hours"
+            });
+        }
+        let message: String = message.trim().chars().take(CLAUDE_PUSH_MAX).collect();
+        let mut sent = false;
+        // ponytail: one after the other, the caller waits for all; join them if a box has many phones
+        for topic in topics {
+            let body = serde_json::json!({ "topic": topic, "title": title, "message": message,
+                "priority": 4, "click": session_link(sid) });
+            sent |= post(&self.client, &self.base, &body).await;
+        }
+        sent.then_some(()).ok_or("ntfy refused it")
+    }
+
     /// A push to the box's own topic only (the owner's alerts).
     pub fn push(&self, title: String, message: String, priority: u8) {
         let Some(topic) = self.topic.clone() else {
@@ -186,21 +247,25 @@ impl Notifier {
             if let Some(click) = click {
                 body["click"] = serde_json::Value::String(click);
             }
-            if let Err(e) = client
-                .post(&base)
-                .json(&body)
-                .send()
-                .await
-                .and_then(|r| r.error_for_status())
-            {
-                tracing::warn!(%e, %topic, "ntfy push failed");
-            }
+            post(&client, &base, &body).await;
         });
     }
 }
 
+/// Posts one push; a failure is logged. Whether ntfy took it.
+async fn post(client: &reqwest::Client, base: &str, body: &serde_json::Value) -> bool {
+    let r = client.post(base).json(body).send().await;
+    match r.and_then(|r| r.error_for_status()) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(%e, topic = %body["topic"], "ntfy push failed");
+            false
+        }
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
@@ -293,7 +358,7 @@ mod tests {
 
     /// An ntfy stand-in on loopback: every posted body comes out of the channel; a post to the
     /// topic `broken` is answered 500.
-    fn stub() -> (String, mpsc::Receiver<serde_json::Value>) {
+    pub(crate) fn stub() -> (String, mpsc::Receiver<serde_json::Value>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", l.local_addr().unwrap());
         let (tx, rx) = mpsc::channel();
@@ -341,7 +406,9 @@ mod tests {
     }
 
     /// The bodies posted until none comes for a moment, by topic.
-    fn drain(rx: &mpsc::Receiver<serde_json::Value>) -> HashMap<String, serde_json::Value> {
+    pub(crate) fn drain(
+        rx: &mpsc::Receiver<serde_json::Value>,
+    ) -> HashMap<String, serde_json::Value> {
         let mut got = HashMap::new();
         while let Ok(v) = rx.recv_timeout(Duration::from_secs(2)) {
             got.insert(v["topic"].as_str().unwrap().to_string(), v);
@@ -411,5 +478,70 @@ mod tests {
         );
         assert_eq!(got["done-only"]["message"], "finished (docs)");
         assert_eq!(got["done-only"]["priority"], 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claudes_push_goes_to_the_box_and_the_phones_that_would_hear_blocked() {
+        let (base, rx) = stub();
+        let n = Notifier::new(Some("owner".into())).with_base(base.clone());
+        let sid = femme_proto::Id(1);
+        n.set_registrations(vec![
+            reg("phone", rules(true, false)),
+            reg(
+                "muted",
+                PushRules {
+                    muted: vec![sid],
+                    ..rules(true, true)
+                },
+            ),
+            reg(
+                "asleep",
+                PushRules {
+                    quiet: Some((22, 6)),
+                    ..rules(true, true)
+                },
+            ),
+        ]);
+        let long = format!("  tests green {}", "x".repeat(400));
+        assert_eq!(n.claude_push_at(sid, "fix-ci", &long, 23).await, Ok(()));
+        let got = drain(&rx);
+        let mut topics: Vec<&str> = got.keys().map(String::as_str).collect();
+        topics.sort();
+        assert_eq!(topics, ["owner", "phone"]);
+        let message: String = long.trim().chars().take(300).collect();
+        for topic in ["owner", "phone"] {
+            assert_eq!(
+                got[topic],
+                serde_json::json!({"topic": topic, "title": "fix-ci", "message": message,
+                    "priority": 4, "click": format!("femme://session/{sid}")})
+            );
+        }
+
+        // not debounced: the next call's push goes out too
+        assert_eq!(n.claude_push_at(sid, "fix-ci", "again", 12).await, Ok(()));
+        assert_eq!(drain(&rx).len(), 3, "owner, phone and the one that slept");
+
+        // nothing arrived: the reason
+        let none = Notifier::new(None).with_base(base.clone());
+        assert_eq!(
+            none.claude_push_at(sid, "x", "m", 12).await,
+            Err("no phone registered")
+        );
+        none.set_registrations(vec![reg(
+            "muted",
+            PushRules {
+                muted: vec![sid],
+                ..rules(true, true)
+            },
+        )]);
+        assert_eq!(
+            none.claude_push_at(sid, "x", "m", 12).await,
+            Err("muted or quiet hours")
+        );
+        none.set_registrations(vec![reg("broken", rules(true, true))]);
+        assert_eq!(
+            none.claude_push_at(sid, "x", "m", 12).await,
+            Err("ntfy refused it")
+        );
     }
 }

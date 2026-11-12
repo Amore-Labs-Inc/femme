@@ -154,6 +154,24 @@ void main() {
     expect(l.linkUrl, 'https://claude.ai/artifact/A');
   });
 
+  test('PushNotification: one line, with what femmed did with it', () {
+    final input = {'message': 'tests green\nall 12', 'status': 'proactive'};
+    final c = call('t8', 'PushNotification', input);
+    final r = result('t8', 'Mobile push not sent (Remote Control inactive).');
+    ToolLine line(String? push) => toolLine(
+      call: c,
+      callBody: {...?c.bodyJson, 'push': ?push},
+      result: r,
+      resultBody: r.bodyJson,
+    );
+    expect(line('sent').name, '🔔 push');
+    expect(line('sent').hint, '· tests green');
+    expect(line('sent').result, 'sent to your phone');
+    expect(line('no phone registered').result, 'not sent: no phone registered');
+    // femmed left it alone: Claude Code's answer
+    expect(line(null).result, startsWith('Mobile push not sent'));
+  });
+
   test('opened input: bare command, pretty JSON, nothing for {}', () {
     expect(inputText({'command': 'ls'}), 'ls');
     expect(inputText({}), '');

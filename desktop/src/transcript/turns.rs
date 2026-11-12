@@ -7,7 +7,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use femme_proto::state::{ItemKind, ItemStatus};
 
-use super::body::{Parsed, Stop};
+use super::body::{Parsed, Stop, PUSH_SENT, PUSH_TOOL};
 use super::items::{Entry, Items};
 
 /// What a list row stands for.
@@ -216,8 +216,12 @@ fn first_line(text: &str) -> String {
 /// The folded line of a tool call, with its result when it has one. A call whose body is not at
 /// hand (still arriving, or a blob) is read from its preview, which is `<name> <hint>`.
 pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
-    let (name, hint, task) = match items.parsed(call) {
-        Parsed::ToolCall(t) => (t.name.clone(), first_line(&t.hint()), t.task.clone()),
+    let mut push = None;
+    let (name, mut hint, task) = match items.parsed(call) {
+        Parsed::ToolCall(t) => {
+            push = t.push.clone();
+            (t.name.clone(), first_line(&t.hint()), t.task.clone())
+        }
         _ => {
             let preview = call.item.preview.trim();
             match preview.split_once(char::is_whitespace) {
@@ -226,6 +230,14 @@ pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
             }
         }
     };
+    // Claude's push to the phone is one readable line: `🔔 push · <what it says>`.
+    let is_push = name == PUSH_TOOL;
+    if let (true, Parsed::ToolCall(t)) = (is_push, items.parsed(call)) {
+        let message = t.input.as_ref().and_then(|i| i["message"].as_str());
+        hint = message
+            .map(|m| format!("· {}", first_line(m)))
+            .unwrap_or(hint);
+    }
     let result = result_of(items, call);
     let (answer, answer_failed, page) = match result {
         None => (None, false, None),
@@ -264,6 +276,16 @@ pub fn tool_line(items: &Items, call: &Entry) -> ToolLine {
             _ => None,
         };
         line.link = Some(p.url);
+    }
+    if is_push {
+        line.name = "🔔 push".into();
+        // femmed sent it itself: its word stands for Claude Code's "Mobile push not sent (Remote
+        // Control inactive)."; a call femmed left alone keeps Claude Code's answer
+        match push.as_deref() {
+            Some(PUSH_SENT) => line.result = Some("sent to your phone".into()),
+            Some(why) => line.result = Some(format!("not sent: {why}")),
+            None => {}
+        }
     }
     line
 }
@@ -962,6 +984,59 @@ mod tests {
         );
         let line = tool_line(&b.items, b.items.by_id("t1").unwrap());
         assert!(!line.in_background);
+    }
+
+    #[test]
+    fn a_push_call_is_one_line_with_what_femmed_did_with_it() {
+        let mut b = Build::new();
+        let call = |push: Option<&str>| {
+            let mut v = json!({"name":"PushNotification","call_id":"t1",
+                "input":{"message":"tests green\nall 12","status":"proactive"}});
+            if let Some(p) = push {
+                v["push"] = json!(p);
+            }
+            v
+        };
+        let read = |b: &Build| {
+            let l = tool_line(&b.items, b.items.by_id("t1").unwrap());
+            (l.name, l.hint, l.result)
+        };
+        // femmed sent it: Claude Code's own answer is not the row's
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t1",
+            call(Some("sent")),
+        );
+        b.add(
+            ItemKind::ToolResult,
+            ItemStatus::Completed,
+            "t1:result",
+            json!({"call_id":"t1","is_error":false,
+                "output":"Mobile push not sent (Remote Control inactive)."}),
+        );
+        assert_eq!(
+            read(&b),
+            (
+                "🔔 push".into(),
+                "· tests green".into(),
+                Some("sent to your phone".into())
+            )
+        );
+        // femmed could not: why
+        b.add(
+            ItemKind::ToolCall,
+            ItemStatus::Completed,
+            "t1",
+            call(Some("no phone registered")),
+        );
+        assert_eq!(read(&b).2.as_deref(), Some("not sent: no phone registered"));
+        // femmed left it alone (a terminal's own push): Claude Code's answer
+        b.add(ItemKind::ToolCall, ItemStatus::Completed, "t1", call(None));
+        assert_eq!(
+            read(&b).2.as_deref(),
+            Some("Mobile push not sent (Remote Control inactive).")
+        );
     }
 
     #[test]

@@ -391,6 +391,8 @@ struct Actor {
     // ponytail: followed from then on, not until the Monitor ends; close it on the
     // Monitor's task end if the read per chunk ever shows
     monitor: Option<GoalTail>,
+    /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
+    pushes: HashMap<String, String>,
 }
 
 /// The transcript on disk of a session with a `/goal` (or a `Monitor`), read from where the goal
@@ -452,6 +454,7 @@ impl Actor {
             stop: false,
             goal: None,
             monitor: None,
+            pushes: HashMap::new(),
         }
     }
 
@@ -1012,9 +1015,18 @@ impl Actor {
     /// Stores and publishes what the driver reported. The session row goes first when the agent is
     /// starting work or asking (a client sees `working` before the first item of the turn), last
     /// when it is done (a client that hears `done` finds the whole answer).
-    async fn apply(&mut self, d: &Daemon, src: Src, events: Vec<AgentEvent>) {
+    async fn apply(&mut self, d: &Daemon, src: Src, mut events: Vec<AgentEvent>) {
         let replay = self.replay_until.is_some();
         let live_line = !replay && matches!(src, Src::Line(_));
+        if live_line {
+            let title = || {
+                d.session(self.sid)
+                    .map_or_else(|_| String::new(), |s| push_title(&s))
+            };
+            let (n, done) = (&d.notifier, &mut self.pushes);
+            forward_pushes(n, self.sid, title, &events, done, false).await;
+        }
+        stamp_pushes(&mut events, &self.pushes);
         if live_line && self.monitor.is_none() && events.iter().any(calls_monitor) {
             self.monitor = Some(self.tail_from_now(d));
         }
@@ -1654,6 +1666,107 @@ async fn tail_read(t: &mut GoalTail, d: &Daemon, sid: Sid) -> Option<Vec<u8>> {
     t.read += end as u64 + 1;
     data.truncate(end);
     Some(data)
+}
+
+/// Claude Code's tool for telling the user's phone something (2.1.322).
+const PUSH_TOOL: &str = "PushNotification";
+/// What Claude Code answers the tool when its own push went nowhere: it only delivers through
+/// Remote Control ("Mobile push not sent (Remote Control inactive).").
+const PUSH_NOT_SENT: &str = "Mobile push not sent";
+/// The outcome of a push that arrived, as the call's body says it (`push`); any other is the reason.
+const PUSH_SENT: &str = "sent";
+
+/// The `PushNotification` call an event holds, once its input is final: its id and message.
+fn push_call(e: &AgentEvent) -> Option<(&str, &str)> {
+    let (id, body) = match e {
+        AgentEvent::ItemUpdated { id, body } => (id, body),
+        AgentEvent::ItemCompleted {
+            id,
+            kind: ItemKind::ToolCall,
+            body,
+            ..
+        } => (id, body),
+        _ => return None,
+    };
+    let message = body["input"]["message"].as_str()?;
+    (body["name"] == PUSH_TOOL && !message.trim().is_empty()).then_some((id, message))
+}
+
+/// Whether `events` hold call `id`'s result, and it says Claude Code's own push went nowhere.
+fn push_unsent(events: &[AgentEvent], id: &str) -> bool {
+    events.iter().any(|e| {
+        matches!(e, AgentEvent::ItemCompleted { kind: ItemKind::ToolResult, body, .. }
+            if body["call_id"] == id
+                && body["output"].as_str().is_some_and(|o| o.contains(PUSH_NOT_SENT)))
+    })
+}
+
+/// What a session is called in Claude's push: its label or name, else its folder.
+pub(crate) fn push_title(s: &Session) -> String {
+    let folder = || {
+        let dir = std::path::Path::new(&s.cwd).file_name()?;
+        Some(dir.to_string_lossy().into_owned())
+    };
+    (s.label.clone())
+        .or_else(|| s.name.clone())
+        .or_else(folder)
+        .unwrap_or_else(|| label(s))
+}
+
+/// Sends the phone what Claude's `PushNotification` calls in `events` say, once per call, and
+/// keeps each outcome in `done` by call id. `needs_result`: only a call whose result is among the
+/// events and says Claude Code's own push went nowhere (a terminal pane, where Claude Code may
+/// have delivered it, or held it back because the user is at the terminal).
+// ponytail: the caller waits for ntfy (10 s at worst) so the outcome is on the row when the call
+// shows; spawn it and update the item later if a slow ntfy ever stalls a chat
+pub(crate) async fn forward_pushes(
+    n: &crate::notify::Notifier,
+    sid: Sid,
+    title: impl FnOnce() -> String,
+    events: &[AgentEvent],
+    done: &mut HashMap<String, String>,
+    needs_result: bool,
+) {
+    let calls: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(push_call)
+        .filter(|(id, _)| !done.contains_key(*id) && (!needs_result || push_unsent(events, id)))
+        .collect();
+    if calls.is_empty() {
+        return;
+    }
+    let title = title();
+    for (id, message) in calls {
+        if done.contains_key(id) {
+            continue; // twice among the events
+        }
+        let outcome = match n.claude_push(sid, &title, message).await {
+            Ok(()) => PUSH_SENT,
+            Err(why) => why,
+        };
+        done.insert(id.to_owned(), outcome.to_owned());
+    }
+}
+
+/// Writes the outcome of each forwarded push on its call's body (`push`), for the clients' row.
+// ponytail: `done` lives in memory, so a call replayed after a daemon restart loses its outcome
+// and the row shows Claude Code's own answer again
+pub(crate) fn stamp_pushes(events: &mut [AgentEvent], done: &HashMap<String, String>) {
+    for e in events {
+        let (id, body) = match e {
+            AgentEvent::ItemUpdated { id, body } => (id, body),
+            AgentEvent::ItemCompleted {
+                id,
+                kind: ItemKind::ToolCall,
+                body,
+                ..
+            } => (id, body),
+            _ => continue,
+        };
+        if let (Some(outcome), Some(body)) = (done.get(id.as_str()), body.as_object_mut()) {
+            body.insert("push".into(), Value::String(outcome.clone()));
+        }
+    }
 }
 
 /// The agent opened a `Monitor` call (Claude names the tool in the item's preview).
@@ -3086,9 +3199,15 @@ mod tests {
             monitor_line(tick("user", "").as_bytes()),
             Some(("u1".into(), "◷ ticks · tick 2".into()))
         );
-        assert_eq!(monitor_line(tick("user", "<status>completed</status>").as_bytes()), None);
+        assert_eq!(
+            monitor_line(tick("user", "<status>completed</status>").as_bytes()),
+            None
+        );
         assert_eq!(monitor_line(tick("attachment", "").as_bytes()), None);
-        assert_eq!(monitor_line(br#"{"type":"user","message":{"content":"hi"}}"#), None);
+        assert_eq!(
+            monitor_line(br#"{"type":"user","message":{"content":"hi"}}"#),
+            None
+        );
         assert!(calls_monitor(&AgentEvent::ItemStarted {
             id: "t1".into(),
             kind: ItemKind::ToolCall,
@@ -3541,5 +3660,85 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((after.blob_hash, after.ts), (Some(hash), 2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claudes_push_call_is_sent_to_the_phone_once() {
+        let (base, rx) = crate::notify::tests::stub();
+        let n = crate::notify::Notifier::new(Some("owner".into())).with_base(base);
+        let call = |id: &str| AgentEvent::ItemUpdated {
+            id: id.into(),
+            body: json!({"name": "PushNotification", "call_id": id,
+                "input": {"message": "tests green", "status": "proactive"}}),
+        };
+        let mut done = HashMap::new();
+        // the call opens without its input: nothing to send yet
+        let opened = [AgentEvent::ItemStarted {
+            id: "t1".into(),
+            kind: ItemKind::ToolCall,
+            preview: "PushNotification".into(),
+            parent: None,
+        }];
+        forward_pushes(&n, SID, || "fix-ci".into(), &opened, &mut done, false).await;
+        assert!(done.is_empty());
+
+        let mut events = vec![call("t1")];
+        forward_pushes(&n, SID, || "fix-ci".into(), &events, &mut done, false).await;
+        stamp_pushes(&mut events, &done);
+        let got = crate::notify::tests::drain(&rx);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["owner"]["title"], "fix-ci");
+        assert_eq!(got["owner"]["message"], "tests green");
+        let AgentEvent::ItemUpdated { body, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "sent");
+
+        // the same call again (its task state, its end): not pushed again, the outcome stays on it
+        let mut again = vec![
+            call("t1"),
+            AgentEvent::ItemCompleted {
+                id: "t1".into(),
+                kind: ItemKind::ToolCall,
+                status: ItemStatus::Completed,
+                body: json!({"name": "PushNotification", "call_id": "t1",
+                    "input": {"message": "tests green", "status": "proactive"}}),
+                parent: None,
+            },
+        ];
+        forward_pushes(&n, SID, || "fix-ci".into(), &again, &mut done, false).await;
+        stamp_pushes(&mut again, &done);
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        let AgentEvent::ItemCompleted { body, .. } = &again[1] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "sent");
+
+        // another tool's call is nobody's push
+        let other = [AgentEvent::ItemUpdated {
+            id: "t2".into(),
+            body: json!({"name": "Bash", "call_id": "t2", "input": {"message": "x"}}),
+        }];
+        forward_pushes(&n, SID, || "fix-ci".into(), &other, &mut done, false).await;
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+
+        // no topic and no phone: the reason is the outcome
+        let none = crate::notify::Notifier::new(None);
+        let mut events = vec![call("t3")];
+        forward_pushes(&none, SID, || "fix-ci".into(), &events, &mut done, false).await;
+        stamp_pushes(&mut events, &done);
+        let AgentEvent::ItemUpdated { body, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(body["push"], "no phone registered");
+    }
+
+    #[test]
+    fn a_push_is_titled_by_the_sessions_label_or_its_folder() {
+        let mut s = session_row(SID, Mode::Headless, SessionStatus::Working);
+        s.cwd = "/home/u/femme".into();
+        assert_eq!(push_title(&s), "femme");
+        s.label = Some("fix-ci".into());
+        assert_eq!(push_title(&s), "fix-ci");
     }
 }
