@@ -216,9 +216,15 @@ impl Account {
         Some(if left <= 0 {
             ("sign-in ended".into(), Level::Bad)
         } else if left < SIGN_IN_URGENT {
-            (format!("sign-in ends in {} h", left / 3600), Level::Bad)
+            (
+                format!("sign-in ends in {} h", left / 3600),
+                Level::Bad,
+            )
         } else {
-            (format!("sign-in ends in {} d", left / 86_400), Level::Warn)
+            (
+                format!("sign-in ends in {} d", left / 86_400),
+                Level::Warn,
+            )
         })
     }
 
