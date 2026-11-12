@@ -37,7 +37,7 @@ use femme_store::{items as store_items, sessions, Store};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::{fold, put, Cmd, FoldState, Head, Put};
+use super::{fold, forward_pushes, push_title, put, stamp_pushes, Cmd, FoldState, Head, Put};
 use crate::core::CoreError;
 use crate::daemon::{now_ms, Daemon};
 use crate::holder_client::SpoolLines;
@@ -703,6 +703,12 @@ struct Tail {
     plan_open: Option<String>,
     /// Since when herdr lists no pane running this conversation; dropped after `GONE_GRACE`.
     gone_since: Option<Instant>,
+    /// Lines from here on were written while this reader followed the file: what Claude asks to
+    /// push in them goes to the phone. Before it is the backfill, or what a daemon that was down
+    /// missed, and old news.
+    live_from: u64,
+    /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
+    pushes: HashMap<String, String>,
 }
 
 /// What Claude Code keeps free below its auto-compact window (2.1.321: a window of 534,643
@@ -794,6 +800,8 @@ impl Tail {
             screen_tried: None,
             plan_open: None,
             gone_since: None,
+            live_from: u64::MAX,
+            pushes: HashMap::new(),
         }
     }
 
@@ -853,6 +861,7 @@ impl Tail {
                 self.lines = SpoolLines::new(self.read);
                 self.skip = true;
             }
+            self.live_from = len;
             self.path = Some(path);
         }
         let Some(path) = self.path.clone() else {
@@ -899,8 +908,17 @@ impl Tail {
                 Some(Disk::Feed { line, typed }) => (line, typed),
             };
             self.note_plan(&line);
-            let events = self.driver.on_line(at, &line, &mut out);
+            let mut events = self.driver.on_line(at, &line, &mut out);
             out.stdin.clear(); // nobody listens: the pane's Claude reads its own terminal
+            if at >= self.live_from {
+                let sid = self.sid;
+                let title = || {
+                    d.session(sid)
+                        .map_or_else(|_| String::new(), |s| push_title(&s))
+                };
+                forward_pushes(&d.notifier, sid, title, &events, &mut self.pushes, true).await;
+            }
+            stamp_pushes(&mut events, &self.pushes);
             let f = fold(
                 &mut self.fold,
                 self.sid,
@@ -2220,11 +2238,18 @@ mod tests {
 
     /// A temp home with a store and one transcript file.
     fn daemon() -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
+        daemon_with(&[])
+    }
+
+    /// A daemon with `vars` in its environment.
+    fn daemon_with(vars: &[(&str, &str)]) -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
         let dir = tempfile::Builder::new()
             .prefix("femmed-h-")
             .tempdir_in("/tmp")
             .unwrap();
-        let mut cfg = Config::from_vars([("HOME".to_string(), dir.path().display().to_string())]);
+        let home = ("HOME".to_string(), dir.path().display().to_string());
+        let vars = vars.iter().map(|(k, v)| (k.to_string(), v.to_string()));
+        let mut cfg = Config::from_vars(vars.chain([home]));
         cfg.state_dir = dir.path().join("state");
         cfg.runtime_dir = dir.path().join("rt");
         (Daemon::open(cfg).unwrap(), dir)
@@ -3053,5 +3078,73 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
                 .unwrap()
                 .len()
         );
+    }
+
+    /// A pane's `PushNotification` call `id` and what Claude Code answered it, as transcript lines.
+    fn push_pair(id: &str, answer: &str) -> String {
+        let call = serde_json::json!({"type":"assistant","message":{"id":format!("a-{id}"),
+            "content":[{"type":"tool_use","id":id,"name":"PushNotification",
+                "input":{"message":format!("tests green {id}"),"status":"proactive"}}]}});
+        let result = serde_json::json!({"type":"user","uuid":format!("r-{id}"),"message":{
+            "content":[{"type":"tool_result","tool_use_id":id,"content":answer}]}});
+        format!("{call}\n{result}\n")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_panes_push_claude_code_did_not_deliver_goes_to_the_phone() {
+        let (base, rx) = crate::notify::tests::stub();
+        let (d, dir) = daemon_with(&[("NTFY_TOPIC", "owner"), ("NTFY_URL", &base)]);
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("u-1.jsonl");
+        const UNSENT: &str = "Mobile push not sent (Remote Control inactive).";
+        // there before the pane was mirrored: old news, pushed to nobody
+        let mut text = push_pair("p0", UNSENT);
+        std::fs::write(&file, &text).unwrap();
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        let mut grow = |more: String| {
+            text.push_str(&more);
+            std::fs::write(&file, &text).unwrap();
+        };
+        let push_of = |id: &str| {
+            let item = d.store.read(|c| store_items::get_item(c, sid, id)).unwrap();
+            let body: Value = serde_json::from_str(&item.unwrap().body.unwrap()).unwrap();
+            body["push"].clone()
+        };
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        assert_eq!(push_of("p0"), Value::Null);
+
+        // written while mirrored, and Claude Code says it went nowhere: FEMME sends it
+        grow(push_pair("p1", UNSENT));
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        let got = crate::notify::tests::drain(&rx);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["owner"]["message"], "tests green p1");
+        assert_eq!(got["owner"]["priority"], 4);
+        assert_eq!(push_of("p1"), "sent");
+
+        // the user is at the terminal, or turned it off, or Claude Code delivered it: left alone
+        grow(push_pair(
+            "p2",
+            "Not sent — this terminal is active, the user can already see it.",
+        ));
+        grow(push_pair(
+            "p3",
+            "Push not sent — mobile push is disabled in /config",
+        ));
+        grow(push_pair("p4", "Mobile push requested."));
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        assert_eq!(push_of("p2"), Value::Null);
     }
 }
