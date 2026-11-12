@@ -58,8 +58,8 @@ use plan::{plan, Plan};
 use size::fmt_size;
 use source::{Piece, Source, MAX_READ};
 use transfer::{
-    clip_uri, downloads_dir, piece_len, progress, read_piece, save_new, tilde, Origin, UpState,
-    Uploads,
+    clip_uri, downloads_dir, paths_in_text, piece_len, progress, read_piece, save_new, tilde,
+    Origin, UpState, Uploads,
 };
 use tree::{Kind, Row, Tree};
 
@@ -460,8 +460,9 @@ impl FilesPanel {
         .detach();
     }
 
-    /// Ctrl-V: copied files go into the folder on show, a picture as `paste-N.<ext>`. Whether
-    /// the clipboard held anything of that.
+    /// Ctrl-V: copied files go into the folder on show (as gpui's paths, or as the text of
+    /// `file://` URIs or absolute paths a file manager copies), a picture as `paste-N.<ext>`.
+    /// Whether the clipboard held anything of that.
     fn paste(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(item) = cx.read_from_clipboard() else {
             return false;
@@ -473,6 +474,12 @@ impl FilesPanel {
                 ClipboardEntry::ExternalPaths(paths) => {
                     self.upload_paths(dir.clone(), paths.paths().to_vec(), cx);
                     taken = true;
+                }
+                ClipboardEntry::String(text) => {
+                    if let Some(paths) = paths_in_text(text.text()) {
+                        self.upload_paths(dir.clone(), paths, cx);
+                        taken = true;
+                    }
                 }
                 ClipboardEntry::Image(image) if self.active() => {
                     self.pastes += 1;

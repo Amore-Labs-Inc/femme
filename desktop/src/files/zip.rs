@@ -37,7 +37,7 @@ pub fn zip_dir(dir: &Path, top: &str, cap: u64) -> Result<Vec<u8>, String> {
             h.extend(20u16.to_le_bytes()); // needed to extract
             h.extend(0x0800u16.to_le_bytes()); // flags: names are UTF-8
             h.extend(0u16.to_le_bytes()); // stored
-            h.extend([0u8; 4]); // time and date
+            h.extend([0, 0, 0x21, 0]); // 00:00, 1980-01-01
             h.extend(crc.to_le_bytes());
             h.extend(len.to_le_bytes());
             h.extend(len.to_le_bytes());

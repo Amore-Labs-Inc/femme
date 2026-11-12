@@ -84,6 +84,49 @@ pub fn uri_list(path: &Path) -> String {
     out
 }
 
+/// The files a copied text names, when every line of it is one: a `file://` URI (percent-encoded,
+/// as file managers copy them) or an absolute path. gpui's Linux clipboard hands copied files over
+/// as that text, never as `ExternalPaths`. `None` for any other text.
+pub fn paths_in_text(text: &str) -> Option<Vec<PathBuf>> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let raw = match line.strip_prefix("file://") {
+            // `file:///x` or `file://localhost/x`.
+            Some(rest) => rest.strip_prefix("localhost").unwrap_or(rest),
+            None => line,
+        };
+        if !raw.starts_with('/') {
+            return None;
+        }
+        let bytes = if line.starts_with("file://") {
+            unpercent(raw)?
+        } else {
+            raw.as_bytes().to_vec()
+        };
+        out.push(PathBuf::from(std::ffi::OsString::from_vec(bytes)));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// `%XX` escapes decoded; `None` for a broken one.
+fn unpercent(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
 /// Puts the file `path` on the clipboard as a `text/uri-list`, so a paste in the file manager
 /// drops the file: through `wl-copy` (Wayland) or `xclip` (X11), whichever works first, the one
 /// of the session's display first. Whether one did. Blocks: run it off the UI thread.
@@ -417,6 +460,26 @@ mod tests {
             "file:///home/c/Downloads/a%20b%20%282%29.pdf\r\n"
         );
         assert_eq!(uri_list(Path::new("/tmp/ı")), "file:///tmp/%C4%B1\r\n");
+    }
+
+    #[test]
+    fn copied_files_are_read_back_from_text() {
+        let line = uri_list(Path::new("/tmp/a b (2).pdf"));
+        assert_eq!(
+            paths_in_text(&line),
+            Some(vec![PathBuf::from("/tmp/a b (2).pdf")])
+        );
+        assert_eq!(
+            paths_in_text("/home/c/x.txt\nfile://localhost/tmp/%C4%B1\n"),
+            Some(vec![
+                PathBuf::from("/home/c/x.txt"),
+                PathBuf::from("/tmp/ı")
+            ])
+        );
+        assert_eq!(paths_in_text("hello"), None);
+        assert_eq!(paths_in_text("/a\nnot a path"), None);
+        assert_eq!(paths_in_text("file:///bad%zz"), None);
+        assert_eq!(paths_in_text("  \n"), None);
     }
 
     #[test]
