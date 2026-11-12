@@ -46,11 +46,13 @@ fn launch() -> Launch {
     }
 }
 
-/// What a driver wrote, as JSON values.
+/// What a driver wrote, as JSON values, without its `get_context_usage` questions (asked since
+/// 2.1.321; the captures are older and the unit test in `claude.rs` covers them).
 fn written(out: &Out) -> Vec<Value> {
     out.lines()
         .iter()
         .map(|l| serde_json::from_str(l).expect("driver wrote JSON"))
+        .filter(|v: &Value| v["request"]["subtype"] != "get_context_usage")
         .collect()
 }
 
@@ -153,6 +155,8 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Exited { .. } => "exited".into(),
             AgentEvent::Goal(g) => format!("goal:{:?}", g.state),
             AgentEvent::Raw(_) => "raw".into(),
+            AgentEvent::ItemRetracted { id } => format!("retracted:{id}"),
+            AgentEvent::TakenBack { prompt_id, .. } => format!("taken-back:{prompt_id}"),
         })
         .collect()
 }
@@ -1561,6 +1565,6 @@ fn elicitation_answers_match_the_capture() {
             }
             d.on_line(off, line, &mut out);
         }
-        assert!(out.lines().is_empty(), "{case}: nothing else written");
+        assert!(written(&out).is_empty(), "{case}: nothing else written");
     }
 }

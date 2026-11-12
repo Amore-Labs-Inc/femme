@@ -282,6 +282,51 @@ pub enum Req {
     SessionOf {
         agent_sid: String,
     },
+    /// Asks for pushes to this phone: `token` is where they go (an ntfy topic for `Ntfy`), `rules`
+    /// which ones. The registration belongs to the calling device, one token per device: a new
+    /// token replaces the device's old one, and a revoked device gets none. `Apns` and `Fcm` are
+    /// answered `Unsupported` until their relay exists. Answered with `Resp::Ok`.
+    PushRegister {
+        platform: PushPlatform,
+        token: String,
+        rules: PushRules,
+    },
+    /// Stops the pushes to `token` (the caller's own registration). `Resp::Ok`, also when there
+    /// was none.
+    PushUnregister {
+        token: String,
+    },
+    /// Esc right after sending, before the agent has shown any reply: takes the session's newest
+    /// message back. The turn is stopped, the agent forgets the message and what it did for it,
+    /// and the message's rows leave the transcript. Answered with `Resp::TakenBack` (the text, for
+    /// the input it goes back into), or with `Resp::Ok` when the turn could only be interrupted
+    /// (not a Claude session, or Claude did not give the message up): then it is `Interrupt`.
+    TakeBack {
+        sid: Sid,
+    },
+}
+
+/// Where a phone's pushes are delivered.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PushPlatform {
+    /// ntfy.sh: the token is the topic the phone subscribes to.
+    Ntfy,
+    Apns,
+    Fcm,
+}
+
+/// Which attention changes a registration is pushed.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct PushRules {
+    /// "needs you": a session became blocked.
+    pub blocked: bool,
+    /// "finished": a session's turn ended.
+    pub done: bool,
+    /// Sessions never pushed.
+    pub muted: Vec<Sid>,
+    /// Hours `[from, to)` of the box's local time with no pushes, e.g. `(23, 7)`; it may wrap
+    /// midnight. `from == to` is never quiet.
+    pub quiet: Option<(u8, u8)>,
 }
 
 /// One open pull request, as `Resp::Prs` lists it.
@@ -378,6 +423,10 @@ pub enum Resp {
     Prs(Vec<Pr>),
     /// Whether merges start fixes for the pull requests they leave conflicting.
     PrAutoFix(bool),
+    /// The answer to `TakeBack` when the message came back: its text.
+    TakenBack {
+        text: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,4 +497,33 @@ pub enum StreamKind {
     /// A bulk transfer (upload, snapshot, blob); the id comes from `Resp::UploadStream` or
     /// `S2C::SnapshotOnBulk`.
     Bulk(u64),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_register_in_json_and_postcard() {
+        let sid = crate::Id::new();
+        let req = Req::PushRegister {
+            platform: PushPlatform::Ntfy,
+            token: "femme-abc".into(),
+            rules: PushRules {
+                blocked: true,
+                done: false,
+                muted: vec![sid],
+                quiet: Some((23, 7)),
+            },
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"PushRegister": {"platform": "Ntfy", "token": "femme-abc",
+                "rules": {"blocked": true, "done": false, "muted": [sid.to_string()], "quiet": [23, 7]}}})
+        );
+        assert_eq!(serde_json::from_value::<Req>(json).unwrap(), req);
+        let bytes = postcard::to_stdvec(&req).unwrap();
+        assert_eq!(postcard::from_bytes::<Req>(&bytes).unwrap(), req);
+    }
 }

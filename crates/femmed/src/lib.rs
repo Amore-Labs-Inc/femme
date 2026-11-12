@@ -44,12 +44,21 @@ use crate::core::Core;
 /// Serves the compat HTTP layer on `cfg.http_bind` until SIGTERM or SIGINT, then drains in-flight
 /// requests and returns.
 pub async fn serve(core: Arc<dyn Core>, cfg: Config) -> anyhow::Result<()> {
+    serve_with(core, cfg, None).await
+}
+
+/// [`serve`] with the phone's `/femme/ws` route on `gate`'s front.
+pub async fn serve_with(
+    core: Arc<dyn Core>,
+    cfg: Config,
+    gate: Option<Arc<front::WsGate>>,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.http_bind)
         .await
         .with_context(|| format!("cannot bind {}", cfg.http_bind))?;
     tracing::info!(bind = %cfg.http_bind, url = %cfg.board_url, "compat HTTP layer up");
     sd_ready();
-    serve_on(listener, core, shutdown_signal()).await
+    serve_on_with(listener, core, gate, shutdown_signal()).await
 }
 
 /// Tells systemd the daemon is up (`femmed.service` is `Type=notify`) and keeps its watchdog fed
@@ -73,7 +82,17 @@ pub async fn serve_on(
     core: Arc<dyn Core>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let app = compat::router(core).into_make_service_with_connect_info::<SocketAddr>();
+    serve_on_with(listener, core, None, shutdown).await
+}
+
+/// [`serve_on`] with the phone's `/femme/ws` route on `gate`'s front.
+pub async fn serve_on_with(
+    listener: tokio::net::TcpListener,
+    core: Arc<dyn Core>,
+    gate: Option<Arc<front::WsGate>>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let app = compat::router_with(core, gate).into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await

@@ -5,7 +5,8 @@
 use std::path::Path;
 
 use femme_proto::rpc::{
-    Err as WireErr, ErrCode, IssueField, Req, Resp, MAX_BLOB_PUT, MAX_FS_WRITE,
+    Err as WireErr, ErrCode, IssueField, PushPlatform, PushRules, Req, Resp, MAX_BLOB_PUT,
+    MAX_FS_WRITE,
 };
 use femme_proto::state::{Agent, Mode};
 use femme_proto::{OpId, Sid};
@@ -137,6 +138,11 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             )
         }
         Req::Interrupt { sid } => done(d.interrupt(sid).await),
+        Req::TakeBack { sid } => match d.take_back(sid).await {
+            Ok(Some(text)) => Ok(Resp::TakenBack { text }),
+            Ok(None) => Ok(Resp::Ok),
+            Err(e) => Err(wire(e)),
+        },
         Req::Background { sid, tool_use_id } => {
             done(d.background(sid, tool_use_id.as_deref()).await)
         }
@@ -241,7 +247,59 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::Resend { sid, item_id } => done(d.resend(sid, &item_id).await),
         Req::PrAutoFix { on } => super::prs::set_auto_fix(&d.cfg, on).await,
         Req::PrClose { number } => super::prs::close(&d.cfg, number).await,
+        Req::PushRegister {
+            platform,
+            token,
+            rules,
+        } => push_register(ctx, platform, token, rules),
+        Req::PushUnregister { token } => {
+            let device = ctx.device;
+            d.store
+                .write(|tx| tx.push_unregister(device, &token))
+                .map_err(|e| wire(core_err(e)))?;
+            d.notifier.reload();
+            Ok(Resp::Ok)
+        }
     }
+}
+
+/// Registers the calling device's phone for pushes: ntfy only until the APNs/FCM relay exists.
+fn push_register(
+    ctx: &Ctx,
+    platform: PushPlatform,
+    token: String,
+    rules: PushRules,
+) -> Result<Resp, WireErr> {
+    if platform != PushPlatform::Ntfy {
+        return Err(unsupported(
+            "APNs and FCM pushes need a relay that does not exist yet: register an ntfy topic",
+        ));
+    }
+    if ctx.device.is_nil() {
+        let why = "pushes belong to a paired device, and this connection has none (ssh)";
+        return Err(err(ErrCode::Bad, why));
+    }
+    // An ntfy topic: what ntfy.sh takes in a URL path.
+    let topic_ok = !token.is_empty()
+        && token.len() <= 64
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !topic_ok {
+        return Err(err(
+            ErrCode::Bad,
+            "token: an ntfy topic, A-Z a-z 0-9 - _, up to 64 characters",
+        ));
+    }
+    if rules.quiet.is_some_and(|(from, to)| from > 23 || to > 23) {
+        return Err(err(ErrCode::Bad, "quiet: hours 0 to 23"));
+    }
+    let d = &ctx.daemon;
+    d.store
+        .write(|tx| tx.push_register(ctx.device, platform, &token, &rules))
+        .map_err(|e| wire(core_err(e)))?;
+    d.notifier.reload();
+    Ok(Resp::Ok)
 }
 
 /// Stores an upload as a blob and answers its hash. The request's `name` is not kept: a `Prompt`

@@ -193,7 +193,7 @@ fn every_connection_gets_the_pragmas() {
     let version: i64 = s
         .read(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 9);
     // the file holds API keys: private from the first byte, and SQLite gives its side files the same mode
     for file in [
         path.clone(),
@@ -542,6 +542,7 @@ fn a_session_keeps_its_context_window() {
         used: 123_456,
         window: 1_000_000,
         compactions: 2,
+        compact_at: Some(501_643),
     };
     let up = s
         .write(|tx| tx.update_session(a.id, |s| s.context = Some(ctx)))
@@ -3844,4 +3845,71 @@ fn items_with_a_status_are_listed_oldest_first() {
         ["a", "d", "e"]
     );
     assert!(ids(&[ItemStatus::Answered]).is_empty());
+}
+
+#[test]
+fn push_registrations_follow_their_device() {
+    use femme_proto::rpc::{PushPlatform, PushRules};
+    use femme_store::push;
+    let s = store();
+    let phone = s
+        .write(|tx| tx.enroll_device("phone", &spki(7), NOW))
+        .unwrap();
+    let other = s
+        .write(|tx| tx.enroll_device("tablet", &spki(8), NOW))
+        .unwrap();
+    let rules = PushRules {
+        blocked: true,
+        done: true,
+        muted: vec![Id::new()],
+        quiet: Some((23, 7)),
+    };
+    s.write_at(NOW + 1, |tx| {
+        tx.push_register(phone, PushPlatform::Ntfy, "topic-a", &rules)
+    })
+    .unwrap();
+    s.write(|tx| tx.push_register(other, PushPlatform::Ntfy, "topic-t", &PushRules::default()))
+        .unwrap();
+    let all = s.read(push::push_list).unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        (
+            all[0].device,
+            all[0].platform,
+            all[0].token.as_str(),
+            &all[0].rules,
+            all[0].created
+        ),
+        (phone, PushPlatform::Ntfy, "topic-a", &rules, NOW + 1)
+    );
+
+    // a new token replaces the device's old one; the other device keeps its own
+    s.write(|tx| tx.push_register(phone, PushPlatform::Ntfy, "topic-b", &rules))
+        .unwrap();
+    let tokens: Vec<String> = s
+        .read(push::push_list)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.token)
+        .collect();
+    assert_eq!(tokens.len(), 2);
+    assert!(tokens.contains(&"topic-b".into()) && !tokens.contains(&"topic-a".into()));
+
+    // unregistering someone else's token does nothing; one's own drops it
+    assert!(!s.write(|tx| tx.push_unregister(other, "topic-b")).unwrap());
+    assert!(s.write(|tx| tx.push_unregister(phone, "topic-b")).unwrap());
+    assert!(!s.write(|tx| tx.push_unregister(phone, "topic-b")).unwrap());
+
+    // a revoked device loses its registration and cannot register again
+    s.write(|tx| tx.revoke_device(other)).unwrap();
+    assert!(s.read(push::push_list).unwrap().is_empty());
+    assert_eq!(count(&s, "push"), 0);
+    assert!(matches!(
+        s.write(|tx| tx.push_register(other, PushPlatform::Ntfy, "x", &PushRules::default())),
+        Err(Error::NotFound)
+    ));
+    assert!(matches!(
+        s.write(|tx| tx.push_register(Id::new(), PushPlatform::Ntfy, "x", &PushRules::default())),
+        Err(Error::NotFound)
+    ));
 }

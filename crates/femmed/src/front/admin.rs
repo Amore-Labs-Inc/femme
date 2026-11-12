@@ -33,6 +33,43 @@ pub(crate) fn enroll(cfg: &Config, name: &str, spki: &str) -> anyhow::Result<Str
     ))
 }
 
+/// Enrolls a phone: a fresh token is its credential (`Authorization: Bearer` on `/femme/ws`), and
+/// the device row's key is the token's SHA-256, so the daemon finds it the way it finds a desktop
+/// by its certificate. Prints the `femme://pair` link, as a QR code and as text (for typing it).
+pub(crate) fn pair(cfg: &Config, name: &str) -> anyhow::Result<String> {
+    use base64::Engine;
+    let mut raw = [0u8; 32];
+    std::io::Read::read_exact(
+        &mut std::fs::File::open("/dev/urandom").context("random bytes")?,
+        &mut raw,
+    )?;
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+    let id = store(cfg)?
+        .write(|tx| tx.enroll_device(name, &femme_store::sha256(token.as_bytes()), now_ms()))?;
+    tracing::debug!(%id, "phone enrolled");
+    // Where the phone connects: the board's public host (Caddy, HTTPS) when there is one, else the
+    // HTTP layer itself (a LAN, a tunnel).
+    let (host, tls) = match cfg.board_url.split_once("://") {
+        Some(("https", host)) => (host.to_owned(), true),
+        Some((_, host)) => (host.to_owned(), false),
+        None => (cfg.http_bind.clone(), false),
+    };
+    let link = format!(
+        "femme://pair?host={host}&tls={}&name={}&token={token}",
+        u8::from(tls),
+        cfg.host
+    );
+    let qr = qrcode::QrCode::new(link.as_bytes()).context("the link fits a QR code")?;
+    let picture = qr
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build();
+    Ok(format!(
+        "{picture}\n{link}\n\nenrolled {name} ({id}): scan with the FEMME app, or paste the link into it. \
+         Revoke with `femmed devices revoke {name}`."
+    ))
+}
+
 /// One line per device, oldest first: id, name, key, when it was made and last seen, and whether
 /// it was revoked.
 pub(crate) fn devices(cfg: &Config) -> anyhow::Result<String> {

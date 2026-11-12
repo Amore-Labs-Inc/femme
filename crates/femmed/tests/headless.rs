@@ -456,7 +456,8 @@ async fn the_context_window_follows_the_agent_and_a_restart_does_not_count_a_com
         Some(Context {
             used: 2,
             window: 200_000,
-            compactions: 0
+            compactions: 0,
+            compact_at: None
         })
     );
 
@@ -494,7 +495,8 @@ async fn the_context_window_follows_the_agent_and_a_restart_does_not_count_a_com
         Some(Context {
             used: 2,
             window: 200_000,
-            compactions: 1
+            compactions: 1,
+            compact_at: None
         }),
         "one compaction, however often its line was read"
     );
@@ -1136,6 +1138,52 @@ async fn slow_turn(d: &Daemon, b: &Box_) -> (Sid, PaneRef) {
     // the store holds the streamed text only when the item is done: wait by the clock instead
     tokio::time::sleep(Duration::from_millis(700)).await;
     (sid, pane)
+}
+
+/// Esc right after sending (claude 2.1.321's `rewind_conversation`): the turn stops, the text
+/// comes back, and nothing of the turn stays in the transcript. The next prompt runs as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_taken_back_leaves_the_transcript_and_returns_its_text() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let (sid, pane) = slow_turn(&d, &b).await;
+    assert!(!items(&d, sid).is_empty());
+    let text = d.take_back(sid).await.unwrap();
+    assert_eq!(text.as_deref().map(str::trim), Some("slow"));
+    let v = items(&d, sid);
+    assert!(
+        v.is_empty(),
+        "nothing of the turn is left: {:#?}",
+        shape(&v)
+    );
+    wait_for(&d, sid, "idle after the take-back", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+
+    d.prompt(&pane, "again").await.unwrap();
+    let v = wait_items(&d, sid, "the next turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: again")
+    })
+    .await;
+    assert_eq!(
+        texts_of(&v, ItemKind::UserMessage).len(),
+        1,
+        "{:#?}",
+        shape(&v)
+    );
+
+    // with nothing running there is nothing to take back: an interrupt that does nothing
+    wait_for(&d, sid, "idle", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    assert_eq!(d.take_back(sid).await, Ok(None));
+    assert!(has_text(
+        &items(&d, sid),
+        ItemKind::AssistantMessage,
+        "echo: again"
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

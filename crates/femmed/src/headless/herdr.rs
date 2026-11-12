@@ -37,7 +37,7 @@ use femme_store::{items as store_items, sessions, Store};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::{fold, put, Cmd, FoldState, Head, Put};
+use super::{fold, forward_pushes, push_title, put, stamp_pushes, Cmd, FoldState, Head, Put};
 use crate::core::CoreError;
 use crate::daemon::{now_ms, Daemon};
 use crate::holder_client::SpoolLines;
@@ -210,8 +210,13 @@ fn status_of(s: &str) -> Option<(SessionStatus, Attention)> {
     })
 }
 
+/// How long a mirrored conversation may be missing from herdr before its session is dropped:
+/// longer than a Claude restarted in its pane takes to be detected again (10-20 s).
+const GONE_GRACE: Duration = Duration::from_secs(90);
+
 /// Makes the mirrored sessions match the panes: new conversations get a session, ones whose pane
-/// is gone (or runs another conversation now) are closed, statuses and titles follow herdr.
+/// is gone (or runs another conversation now) for `GONE_GRACE` are closed, statuses and titles
+/// follow herdr.
 async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<Sid, Tail>) {
     let rows: Vec<Session> = d
         .store
@@ -224,17 +229,32 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
         rows.iter()
             .find(|s| s.owner == p.owner() && s.agent_sid.as_deref() == Some(&p.uuid))
     };
+    // the rows gone for less than GONE_GRACE, whose tails stay
+    let mut waiting = HashSet::new();
     for s in rows.iter().filter(|s| s.closed.is_none()) {
         if !panes
             .iter()
             .any(|p| row_of(p).is_some_and(|r| r.id == s.id))
         {
-            // gone, not closed: a closed row is one the user hid, and stays hidden
-            tails.remove(&s.id);
-            if let Some(h) = d.sessions.head(s.id) {
-                h.close().await;
-                d.sessions.unhead(s.id);
+            // gone, not closed: a closed row is one the user hid, and stays hidden. Gone only
+            // after GONE_GRACE: a Claude restarted in place (`/exit`, then `claude --resume` of
+            // the same uuid) is missing from herdr for a while, and keeps its session.
+            let t = tails.entry(s.id).or_insert_with(|| {
+                // not tailed yet (the daemon just started): the grace counts from here too
+                let from = d
+                    .store
+                    .read(|c| sessions::spool_committed(c, s.id))
+                    .unwrap_or(0);
+                Tail::new(s.id, s.agent_sid.clone().unwrap_or_default(), from)
+            });
+            if t.gone_since.get_or_insert_with(Instant::now).elapsed() < GONE_GRACE {
+                waiting.insert(s.id);
+                continue;
             }
+            tails.remove(&s.id);
+            // the head goes, and its task ends with its last sender; the pane is left alone: it
+            // is gone, runs another conversation now, or is a shell the user's Claude exited to
+            d.sessions.unhead(s.id);
             if let Err(e) = d.write(|tx, _| tx.delete_session(s.id)) {
                 tracing::warn!(sid = %s.id, %e, "herdr session not dropped");
             }
@@ -254,11 +274,12 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
             },
         };
         open.insert(s.id);
-        if let std::collections::hash_map::Entry::Vacant(e) = tails.entry(s.id) {
-            let from = d
-                .store
-                .read(|c| sessions::spool_committed(c, s.id))
-                .unwrap_or(0);
+        if let Some(t) = tails.get_mut(&s.id) {
+            t.gone_since = None;
+        }
+        // a tail the gone check made (the pane was missing when the daemon started) has no head
+        let fresh = !tails.contains_key(&s.id);
+        if fresh || d.sessions.head(s.id).is_none() {
             d.sessions.set_head(
                 s.id,
                 head(
@@ -269,7 +290,13 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
                     Arc::downgrade(d),
                 ),
             );
-            e.insert(Tail::new(s.id, p.uuid.clone(), from));
+        }
+        if fresh {
+            let from = d
+                .store
+                .read(|c| sessions::spool_committed(c, s.id))
+                .unwrap_or(0);
+            tails.insert(s.id, Tail::new(s.id, p.uuid.clone(), from));
         }
         let on_plan = tails.get(&s.id).is_some_and(|t| t.plan_open.is_some());
         let state = status_of(if on_plan { "blocked" } else { &p.status });
@@ -304,7 +331,7 @@ async fn sync(d: &Arc<Daemon>, bin: &str, panes: &[HPane], tails: &mut HashMap<S
         }
     }
     // closed in FEMME since the last round: nothing more is written to it
-    tails.retain(|sid, _| open.contains(sid));
+    tails.retain(|sid, _| open.contains(sid) || waiting.contains(sid));
 }
 
 /// Keeps the pane's screen question in step with its status: a pane blocked on a prompt the TUI
@@ -674,6 +701,61 @@ struct Tail {
     /// The ExitPlanMode call the transcript has no result for yet: the pane is on the plan
     /// dialog, which herdr's detection reads as idle (its question wraps on a wide pane).
     plan_open: Option<String>,
+    /// Since when herdr lists no pane running this conversation; dropped after `GONE_GRACE`.
+    gone_since: Option<Instant>,
+    /// Lines from here on were written while this reader followed the file: what Claude asks to
+    /// push in them goes to the phone. Before it is the backfill, or what a daemon that was down
+    /// missed, and old news.
+    live_from: u64,
+    /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
+    pushes: HashMap<String, String>,
+}
+
+/// What Claude Code keeps free below its auto-compact window (2.1.321: a window of 534,643
+/// compacts at 501,643).
+const COMPACT_BUFFER: u64 = 33_000;
+/// The smallest auto-compact window Claude Code takes (2.1.321): a smaller one in a settings file
+/// is ignored, a smaller `CLAUDE_CODE_AUTO_COMPACT_WINDOW` counts as this.
+const COMPACT_WINDOW_MIN: u64 = 100_000;
+
+/// The settings files Claude Code reads in `cwd`, the one that wins first; a missing or broken
+/// file is skipped.
+fn claude_settings(home: &Path, cwd: &Path) -> Vec<Value> {
+    [
+        cwd.join(".claude/settings.local.json"),
+        cwd.join(".claude/settings.json"),
+        home.join(".claude/settings.json"),
+    ]
+    .iter()
+    .filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok())
+    .collect()
+}
+
+/// Where a Claude pane compacts by itself, in tokens, as its settings say (`files`, the one that
+/// wins first): `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`env`), then the model's
+/// `modelSettings.<model>.autoCompactWindow`, then `autoCompactWindow`, capped at the model's
+/// `window` (0: unknown), minus the buffer. `None` when nothing sets it or auto-compaction is off.
+// ponytail: with nothing set the CLI compacts at the window minus the buffer; the bar then fills
+// against the window as before, 3% off on a 1M model
+fn compact_at(env: Option<&str>, files: &[Value], model: Option<&str>, window: u64) -> Option<u64> {
+    if files.iter().find_map(|f| f["autoCompactEnabled"].as_bool()) == Some(false) {
+        return None;
+    }
+    // the row's model may carry the size suffix (`opus[1m]`), the settings key may not
+    let names = model.map(|m| [m, m.split('[').next().unwrap_or(m)]);
+    let valid = |v: &Value| v.as_u64().filter(|w| *w >= COMPACT_WINDOW_MIN);
+    let of_model = |f: &Value| {
+        names?
+            .iter()
+            .find_map(|m| valid(&f["modelSettings"][m]["autoCompactWindow"]))
+    };
+    let set = env
+        .and_then(|e| e.trim().parse::<u64>().ok())
+        .map(|w| w.max(COMPACT_WINDOW_MIN))
+        .or_else(|| files.iter().find_map(of_model))
+        .or_else(|| files.iter().find_map(|f| valid(&f["autoCompactWindow"])))?;
+    let capped = if window > 0 { set.min(window) } else { set };
+    Some(capped.saturating_sub(COMPACT_BUFFER)).filter(|n| *n > 0)
 }
 
 /// A subagent's transcript, read on from where it was read.
@@ -717,6 +799,9 @@ impl Tail {
             asks_checked: false,
             screen_tried: None,
             plan_open: None,
+            gone_since: None,
+            live_from: u64::MAX,
+            pushes: HashMap::new(),
         }
     }
 
@@ -776,6 +861,7 @@ impl Tail {
                 self.lines = SpoolLines::new(self.read);
                 self.skip = true;
             }
+            self.live_from = len;
             self.path = Some(path);
         }
         let Some(path) = self.path.clone() else {
@@ -822,8 +908,17 @@ impl Tail {
                 Some(Disk::Feed { line, typed }) => (line, typed),
             };
             self.note_plan(&line);
-            let events = self.driver.on_line(at, &line, &mut out);
+            let mut events = self.driver.on_line(at, &line, &mut out);
             out.stdin.clear(); // nobody listens: the pane's Claude reads its own terminal
+            if at >= self.live_from {
+                let sid = self.sid;
+                let title = || {
+                    d.session(sid)
+                        .map_or_else(|_| String::new(), |s| push_title(&s))
+                };
+                forward_pushes(&d.notifier, sid, title, &events, &mut self.pushes, true).await;
+            }
+            stamp_pushes(&mut events, &self.pushes);
             let f = fold(
                 &mut self.fold,
                 self.sid,
@@ -861,12 +956,16 @@ impl Tail {
             return;
         }
         let sid = self.sid;
+        let removed = super::removes(d, &puts);
         let r = d.write_items(|tx, _, published| {
             for p in &puts {
                 put(tx, sid, p, published)?;
             }
             tx.set_spool_committed(sid, end)
         });
+        if let Some(before) = removed {
+            d.say_removed(sid, before);
+        }
         match r {
             Ok(()) => self.committed = end,
             Err(e) => {
@@ -901,8 +1000,18 @@ impl Tail {
             // ponytail: a file rewritten under us is read again from its start and its
             // compactions counted again (the level overstates); keep the count in the row's
             // store if that ever shows
+            // a pane has no control channel to ask: the point is what its settings say, read
+            // again at every write (`/autocompact` rewrites them)
+            let files = d
+                .session(sid)
+                .map(|s| claude_settings(&d.cfg.home, Path::new(&s.cwd)))
+                .unwrap_or_default();
+            let env = std::env::var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").ok();
             let _ = d.update(sid, |s| {
-                s.context = super::with_context(s.context, used, window, compacted);
+                s.context = super::with_context(s.context, used, window, None, compacted);
+                if let Some(c) = &mut s.context {
+                    c.compact_at = compact_at(env.as_deref(), &files, s.model.as_deref(), c.window);
+                }
             });
         }
     }
@@ -1065,7 +1174,7 @@ fn ids_of(v: &Value) -> Vec<String> {
 fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
     let held = puts.iter().any(|p| match p {
         Put::Start(i) | Put::Done(i) => i.item_id == id && i.kind == ItemKind::UserMessage,
-        Put::Update(..) => false,
+        Put::Update(..) | Put::Remove(_) => false,
     });
     if held {
         return None;
@@ -1410,6 +1519,11 @@ fn disk_value(mut v: Value) -> Option<Value> {
     if v["isMeta"] == true && v["origin"]["kind"] != "peer" {
         return None;
     }
+    // the summary a compaction restarts the model with: a `user` line the terminal never shows
+    // (the `compact_boundary` before it is the "Conversation compacted" row), so not a message
+    if v["isCompactSummary"] == true || v["isVisibleInTranscriptOnly"] == true {
+        return None;
+    }
     match v["type"].as_str()? {
         "assistant" => {}
         "user" => {
@@ -1435,14 +1549,17 @@ fn disk_value(mut v: Value) -> Option<Value> {
                         .and_then(|(_, r)| r.split_once(&format!("</{t}>")))
                         .map(|(s, _)| s.trim().to_owned())
                 };
-                v = serde_json::json!({
-                    "type": "system",
-                    "subtype": "task_notification",
-                    "tool_use_id": tag("tool-use-id"),
-                    "status": tag("status"),
-                    "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
-                    "uuid": v["uuid"],
-                });
+                // without a status it is a Monitor event, not an end: the driver draws its row
+                if let Some(status) = tag("status") {
+                    v = serde_json::json!({
+                        "type": "system",
+                        "subtype": "task_notification",
+                        "tool_use_id": tag("tool-use-id"),
+                        "status": status,
+                        "summary": tag("summary").unwrap_or_else(|| "A background task reported".into()),
+                        "uuid": v["uuid"],
+                    });
+                }
             } else if !result && !text.starts_with("[Request interrupted") && v["notTyped"] != true
             {
                 v["isReplay"] = Value::Bool(true);
@@ -1474,6 +1591,9 @@ fn disk_value(mut v: Value) -> Option<Value> {
 }
 
 // ---- the way in ---------------------------------------------------------------------------------
+
+/// How long the TUI gets to put a message it took back into its input before that is cleared.
+const TAKE_BACK_SETTLE: Duration = Duration::from_millis(300);
 
 /// The session's head: a prompt is typed into the pane, an interrupt is its Escape, a screen
 /// question's answer is its option's number (or Escape). Transcript questions, models and
@@ -1565,6 +1685,26 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
                     let _ = reply.send(r.map(drop));
                 }
+                // Esc right after sending: the TUI stops the turn and puts the message back into
+                // its own input, where FEMME cannot see it. The input is cleared (Ctrl+U, a line at
+                // a time) and the text goes to whoever asked; the message's row leaves when the
+                // line sent in its place lands (the mirror driver's take-back rule).
+                // ponytail: the TUI is not asked whether it took the message back; one it only
+                // interrupted stays in the transcript, and the text is in the composer as well.
+                Cmd::TakeBack { reply } => {
+                    let esc = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "esc"]).await;
+                    let text = d.upgrade().and_then(|d| {
+                        let newest = d.store.write(|tx| crate::sent::newest(tx, sid));
+                        newest.ok().flatten().map(|(text, _)| text)
+                    });
+                    if let (Ok(_), Some(text)) = (&esc, &text) {
+                        tokio::time::sleep(TAKE_BACK_SETTLE).await;
+                        let mut args = vec!["pane", "send-keys", pane.as_str()];
+                        args.extend(text.lines().map(|_| "ctrl+u"));
+                        let _ = herdr(&bin, Some(&hs), &args).await;
+                    }
+                    let _ = reply.send(esc.map(|_| text));
+                }
                 // the TUI backgrounds its foreground task on Ctrl+B (every one: it has no per-call key)
                 Cmd::Background { reply, .. } => {
                     let r = herdr(&bin, Some(&hs), &["pane", "send-keys", &pane, "ctrl+b"]).await;
@@ -1584,7 +1724,7 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                     let _ = reply.send(HashMap::new());
                 }
                 // Closing from FEMME ends the pane too: a close is a kill, not a hide. A pane
-                // that is already gone (the sync noticed it) makes this a no-op error.
+                // that is already gone makes this a no-op error. The sync never sends it.
                 Cmd::Close { done } => {
                     let _ = herdr(&bin, Some(&hs), &["pane", "close", &pane]).await;
                     let _ = done.send(());
@@ -1894,6 +2034,14 @@ mod tests {
             ),
             "the stream's shape, so the driver ends the call's task"
         );
+        let tick = line(serde_json::json!({"type":"user","uuid":"u2","message":{"content":
+            "<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick 1</event>\n</task-notification>"}}))
+        .unwrap();
+        assert_eq!(
+            (&tick["type"], &tick["isReplay"]),
+            (&Value::from("user"), &Value::Null),
+            "a Monitor event is no end and nothing typed: the driver's row"
+        );
         let mode =
             line(serde_json::json!({"type":"permission-mode","permissionMode":"plan"})).unwrap();
         assert_eq!(
@@ -1907,6 +2055,71 @@ mod tests {
         ] {
             assert_eq!(line(skipped), None);
         }
+    }
+
+    /// A compaction's summary (a `user` line marked `isCompactSummary`) is not a message: only the
+    /// `compact_boundary` before it reaches the driver, as the "Conversation compacted" row.
+    #[test]
+    fn a_compaction_summary_is_not_a_message() {
+        use femme_agents::Driver as _;
+        const PLAIN: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. x";
+        let summary = |text: String| {
+            serde_json::json!({"type":"user","uuid":"s1","isCompactSummary":true,
+                "isVisibleInTranscriptOnly":true,"message":{"role":"user","content":text}})
+        };
+        let artifact = format!("<artifact-content-authored-by-others/>\nThe summarized conversation included Artifact content.\n{PLAIN}");
+        for text in [PLAIN.to_owned(), artifact] {
+            assert_eq!(line(summary(text.clone())), None);
+            // either mark alone drops it
+            for mark in ["isCompactSummary", "isVisibleInTranscriptOnly"] {
+                let mut one = summary(text.clone());
+                one.as_object_mut().unwrap().retain(|k, _| {
+                    k == mark
+                        || !matches!(k.as_str(), "isCompactSummary" | "isVisibleInTranscriptOnly")
+                });
+                assert_eq!(line(one), None, "{mark}");
+            }
+            // a subagent's file holds them too
+            let mut side = summary(text);
+            side["isSidechain"] = Value::Bool(true);
+            assert_eq!(sub_line(side.to_string().as_bytes(), "toolu_A"), None);
+        }
+        let typed = line(
+            serde_json::json!({"type":"user","uuid":"u1","message":{"role":"user","content":PLAIN}}),
+        )
+        .expect("an ordinary typed entry still passes");
+        assert_eq!(typed["isReplay"], true);
+
+        // the boundary and its summary, as the file has them: one event row, no user message
+        let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","uuid":"c1",
+            "compactMetadata":{"trigger":"auto","preTokens":310172}});
+        let mut d = femme_agents::claude::ClaudeDriver::new();
+        let mut out = femme_agents::Out::default();
+        d.on_start(&femme_agents::Launch::default(), &mut out);
+        let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"femme-init","response":{}}}"#;
+        d.on_line(0, init, &mut out);
+        let mut kinds = Vec::new();
+        let mut compacted = None;
+        for (n, v) in [boundary, summary(PLAIN.to_owned())]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(l) = line(v) else { continue };
+            for e in d.on_line(n as u64 + 1, l.to_string().as_bytes(), &mut out) {
+                match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        kinds.push((kind, body["text"].clone()))
+                    }
+                    femme_agents::AgentEvent::Compacted { pre_tokens } => compacted = pre_tokens,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            kinds,
+            [(ItemKind::Event, Value::from("Conversation compacted"))]
+        );
+        assert_eq!(compacted, Some(310172));
     }
 
     /// A peer's message (SendMessage from another session) passes the `isMeta` drop, whether it
@@ -2048,11 +2261,18 @@ mod tests {
 
     /// A temp home with a store and one transcript file.
     fn daemon() -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
+        daemon_with(&[])
+    }
+
+    /// A daemon with `vars` in its environment.
+    fn daemon_with(vars: &[(&str, &str)]) -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
         let dir = tempfile::Builder::new()
             .prefix("femmed-h-")
             .tempdir_in("/tmp")
             .unwrap();
-        let mut cfg = Config::from_vars([("HOME".to_string(), dir.path().display().to_string())]);
+        let home = ("HOME".to_string(), dir.path().display().to_string());
+        let vars = vars.iter().map(|(k, v)| (k.to_string(), v.to_string()));
+        let mut cfg = Config::from_vars(vars.chain([home]));
         cfg.state_dir = dir.path().join("state");
         cfg.runtime_dir = dir.path().join("rt");
         (Daemon::open(cfg).unwrap(), dir)
@@ -2281,8 +2501,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
     }
 
     /// A `herdr` stand-in: `agent read` prints `<dir>/screen`, `pane send-keys` logs to
-    /// `<dir>/keys`, `agent prompt` logs to `<dir>/prompts` once `<dir>/unblocked` exists and is
-    /// refused as blocked before.
+    /// `<dir>/keys`, `pane close` to `<dir>/closes`, `agent prompt` logs to `<dir>/prompts` once
+    /// `<dir>/unblocked` exists and is refused as blocked before.
     fn fake_herdr(dir: &Path) -> String {
         let bin = dir.join("herdr");
         let script = format!(
@@ -2290,6 +2510,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
              case \"$1 $2\" in\n\
              \"agent read\") cat {d}/screen ;;\n\
              \"pane send-keys\") echo \"$3 $4\" >> {d}/keys ;;\n\
+             \"pane close\") echo \"$3\" >> {d}/closes ;;\n\
              \"agent prompt\") [ -e {d}/unblocked ] && echo \"$3 $4\" >> {d}/prompts || {{ echo agent_blocked; exit 1; }} ;;\n\
              *) exit 1 ;;\nesac\n",
             d = dir.display()
@@ -2398,6 +2619,67 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         );
     }
 
+    /// Esc in the TUI right after sending (2.1.321) puts the message back into its input, and
+    /// the line sent in its place hangs off the same `parentUuid`: only that one is shown. From
+    /// FEMME the same Esc clears the TUI's input and answers with the text.
+    #[tokio::test]
+    async fn a_message_taken_back_in_the_pane_leaves_only_the_one_sent_in_its_place() {
+        let (d, dir) = daemon();
+        let bin = fake_herdr(dir.path());
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("u-1.jsonl");
+        let first = concat!(
+            r#"{"type":"user","uuid":"u1","parentUuid":"p0","message":{"role":"user","content":"fix the build"}}"#,
+            "\n",
+            r#"{"type":"last-prompt","lastPrompt":"fix the build"}"#,
+            "\n"
+        );
+        std::fs::write(&file, first).unwrap();
+        let mut tails = HashMap::new();
+        let mut panes = parse_panes("default", BLOCKED);
+        panes[0].status = "working".into();
+        sync(&d, &bin, &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        let shown = |d: &Daemon| {
+            let mut v = d
+                .store
+                .read(|c| store_items::page_items(c, sid, None, 100))
+                .unwrap();
+            v.reverse();
+            v.into_iter()
+                .filter(|i| matches!(i.kind, ItemKind::UserMessage | ItemKind::AssistantMessage))
+                .map(|i| i.item_id)
+                .collect::<Vec<_>>()
+        };
+        tails.get_mut(&sid).unwrap().tail(&d).await;
+        assert_eq!(shown(&d), ["u1"]);
+
+        let taken = d.sessions.head(sid).unwrap().take_back().await;
+        assert_eq!(taken, Ok(Some("fix the build".into())));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("keys")).unwrap(),
+            "wA:p1 esc\nwA:p1 ctrl+u\n"
+        );
+        assert_eq!(shown(&d), ["u1"], "until the line sent in its place lands");
+
+        let second = concat!(
+            r#"{"type":"file-history-snapshot"}"#,
+            "\n",
+            r#"{"type":"user","uuid":"u2","parentUuid":"p0","message":{"role":"user","content":"fix the build, and run the tests"}}"#,
+            "\n",
+            r#"{"type":"last-prompt","explicit":true}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u2","message":{"id":"m1","content":[{"type":"text","text":"done"}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"turn_duration","durationMs":12}"#,
+            "\n"
+        );
+        std::fs::write(&file, format!("{first}{second}")).unwrap();
+        tails.get_mut(&sid).unwrap().tail(&d).await;
+        assert_eq!(shown(&d), ["u2", "m1:0"]);
+    }
+
     #[tokio::test]
     async fn a_prompt_answered_in_the_pane_closes_the_question_here() {
         let (d, dir) = daemon();
@@ -2431,6 +2713,77 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let mut later = HashMap::new();
         sync(&d, &bin, &idle, &mut later).await;
         assert!(d.pending_question(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_panes_compaction_point_is_what_its_settings_say() {
+        use serde_json::json;
+        let user = json!({"autoCompactWindow":534_643,"autoCompactEnabled":true});
+        let m = Some("claude-fable-5-2");
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 1_000_000),
+            Some(501_643)
+        );
+        // the model's own setting wins over the top-level key, whichever file holds it
+        let per = json!({"modelSettings":{"claude-fable-5-2":{"autoCompactWindow":300_000}}});
+        let both = [user.clone(), per];
+        assert_eq!(compact_at(None, &both, m, 1_000_000), Some(267_000));
+        assert_eq!(
+            compact_at(None, &both, Some("claude-fable-5-2[1m]"), 1_000_000),
+            Some(267_000)
+        );
+        assert_eq!(
+            compact_at(None, &both, Some("claude-opus-5-5"), 1_000_000),
+            Some(501_643)
+        );
+        // the env var wins over both
+        assert_eq!(
+            compact_at(Some("200000"), &both, m, 1_000_000),
+            Some(167_000)
+        );
+        // the project's file is listed before the user's
+        let project = json!({"autoCompactWindow":120_000});
+        assert_eq!(
+            compact_at(None, &[project, user.clone()], m, 1_000_000),
+            Some(87_000)
+        );
+        // a window under the CLI's minimum is ignored in a file and raised in the env var
+        let small = json!({"autoCompactWindow":80_000});
+        assert_eq!(
+            compact_at(None, &[small, user.clone()], m, 1_000_000),
+            Some(501_643)
+        );
+        assert_eq!(compact_at(Some("80000"), &[], m, 1_000_000), Some(67_000));
+        // never past the model's window; an unknown window caps nothing
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 200_000),
+            Some(167_000)
+        );
+        assert_eq!(compact_at(None, &[user], m, 0), Some(501_643));
+        // nothing set, or auto-compaction off: the bar fills against the window
+        assert_eq!(compact_at(None, &[], m, 1_000_000), None);
+        let off = json!({"autoCompactWindow":534_643,"autoCompactEnabled":false});
+        assert_eq!(compact_at(None, &[off], m, 1_000_000), None);
+    }
+
+    #[test]
+    fn claude_settings_reads_the_projects_files_before_the_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, cwd) = (dir.path().join("home"), dir.path().join("w"));
+        for (root, text) in [
+            (&home, r#"{"autoCompactWindow":1}"#),
+            (&cwd, r#"{"autoCompactWindow":2}"#),
+        ] {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            std::fs::write(root.join(".claude/settings.json"), text).unwrap();
+        }
+        std::fs::write(cwd.join(".claude/settings.local.json"), "not json").unwrap();
+        let files = claude_settings(&home, &cwd);
+        let windows: Vec<_> = files
+            .iter()
+            .map(|f| f["autoCompactWindow"].as_u64())
+            .collect();
+        assert_eq!(windows, [Some(2), Some(1)]);
     }
 
     /// herdr reads the plan dialog as idle (its question wraps on a wide pane): the transcript's
@@ -2522,7 +2875,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             Some(femme_proto::state::Context {
                 used: 40_502,
                 window: 1_000_000,
-                compactions: 1
+                compactions: 1,
+                compact_at: None
             })
         );
         // read again: nothing new, nothing written twice
@@ -2566,11 +2920,73 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             1
         );
         sync(&d, "/bin/false", &[], &mut tails).await;
+        let left = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(left.len(), 1, "gone for less than GONE_GRACE: kept");
+        tails.get_mut(&left[0].id).unwrap().gone_since =
+            Some(Instant::now() - GONE_GRACE - Duration::from_secs(1));
+        sync(&d, "/bin/false", &[], &mut tails).await;
         assert!(d
             .store
             .read(|c| sessions::list_sessions(c, false))
             .unwrap()
             .is_empty());
+        assert!(tails.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pane_gone_past_the_grace_is_dropped_without_closing_the_pane() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("screen"), "").unwrap();
+        let bin = fake_herdr(dir.path());
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, &bin, &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        // its Claude exited: the pane is a shell now, out of herdr's agent list
+        sync(&d, &bin, &[], &mut tails).await;
+        tails.get_mut(&sid).unwrap().gone_since =
+            Some(Instant::now() - GONE_GRACE - Duration::from_secs(1));
+        sync(&d, &bin, &[], &mut tails).await;
+        assert!(d
+            .store
+            .read(|c| sessions::list_sessions(c, false))
+            .unwrap()
+            .is_empty());
+        assert!(d.sessions.head(sid).is_none());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !dir.path().join("closes").exists(),
+            "the sync sent a pane close"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pane_missing_for_a_sync_keeps_its_session() {
+        let (d, _dir) = daemon();
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let sid = *tails.keys().next().unwrap();
+        // Claude restarted in its pane: herdr lists no agent there for a while
+        sync(&d, "/bin/false", &[], &mut tails).await;
+        assert!(tails[&sid].gone_since.is_some());
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let rows = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(rows.iter().map(|s| s.id).collect::<Vec<_>>(), [sid]);
+        assert!(tails[&sid].gone_since.is_none());
+        assert!(d.sessions.head(sid).is_some());
+
+        // the daemon restarted with the pane missing: its grace counts from there, and the pane
+        // back gets its head
+        let mut tails = HashMap::new();
+        d.sessions.unhead(sid);
+        sync(&d, "/bin/false", &[], &mut tails).await;
+        assert!(tails[&sid].gone_since.is_some());
+        assert!(d.sessions.head(sid).is_none());
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let rows = d.store.read(|c| sessions::list_sessions(c, false)).unwrap();
+        assert_eq!(rows.iter().map(|s| s.id).collect::<Vec<_>>(), [sid]);
+        assert!(d.sessions.head(sid).is_some());
     }
 
     const AGENT_TURN: &str = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"look"}}
@@ -2746,5 +3162,73 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
                 .unwrap()
                 .len()
         );
+    }
+
+    /// A pane's `PushNotification` call `id` and what Claude Code answered it, as transcript lines.
+    fn push_pair(id: &str, answer: &str) -> String {
+        let call = serde_json::json!({"type":"assistant","message":{"id":format!("a-{id}"),
+            "content":[{"type":"tool_use","id":id,"name":"PushNotification",
+                "input":{"message":format!("tests green {id}"),"status":"proactive"}}]}});
+        let result = serde_json::json!({"type":"user","uuid":format!("r-{id}"),"message":{
+            "content":[{"type":"tool_result","tool_use_id":id,"content":answer}]}});
+        format!("{call}\n{result}\n")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_panes_push_claude_code_did_not_deliver_goes_to_the_phone() {
+        let (base, rx) = crate::notify::tests::stub();
+        let (d, dir) = daemon_with(&[("NTFY_TOPIC", "owner"), ("NTFY_URL", &base)]);
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("u-1.jsonl");
+        const UNSENT: &str = "Mobile push not sent (Remote Control inactive).";
+        // there before the pane was mirrored: old news, pushed to nobody
+        let mut text = push_pair("p0", UNSENT);
+        std::fs::write(&file, &text).unwrap();
+        let panes = parse_panes("default", PANES);
+        let mut tails = HashMap::new();
+        sync(&d, "/bin/false", &panes, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        let mut grow = |more: String| {
+            text.push_str(&more);
+            std::fs::write(&file, &text).unwrap();
+        };
+        let push_of = |id: &str| {
+            let item = d.store.read(|c| store_items::get_item(c, sid, id)).unwrap();
+            let body: Value = serde_json::from_str(&item.unwrap().body.unwrap()).unwrap();
+            body["push"].clone()
+        };
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        assert_eq!(push_of("p0"), Value::Null);
+
+        // written while mirrored, and Claude Code says it went nowhere: FEMME sends it
+        grow(push_pair("p1", UNSENT));
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        let got = crate::notify::tests::drain(&rx);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["owner"]["message"], "tests green p1");
+        assert_eq!(got["owner"]["priority"], 4);
+        assert_eq!(push_of("p1"), "sent");
+
+        // the user is at the terminal, or turned it off, or Claude Code delivered it: left alone
+        grow(push_pair(
+            "p2",
+            "Not sent — this terminal is active, the user can already see it.",
+        ));
+        grow(push_pair(
+            "p3",
+            "Push not sent — mobile push is disabled in /config",
+        ));
+        grow(push_pair("p4", "Mobile push requested."));
+        for t in tails.values_mut() {
+            t.tail(&d).await;
+        }
+        assert!(crate::notify::tests::drain(&rx).is_empty());
+        assert_eq!(push_of("p2"), Value::Null);
     }
 }

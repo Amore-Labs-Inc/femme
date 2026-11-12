@@ -311,6 +311,21 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
     },
+    /// The agent took the item back (Claude retracts a reply its model's safeguards refused, with
+    /// the tool results under it): it leaves the transcript. An id nobody holds is not an error.
+    ItemRetracted {
+        /// Item id.
+        id: String,
+    },
+    /// A prompt was taken back ([`Driver::take_back`]): the agent has forgotten it and what it did
+    /// for it, and the items of its turn are retracted. `text` is the prompt, for the input it
+    /// goes back into.
+    TakenBack {
+        /// The id the prompt was given with [`Driver::prompt_with_id`].
+        prompt_id: String,
+        /// The prompt's text, as the agent gives it back.
+        text: String,
+    },
     /// The agent asks the user something and waits. Answer with [`Driver::answer`] using
     /// `q.request_id`. The daemon creates the `Question` item `item_id` as `Pending`.
     QuestionAsked {
@@ -359,6 +374,10 @@ pub enum AgentEvent {
         used: u64,
         /// The window in tokens, when the agent said (Claude: the turn's `result`).
         window: Option<u64>,
+        /// Tokens at which the agent compacts by itself, when the event says (Claude: the reply
+        /// to `get_context_usage`). `None` is no word: what was said before stays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compact_at: Option<u64>,
     },
     /// The conversation was compacted: the context shrinks, the desktop's level goes up.
     Compacted {
@@ -463,6 +482,18 @@ pub trait Driver: Send {
     /// Claude refuses with `Error::State` until its `initialize` is answered); after
     /// [`Driver::on_exit`] it is `Error::State`.
     fn interrupt(&mut self, out: &mut Out) -> Result<(), Error>;
+
+    /// Take the prompt `prompt_id` (given with [`Driver::prompt_with_id`]) back, as Esc does in
+    /// Claude's TUI right after sending: its turn is stopped and the agent forgets the prompt and
+    /// everything it did for it. A prompt the driver still held comes back at once, as the
+    /// returned [`AgentEvent::TakenBack`]; one the agent has is interrupted first, and
+    /// `TakenBack` with the retraction of the turn's items ([`AgentEvent::ItemRetracted`]) follows
+    /// from [`Driver::on_line`] once the agent has confirmed. When the agent does not confirm,
+    /// nothing follows and the turn is just interrupted. `Error::State` when the prompt is not the
+    /// only one the agent works on, `Error::Unsupported` for agents that cannot forget a prompt.
+    fn take_back(&mut self, _prompt_id: &str, _out: &mut Out) -> Result<Vec<AgentEvent>, Error> {
+        Err(Error::Unsupported("taking a prompt back"))
+    }
 
     /// Move the task of the tool call `tool_use_id` (a Bash command or a subagent the turn waits
     /// for), or with `None` every foreground task, to the background (Ctrl+B in Claude's TUI): the

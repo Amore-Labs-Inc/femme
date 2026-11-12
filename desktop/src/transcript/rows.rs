@@ -26,8 +26,8 @@ use super::thumb;
 use super::turns::{self, Key, ToolLine};
 use crate::motion::appear;
 use crate::theme::{
-    self, accent_deep, accent_text, bad, hover, ink, muted, neon, panel, paper, pause, work,
-    BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE,
+    self, accent_deep, accent_text, bad, hover, ink, muted, neon, panel, paper, pause, warn_text,
+    work, BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE,
 };
 use crate::ui::{card, dialog, meta, ruled, st, tb};
 
@@ -177,6 +177,13 @@ fn read_of(item: &femme_proto::state::Item) -> Option<String> {
     b.get("read")?.as_str().map(str::to_owned)
 }
 
+/// A warning `Event` (its body's `warning`: the model fell back, a refusal): the agent's own
+/// longer wording (`detail`), empty when it gave none.
+fn warning_of(item: &femme_proto::state::Item) -> Option<String> {
+    let b: serde_json::Value = serde_json::from_str(item.body.as_deref()?).ok()?;
+    (b.get("warning")?.as_bool()?).then(|| b["detail"].as_str().unwrap_or("").to_owned())
+}
+
 /// `ms` since the epoch as the local `HH:MM`.
 fn hhmm(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
@@ -281,6 +288,7 @@ impl Transcript {
         };
         let kind = e.item.kind;
         let read = read_of(&e.item);
+        let warning = warning_of(&e.item);
         let handoff = is_handoff(&e.item.preview);
         let before_handoff = self
             .items
@@ -304,9 +312,10 @@ impl Transcript {
             ItemKind::Thinking => self.thinking_row(seq, sel, cx),
             ItemKind::Question => self.question_row(seq, sel, window, cx),
             ItemKind::ToolResult => self.tool_row(seq, sel, cx),
-            ItemKind::Event => match read {
-                Some(id) => self.read_row(seq, &id, sel, cx),
-                None => self.note_row(seq, sel),
+            ItemKind::Event => match (read, warning) {
+                (Some(id), _) => self.read_row(seq, &id, sel, cx),
+                (None, Some(detail)) => self.warning_row(seq, &detail, sel, cx),
+                (None, None) => self.note_row(seq, sel, cx),
             },
             ItemKind::TurnEnd => self.end_row(seq, sel),
             ItemKind::ToolCall | ItemKind::TurnStart => div().into_any_element(),
@@ -421,7 +430,7 @@ impl Transcript {
     /// message. Nothing when the message is the row right above (it was read at once).
     fn read_row(&mut self, seq: u64, read: &str, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let Some(orig) = self.items.by_id(read).map(|e| e.item.seq) else {
-            return self.note_row(seq, sel);
+            return self.note_row(seq, sel, cx);
         };
         let rows = &self.layout.rows;
         let here = rows.iter().position(|r| r.key == Key::Item(seq));
@@ -649,14 +658,84 @@ impl Transcript {
     }
 
     /// A status line the agent or the daemon put among the messages.
-    fn note_row(&self, seq: u64, sel: &Sel) -> AnyElement {
+    fn note_row(&self, seq: u64, sel: &Sel, cx: &mut Context<Self>) -> AnyElement {
         let (text, _) = self.text_of(seq);
+        let text = note_text(&text);
+        let folded = note_folded(&text);
+        let shown = match &folded {
+            Some(line) if !self.open.contains(&seq) => line.clone(),
+            _ => text,
+        };
         column(
             div()
+                .id(("note", seq))
                 .font_family(FONT_MONO)
                 .text_size(px(12.))
                 .text_color(muted())
-                .child(Selectable::new(sel.slot(), note_text(&text))),
+                .child(Selectable::new(sel.slot(), shown))
+                .when(folded.is_some(), |d| {
+                    d.cursor_pointer()
+                        .hover(|s| s.bg(panel()))
+                        .on_click(cx.listener(move |this, click, _, cx| {
+                            if select::plain_click(click) {
+                                this.toggle(seq, cx);
+                            }
+                        }))
+                }),
+        )
+    }
+
+    /// A warning among the messages (the model fell back, a reply was refused): one line behind
+    /// a `⚠` in the warning colour; a click shows the agent's own words, links and all.
+    fn warning_row(
+        &mut self,
+        seq: u64,
+        detail: &str,
+        sel: &Sel,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (text, _) = self.text_of(seq);
+        let open = self.open.contains(&seq) && !detail.is_empty();
+        let line = div()
+            .font_family(FONT_MONO)
+            .text_size(px(12.))
+            .text_color(warn_text())
+            .child(Selectable::new(
+                sel.slot(),
+                format!("⚠ {}", text.trim_end()),
+            ));
+        if detail.is_empty() {
+            return column(line);
+        }
+        let head = div()
+            .id(("warning", seq))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .py(px(2.))
+            .cursor_pointer()
+            .hover(|s| s.bg(panel()))
+            .on_click(cx.listener(move |this, click, _, cx| {
+                if select::plain_click(click) {
+                    this.toggle(seq, cx);
+                }
+            }))
+            .child(chevron(open))
+            .child(line);
+        let doc = open.then(|| self.doc(seq, detail));
+        column(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(head)
+                .when_some(doc, |d, doc| {
+                    d.child(div().pl(px(18.)).text_size(px(13.)).child(md_view::doc(
+                        &doc,
+                        muted(),
+                        sel,
+                    )))
+                }),
         )
     }
 
@@ -923,10 +1002,16 @@ impl Transcript {
             Parsed::ToolCall(t) => t.input_text(),
             _ => None,
         };
-        let output = result.and_then(|r| match self.items.parsed(r) {
-            Parsed::ToolResult(t) => Some(t.output.clone()),
-            _ => None,
-        });
+        // a push femmed sent to the phone: its word, not Claude Code's "Mobile push not sent"
+        let sent = matches!(self.items.parsed(e),
+            Parsed::ToolCall(t) if t.push.as_deref() == Some(super::body::PUSH_SENT));
+        let output = match (sent, result) {
+            (true, _) => line.result.clone(),
+            (false, r) => r.and_then(|r| match self.items.parsed(r) {
+                Parsed::ToolResult(t) => Some(t.output.clone()),
+                _ => None,
+            }),
+        };
         Some(ToolView {
             line,
             input,
@@ -1178,16 +1263,64 @@ fn action(id: String, label: &'static str, enabled: bool) -> gpui::Stateful<Div>
 /// unless it brings its own mark (`◎ goal not met yet · …`).
 fn note_text(text: &str) -> String {
     let text = text.trim_end();
-    if text.starts_with('◎') {
+    if text.starts_with(['◎', '◷']) {
         text.to_owned()
     } else {
         format!("· {text}")
     }
 }
 
+/// The one line a Monitor event (`◷`) of several lines shows until its row is clicked.
+fn note_folded(text: &str) -> Option<String> {
+    let (first, _) = text.split_once('\n').filter(|_| text.starts_with('◷'))?;
+    Some(format!("{first} …"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warning_event_says_so_in_its_body() {
+        let item = |body: &str| femme_proto::state::Item {
+            sid: femme_proto::Id(1),
+            item_id: "u-f".into(),
+            seq: 1,
+            rev: 1,
+            kind: ItemKind::Event,
+            status: ItemStatus::Completed,
+            preview: String::new(),
+            body: Some(body.into()),
+            blob_hash: None,
+            ts: 0,
+            parent: None,
+        };
+        assert_eq!(
+            warning_of(&item(
+                r#"{"text":"fable 5.2 → opus 4.8 · x","warning":true,"detail":"Switched."}"#
+            )),
+            Some("Switched.".into())
+        );
+        assert_eq!(
+            warning_of(&item(r#"{"text":"t","warning":true}"#)),
+            Some(String::new())
+        );
+        assert_eq!(
+            warning_of(&item(r#"{"text":"Conversation compacted"}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_monitor_event_keeps_its_mark_and_folds_to_its_first_line() {
+        assert_eq!(note_text("◷ ticks · tick 1"), "◷ ticks · tick 1");
+        assert_eq!(note_folded("◷ ticks · tick 1"), None);
+        assert_eq!(
+            note_folded("◷ log · one\ntwo").as_deref(),
+            Some("◷ log · one …")
+        );
+        assert_eq!(note_folded("· one\ntwo"), None, "other notes stay whole");
+    }
 
     #[test]
     fn a_note_keeps_all_its_lines() {

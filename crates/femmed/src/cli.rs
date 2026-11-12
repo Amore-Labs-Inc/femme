@@ -103,6 +103,12 @@ pub enum Command {
         #[arg(long)]
         spki: String,
     },
+    /// Let a phone connect: enroll it under a new token and print the QR code the app scans.
+    Pair {
+        /// What to call the phone in `femmed devices`.
+        #[arg(long, default_value = "phone", value_parser = NonEmptyStringValueParser::new())]
+        name: String,
+    },
     /// List the enrolled devices, or revoke one.
     Devices {
         /// What to do with them (default: list).
@@ -151,7 +157,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
     daemon.reconcile().await;
     // Before the worker starts anything: a port that is taken must stop the daemon, not half-start it.
     // Held to the end of `serve`; dropping it closes the listeners and removes the socket.
-    let _front = crate::front::serve_front(daemon.clone()).await?;
+    let front = crate::front::serve_front(daemon.clone()).await?;
     tokio::spawn(crate::worker::run(std::sync::Arc::downgrade(&daemon)));
     tokio::spawn(crate::headless::seed_commands(std::sync::Arc::downgrade(
         &daemon,
@@ -162,7 +168,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
     tokio::spawn(crate::daemon::Daemon::retain_daily(
         std::sync::Arc::downgrade(&daemon),
     ));
-    crate::serve(daemon, cfg).await
+    crate::serve_with(daemon, cfg, Some(front.gate())).await
 }
 
 /// The SSH fallback transport: connects to the daemon's socket `sock`, copies `input` to it and
@@ -362,6 +368,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             "enroll",
             crate::front::admin::enroll(&Config::load(), &name, &spki),
         ),
+        Command::Pair { name } => finish("pair", crate::front::admin::pair(&Config::load(), &name)),
         Command::Devices {
             cmd: None | Some(DevicesCmd::List),
         } => finish("devices", crate::front::admin::devices(&Config::load())),

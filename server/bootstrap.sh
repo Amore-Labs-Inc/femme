@@ -90,6 +90,10 @@ if [ -n "${BOARD_URL:-}" ] && [ "${BOARD_PUBLIC:-0}" = 1 ]; then
   # encode: the browser terminal polls the screen several times a second; compressed it is ~5x smaller.
   # timeouts: the board takes one request at a time, so a client trickling a body may hold it 60 s, not forever.
   # max_size: a 20 MB upload, base64'd. Headers: HSTS; no Referer, the magic link's token is in its URL.
+  # /femme/*: femmed's own HTTP layer (the phone's WebSocket, crates/femmed/src/front/ws.rs), which
+  # listens beside the board on 8788 while FEMMED=1; with FEMMED=2 femmed is the board itself.
+  femme_ws=''
+  [ "$femmed" != 1 ] || femme_ws=$(printf '\thandle /femme/* {\n\t\treverse_proxy 127.0.0.1:8788\n\t}')
   sudo tee /etc/caddy/Caddyfile >/dev/null <<EOF
 {
 	servers {
@@ -110,6 +114,7 @@ ${BOARD_URL#https://} {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 	}
+$femme_ws
 	reverse_proxy 127.0.0.1:8787
 }
 EOF
@@ -167,6 +172,10 @@ for u in $units; do cp "server/systemd/$u.service" ~/.config/systemd/user/; done
 # labelled box-health) when disk, load or swap run high or a recording leaks its desktop (server/box-health.sh).
 cp server/systemd/femme-box-health.service server/systemd/femme-box-health.timer ~/.config/systemd/user/
 units="$units femme-box-health.timer"
+# 01:15: every herdr pane's Claude that still runs an older binary than the night's upgrade is restarted
+# in place (`/exit`, `claude --resume`) once it has sat idle (server/pane-restart.sh).
+cp server/systemd/femme-pane-restart.service server/systemd/femme-pane-restart.timer ~/.config/systemd/user/
+units="$units femme-pane-restart.timer"
 systemctl --user daemon-reload
 # femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
 [ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true

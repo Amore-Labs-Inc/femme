@@ -32,6 +32,8 @@ pub struct Config {
     pub mail_from: String,
     /// `NTFY_TOPIC`: empty means no phone pushes.
     pub ntfy_topic: String,
+    /// `NTFY_URL`: the ntfy server the pushes go to; empty means ntfy.sh.
+    pub ntfy_url: String,
     /// `PARALLEL` (default 2): issues worked at once.
     pub parallel: usize,
     /// `CAP` (default 60): percent of Claude's 5-hour window at which running agents are paused.
@@ -116,6 +118,7 @@ impl Config {
             resend_api_key: get("RESEND_API_KEY").into(),
             mail_from: get("MAIL_FROM").into(),
             ntfy_topic: get("NTFY_TOPIC").into(),
+            ntfy_url: get("NTFY_URL").into(),
             parallel: get("PARALLEL").parse().unwrap_or(2),
             cap: get("CAP").parse().unwrap_or(60),
             account_rotation: flag("ACCOUNT_ROTATION"),

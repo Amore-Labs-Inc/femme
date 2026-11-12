@@ -8,7 +8,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::{Error, Result};
 
 /// Every migration, oldest first. Index + 1 is the `user_version` it leaves behind.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 // Notes on the shape (plan §7):
 // - STRICT: SQLite refuses a TEXT in a BLOB column and the like, so an encoding slip is an error
@@ -177,6 +177,22 @@ const V6: &str = "ALTER TABLE sessions ADD COLUMN effort TEXT;";
 /// A Claude session's `/goal` (`Session::goal` as JSON): NULL when there is none.
 const V7: &str = "ALTER TABLE sessions ADD COLUMN goal TEXT;";
 
+/// Phones that asked for pushes (`femme_store::push`). Not replicated, no rev; a device's rows go
+/// with it.
+const V8: &str = r#"
+CREATE TABLE push (
+    device   BLOB NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    token    TEXT NOT NULL,
+    rules    TEXT NOT NULL,
+    created  INTEGER NOT NULL,
+    PRIMARY KEY (device, token)
+) STRICT, WITHOUT ROWID;
+"#;
+
+/// Where the agent compacts by itself (`Context::compact_at`): NULL until the agent said.
+const V9: &str = "ALTER TABLE sessions ADD COLUMN ctx_compact_at INTEGER;";
+
 /// Brings the database up to [`MIGRATIONS`]'s last version. Safe to run from two processes at
 /// once: each script runs inside `BEGIN IMMEDIATE` after re-reading the version.
 pub(crate) fn migrate(conn: &mut Connection) -> Result<()> {
@@ -204,9 +220,13 @@ fn user_version(conn: &Connection) -> Result<usize> {
     Ok(v.max(0) as usize)
 }
 
+/// The bits of an epoch: 53, what a JSON reader keeps whole (the phone decodes every number as a
+/// double), so a client on the JSON carrier echoes in `Hello` exactly the epoch `Welcome` said.
+pub const EPOCH_BITS: u64 = (1 << 53) - 1;
+
 /// A random non-zero epoch (see [`init_meta`]).
 pub(crate) fn new_epoch() -> u64 {
-    (femme_proto::Id::new().0 as u64).max(1)
+    (femme_proto::Id::new().0 as u64 & EPOCH_BITS).max(1)
 }
 
 /// Inserts the `meta` rows a fresh database starts with (existing rows are left alone) and
@@ -227,4 +247,17 @@ pub(crate) fn init_meta(conn: &Connection) -> Result<(u64, String)> {
     let instance_id = crate::meta_get(conn, "instance_id")?
         .ok_or_else(|| Error::Corrupt("meta.instance_id missing".into()))?;
     Ok((epoch, instance_id))
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    #[test]
+    fn an_epoch_is_a_json_safe_number() {
+        for _ in 0..64 {
+            let e = new_epoch();
+            assert!(e > 0 && e < (1 << 53), "{e}");
+        }
+    }
 }

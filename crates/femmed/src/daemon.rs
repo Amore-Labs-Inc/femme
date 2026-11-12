@@ -65,7 +65,9 @@ impl Daemon {
         }));
         let sessions = Sessions::new(&cfg);
         sessions.write_hook_files()?;
-        let notifier = Notifier::new(Some(cfg.ntfy_topic.clone()));
+        let notifier = Notifier::new(Some(cfg.ntfy_topic.clone()))
+            .with_base(cfg.ntfy_url.clone())
+            .with_store(store.clone());
         Ok(Arc::new_cyclic(|me| Daemon {
             cfg,
             store,
@@ -172,6 +174,23 @@ impl Daemon {
             Err(e) => tracing::warn!("changes after rev {before} not published: {e}"),
         }
         Ok(out)
+    }
+
+    /// [`Daemon::write_items`] publishes the items it stored, not the ones it deleted: the
+    /// tombstones session `sid`'s items got after rev `before` go to the hub here.
+    pub(crate) fn say_removed(&self, sid: Sid, before: u64) {
+        match self
+            .store
+            .changes_since(Scope::Session(sid), Some(before), usize::MAX)
+        {
+            Ok(ch) => self.hub.publish(
+                ch.rows
+                    .into_iter()
+                    .filter(|r| matches!(r, Row::Tombstone { .. }))
+                    .collect(),
+            ),
+            Err(e) => tracing::warn!(%sid, %e, "deleted items not published"),
+        }
     }
 }
 

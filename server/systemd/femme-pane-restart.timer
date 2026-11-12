@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart the herdr panes' Claude onto the night's upgrade, at 01:15
+
+[Timer]
+OnCalendar=*-*-* 01:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
