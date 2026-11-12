@@ -231,6 +231,7 @@ opens on click (`rows.rs:555-612`); counts into a turn's fold line (`turns.rs:33
 | `call_id` | string | always (= the item id) | `items.rs:40-41` |
 | `input` | JSON | `null` until the streamed input is complete or when the stream died; `{}` for no args | `items.rs:38-39`, `claude.rs:858`, `:922-928` |
 | `name` | string | always | `items.rs:36-37` |
+| `push` | string | only on a Claude `PushNotification` call femmed sent to the phone itself: `"sent"`, or the reason it did not arrive | `femmed/src/headless.rs` `stamp_pushes` |
 | `task` | `"foreground"` \| `"background"` | omitted unless the agent runs the call as a task (Claude Bash / subagent) | `items.rs:42-57` |
 
 Lifecycle (Claude): `ItemStarted` (preview = name, no body) → `ItemUpdated` with full body once the
@@ -479,6 +480,11 @@ A tool row reads: **`<name>`** (bold, red if failed) `<hint>` (muted, truncated)
   equal to this call yet (`turns.rs:241-253`).
 - `Artifact` result with a `link` (and not failed): name `artifact`, hint `· <title> ↗` (a link to
   `url`), result `updated · v<version>` only for an update with a version (`turns.rs:256-266`).
+- `PushNotification` call (Claude's push to the phone): name `🔔 push`, hint `· <first line of
+  input.message>`. femmed sends the message through ntfy itself (Claude Code only delivers through
+  Remote Control) and writes the outcome on the call's body as `push`: `"sent"` → result
+  `sent to your phone` (and that is the opened row's output too), any other string is the reason →
+  result `not sent: <reason>`; no `push` (femmed left the call alone) → Claude Code's own answer.
 - Opened row: input shown as the bare command if the input is exactly `{command}`, else pretty JSON
   (empty object → nothing) (`body.rs:64-77`); output shown; both capped at 400 lines / 24 000 bytes
   (`rows.rs:40-44`, `:93-111`).

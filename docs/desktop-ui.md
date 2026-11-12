@@ -41,6 +41,9 @@ Keep it current: when your module's public API changes, edit your section in the
   An `Artifact` call (Claude Code's page on claude.ai; FEMME's Claude chats run with
   `CLAUDE_CODE_ARTIFACT=1`) is one line, `artifact · <title> ↗`, whose title opens the page; a
   publish that changed an existing page adds `updated · v<N>`. Its folded body is the plain call.
+  A `PushNotification` call (Claude's push to your phone, which femmed sends through ntfy, see
+  [notifications.md](notifications.md)) is one line, `🔔 push · <message>`, with
+  `sent to your phone` or `not sent: <reason>`.
 - **Compaction hand-off**: a compaction shows as one row, `· Conversation compacted`. Claude Code
   restarts the model with a summary it writes itself ("This session is being continued from a
   previous conversation… Summary: …", after an `<artifact-content-authored-by-others/>` preamble
