@@ -10,7 +10,9 @@ use femme_desktop::accounts::model::{parse_accounts, AccountList, Level};
 use serde_json::{json, Value};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: sign-in-lines <json file>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: sign-in-lines <json file>");
     let text = std::fs::read_to_string(&path).expect("cannot read the file");
     let v: Value = serde_json::from_str(&text).expect("not JSON");
     // The fixture wraps the body as `accounts`; cswap's own list needs wrapping as `cswap`.
@@ -28,15 +30,29 @@ fn main() {
     let now = clock::now();
     let mut alert = false;
     for a in &rows {
-        let state = if a.active { "active" } else if a.disabled { "disabled" } else { "" };
+        let state = if a.active {
+            "active"
+        } else if a.disabled {
+            "disabled"
+        } else {
+            ""
+        };
         match a.sign_in(now) {
             None => println!("account {:<2} {:<9} (quiet)", a.number, state),
-            Some((line, Level::Warn)) => println!("account {:<2} {:<9} ● {line}  [amber]", a.number, state),
+            Some((line, Level::Warn)) => {
+                println!("account {:<2} {:<9} ● {line}  [amber]", a.number, state)
+            }
             Some((line, Level::Bad)) => {
                 alert = true;
-                println!("account {:<2} {:<9} ● {line}  [red]  [sign in again]", a.number, state);
+                println!(
+                    "account {:<2} {:<9} ● {line}  [red]  [sign in again]",
+                    a.number, state
+                );
             }
         }
     }
-    println!("menu ▸ Accounts: {}", if alert { "● red dot" } else { "no dot" });
+    println!(
+        "menu ▸ Accounts: {}",
+        if alert { "● red dot" } else { "no dot" }
+    );
 }

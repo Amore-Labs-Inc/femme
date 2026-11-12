@@ -28,12 +28,9 @@ pub struct Working {
 pub fn working(items: &Items, view: Option<&str>) -> Working {
     let all: Vec<_> = items.view(view).collect();
     // a peer's message starts a turn as a prompt does
-    let start = all.iter().rposition(|e| {
-        matches!(
-            e.item.kind,
-            ItemKind::UserMessage | ItemKind::PeerMessage
-        )
-    });
+    let start = all
+        .iter()
+        .rposition(|e| matches!(e.item.kind, ItemKind::UserMessage | ItemKind::PeerMessage));
     let turn = &all[start.map_or(0, |i| i + 1)..];
     let bytes = turn
         .iter()

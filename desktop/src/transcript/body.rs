@@ -47,7 +47,15 @@ pub struct ToolCall {
     /// Where the call's task runs, once the agent runs it as one (Claude: a Bash command or a
     /// subagent): `foreground` while the turn waits for it, `background` once it was moved.
     pub task: Option<String>,
+    /// Claude's `PushNotification` call that femmed sent to the phone itself (Claude Code only
+    /// delivers through Remote Control): [`PUSH_SENT`], or why it did not arrive.
+    pub push: Option<String>,
 }
+
+/// Claude Code's tool for telling the user's phone something.
+pub const PUSH_TOOL: &str = "PushNotification";
+/// [`ToolCall::push`] of a push that arrived.
+pub const PUSH_SENT: &str = "sent";
 
 impl ToolCall {
     /// The first of the input's usual keys that holds a string: the command, the path, the
@@ -166,6 +174,7 @@ fn tool_call(json: &str) -> ToolCall {
             name: v["name"].as_str().unwrap_or("tool").to_owned(),
             input: v.get("input").cloned(),
             task: v["task"].as_str().map(str::to_owned),
+            push: v["push"].as_str().map(str::to_owned),
         },
         // Cut inside the input (keys are sorted, so `input` comes before `name`): the name is gone
         // with the tail; the caller falls back to the item's preview.
@@ -173,6 +182,7 @@ fn tool_call(json: &str) -> ToolCall {
             name: string_field(json, "name").unwrap_or_default(),
             input: None,
             task: None,
+            push: None,
         },
     }
 }

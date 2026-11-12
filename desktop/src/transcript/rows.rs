@@ -1002,10 +1002,16 @@ impl Transcript {
             Parsed::ToolCall(t) => t.input_text(),
             _ => None,
         };
-        let output = result.and_then(|r| match self.items.parsed(r) {
-            Parsed::ToolResult(t) => Some(t.output.clone()),
-            _ => None,
-        });
+        // a push femmed sent to the phone: its word, not Claude Code's "Mobile push not sent"
+        let sent = matches!(self.items.parsed(e),
+            Parsed::ToolCall(t) if t.push.as_deref() == Some(super::body::PUSH_SENT));
+        let output = match (sent, result) {
+            (true, _) => line.result.clone(),
+            (false, r) => r.and_then(|r| match self.items.parsed(r) {
+                Parsed::ToolResult(t) => Some(t.output.clone()),
+                _ => None,
+            }),
+        };
         Some(ToolView {
             line,
             input,

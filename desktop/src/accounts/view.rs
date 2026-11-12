@@ -272,7 +272,9 @@ impl AccountsOverlay {
     fn account_card(&self, a: &Account, now: i64, offset: i64, cx: &mut Context<Self>) -> Div {
         let caps = self.caps_of(a.number);
         let five_cap = caps.five_hour.or(self.meta.cap);
-        let sign_in = a.sign_in(now).map(|(line, level)| self.sign_in_row(a.number, line, level, cx));
+        let sign_in = a
+            .sign_in(now)
+            .map(|(line, level)| self.sign_in_row(a.number, line, level, cx));
         let switch = (!a.active).then(|| {
             let n = a.number;
             div().ml_auto().child(
