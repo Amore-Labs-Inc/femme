@@ -1397,24 +1397,26 @@ impl FilesPanel {
                 )
             })
             .when(open.edit.is_some(), |bar| {
-                bar.when(modified, |bar| bar.child(st("●", neon())))
-                    .when(saving, |bar| {
-                        bar.child(spinner(self.spin()))
-                            .child(st("saving", bar_dim()))
-                    })
-                    .when(!saving, |bar| {
-                        bar.child(
-                            small(button("files-save", "save"))
-                                .on_click(cx.listener(|t, _, _, cx| t.save_edit(false, cx))),
-                        )
-                        .child(
-                            small(button(
-                                "files-done",
-                                if modified { "discard" } else { "done" },
-                            ))
-                            .on_click(cx.listener(|t, _, _, cx| t.stop_edit(cx))),
-                        )
-                    })
+                bar.when(modified, |bar| {
+                    bar.child(div().flex_none().text_color(neon()).child("●"))
+                })
+                .when(saving, |bar| {
+                    bar.child(spinner(self.spin()))
+                        .child(st("saving", bar_dim()))
+                })
+                .when(!saving, |bar| {
+                    bar.child(
+                        small(button("files-save", "save"))
+                            .on_click(cx.listener(|t, _, _, cx| t.save_edit(false, cx))),
+                    )
+                    .child(
+                        small(button(
+                            "files-done",
+                            if modified { "discard" } else { "done" },
+                        ))
+                        .on_click(cx.listener(|t, _, _, cx| t.stop_edit(cx))),
+                    )
+                })
             });
         // what a save ran into, under the bar
         let trouble = open.edit.as_ref().and_then(|e| {
@@ -1443,7 +1445,12 @@ impl FilesPanel {
         // The scrollbar is a sibling of what scrolls: inside it, it would scroll away.
         let body = match &open.edit {
             // the editor scrolls by itself
-            Some(e) => div().flex_1().min_h_0().child(e.element()),
+            Some(e) => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(e.element()),
             None => div()
                 .flex_1()
                 .min_h_0()

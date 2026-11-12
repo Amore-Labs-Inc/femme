@@ -92,7 +92,10 @@ impl Editing {
 
     /// The editor, to be placed in the viewer page's body (it scrolls by itself).
     pub fn element(&self) -> impl IntoElement {
-        Editor::new(&self.state).appearance(false).bordered(false)
+        Editor::new(&self.state)
+            .appearance(false)
+            .bordered(false)
+            .h(gpui::relative(1.))
     }
 
     /// Writes the editor's text over the file, in pieces of `MAX_FS_WRITE`. With `overwrite` the
