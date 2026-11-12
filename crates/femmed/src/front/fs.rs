@@ -7,15 +7,21 @@
 //! and an absolute path outside home is refused before the disk is asked whether it exists, so
 //! the answer is no oracle for the rest of the box. All the I/O runs on the blocking pool.
 //!
+//! `FsWrite` saves a file under the same rules, checked on the folder it goes in (the file itself
+//! may not exist yet), in pieces: see [`write_piece`].
+//!
 //! `Folders` looks the same way at home alone, before any session runs there: the desktop picks
 //! a project's folder with it, and may have it made.
 
-use std::io::{ErrorKind, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use femme_proto::codec::MAX_FRAME;
-use femme_proto::rpc::{Err as WireErr, ErrCode, FsEntry, Resp};
+use femme_proto::rpc::{Err as WireErr, ErrCode, FsEntry, Resp, MAX_FS_WRITE};
 use femme_proto::Sid;
+use sha2::{Digest, Sha256};
 
 use super::req::err;
 use crate::daemon::Daemon;
@@ -28,6 +34,8 @@ pub(crate) const READ_MAX: u64 = (MAX_FRAME - 4096) as u64;
 const LIST_MAX: usize = 20_000;
 /// The longest path the desktop may ask for.
 const PATH_MAX: usize = 4096;
+/// How far a taken name is numbered (` (2)`, ` (3)`, ...) before `FsWrite` gives up on it.
+const COPIES_MAX: u32 = 1000;
 
 fn bad(msg: impl Into<String>) -> WireErr {
     err(ErrCode::Bad, msg)
@@ -108,6 +116,28 @@ impl Scope {
         }
     }
 
+    /// The folder a file `path` names would be in, resolved and in scope, and the file's name.
+    /// The folder must exist: nothing is made on the way.
+    fn parent<'a>(&self, path: &'a str) -> Result<(PathBuf, &'a str), WireErr> {
+        let joined = self.join(path)?;
+        let name = path.rsplit('/').next().unwrap_or_default();
+        if name.is_empty() || name == "." {
+            return Err(bad("not a file name"));
+        }
+        let dir = joined.parent().ok_or_else(|| bad("not a file name"))?;
+        let real = std::fs::canonicalize(dir).map_err(|e| match e.kind() {
+            ErrorKind::NotFound => bad("no such folder"),
+            _ => io_err(e),
+        })?;
+        if !self.holds(&real) {
+            return Err(outside());
+        }
+        if !real.is_dir() {
+            return Err(bad("not a folder"));
+        }
+        Ok((real, name))
+    }
+
     /// Makes the folder `path` names, with any folders missing on the way. The deepest part that
     /// is already there is resolved first and must lie in scope, so a symlink on the way cannot
     /// have the folders made somewhere else.
@@ -172,6 +202,22 @@ pub(crate) async fn read(d: &Daemon, sid: Sid, path: String) -> Result<Resp, Wir
     blocking(move || read_file(&scope.resolve(&path)?))
         .await
         .map(Resp::FsData)
+}
+
+/// One `FsWrite`: what the request carries besides its session.
+pub(crate) struct Piece {
+    pub path: String,
+    pub offset: u64,
+    pub total: u64,
+    pub data: Vec<u8>,
+    pub replace: bool,
+    pub was: Option<[u8; 32]>,
+}
+
+/// `FsWrite`: one piece of a file, the last one putting it in place.
+pub(crate) async fn write(d: &Daemon, sid: Sid, piece: Piece) -> Result<Resp, WireErr> {
+    let scope = scope(d, sid)?;
+    blocking(move || write_piece(&scope, piece)).await
 }
 
 /// `Folders`: the folders in a folder of home, for picking a project's folder. `~`, `~/` and a
@@ -263,9 +309,180 @@ fn read_file(file: &Path) -> Result<Vec<u8>, WireErr> {
     Ok(bytes)
 }
 
+fn conflict(msg: &str) -> WireErr {
+    err(ErrCode::Conflict, msg)
+}
+
+/// Writes one piece of a file. Every piece of a transfer carries the same `path`, and each finds
+/// the same file again:
+///
+/// - Without `replace`, the file is the first of `name`, `name (2)`, `name (3)`, ... (the number
+///   goes before the last dot: `a (2).txt`) that does not exist yet, so a file already there is
+///   never touched. A file that has not landed does not exist yet, so later pieces find the name
+///   the first one chose. The answer's `path` is the request's with that name in it.
+/// - With `replace` it is `name` itself (through a symlink, if it is one, to a file in scope), and
+///   `was`, when given, must be the sha256 of what is there: checked on the first piece and again
+///   just before the last one renames over it, so an edit made meanwhile is not lost (`Conflict`).
+///
+/// The bytes go to `<file>.part` beside it: the first piece (`offset` 0) starts it afresh (a
+/// stale one from a transfer that never ended is replaced), a later piece must find it exactly
+/// `offset` long, else `Conflict` "piece out of order" (pieces go one after another; a daemon
+/// restarted halfway loses nothing but the transfer). The piece that reaches `total` puts it in
+/// place: a rename over the old file with `replace`, which keeps the old file's mode; a hard link
+/// otherwise, which fails rather than overwrite a file that appeared meanwhile. A new file is
+/// `0o600`, like the uploads: only the user reads it until they say otherwise. Two transfers to
+/// one name at once share one `.part`, and one of them fails "out of order".
+fn write_piece(scope: &Scope, p: Piece) -> Result<Resp, WireErr> {
+    if p.data.len() > MAX_FS_WRITE {
+        return Err(bad(format!("a piece is at most {MAX_FS_WRITE} bytes")));
+    }
+    let end = p
+        .offset
+        .checked_add(p.data.len() as u64)
+        .filter(|&end| end <= p.total)
+        .ok_or_else(|| bad("the piece ends past the file's total"))?;
+    let (dir, name) = scope.parent(&p.path)?;
+    let (dest, shown) = if p.replace {
+        (replaced(scope, dir.join(name))?, p.path.clone())
+    } else {
+        let free = free_name(&dir, name)?;
+        let shown = match p.path.rfind('/') {
+            Some(slash) => format!("{}{free}", &p.path[..=slash]),
+            None => free.clone(),
+        };
+        (dir.join(free), shown)
+    };
+    let part = {
+        let mut s = dest.clone().into_os_string();
+        s.push(".part");
+        PathBuf::from(s)
+    };
+
+    let mut file = if p.offset == 0 {
+        if p.replace {
+            check_was(&dest, p.was)?;
+        }
+        match std::fs::remove_file(&part) {
+            Err(e) if e.kind() != ErrorKind::NotFound => return Err(io_err(e)),
+            _ => {}
+        }
+        // `create_new` follows no symlink: the bytes land in a file made here, nowhere else.
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&part)
+            .map_err(io_err)?
+    } else {
+        let out_of_order = || conflict("piece out of order");
+        let meta = std::fs::symlink_metadata(&part).map_err(|_| out_of_order())?;
+        if !meta.is_file() || meta.len() != p.offset {
+            return Err(out_of_order());
+        }
+        OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .map_err(io_err)?
+    };
+    file.write_all(&p.data).map_err(io_err)?;
+    let done = end == p.total;
+    if done {
+        file.sync_all().map_err(io_err)?;
+        drop(file);
+        land(&part, &dest, p.replace, p.was)?;
+    }
+    Ok(Resp::FsWritten {
+        path: shown,
+        written: end,
+        done,
+    })
+}
+
+/// The file `FsWrite` with `replace` writes for `dest`: `dest`, or the file a symlink there
+/// points to, which must lie in scope too.
+fn replaced(scope: &Scope, dest: PathBuf) -> Result<PathBuf, WireErr> {
+    let real = match std::fs::symlink_metadata(&dest) {
+        Ok(m) if m.file_type().is_symlink() => {
+            let real = std::fs::canonicalize(&dest).map_err(io_err)?;
+            if !scope.holds(&real) {
+                return Err(outside());
+            }
+            real
+        }
+        _ => dest,
+    };
+    if real.is_dir() {
+        return Err(bad("a folder, not a file"));
+    }
+    Ok(real)
+}
+
+/// The first of `name`, `name (2)`, ... that nothing in `dir` is called (a dangling symlink too
+/// takes its name).
+fn free_name(dir: &Path, name: &str) -> Result<String, WireErr> {
+    (1..=COPIES_MAX)
+        .map(|n| numbered(name, n))
+        .find(|c| {
+            matches!(std::fs::symlink_metadata(dir.join(c)),
+                Err(e) if e.kind() == ErrorKind::NotFound)
+        })
+        .ok_or_else(|| bad("too many files by that name"))
+}
+
+/// `name` as the `n`th of its name: `a.txt`, `a (2).txt`, ...; a name whose only dot leads it
+/// (`.env`) has no extension.
+fn numbered(name: &str, n: u32) -> String {
+    match name.rfind('.') {
+        _ if n == 1 => name.to_owned(),
+        Some(dot) if dot > 0 => format!("{} ({n}){}", &name[..dot], &name[dot..]),
+        _ => format!("{name} ({n})"),
+    }
+}
+
+/// `Conflict` unless the file at `dest` hashes to `was` (no `was`, no check).
+fn check_was(dest: &Path, was: Option<[u8; 32]>) -> Result<(), WireErr> {
+    let Some(was) = was else { return Ok(()) };
+    let changed = || conflict("changed on disk");
+    let mut file = match File::open(dest) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return Err(changed()),
+        r => r.map_err(io_err)?,
+    };
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).map_err(io_err)?;
+    if hash.finalize().as_slice() == was {
+        Ok(())
+    } else {
+        Err(changed())
+    }
+}
+
+/// Puts the whole `.part` in place at `dest`.
+fn land(part: &Path, dest: &Path, replace: bool, was: Option<[u8; 32]>) -> Result<(), WireErr> {
+    if replace {
+        if let Err(e) = check_was(dest, was) {
+            let _ = std::fs::remove_file(part);
+            return Err(e);
+        }
+        if let Ok(old) = std::fs::metadata(dest) {
+            std::fs::set_permissions(part, old.permissions()).map_err(io_err)?;
+        }
+        return std::fs::rename(part, dest).map_err(io_err);
+    }
+    match std::fs::hard_link(part, dest) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(part);
+            return Err(conflict("a file by that name appeared meanwhile"));
+        }
+        // A file system without hard links: a rename, the name having been free a moment ago.
+        Err(_) => return std::fs::rename(part, dest).map_err(io_err),
+    }
+    std::fs::remove_file(part).map_err(io_err)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     use super::*;
 
@@ -439,5 +656,218 @@ mod tests {
             read_file(&dir.path().join("big")).unwrap_err().code,
             ErrCode::Bad
         );
+    }
+
+    fn piece(path: &str, offset: u64, total: u64, data: &[u8]) -> Piece {
+        Piece {
+            path: path.into(),
+            offset,
+            total,
+            data: data.to_vec(),
+            replace: false,
+            was: None,
+        }
+    }
+
+    fn replacing(path: &str, data: &[u8], was: Option<&[u8]>) -> Piece {
+        Piece {
+            replace: true,
+            was: was.map(|b| Sha256::digest(b).into()),
+            ..piece(path, 0, data.len() as u64, data)
+        }
+    }
+
+    /// The path, bytes so far and doneness of a landed piece.
+    fn landed(s: &Scope, p: Piece) -> (String, u64, bool) {
+        match write_piece(s, p).unwrap() {
+            Resp::FsWritten {
+                path,
+                written,
+                done,
+            } => (path, written, done),
+            other => panic!("not FsWritten: {other:?}"),
+        }
+    }
+
+    fn code(s: &Scope, p: Piece) -> ErrCode {
+        write_piece(s, p).unwrap_err().code
+    }
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn pieces_in_order_make_the_file_and_only_the_last_puts_it_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("proj/sub")).unwrap();
+        let s = scope_in(home, &home.join("proj"));
+        let f = home.join("proj/f.bin");
+
+        let first = landed(&s, piece("f.bin", 0, 7, b"abc"));
+        assert_eq!(first, ("f.bin".into(), 3, false));
+        assert!(!f.exists());
+        assert_eq!(std::fs::read(home.join("proj/f.bin.part")).unwrap(), b"abc");
+        assert_eq!(
+            landed(&s, piece("f.bin", 3, 7, b"def")),
+            ("f.bin".into(), 6, false)
+        );
+        assert_eq!(
+            landed(&s, piece("f.bin", 6, 7, b"g")),
+            ("f.bin".into(), 7, true)
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"abcdefg");
+        assert!(!home.join("proj/f.bin.part").exists());
+        assert_eq!(mode(&f), 0o600);
+
+        assert_eq!(
+            landed(&s, piece("sub/one.txt", 0, 2, b"hi")),
+            ("sub/one.txt".into(), 2, true)
+        );
+        assert_eq!(std::fs::read(home.join("proj/sub/one.txt")).unwrap(), b"hi");
+        let absolute = home.join("proj/sub/abs.txt").display().to_string();
+        assert!(landed(&s, piece(&absolute, 0, 1, b"x")).2);
+
+        // An empty file is one empty piece.
+        assert_eq!(
+            landed(&s, piece("empty", 0, 0, b"")),
+            ("empty".into(), 0, true)
+        );
+        assert_eq!(std::fs::metadata(home.join("proj/empty")).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_taken_name_gets_a_number_and_the_file_there_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("d")).unwrap();
+        for f in ["a.txt", ".env", "d/b"] {
+            std::fs::write(home.join(f), "old").unwrap();
+        }
+        let s = scope_in(home, home);
+
+        // Every piece names the original path; the later ones find the numbered file again.
+        assert_eq!(
+            landed(&s, piece("a.txt", 0, 4, b"ne")),
+            ("a (2).txt".into(), 2, false)
+        );
+        assert_eq!(
+            landed(&s, piece("a.txt", 2, 4, b"w!")),
+            ("a (2).txt".into(), 4, true)
+        );
+        assert_eq!(std::fs::read(home.join("a (2).txt")).unwrap(), b"new!");
+        assert_eq!(std::fs::read(home.join("a.txt")).unwrap(), b"old");
+        assert_eq!(landed(&s, piece("a.txt", 0, 1, b"3")).0, "a (3).txt");
+        assert_eq!(landed(&s, piece(".env", 0, 1, b"e")).0, ".env (2)");
+        assert_eq!(landed(&s, piece("d/b", 0, 1, b"b")).0, "d/b (2)");
+        assert_eq!(numbered("a.tar.gz", 2), "a.tar (2).gz");
+        assert_eq!(numbered("a.tar.gz", 1), "a.tar.gz");
+    }
+
+    #[test]
+    fn a_replace_lands_only_over_the_file_it_was_read_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let f = home.join("run.sh");
+        std::fs::write(&f, "old").unwrap();
+        std::fs::set_permissions(&f, PermissionsExt::from_mode(0o755)).unwrap();
+        let s = scope_in(home, home);
+
+        assert_eq!(
+            landed(&s, replacing("run.sh", b"new", Some(b"old"))),
+            ("run.sh".into(), 3, true)
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"new");
+        assert_eq!(mode(&f), 0o755, "a replaced file keeps its mode");
+
+        // Read as "old", but it says "new" now.
+        assert_eq!(
+            code(&s, replacing("run.sh", b"mine", Some(b"old"))),
+            ErrCode::Conflict
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"new");
+        assert_eq!(
+            code(&s, replacing("gone.txt", b"x", Some(b"old"))),
+            ErrCode::Conflict
+        );
+        assert!(!home.join("gone.txt").exists());
+        // No `was`, no check: the file is made or overwritten.
+        assert!(landed(&s, replacing("gone.txt", b"x", None)).2);
+        assert!(landed(&s, replacing("run.sh", b"forced", None)).2);
+        assert_eq!(std::fs::read(&f).unwrap(), b"forced");
+
+        // Edited between the first piece and the last: the edit stays.
+        let first = Piece {
+            total: 4,
+            ..replacing("run.sh", b"ab", Some(b"forced"))
+        };
+        assert!(!landed(&s, first).2);
+        std::fs::write(&f, "edited").unwrap();
+        let last = Piece {
+            offset: 2,
+            total: 4,
+            ..replacing("run.sh", b"cd", Some(b"forced"))
+        };
+        assert_eq!(code(&s, last), ErrCode::Conflict);
+        assert_eq!(std::fs::read(&f).unwrap(), b"edited");
+        assert!(!home.join("run.sh.part").exists());
+
+        std::fs::create_dir(home.join("folder")).unwrap();
+        assert_eq!(code(&s, replacing("folder", b"x", None)), ErrCode::Bad);
+    }
+
+    #[test]
+    fn a_piece_out_of_order_or_too_big_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let s = scope_in(home, home);
+        assert_eq!(code(&s, piece("f", 3, 6, b"def")), ErrCode::Conflict);
+        assert!(!landed(&s, piece("f", 0, 6, b"abc")).2);
+        assert_eq!(code(&s, piece("f", 4, 6, b"ef")), ErrCode::Conflict);
+        assert_eq!(code(&s, piece("f", 2, 6, b"cdef")), ErrCode::Conflict);
+        assert_eq!(code(&s, piece("f", 3, 6, b"defg")), ErrCode::Bad);
+        assert_eq!(code(&s, piece("f", u64::MAX, 6, b"d")), ErrCode::Bad);
+        let big = vec![0; MAX_FS_WRITE + 1];
+        assert_eq!(
+            code(&s, piece("g", 0, big.len() as u64, &big)),
+            ErrCode::Bad
+        );
+        // The transfer that was going on is still whole.
+        assert!(landed(&s, piece("f", 3, 6, b"def")).2);
+        assert_eq!(std::fs::read(home.join("f")).unwrap(), b"abcdef");
+    }
+
+    #[test]
+    fn a_write_goes_only_into_a_folder_in_scope_that_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, outside) = (dir.path().join("home"), dir.path().join("outside"));
+        std::fs::create_dir_all(home.join("proj")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), "s").unwrap();
+        std::fs::write(home.join("proj/file"), "f").unwrap();
+        symlink(&outside, home.join("proj/out")).unwrap();
+        symlink(outside.join("secret"), home.join("proj/leak")).unwrap();
+        let s = scope_in(&home, &home.join("proj"));
+        let outside_abs = outside.join("new").display().to_string();
+        for path in [
+            "../x",
+            "sub/../x",
+            "missing/x",
+            "file/x",
+            "out/x",
+            "",
+            ".",
+            "sub/",
+            "a/.",
+            outside_abs.as_str(),
+        ] {
+            assert_eq!(code(&s, piece(path, 0, 1, b"x")), ErrCode::Bad, "{path}");
+        }
+        assert_eq!(code(&s, replacing("leak", b"x", None)), ErrCode::Bad);
+        assert_eq!(std::fs::read(outside.join("secret")).unwrap(), b"s");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+        // Without `replace` a link is a taken name like any other: the new file goes beside it.
+        assert_eq!(landed(&s, piece("leak", 0, 1, b"x")).0, "leak (2)");
     }
 }

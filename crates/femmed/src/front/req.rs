@@ -181,7 +181,26 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::IssueDelete { id } => done(d.issue_delete(id).await),
         Req::FsList { sid, path } => super::fs::list(d, sid, path).await,
         Req::FsRead { sid, path } => super::fs::read(d, sid, path).await,
-        Req::FsWrite { .. } | Req::FsZip { .. } => Err(unsupported("not yet")),
+        Req::FsWrite {
+            sid,
+            path,
+            offset,
+            total,
+            data,
+            replace,
+            was,
+        } => {
+            let piece = super::fs::Piece {
+                path,
+                offset,
+                total,
+                data,
+                replace,
+                was,
+            };
+            super::fs::write(d, sid, piece).await
+        }
+        Req::FsZip { .. } => Err(unsupported("not yet")),
         Req::Folders { path, make } => super::fs::folders(d, path, make).await,
         Req::Upload { .. } => Err(unsupported("uploads arrive with M5")),
         Req::BlobPut { data, .. } => blob_put(d, data).await,
