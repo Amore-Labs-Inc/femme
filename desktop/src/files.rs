@@ -46,7 +46,9 @@ pub mod cache;
 pub mod plan;
 pub mod size;
 pub mod source;
+pub mod transfer;
 pub mod tree;
+pub mod zip;
 
 use cache::FileCache;
 use plan::{plan, Plan};
@@ -395,7 +397,7 @@ impl FilesPanel {
                 self.open_file(row.path.clone(), len, false, cx);
             }
             Kind::Failed => self.tree.retry(&row.path),
-            Kind::Loading | Kind::Empty => {}
+            Kind::Loading | Kind::Empty | Kind::Transfer { .. } => {}
         }
         self.fetch_wanted(cx);
         cx.notify();
@@ -415,7 +417,7 @@ impl FilesPanel {
                 self.tree.enter(&row.path);
             }
             Kind::File { len } => self.open_file(row.path, len, false, cx),
-            Kind::Loading | Kind::Empty | Kind::Failed => {}
+            Kind::Loading | Kind::Empty | Kind::Failed | Kind::Transfer { .. } => {}
         }
     }
 
@@ -707,6 +709,10 @@ impl FilesPanel {
             Kind::Empty => base
                 .child(marker(""))
                 .child(note("(empty)".to_owned(), dim)),
+            Kind::Transfer { .. } => base
+                .opacity(0.5)
+                .child(marker(""))
+                .child(name(row.name().to_owned(), color)),
             Kind::Failed => base.child(marker("!")).child(note(
                 "could not list: click to try again".to_owned(),
                 if on_neon { on_accent_strong() } else { bad() },

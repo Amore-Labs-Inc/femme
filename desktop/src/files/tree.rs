@@ -90,6 +90,28 @@ pub enum Kind {
     Empty,
     /// Below a directory whose listing failed: a click asks again.
     Failed,
+    /// A file on its way up (see [`Pending`]): the panel knows where it stands by `id`.
+    Transfer {
+        /// The upload's id.
+        id: u64,
+    },
+}
+
+/// A file that is not listed yet but shown among its directory's files: an upload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    /// Where it goes, relative to the session's directory.
+    pub path: String,
+    /// Which upload it is.
+    pub id: u64,
+    /// It gives way to a listed file of the same name (a finished upload, once the listing has it).
+    pub yields: bool,
+}
+
+/// The order of the tree within one directory: directories first, then by name without regard
+/// to case (then by name).
+pub fn sort_key(dir: bool, name: &str) -> (bool, String, String) {
+    (!dir, name.to_lowercase(), name.to_owned())
 }
 
 /// One line of the flattened tree.
@@ -110,18 +132,18 @@ impl Row {
     pub fn name(&self) -> &str {
         match self.kind {
             Kind::Up => "..",
-            Kind::Dir { .. } | Kind::File { .. } => base(&self.path),
+            Kind::Dir { .. } | Kind::File { .. } | Kind::Transfer { .. } => base(&self.path),
             Kind::Loading | Kind::Empty | Kind::Failed => "",
         }
     }
 
     /// What the cursor remembers the line by: its path, `..` for the up line, nothing for the
-    /// placeholders (the cursor skips them).
+    /// placeholders and the uploads (the cursor skips them).
     pub fn key(&self) -> Option<&str> {
         match self.kind {
             Kind::Up => Some(".."),
             Kind::Dir { .. } | Kind::File { .. } => Some(&self.path),
-            Kind::Loading | Kind::Empty | Kind::Failed => None,
+            Kind::Loading | Kind::Empty | Kind::Failed | Kind::Transfer { .. } => None,
         }
     }
 
@@ -156,6 +178,8 @@ pub struct Tree {
     selected: Option<String>,
     /// The cursor is to land on the root's first entry as soon as it is listed ([`Tree::enter`]).
     pick: bool,
+    /// Files on their way up, shown among the listed ones.
+    pending: Vec<Pending>,
     rows: Vec<Row>,
 }
 
@@ -174,6 +198,7 @@ impl Tree {
             open: HashSet::new(),
             selected: None,
             pick: false,
+            pending: Vec::new(),
             rows: Vec::new(),
         };
         t.dirs.insert(String::new(), Dir::default());
@@ -230,7 +255,7 @@ impl Tree {
         match answer {
             Ok(mut entries) => {
                 entries.retain(|e| valid_name(&e.name));
-                entries.sort_by_cached_key(|e| (!e.dir, e.name.to_lowercase(), e.name.clone()));
+                entries.sort_by_cached_key(|e| sort_key(e.dir, &e.name));
                 entries.dedup_by(|a, b| a.name == b.name && a.dir == b.dir);
                 d.entries = Some(entries);
                 d.error = None;
@@ -256,6 +281,15 @@ impl Tree {
             }
         }
         any
+    }
+
+    /// The uploads to show: each at its sorted place among the files of its directory (when that
+    /// one is listed and on show), in no particular order here.
+    pub fn set_pending(&mut self, pending: Vec<Pending>) {
+        if self.pending != pending {
+            self.pending = pending;
+            self.rebuild();
+        }
     }
 
     /// Asks again for `dir` after a failure: the next [`Tree::wanted`] returns it.
@@ -531,10 +565,34 @@ impl Tree {
             }));
             return;
         };
-        if entries.is_empty() && d.error.is_none() {
+        // The uploads into `dir`, each before the first entry that sorts after it.
+        let mut ups: Vec<(usize, (bool, String, String), &Pending)> = self
+            .pending
+            .iter()
+            .filter(|p| parent(&p.path) == dir && !p.path.is_empty())
+            .filter(|p| !(p.yields && entries.iter().any(|e| !e.dir && e.name == base(&p.path))))
+            .map(|p| {
+                let key = sort_key(false, base(&p.path));
+                let at = entries.partition_point(|e| sort_key(e.dir, &e.name) <= key);
+                (at, key, p)
+            })
+            .collect();
+        ups.sort_by(|a, b| (a.0, &a.1, a.2.id).cmp(&(b.0, &b.1, b.2.id)));
+        if entries.is_empty() && ups.is_empty() && d.error.is_none() {
             out.push(placeholder(Kind::Empty));
         }
-        for e in entries {
+        let mut ups = ups.into_iter().peekable();
+        let mut push_ups = |before: usize, out: &mut Vec<Row>| {
+            while let Some((_, _, p)) = ups.next_if(|u| u.0 <= before) {
+                out.push(Row {
+                    path: p.path.clone(),
+                    depth,
+                    kind: Kind::Transfer { id: p.id },
+                });
+            }
+        };
+        for (i, e) in entries.iter().enumerate() {
+            push_ups(i, out);
             let Some(path) = join(dir, &e.name) else {
                 continue;
             };
@@ -556,6 +614,7 @@ impl Tree {
                 });
             }
         }
+        push_ups(usize::MAX, out);
         if d.error.is_some() {
             out.push(placeholder(Kind::Failed));
         }

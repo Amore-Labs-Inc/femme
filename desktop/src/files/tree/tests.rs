@@ -31,6 +31,7 @@ fn shape(t: &Tree) -> Vec<String> {
                 Kind::Loading => "loading".to_owned(),
                 Kind::Empty => "empty".to_owned(),
                 Kind::Failed => "failed".to_owned(),
+                Kind::Transfer { id } => format!("up{id}"),
             };
             format!("{}{} {}", "  ".repeat(r.depth), tag, r.path)
         })
@@ -489,4 +490,64 @@ fn toggling_flips_the_directory() {
     assert!(t.toggle(".git") && !t.is_open(".git"));
     assert!(!t.toggle(""), "the root has no line to close");
     assert!(!t.toggle("../x"));
+}
+
+fn up(path: &str, id: u64, yields: bool) -> Pending {
+    Pending {
+        path: path.into(),
+        id,
+        yields,
+    }
+}
+
+#[test]
+fn an_upload_shows_at_its_sorted_place_among_the_files() {
+    let mut t = sample();
+    t.set_pending(vec![
+        up("b.txt", 1, false),
+        up("zz", 2, false),
+        up("src/a.rs", 3, false),
+        up("closed/x", 4, false),
+    ]);
+    assert_eq!(
+        shape(&t),
+        [
+            "> .git",
+            "v src",
+            "  > src/ui",
+            "  up3 src/a.rs",
+            "  f99 src/main.rs",
+            "f12 .env",
+            "up1 b.txt",
+            "f700 Cargo.toml",
+            "f2048 README.md",
+            "up2 zz",
+        ],
+        "{:#?}",
+        shape(&t)
+    );
+    // The cursor skips them.
+    t.select(Some(".env"));
+    t.step(1);
+    assert_eq!(t.selected(), Some("Cargo.toml"));
+}
+
+#[test]
+fn a_finished_upload_gives_way_to_the_listed_file_and_a_running_one_does_not() {
+    let mut t = sample();
+    t.set_pending(vec![up("Cargo.toml", 1, true), up("README.md", 2, false)]);
+    let ups: Vec<_> = shape(&t)
+        .into_iter()
+        .filter(|l| l.starts_with("up"))
+        .collect();
+    assert_eq!(ups, ["up2 README.md"]);
+}
+
+#[test]
+fn an_upload_into_an_empty_directory_takes_the_place_of_the_empty_line() {
+    let mut t = Tree::new();
+    t.wanted();
+    t.loaded("", Ok(vec![]));
+    t.set_pending(vec![up("n.txt", 7, false)]);
+    assert_eq!(shape(&t), ["up7 n.txt"]);
 }

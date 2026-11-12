@@ -7,13 +7,45 @@ use femme_proto::rpc::{FsEntry, Req, Resp};
 use femme_proto::Sid;
 use gpui::{AsyncApp, Entity};
 
-use super::tree::clean;
+use super::transfer::free_name;
+use super::tree::{base, clean, parent};
+use super::zip::zip_dir;
 use crate::net::Net;
 
 /// The most the daemon reads for one `FsRead`: a frame holds under 16 MiB and the answer's
 /// envelope takes a few bytes of that, so the daemon refuses (`Bad`) anything over a frame less 4
 /// KiB. The panel does not offer to open a bigger file.
 pub const MAX_READ: u64 = (femme_proto::codec::MAX_FRAME - 4096) as u64;
+
+/// One `FsWrite`: `data` at `offset` of the file `path`, `total` bytes in all (see `Req::FsWrite`).
+#[derive(Clone, Debug, Default)]
+pub struct Piece {
+    /// The file, relative to the session's directory. For the pieces after the first, the path
+    /// the first one's answer gave (the name may have got a ` (2)`).
+    pub path: String,
+    /// Where in the file `data` goes: the bytes sent before it.
+    pub offset: u64,
+    /// The size of the whole file.
+    pub total: u64,
+    /// At most `MAX_FS_WRITE` bytes.
+    pub data: Vec<u8>,
+    /// Write over a file that is there instead of taking a free name.
+    pub replace: bool,
+    /// With `replace`: the sha256 of the file as it was read; the write is refused when it changed.
+    pub was: Option<[u8; 32]>,
+}
+
+/// The answer to a [`Piece`]: the path written (with the suffix a taken name got), the bytes of
+/// it so far, and whether the file is whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Written {
+    /// The file's path, relative to the session's directory.
+    pub path: String,
+    /// The bytes of it on the box so far.
+    pub written: u64,
+    /// It is whole and in place.
+    pub done: bool,
+}
 
 /// Where requests go.
 #[derive(Clone)]
@@ -105,6 +137,77 @@ impl Source {
             }
         }
     }
+
+    /// Sends one piece of a file (`Req::FsWrite`).
+    pub async fn write(
+        &self,
+        sid: Option<Sid>,
+        piece: Piece,
+        cx: &mut AsyncApp,
+    ) -> Result<Written, String> {
+        match self {
+            Source::Offline => Err(offline()),
+            Source::Daemon(net) => {
+                let sid = sid.ok_or_else(no_session)?;
+                let req = Req::FsWrite {
+                    sid,
+                    path: piece.path,
+                    offset: piece.offset,
+                    total: piece.total,
+                    data: piece.data,
+                    replace: piece.replace,
+                    was: piece.was,
+                };
+                match ask(net, req, cx).await? {
+                    Resp::FsWritten {
+                        path,
+                        written,
+                        done,
+                    } => Ok(Written {
+                        path,
+                        written,
+                        done,
+                    }),
+                    _ => Err(unexpected()),
+                }
+            }
+            Source::Fixture(root) => {
+                let root = root.clone();
+                cx.background_executor()
+                    .spawn(async move { fixture_write(&root, piece) })
+                    .await
+            }
+        }
+    }
+
+    /// The folder `path` as a zip archive (`Req::FsZip`).
+    pub async fn zip(
+        &self,
+        sid: Option<Sid>,
+        path: &str,
+        cx: &mut AsyncApp,
+    ) -> Result<Vec<u8>, String> {
+        match self {
+            Source::Offline => Err(offline()),
+            Source::Daemon(net) => {
+                let sid = sid.ok_or_else(no_session)?;
+                let req = Req::FsZip {
+                    sid,
+                    path: path.to_owned(),
+                };
+                match ask(net, req, cx).await? {
+                    Resp::FsData(data) => Ok(data),
+                    _ => Err(unexpected()),
+                }
+            }
+            Source::Fixture(root) => {
+                let (root, path) = (root.clone(), path.to_owned());
+                cx.background_executor()
+                    .spawn(async move { fixture_zip(&root, &path) })
+                    .await
+            }
+        }
+    }
 }
 
 fn offline() -> String {
@@ -123,7 +226,7 @@ fn unexpected() -> String {
 /// keeps the reason of a failure in a single place for the nav bar, and the answer to any other
 /// request that lands before this one is read (the sessions, the board and the transcripts all
 /// ask) wipes it, so the panel would say "the request failed" for a refusal the daemon explained.
-async fn ask(net: &Entity<Net>, req: Req, cx: &mut AsyncApp) -> Result<Resp, String> {
+pub(super) async fn ask(net: &Entity<Net>, req: Req, cx: &mut AsyncApp) -> Result<Resp, String> {
     // Through a weak handle: it answers with an error, not a panic, once the app is gone.
     let (client, rt) = net
         .downgrade()
@@ -188,6 +291,91 @@ pub fn fixture_read(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
     std::fs::read(&file).map_err(|e| format!("Bad: {}: {e}", shown(rel)))
 }
 
+/// What the daemon would answer to `FsWrite` (see [`Piece`]): the first piece (`offset` 0) picks
+/// the name (a free one, unless `replace`) and starts `<name>.part`, the next ones go on at the
+/// end of that `.part` (whose length must be `offset`), and the one that reaches `total` renames
+/// it into place. Unlike the daemon it does not check `was`.
+pub fn fixture_write(root: &Path, piece: Piece) -> Result<Written, String> {
+    use std::io::Write as _;
+    let rel = piece.path.as_str();
+    if rel.is_empty() {
+        return Err("Bad: no file named".to_owned());
+    }
+    fixture_path(root, rel)?;
+    let end = piece.offset + piece.data.len() as u64;
+    if end > piece.total {
+        return Err(format!(
+            "Bad: {rel}: {end} bytes is past the total {}",
+            piece.total
+        ));
+    }
+    let bad = |e: std::io::Error| format!("Bad: {rel}: {e}");
+    let path = if piece.offset == 0 && !piece.replace {
+        let dir = parent(rel);
+        let name = free_name(base(rel), |n| {
+            let p = if dir.is_empty() {
+                n.to_owned()
+            } else {
+                format!("{dir}/{n}")
+            };
+            root.join(p).exists()
+        });
+        if dir.is_empty() {
+            name
+        } else {
+            format!("{dir}/{name}")
+        }
+    } else {
+        rel.to_owned()
+    };
+    let fin = root.join(&path);
+    let part = root.join(format!("{path}.part"));
+    let mut file = if piece.offset == 0 {
+        std::fs::File::create(&part).map_err(bad)?
+    } else {
+        let have = std::fs::metadata(&part)
+            .map_err(|e| format!("Bad: {rel}: no upload under way: {e}"))?
+            .len();
+        if have != piece.offset {
+            return Err(format!(
+                "Bad: {rel}: a piece at {} after {have} bytes",
+                piece.offset
+            ));
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .map_err(bad)?
+    };
+    file.write_all(&piece.data).map_err(bad)?;
+    drop(file);
+    let done = end == piece.total;
+    if done {
+        std::fs::rename(&part, &fin).map_err(bad)?;
+    }
+    Ok(Written {
+        path,
+        written: end,
+        done,
+    })
+}
+
+/// What the daemon would answer to `FsZip`: the folder `rel` (`""` for the root) as a zip, at
+/// most [`MAX_READ`] bytes of it.
+pub fn fixture_zip(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
+    let dir = fixture_path(root, rel)?;
+    if !dir.is_dir() {
+        return Err(format!("Bad: {} is not a folder", shown(rel)));
+    }
+    let top = if rel.is_empty() {
+        root.file_name()
+            .map_or("files".to_owned(), |n| n.to_string_lossy().into_owned())
+    } else {
+        base(rel).to_owned()
+    };
+    zip_dir(&dir, &top, MAX_READ)
+}
+
 fn shown(rel: &str) -> &str {
     if rel.is_empty() {
         "."
@@ -250,6 +438,64 @@ mod tests {
             .unwrap_err()
             .starts_with("NotFound:"));
         assert!(fixture_list(&root, "missing").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn piece(path: &str, offset: u64, total: u64, data: &[u8]) -> Piece {
+        Piece {
+            path: path.to_owned(),
+            offset,
+            total,
+            data: data.to_vec(),
+            ..Piece::default()
+        }
+    }
+
+    #[test]
+    fn the_fixture_writes_in_pieces_and_suffixes_a_taken_name() {
+        let root = scratch("write");
+        // `a.txt` is there: the upload becomes `a (2).txt`, the next pieces name that.
+        let w = fixture_write(&root, piece("a.txt", 0, 6, b"abc")).unwrap();
+        assert_eq!(
+            w,
+            Written {
+                path: "a (2).txt".into(),
+                written: 3,
+                done: false
+            }
+        );
+        assert!(root.join("a (2).txt.part").exists());
+        assert!(!root.join("a (2).txt").exists());
+        let w = fixture_write(&root, piece(&w.path, 3, 6, b"def")).unwrap();
+        assert!(w.done);
+        assert_eq!(std::fs::read(root.join("a (2).txt")).unwrap(), b"abcdef");
+        assert!(!root.join("a (2).txt.part").exists());
+        assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"hello");
+
+        // A piece out of order, past the total, or escaping is refused.
+        fixture_write(&root, piece("sub/n.bin", 0, 4, b"ab")).unwrap();
+        assert!(fixture_write(&root, piece("sub/n.bin", 1, 4, b"cd")).is_err());
+        assert!(fixture_write(&root, piece("sub/n.bin", 2, 3, b"cd")).is_err());
+        assert!(fixture_write(&root, piece("../x", 0, 1, b"x")).is_err());
+
+        // An empty file is whole at once; `replace` writes over.
+        assert!(fixture_write(&root, piece("e", 0, 0, b"")).unwrap().done);
+        let over = Piece {
+            replace: true,
+            ..piece("a.txt", 0, 2, b"hi")
+        };
+        assert_eq!(fixture_write(&root, over).unwrap().path, "a.txt");
+        assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"hi");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_fixture_zips_a_folder_and_refuses_a_file() {
+        let root = scratch("zipf");
+        let zip = fixture_zip(&root, "sub").unwrap();
+        assert!(String::from_utf8_lossy(&zip).contains("sub/deep.txt"));
+        assert!(fixture_zip(&root, "a.txt").unwrap_err().starts_with("Bad:"));
+        assert!(fixture_zip(&root, "..").is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
