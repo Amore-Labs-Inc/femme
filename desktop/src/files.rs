@@ -18,16 +18,19 @@
 //! * Debug aid: with `FEMME_FILES_FIXTURE=<dir>` set, the panel lists and reads that local
 //!   directory instead of asking the daemon, whatever session is set (see [`source::Source::new`]).
 
+use std::collections::HashSet;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, relative, uniform_list, AnyElement, App, AppContext as _, ClickEvent, Context, Div,
-    Entity, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement as _, Render, Rgba, ScrollHandle, ScrollStrategy, Stateful,
+    div, px, relative, transparent_black, uniform_list, AnyElement, App, AppContext as _,
+    ClickEvent, ClipboardEntry, ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle,
+    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, Render, Rgba, ScrollHandle, ScrollStrategy, Stateful,
     StatefulInteractiveElement as _, Styled as _, Task, UniformListScrollHandle, Window,
 };
 use gpui_component::scroll::Scrollbar;
@@ -53,7 +56,11 @@ pub mod zip;
 use cache::FileCache;
 use plan::{plan, Plan};
 use size::fmt_size;
-use source::{Source, MAX_READ};
+use source::{Piece, Source, MAX_READ};
+use transfer::{
+    clip_uri, downloads_dir, piece_len, progress, read_piece, save_new, tilde, Origin, UpState,
+    Uploads,
+};
 use tree::{Kind, Row, Tree};
 
 /// A listing on show is asked for again once it is this old (the next time the panel is drawn).
@@ -83,6 +90,19 @@ enum Notice {
     ListFailed { path: String, text: String },
     /// Another request failed.
     Error(String),
+    /// Something asked for was not done, and why (not a failure of the box).
+    Note(String),
+    /// A download landed at `path`; `clip`: it went on the clipboard as a file (`true`) or, with
+    /// no `wl-copy` or `xclip` to do that, as its path in text (`false`).
+    Saved { path: PathBuf, clip: Option<bool> },
+}
+
+/// Where a download goes.
+enum Dest {
+    /// The download folder under a free name; `clip`: then onto the clipboard (Ctrl-C).
+    Downloads { clip: bool },
+    /// The path the save dialog gave.
+    At(PathBuf),
 }
 
 /// A file on show in the viewer page.
@@ -119,6 +139,15 @@ pub struct FilesPanel {
     view_scroll: ScrollHandle,
     born: Instant,
     ticker: Option<Task<()>>,
+    /// Files going up, one at a time; `sending` is the one whose pieces are out.
+    uploads: Uploads,
+    sending: Option<u64>,
+    /// The files and folders on their way to this machine.
+    downloads: HashSet<String>,
+    /// The line under the pointer (it shows the `↓` button).
+    hovered: Option<usize>,
+    /// Pictures pasted so far, for their names (`paste-3.png`).
+    pastes: u32,
 }
 
 impl FilesPanel {
@@ -141,6 +170,11 @@ impl FilesPanel {
             view_scroll: ScrollHandle::new(),
             born: Instant::now(),
             ticker: None,
+            uploads: Uploads::default(),
+            sending: None,
+            downloads: HashSet::new(),
+            hovered: None,
+            pastes: 0,
         }
     }
 
@@ -204,6 +238,10 @@ impl FilesPanel {
         self.page = Page::Tree;
         self.notice = None;
         self.reading = None;
+        self.uploads.clear();
+        self.sending = None;
+        self.downloads.clear();
+        self.hovered = None;
         self.scroll = UniformListScrollHandle::new();
         self.fetch_wanted(cx);
         cx.notify();
@@ -238,11 +276,19 @@ impl FilesPanel {
                             text,
                         });
                     }
-                    Ok(_) => {
+                    Ok(entries) => {
                         if matches!(&t.notice, Some(Notice::ListFailed { path: p, .. }) if *p == path)
                         {
                             t.notice = None;
                         }
+                        // The uploads that finished here are in the listing now.
+                        let names: Vec<&str> = entries
+                            .iter()
+                            .filter(|e| !e.dir)
+                            .map(|e| e.name.as_str())
+                            .collect();
+                        t.uploads.listed(&path, &names);
+                        t.tree.set_pending(t.uploads.pending());
                     }
                 }
                 t.tree.loaded(&path, answer);
@@ -343,7 +389,314 @@ impl FilesPanel {
 
     /// Whether something is on its way (the spinner turns).
     fn busy(&self) -> bool {
-        self.tree.busy() || matches!(self.notice, Some(Notice::Reading { .. }))
+        self.tree.busy()
+            || matches!(self.notice, Some(Notice::Reading { .. }))
+            || self.uploads.active()
+            || !self.downloads.is_empty()
+    }
+
+    /// Asks again for every listing on show (after uploads), keeping the notice and the cache.
+    fn relist(&mut self, cx: &mut Context<Self>) {
+        self.tree.refresh();
+        self.fetch_wanted(cx);
+        cx.notify();
+    }
+
+    /// Uploads the files `paths` (of this machine) into the directory `dir`, one after the other;
+    /// a folder is refused with a note. Measured off the UI thread.
+    fn upload_paths(&mut self, dir: String, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if !self.active() {
+            self.notice = Some(Notice::Note("no session to upload to".into()));
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let measured = cx
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|p| {
+                            let name = p.file_name().map(|n| n.to_string_lossy().into_owned());
+                            let meta = std::fs::metadata(&p);
+                            (p, name, meta)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |t, cx| {
+                let (mut folders, mut refused) = (Vec::new(), Vec::new());
+                for (path, name, meta) in measured {
+                    let name = name.unwrap_or_else(|| path.display().to_string());
+                    match meta {
+                        Ok(m) if m.is_dir() => folders.push(name),
+                        Ok(m) if m.is_file() => {
+                            let origin = Origin::Local(path);
+                            if t.uploads.add(origin, &dir, &name, m.len()).is_none() {
+                                refused.push(format!("{name}: not a name the box takes"));
+                            }
+                        }
+                        Ok(_) => refused.push(format!("{name}: not a regular file")),
+                        Err(e) => refused.push(format!("{name}: {e}")),
+                    }
+                }
+                if !folders.is_empty() {
+                    let names = folders.join(", ");
+                    t.notice = Some(Notice::Note(format!(
+                        "folders are not uploaded (files only): {names}"
+                    )));
+                }
+                if !refused.is_empty() {
+                    t.notice = Some(Notice::Error(format!(
+                        "can't upload {}",
+                        refused.join("; ")
+                    )));
+                }
+                t.tree.set_pending(t.uploads.pending());
+                t.pump(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ctrl-V: copied files go into the folder on show, a picture as `paste-N.<ext>`. Whether
+    /// the clipboard held anything of that.
+    fn paste(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let dir = self.tree.root().to_owned();
+        let mut taken = false;
+        for entry in item.entries {
+            match entry {
+                ClipboardEntry::ExternalPaths(paths) => {
+                    self.upload_paths(dir.clone(), paths.paths().to_vec(), cx);
+                    taken = true;
+                }
+                ClipboardEntry::Image(image) if self.active() => {
+                    self.pastes += 1;
+                    let name = format!("paste-{}.{}", self.pastes, image.format.extension());
+                    let total = image.bytes.len() as u64;
+                    let origin = Origin::Bytes(Arc::new(image.bytes));
+                    self.uploads.add(origin, &dir, &name, total);
+                    taken = true;
+                }
+                _ => {}
+            }
+        }
+        if taken {
+            self.tree.set_pending(self.uploads.pending());
+            self.pump(cx);
+            cx.notify();
+        }
+        taken
+    }
+
+    /// Starts the next queued upload unless one is going: its pieces go out one after the
+    /// other, each read off the UI thread just before it is sent. After the last upload the
+    /// listings on show are asked for again.
+    fn pump(&mut self, cx: &mut Context<Self>) {
+        if self.sending.is_some() {
+            return;
+        }
+        let Some(id) = self.uploads.start_next() else {
+            return;
+        };
+        self.sending = Some(id);
+        let (source, sid) = (self.source.clone(), self.session);
+        cx.spawn(async move |this, cx| {
+            loop {
+                let next = this
+                    .update(cx, |t, _| {
+                        (t.sending == Some(id))
+                            .then(|| t.uploads.next(id))
+                            .flatten()
+                    })
+                    .ok()
+                    .flatten();
+                let Some((origin, path, offset, total)) = next else {
+                    break;
+                };
+                let len = piece_len(offset, total);
+                let data = match origin {
+                    Origin::Local(file) => {
+                        cx.background_spawn(async move { read_piece(&file, offset, len) })
+                            .await
+                    }
+                    Origin::Bytes(bytes) => bytes
+                        .get(offset as usize..offset as usize + len)
+                        .map(<[u8]>::to_vec)
+                        .ok_or_else(|| "the bytes ran out".to_owned()),
+                };
+                let answer = match data {
+                    Ok(data) => {
+                        let piece = Piece {
+                            path,
+                            offset,
+                            total,
+                            data,
+                            ..Piece::default()
+                        };
+                        source.write(sid, piece, cx).await
+                    }
+                    Err(why) => Err(why),
+                };
+                let more = this
+                    .update(cx, |t, cx| {
+                        if t.sending != Some(id) {
+                            return false;
+                        }
+                        let more = match answer {
+                            // An answer that takes nothing would go round forever.
+                            Ok(w) if !w.done && w.written <= offset => {
+                                t.uploads.failed(id, "the box took none of it".into());
+                                false
+                            }
+                            Ok(w) => {
+                                t.uploads.landed(id, &w.path, w.written, w.done);
+                                !w.done
+                            }
+                            Err(why) => {
+                                t.uploads.failed(id, why);
+                                false
+                            }
+                        };
+                        t.tree.set_pending(t.uploads.pending());
+                        cx.notify();
+                        more
+                    })
+                    .unwrap_or(false);
+                if !more {
+                    break;
+                }
+            }
+            this.update(cx, |t, cx| {
+                if t.sending == Some(id) {
+                    t.sending = None;
+                    if t.uploads.active() {
+                        t.pump(cx);
+                    } else {
+                        t.relist(cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+        self.ensure_ticker(cx);
+    }
+
+    /// The `↓` button (with `ask`, Shift: a save dialog) or Ctrl-C (`clip`): the file on `row`,
+    /// or its folder as `<name>.zip`, onto this machine.
+    fn download(&mut self, row: &Row, ask: bool, clip: bool, cx: &mut Context<Self>) {
+        let (len, name) = match row.kind {
+            Kind::File { len } if len > MAX_READ => {
+                let name = row.name().to_owned();
+                self.notice = Some(Notice::TooBig { name, len });
+                cx.notify();
+                return;
+            }
+            Kind::File { len } => (Some(len), row.name().to_owned()),
+            Kind::Dir { .. } => (None, format!("{}.zip", row.name())),
+            _ => return,
+        };
+        if self.downloads.contains(&row.path) {
+            return;
+        }
+        let path = row.path.clone();
+        if !ask {
+            self.fetch_out(path, name, len, Dest::Downloads { clip }, cx);
+            return;
+        }
+        let picked = cx.prompt_for_new_path(&downloads_dir(), Some(&name));
+        cx.spawn(async move |this, cx| {
+            let answer = picked.await;
+            this.update(cx, |t, cx| match answer {
+                Ok(Ok(Some(to))) => t.fetch_out(path, name, len, Dest::At(to), cx),
+                Ok(Err(why)) => {
+                    t.notice = Some(Notice::Error(format!("no save dialog: {why}")));
+                    cx.notify();
+                }
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Fetches `path` (a file of `len` bytes, or with `None` a folder, zipped) and writes it as
+    /// `name` where `dest` says, then says where it went.
+    fn fetch_out(
+        &mut self,
+        path: String,
+        name: String,
+        len: Option<u64>,
+        dest: Dest,
+        cx: &mut Context<Self>,
+    ) {
+        self.downloads.insert(path.clone());
+        let cached = len.and_then(|_| self.files.get(&path));
+        let (source, sid) = (self.source.clone(), self.session);
+        let clip = matches!(dest, Dest::Downloads { clip: true });
+        cx.spawn(async move |this, cx| {
+            let data = match cached {
+                Some(data) => Ok(data),
+                None if len.is_some() => source.read(sid, &path, cx).await.map(Arc::new),
+                None => source.zip(sid, &path, cx).await.map(Arc::new),
+            };
+            let saved = match data {
+                Ok(data) => {
+                    cx.background_spawn(async move {
+                        match dest {
+                            Dest::Downloads { .. } => save_new(&downloads_dir(), &name, &data),
+                            Dest::At(to) => std::fs::write(&to, &*data)
+                                .map(|()| to.clone())
+                                .map_err(|e| format!("{}: {e}", tilde(&to))),
+                        }
+                    })
+                    .await
+                }
+                Err(why) => Err(format!("can't download {name}: {why}")),
+            };
+            let clipped = match &saved {
+                Ok(at) if clip => {
+                    let at = at.clone();
+                    Some(cx.background_spawn(async move { clip_uri(&at) }).await)
+                }
+                _ => None,
+            };
+            this.update(cx, |t, cx| {
+                t.downloads.remove(&path);
+                t.notice = Some(match saved {
+                    Ok(at) => {
+                        if clipped == Some(false) {
+                            let text = at.display().to_string();
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                        Notice::Saved {
+                            path: at,
+                            clip: clipped,
+                        }
+                    }
+                    Err(why) => Notice::Error(why),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        self.ensure_ticker(cx);
+        cx.notify();
+    }
+
+    /// Files dropped on the line of `dir` (a directory, opened so the uploads show) or into
+    /// the panel (the directory on show).
+    fn dropped(&mut self, dir: String, paths: &ExternalPaths, cx: &mut Context<Self>) {
+        if !dir.is_empty() && self.tree.set_open(&dir, true) {
+            self.fetch_wanted(cx);
+        }
+        self.upload_paths(dir, paths.paths().to_vec(), cx);
     }
 
     /// Redraws a few times a second while something is on its way, so the spinner turns even in a
@@ -397,7 +750,13 @@ impl FilesPanel {
                 self.open_file(row.path.clone(), len, false, cx);
             }
             Kind::Failed => self.tree.retry(&row.path),
-            Kind::Loading | Kind::Empty | Kind::Transfer { .. } => {}
+            Kind::Transfer { id } => {
+                if self.uploads.retry(id) {
+                    self.tree.set_pending(self.uploads.pending());
+                    self.pump(cx);
+                }
+            }
+            Kind::Loading | Kind::Empty => {}
         }
         self.fetch_wanted(cx);
         cx.notify();
@@ -423,8 +782,27 @@ impl FilesPanel {
 
     fn on_key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
-        // Chords belong to the shell.
-        if k.modifiers.control || k.modifiers.alt || k.modifiers.platform {
+        let m = &k.modifiers;
+        // Ctrl-V uploads what was copied, Ctrl-C copies the line's file out; other chords belong
+        // to the shell.
+        if (m.control || m.platform) && !m.alt && !m.shift && matches!(self.page, Page::Tree) {
+            match k.key.as_str() {
+                "v" => {
+                    if self.paste(cx) {
+                        cx.stop_propagation();
+                    }
+                }
+                "c" => {
+                    if let Some(row) = self.tree.selected_row().cloned() {
+                        self.download(&row, false, true, cx);
+                        cx.stop_propagation();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        if m.control || m.alt || m.platform {
             return;
         }
         let key = k.key.as_str();
@@ -517,6 +895,26 @@ impl FilesPanel {
                 )))
                 .child(dismiss(cx))
                 .into_any_element(),
+            Notice::Note(why) => strip(panel())
+                .child(text(why.clone()))
+                .child(dismiss(cx))
+                .into_any_element(),
+            Notice::Saved { path, clip } => {
+                let at = path.clone();
+                let tail = match clip {
+                    Some(true) => " · on the clipboard",
+                    Some(false) => " · no wl-copy or xclip: its path is on the clipboard as text",
+                    None => "",
+                };
+                strip(panel())
+                    .child(text(format!("saved to {}{tail}", tilde(path))))
+                    .child(
+                        small(button("files-reveal", "open folder"))
+                            .on_click(cx.listener(move |_, _, _, cx| cx.reveal_path(&at))),
+                    )
+                    .child(dismiss(cx))
+                    .into_any_element()
+            }
             Notice::ListFailed { text: why, .. } | Notice::Error(why) => {
                 strip(Rgba { a: 0.12, ..bad() })
                     .child(st("error", bad()))
@@ -559,6 +957,16 @@ impl FilesPanel {
                 .text_color(muted())
                 .child(tree::under(&self.cwd, self.tree.root())),
         )
+        .when_some(self.uploads.counter(), |h, (k, n)| {
+            h.child(spinner(self.spin())).child(
+                div()
+                    .flex_none()
+                    .font_family(FONT_MONO)
+                    .text_size(META_SIZE)
+                    .text_color(muted())
+                    .child(format!("{k} / {n}")),
+            )
+        })
         .child(
             button("files-refresh", "refresh")
                 .h(px(26.))
@@ -628,7 +1036,14 @@ impl FilesPanel {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         // The lines that do something when clicked; a spinner or "(empty)" is only text.
-        let clickable = !matches!(row.kind, Kind::Loading | Kind::Empty);
+        let clickable = match row.kind {
+            Kind::Loading | Kind::Empty => false,
+            Kind::Transfer { id } => self
+                .uploads
+                .get(id)
+                .is_some_and(|u| matches!(u.state, UpState::Failed(_))),
+            _ => true,
+        };
         // On the neon row of the keyboard every label takes the colour that reads on neon (ink in
         // the light palette, paper in the dark one); elsewhere ink for a name, muted for the rest.
         let on_neon = selected && focused;
@@ -684,40 +1099,108 @@ impl FilesPanel {
         } else {
             ink()
         };
+        let size_col = |text: String, color: Rgba| {
+            div()
+                .flex_none()
+                .pl(px(6.))
+                .font_family(FONT_MONO)
+                .text_size(META_SIZE)
+                .text_color(color)
+                .child(text)
+        };
+        let down = self.downloads.contains(&row.path);
         let line = match row.kind {
             Kind::Up => base
                 .child(marker(""))
                 .child(name("..".to_owned(), dim).font_family(FONT_MONO)),
             Kind::Dir { open } => base
-                .child(marker(if open { "▾" } else { "▸" }))
-                .child(name(row.name().to_owned(), color).font_weight(FontWeight::SEMIBOLD)),
-            Kind::File { len } => base
-                .child(marker(""))
-                .child(name(row.name().to_owned(), color))
-                .child(
-                    div()
-                        .flex_none()
-                        .pl(px(6.))
-                        .font_family(FONT_MONO)
-                        .text_size(META_SIZE)
-                        .text_color(dim)
-                        .child(fmt_size(len)),
-                ),
+                .when(down, |d| d.opacity(0.5).child(spinner(spin)))
+                .when(!down, |d| d.child(marker(if open { "▾" } else { "▸" })))
+                .child(name(row.name().to_owned(), color).font_weight(FontWeight::SEMIBOLD))
+                .when(down, |d| d.child(size_col("zipping…".into(), dim))),
+            Kind::File { len } => match down {
+                true => base
+                    .opacity(0.5)
+                    .child(spinner(spin))
+                    .child(name(row.name().to_owned(), color))
+                    .child(size_col(format!("downloading {}", fmt_size(len)), dim)),
+                false => base
+                    .child(marker(""))
+                    .child(name(row.name().to_owned(), color))
+                    .child(size_col(fmt_size(len), dim)),
+            },
             Kind::Loading => base
                 .child(spinner(spin))
                 .child(note("loading…".to_owned(), dim)),
             Kind::Empty => base
                 .child(marker(""))
                 .child(note("(empty)".to_owned(), dim)),
-            Kind::Transfer { .. } => base
-                .opacity(0.5)
-                .child(marker(""))
-                .child(name(row.name().to_owned(), color)),
+            Kind::Transfer { id } => {
+                let label = name(row.name().to_owned(), color);
+                match self.uploads.get(id).map(|u| (&u.state, u.sent, u.total)) {
+                    Some((UpState::Queued, _, _)) => base
+                        .opacity(0.5)
+                        .child(marker(""))
+                        .child(label)
+                        .child(size_col("waiting".into(), dim)),
+                    Some((UpState::Sending, sent, total)) => base
+                        .opacity(0.5)
+                        .child(spinner(spin))
+                        .child(label)
+                        .child(size_col(
+                            format!("uploading {}", progress(sent, total)),
+                            dim,
+                        )),
+                    Some((UpState::Failed(_), _, _)) => {
+                        base.child(marker("!")).child(label).child(size_col(
+                            "failed · retry".into(),
+                            if on_neon { on_accent_strong() } else { bad() },
+                        ))
+                    }
+                    Some((UpState::Done, _, total)) => base
+                        .child(marker(""))
+                        .child(label)
+                        .child(size_col(fmt_size(total), dim)),
+                    None => base.child(marker("")).child(label),
+                }
+            }
             Kind::Failed => base.child(marker("!")).child(note(
                 "could not list: click to try again".to_owned(),
                 if on_neon { on_accent_strong() } else { bad() },
             )),
         };
+        // Files dropped on a directory go into it, on a file into the file's directory.
+        let drop_into = match row.kind {
+            Kind::Dir { .. } => Some(row.path.clone()),
+            Kind::File { .. } => Some(tree::parent(&row.path).to_owned()),
+            _ => None,
+        };
+        let line = match drop_into {
+            Some(dir) => line
+                .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(drop_fill()))
+                .on_drop(cx.listener(move |t, paths: &ExternalPaths, _, cx| {
+                    t.dropped(dir.clone(), paths, cx)
+                })),
+            None => line,
+        };
+        // The `↓` on the line under the pointer: Shift asks where to save.
+        let offer = self.hovered == Some(ix)
+            && !down
+            && matches!(row.kind, Kind::Dir { .. } | Kind::File { .. });
+        let line = line.when(offer, |d| {
+            let row = row.clone();
+            d.child(
+                button(("files-down", ix), "↓")
+                    .h(px(20.))
+                    .px(px(6.))
+                    .font_family(FONT_MONO)
+                    .text_size(px(12.))
+                    .on_click(cx.listener(move |t, e: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        t.download(&row, e.modifiers().shift, false, cx);
+                    })),
+            )
+        });
         if !clickable {
             return line.cursor_default();
         }
@@ -726,7 +1209,14 @@ impl FilesPanel {
             // when the pointer moves: a line that slid under a still pointer (a notice appeared,
             // the page changed) would stay grey after the pointer left. This listener also
             // fires for such moves of the layout, and the repaint it asks for is what clears it.
-            .on_hover(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_hover(cx.listener(move |t, hovered: &bool, _, cx| {
+                if *hovered {
+                    t.hovered = Some(ix);
+                } else if t.hovered == Some(ix) {
+                    t.hovered = None;
+                }
+                cx.notify();
+            }))
             .on_click(
                 cx.listener(move |t, e: &ClickEvent, _, cx| {
                     t.row_clicked(&row, e.click_count(), cx)
@@ -794,6 +1284,18 @@ fn cursor_idle() -> Rgba {
     Rgba { a: 0.3, ..neon() }
 }
 
+/// The panel's colour while files are dragged over it (the composer's): paper with a fifth of
+/// neon in it, opaque.
+fn drop_fill() -> Rgba {
+    let mix = |paper: f32, neon: f32| paper * 0.8 + neon * 0.2;
+    Rgba {
+        r: mix(paper().r, neon().r),
+        g: mix(paper().g, neon().g),
+        b: mix(paper().b, neon().b),
+        a: 1.,
+    }
+}
+
 /// A row between the header and the tree: ruled below, `bg` behind.
 fn strip(bg: Rgba) -> Div {
     ruled_sides(
@@ -854,6 +1356,13 @@ impl Render for FilesPanel {
             .font_family(FONT_UI)
             .text_size(px(14.))
             .line_height(relative(1.3))
+            .border_2()
+            .border_color(transparent_black())
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.border_color(neon()).bg(drop_fill()))
+            .on_drop(cx.listener(|t, paths: &ExternalPaths, _, cx| {
+                let root = t.tree.root().to_owned();
+                t.dropped(root, paths, cx)
+            }))
             .track_focus(&self.focus)
             .on_mouse_down(
                 MouseButton::Left,

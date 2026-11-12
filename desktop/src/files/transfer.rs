@@ -84,6 +84,39 @@ pub fn uri_list(path: &Path) -> String {
     out
 }
 
+/// Puts the file `path` on the clipboard as a `text/uri-list`, so a paste in the file manager
+/// drops the file: through `wl-copy` (Wayland) or `xclip` (X11), whichever works first, the one
+/// of the session's display first. Whether one did. Blocks: run it off the UI thread.
+pub fn clip_uri(path: &Path) -> bool {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let text = uri_list(path);
+    let wl: (&str, &[&str]) = ("wl-copy", &["-t", "text/uri-list"]);
+    let x: (&str, &[&str]) = ("xclip", &["-selection", "clipboard", "-t", "text/uri-list"]);
+    let order = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        [wl, x]
+    } else {
+        [x, wl]
+    };
+    order.iter().any(|(cmd, args)| {
+        // Both fork to serve the clipboard and the parent exits: waiting for it is short. Their
+        // output is not read (the child that stays would hold a pipe open).
+        let Ok(mut child) = Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        child.wait().is_ok_and(|s| s.success())
+    })
+}
+
 /// The download folder `user-dirs.dirs` (its `contents`) names, `$HOME` put in: the line
 /// `XDG_DOWNLOAD_DIR="$HOME/İndirilenler"`. `None` when it names none or `$HOME` itself.
 pub fn xdg_download(contents: &str, home: &Path) -> Option<PathBuf> {
