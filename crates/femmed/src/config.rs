@@ -266,6 +266,33 @@ pub fn sock_path() -> PathBuf {
     runtime_dir().join("femme/femmed.sock")
 }
 
+/// `femmed local`'s default state dir: `$XDG_STATE_HOME/femme-local`, else
+/// `<home>/.local/state/femme-local`. Apart from the server daemon's `femme`, so a laptop's local
+/// sessions never share a store with anything else.
+pub fn local_state_dir(xdg_state_home: Option<&str>, home: &Path) -> PathBuf {
+    match xdg_state_home {
+        Some(d) if !d.is_empty() => PathBuf::from(d).join("femme-local"),
+        _ => home.join(".local/state/femme-local"),
+    }
+}
+
+/// `femmed local`'s only way in: `<state>/femmed.sock`. The desktop computes the same path.
+pub fn local_sock_path(state: &Path) -> PathBuf {
+    state.join("femmed.sock")
+}
+
+impl Config {
+    /// This config for `femmed local` on `state`: its own store there, and nothing that belongs to
+    /// the server daemon (no board import, no phone pushes, no board API elsewhere).
+    pub fn local(mut self, state: PathBuf) -> Config {
+        self.state_dir = state;
+        self.replaces_board = false;
+        self.ntfy_topic.clear();
+        self.board_api = None;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +427,37 @@ mod tests {
     #[test]
     fn socket_path_is_under_the_runtime_dir() {
         assert!(sock_path().ends_with("femme/femmed.sock"));
+    }
+
+    #[test]
+    fn local_state_follows_xdg_then_home() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            local_state_dir(Some("/x/state"), home),
+            PathBuf::from("/x/state/femme-local")
+        );
+        for unset in [None, Some("")] {
+            assert_eq!(
+                local_state_dir(unset, home),
+                PathBuf::from("/home/me/.local/state/femme-local")
+            );
+        }
+        assert_eq!(
+            local_sock_path(Path::new("/s")),
+            PathBuf::from("/s/femmed.sock")
+        );
+    }
+
+    #[test]
+    fn local_config_is_its_own_store_and_no_board() {
+        let c = Config::from_vars(vars(&[
+            ("HOME", "/home/me"),
+            ("FEMMED", "2"),
+            ("NTFY_TOPIC", "t"),
+            ("FEMME_BOARD_API", "http://x"),
+        ]))
+        .local(PathBuf::from("/s"));
+        assert_eq!(c.state_dir, PathBuf::from("/s"));
+        assert!(!c.replaces_board && c.ntfy_topic.is_empty() && c.board_api.is_none());
     }
 }
