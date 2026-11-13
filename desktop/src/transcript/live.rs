@@ -38,7 +38,7 @@ use super::thumb::Thumb;
 use super::turns::{self, Key, Layout};
 use super::working;
 use crate::motion::appear;
-use crate::net::{ClientEvent, Net};
+use crate::net::{BoxId, ClientEvent, Net};
 use crate::theme::{
     accent_deep, bad, done, goal, goal_met, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL,
 };
@@ -80,7 +80,7 @@ pub struct Transcript {
     pub(super) list: ListState,
     focus: FocusHandle,
     /// The session whose scope should be subscribed; the task [`hold`] follows it.
-    want: watch::Sender<Option<Sid>>,
+    want: watch::Sender<Option<(BoxId, Sid)>>,
     /// Counts the sessions shown, so answers to requests made for an earlier one are dropped.
     generation: u64,
     /// A page of older items is being fetched.
@@ -128,11 +128,11 @@ impl Transcript {
         super::faces::register(cx);
         let (want, wanted) = watch::channel(None);
         if let Some(net) = &net {
-            let (client, rt) = {
-                let n = net.read(cx);
-                (n.client(), n.rt())
-            };
-            rt.spawn(hold(client, wanted));
+            let n = net.read(cx);
+            // One holder per box: each keeps the subscription when the session shown is its own.
+            for (b, client) in n.clients() {
+                n.rt().spawn(hold(client, b, wanted.clone()));
+            }
         }
         // One row past the items: the working line, empty when the session is idle.
         let list = ListState::new(1, ListAlignment::Top, px(300.));
@@ -228,7 +228,11 @@ impl Transcript {
         self.generation += 1;
         self.list.reset(1);
         self.list.set_follow_mode(FollowMode::Tail);
-        self.want.send_replace(sid);
+        let at = self
+            .net
+            .as_ref()
+            .and_then(|n| Some((n.read(cx).model.box_of(sid?), sid?)));
+        self.want.send_replace(at);
         cx.notify();
     }
 
@@ -459,7 +463,7 @@ impl Transcript {
         };
         let (client, rt) = {
             let n = net.read(cx);
-            (n.client(), n.rt())
+            (n.client_for_req(&req), n.rt())
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         rt.spawn(async move {
@@ -735,13 +739,16 @@ impl Transcript {
     }
 }
 
-/// Keeps the daemon's subscription on the scope of the session `want` names: the scope held is
+/// Keeps box `me`'s subscription on the scope of the session `want` names when it is `me`'s: the scope held is
 /// left before the next is joined, and a join the daemon refuses is tried again. Ends (leaving the
 /// scope) when the transcript is dropped.
-async fn hold(client: Arc<Client>, mut want: watch::Receiver<Option<Sid>>) {
+async fn hold(client: Arc<Client>, me: BoxId, mut want: watch::Receiver<Option<(BoxId, Sid)>>) {
     let mut held: Option<Sid> = None;
     loop {
-        let target = *want.borrow_and_update();
+        let target = want
+            .borrow_and_update()
+            .filter(|(b, _)| *b == me)
+            .map(|(_, sid)| sid);
         if held != target {
             if let Some(old) = held.take() {
                 client.unsubscribe(Scope::Session(old)).await;

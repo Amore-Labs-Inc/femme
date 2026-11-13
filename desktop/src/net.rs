@@ -1,6 +1,11 @@
 //! The desktop's copy of what the daemon says: the state of the link, and the sessions and panes of
 //! the global scope. [`Model`] is plain data, fed by the client's events (and tested without gpui);
 //! [`Net`] is the entity that drains the client into it and runs requests for the UI.
+//!
+//! There are two daemons, two [`BoxId`]s (docs/plan-local.md): the remote box, and `femmed local` on
+//! this machine over a unix socket. One `Model` holds the sessions of both (session ids are ULIDs,
+//! unique across boxes) and remembers which box each came from, so a request about a session goes
+//! to the client of its box.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,6 +23,16 @@ use crate::transcript::outbox::Outbox;
 
 /// How many characters of a tab's label are shown.
 const LABEL: usize = 28;
+
+/// Which daemon: the remote box, or `femmed local` on this machine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoxId {
+    /// The box the app was told to connect to (QUIC, else ssh).
+    #[default]
+    Remote,
+    /// `femmed local`, over `<state>/femmed.sock`.
+    Local,
+}
 
 /// Where the connection stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -68,6 +83,12 @@ pub struct Model {
     /// Prompts sent and not yet echoed by the daemon, drawn faded at the end of their transcript.
     /// The composer adds them; the `UserMessage` rows of a session's scope take them off.
     pub outbox: Outbox,
+    /// The box each session came from (or was created on). Never pruned: a few ULIDs.
+    pub boxes: BTreeMap<Sid, BoxId>,
+    /// The local daemon's connection; `None` when there is no local box at all.
+    pub local_link: Option<Link>,
+    /// [`Model::load`] of the local box.
+    pub local_load: Load,
 }
 
 fn is_live(s: &Session) -> bool {
@@ -113,19 +134,93 @@ pub fn title(s: &Session) -> String {
         .unwrap_or_else(|| s.handle.clone())
 }
 
+/// The session a request is about, if it names one.
+fn req_sid(req: &Req) -> Option<Sid> {
+    match req {
+        Req::Subscribe {
+            scope: Scope::Session(sid),
+            ..
+        }
+        | Req::Unsubscribe {
+            scope: Scope::Session(sid),
+        }
+        | Req::TranscriptPage { sid, .. }
+        | Req::SessionClose { sid }
+        | Req::Prompt { sid, .. }
+        | Req::Interrupt { sid }
+        | Req::Background { sid, .. }
+        | Req::AnswerQuestion { sid, .. }
+        | Req::Takeover { sid, .. }
+        | Req::SetModel { sid, .. }
+        | Req::PaneOpen { sid }
+        | Req::FsList { sid, .. }
+        | Req::FsRead { sid, .. }
+        | Req::FsWrite { sid, .. }
+        | Req::FsZip { sid, .. }
+        | Req::CyclePermission { sid }
+        | Req::SessionLabel { sid, .. }
+        | Req::Show { sid, .. }
+        | Req::Resend { sid, .. }
+        | Req::TakeBack { sid } => Some(*sid),
+        Req::PaneClose { pane } => Some(pane.sid),
+        _ => None,
+    }
+}
+
 impl Model {
-    /// Takes in one event; whether anything the UI shows changed.
+    /// Takes in one event of the remote box; whether anything the UI shows changed.
     pub fn apply(&mut self, ev: &Event) -> bool {
+        self.apply_from(BoxId::Remote, ev)
+    }
+
+    /// The box `sid` lives on; a session nobody has placed is the remote box's.
+    pub fn box_of(&self, sid: Sid) -> BoxId {
+        self.boxes.get(&sid).copied().unwrap_or_default()
+    }
+
+    /// Whether `sid` runs on this machine (`femmed local`).
+    pub fn is_local(&self, sid: Sid) -> bool {
+        self.box_of(sid) == BoxId::Local
+    }
+
+    /// The box a request goes to: that of the session it names; blobs (a transcript's pictures, a
+    /// composer's attachments) are those of the session on show; anything else is the remote box's.
+    pub fn route(&self, req: &Req) -> BoxId {
+        let sid = req_sid(req).or(match req {
+            Req::BlobGet { .. } | Req::BlobPut { .. } | Req::Upload { .. } => self.current,
+            _ => None,
+        });
+        sid.map_or(BoxId::Remote, |s| self.box_of(s))
+    }
+
+    fn load_mut(&mut self, b: BoxId) -> &mut Load {
+        match b {
+            BoxId::Remote => &mut self.load,
+            BoxId::Local => &mut self.local_load,
+        }
+    }
+
+    /// Takes in one event of box `b`'s client; whether anything the UI shows changed.
+    pub fn apply_from(&mut self, b: BoxId, ev: &Event) -> bool {
         match ev {
             Event::Connected {
                 link, quic_error, ..
             } => {
-                self.link = Link::Up(*link);
-                self.quic_error.clone_from(quic_error);
+                match b {
+                    BoxId::Remote => {
+                        self.link = Link::Up(*link);
+                        self.quic_error.clone_from(quic_error);
+                    }
+                    BoxId::Local => self.local_link = Some(Link::Up(*link)),
+                }
                 true
             }
             Event::Disconnected { reason } => {
-                self.link = Link::Down(reason.clone());
+                let down = Link::Down(reason.clone());
+                match b {
+                    BoxId::Remote => self.link = down,
+                    BoxId::Local => self.local_link = Some(down),
+                }
                 true
             }
             Event::Changes {
@@ -133,10 +228,18 @@ impl Model {
                 rows,
                 ..
             } => {
-                let rebuilt = self.load == Load::Rebuilding;
+                let load = *self.load_mut(b);
+                // Only this box's full set can say that the session on show is gone.
+                let rebuilt =
+                    load == Load::Rebuilding && self.current.is_none_or(|c| self.box_of(c) == b);
                 // Sessions new to the list. The first list and the full set after a `Reset` are what
                 // was there already, not arrivals.
-                let listed = self.load == Load::Done;
+                let listed = load == Load::Done;
+                for r in rows {
+                    if let Row::Session(s) = r {
+                        self.boxes.insert(s.id, b);
+                    }
+                }
                 let arrived: Vec<Sid> = rows
                     .iter()
                     .filter_map(|r| match r {
@@ -147,7 +250,7 @@ impl Model {
                     })
                     .collect();
                 let changed = rows.iter().fold(false, |any, row| self.row(row) | any);
-                self.load = Load::Done;
+                *self.load_mut(b) = Load::Done;
                 self.keep_current(rows, rebuilt) | self.follow_claude(&arrived) | changed
             }
             // The daemon cannot vouch for what we hold: its full set follows. The session on show
@@ -155,9 +258,11 @@ impl Model {
             Event::Reset {
                 scope: Scope::Global,
             } => {
-                self.sessions.clear();
-                self.panes.clear();
-                self.load = Load::Rebuilding;
+                let boxes = &self.boxes;
+                let other = |sid: &Sid| boxes.get(sid).copied().unwrap_or_default() != b;
+                self.sessions.retain(|sid, _| other(sid));
+                self.panes.retain(|p, _| other(&p.sid));
+                *self.load_mut(b) = Load::Rebuilding;
                 true
             }
             Event::Changes {
@@ -307,6 +412,7 @@ impl Model {
                 .rtt_ms
                 .map_or_else(|| "quic".into(), |ms| format!("quic {ms} ms")),
             Link::Up(Transport::Ssh) => "ssh".into(),
+            Link::Up(Transport::Local) => "local".into(),
             Link::Down(why) => format!("offline: {why}"),
         }
     }
@@ -367,7 +473,8 @@ pub fn start(c: &Connect) -> anyhow::Result<Started> {
 /// Every event of the daemon's client, re-emitted for views that keep more than [`Model`] does (the
 /// transcript's items and deltas, the composer's answers). Subscribe with `cx.subscribe(&net, …)`;
 /// `Model` has already applied the event when it arrives.
-pub struct ClientEvent(pub Event);
+/// The second field is the box whose client said it.
+pub struct ClientEvent(pub Event, pub BoxId);
 
 impl EventEmitter<ClientEvent> for Net {}
 
@@ -414,58 +521,46 @@ pub struct Net {
     starting: Option<String>,
     /// How far the choice of a first session has got.
     pub(crate) opening: Opening,
+    /// The remote box's client.
     client: Arc<Client>,
+    /// The client of `femmed local`, when there is a local box.
+    local: Option<Arc<Client>>,
     rt: tokio::runtime::Handle,
-    _tasks: [Task<()>; 2],
+    _tasks: Vec<Task<()>>,
 }
 
 impl Net {
-    /// Drains `client`'s events into the model and subscribes to the global scope.
+    /// Drains the events of `client` (the remote box) and of `local` (`femmed local`, if any) into
+    /// the model and subscribes both to the global scope.
     pub fn new(
         client: Arc<Client>,
+        local: Option<Arc<Client>>,
         rt: tokio::runtime::Handle,
         enroll: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut events = client.events();
-        let drain = cx.spawn(async move |this, cx| {
-            while let Some(ev) = events.recv().await {
-                let alive = this
-                    .update(cx, |n, cx| {
-                        if n.model.apply(&ev) {
-                            cx.notify();
-                        }
-                        cx.emit(ClientEvent(ev));
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
-                }
-            }
-        });
-        let poll = cx.spawn(async move |this, cx| loop {
+        let mut tasks = vec![drain(&client, BoxId::Remote, &rt, cx)];
+        tasks.extend(local.iter().map(|l| drain(l, BoxId::Local, &rt, cx)));
+        tasks.push(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             if this.update(cx, |n, cx| n.poll(cx)).is_err() {
                 break;
             }
-        });
-        // The client resubscribes by itself after a reconnect, but a subscribe that gets no answer
-        // in 30 s is forgotten: ask again until the daemon has said yes.
-        let c = client.clone();
-        rt.spawn(async move {
-            while c.subscribe(Scope::Global).await.is_err() {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-        });
+        }));
+        let model = Model {
+            local_link: local.as_ref().map(|_| Link::Connecting),
+            ..Model::default()
+        };
         Self {
-            model: Model::default(),
+            model,
             error: None,
             enroll,
             starting: None,
             opening: Opening::default(),
             client,
+            local,
             rt,
-            _tasks: [drain, poll],
+            _tasks: tasks,
         }
     }
 
@@ -483,9 +578,43 @@ impl Net {
         }
     }
 
-    /// The client, for panes that attach to a terminal.
+    /// The remote box's client, for what only it has (accounts, pull requests, GitHub).
     pub fn client(&self) -> Arc<Client> {
         self.client.clone()
+    }
+
+    /// The client of box `b`; `None` for a local box this app has not got.
+    pub fn client_of(&self, b: BoxId) -> Option<Arc<Client>> {
+        match b {
+            BoxId::Remote => Some(self.client.clone()),
+            BoxId::Local => self.local.clone(),
+        }
+    }
+
+    /// The client of the box session `sid` lives on.
+    pub fn client_for(&self, sid: Sid) -> Arc<Client> {
+        self.client_of(self.model.box_of(sid))
+            .unwrap_or_else(|| self.client.clone())
+    }
+
+    /// The client `req` goes to ([`Model::route`]).
+    pub fn client_for_req(&self, req: &Req) -> Arc<Client> {
+        self.client_of(self.model.route(req))
+            .unwrap_or_else(|| self.client.clone())
+    }
+
+    /// Every client with its box: the remote one first.
+    pub fn clients(&self) -> Vec<(BoxId, Arc<Client>)> {
+        let mut v = vec![(BoxId::Remote, self.client.clone())];
+        v.extend(self.local.clone().map(|l| (BoxId::Local, l)));
+        v
+    }
+
+    /// Tells every daemon whether the window is out of sight (they ping less often then).
+    pub fn set_background(&self, background: bool) {
+        for (_, c) in self.clients() {
+            c.set_background(background);
+        }
     }
 
     /// The session the centre shows.
@@ -540,10 +669,16 @@ impl Net {
         }
     }
 
-    /// Runs `req` on the side runtime. The answer is `None` when the request failed, and the
-    /// reason waits in [`Net::error`] for the nav bar.
+    /// Runs `req` on the side runtime, on the box it is about ([`Model::route`]). The answer is
+    /// `None` when the request failed, and the reason waits in [`Net::error`] for the nav bar.
     pub fn run(&mut self, req: Req, cx: &mut Context<Self>) -> Task<Option<Resp>> {
-        let sent = self.try_run(req, cx);
+        let b = self.model.route(&req);
+        self.run_on(b, req, cx)
+    }
+
+    /// [`Net::run`] on box `b` (a new session is made where the user chose).
+    pub fn run_on(&mut self, b: BoxId, req: Req, cx: &mut Context<Self>) -> Task<Option<Resp>> {
+        let sent = self.try_run_on(b, req, cx);
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             let error = answer.as_ref().err().cloned();
@@ -559,14 +694,68 @@ impl Net {
     /// Runs `req` on the side runtime and gives the answer or the reason it failed, leaving
     /// [`Net::error`] alone: for a caller that has another plan when this one fails.
     pub fn try_run(&mut self, req: Req, cx: &mut Context<Self>) -> Task<Result<Resp, String>> {
-        let c = self.client.clone();
+        let b = self.model.route(&req);
+        self.try_run_on(b, req, cx)
+    }
+
+    /// [`Net::try_run`] on box `b`. A session it makes is placed on `b` before the answer is given,
+    /// so whoever shows it reaches the right daemon at once.
+    pub fn try_run_on(
+        &mut self,
+        b: BoxId,
+        req: Req,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Resp, String>> {
+        let Some(c) = self.client_of(b) else {
+            return Task::ready(Err("this laptop has no local daemon".to_owned()));
+        };
         let sent = self.rt.spawn(async move { c.request(req).await });
-        cx.spawn(async move |_, _| match sent.await {
-            Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(e) => Err(e.to_string()),
+        cx.spawn(async move |this, cx| {
+            let answer = match sent.await {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            if let Ok(Resp::Session(sid)) = &answer {
+                let sid = *sid;
+                this.update(cx, |n, _| n.model.boxes.insert(sid, b)).ok();
+            }
+            answer
         })
     }
+}
+
+/// Drains `client`'s events into the model as box `b`'s, re-emits them, and keeps asking for the
+/// global scope until the daemon says yes (the client resubscribes by itself after a reconnect, but
+/// a subscribe that gets no answer in 30 s is forgotten).
+fn drain(
+    client: &Arc<Client>,
+    b: BoxId,
+    rt: &tokio::runtime::Handle,
+    cx: &mut Context<Net>,
+) -> Task<()> {
+    let c = client.clone();
+    rt.spawn(async move {
+        while c.subscribe(Scope::Global).await.is_err() {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+    let mut events = client.events();
+    cx.spawn(async move |this, cx| {
+        while let Some(ev) = events.recv().await {
+            let alive = this
+                .update(cx, |n, cx| {
+                    if n.model.apply_from(b, &ev) {
+                        cx.notify();
+                    }
+                    cx.emit(ClientEvent(ev, b));
+                })
+                .is_ok();
+            if !alive {
+                break;
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1102,6 +1291,75 @@ mod tests {
             status_line_with(&m, "", None, None),
             status_line(&m, "", None)
         );
+    }
+
+    fn changes_of(m: &mut Model, b: BoxId, rows: Vec<Row>) -> bool {
+        m.apply_from(b, &changes(rows))
+    }
+
+    #[test]
+    fn a_session_is_routed_to_the_box_that_listed_it() {
+        let mut m = Model::default();
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(session(1, 1, 10))]);
+        changes_of(&mut m, BoxId::Local, vec![Row::Session(session(2, 1, 20))]);
+        assert_eq!(m.live().len(), 2, "one list for both boxes");
+        assert_eq!(
+            (m.box_of(Id(1)), m.box_of(Id(2))),
+            (BoxId::Remote, BoxId::Local)
+        );
+        assert!(m.is_local(Id(2)) && !m.is_local(Id(1)));
+        assert_eq!(m.box_of(Id(9)), BoxId::Remote, "unplaced: the remote box");
+        let prompt = |sid| Req::Prompt {
+            sid: Id(sid),
+            text: "hi".into(),
+            attachments: vec![],
+            how: femme_proto::rpc::PromptHow::Queue,
+        };
+        assert_eq!(m.route(&prompt(2)), BoxId::Local);
+        assert_eq!(m.route(&prompt(1)), BoxId::Remote);
+        assert_eq!(
+            m.route(&Req::PaneClose {
+                pane: PaneId { sid: Id(2), no: 1 }
+            }),
+            BoxId::Local
+        );
+        // Global requests stay on the remote box; blobs go with the session on show.
+        m.current = Some(Id(2));
+        assert_eq!(m.route(&Req::Prs), BoxId::Remote);
+        assert_eq!(m.route(&Req::BlobGet { hash: [0; 32] }), BoxId::Local);
+    }
+
+    #[test]
+    fn a_reset_of_one_box_keeps_the_other_boxs_sessions() {
+        let mut m = Model::default();
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(session(1, 1, 10))]);
+        changes_of(
+            &mut m,
+            BoxId::Local,
+            vec![Row::Session(session(2, 1, 20)), Row::Pane(pane(2, 1, 1))],
+        );
+        m.current = Some(Id(1));
+        m.apply_from(
+            BoxId::Local,
+            &Event::Reset {
+                scope: Scope::Global,
+            },
+        );
+        assert_eq!(m.sessions.keys().collect::<Vec<_>>(), [&Id(1)]);
+        assert!(m.panes.is_empty());
+        assert_eq!((m.load, m.local_load), (Load::Done, Load::Rebuilding));
+        // The local full set does not list the remote session on show: it stays.
+        changes_of(&mut m, BoxId::Local, vec![]);
+        assert_eq!(m.current, Some(Id(1)));
+        // The local link is its own; the remote one is not touched.
+        m.apply_from(
+            BoxId::Local,
+            &Event::Disconnected {
+                reason: "gone".into(),
+            },
+        );
+        assert_eq!(m.link, Link::Connecting);
+        assert_eq!(m.local_link, Some(Link::Down("gone".into())));
     }
 
     #[test]

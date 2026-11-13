@@ -1071,7 +1071,7 @@ fn request_as(
 ) -> Task<Result<Resp, String>> {
     let (client, rt) = {
         let net = net.read(cx);
-        (net.client(), net.rt())
+        (net.client_for_req(&req), net.rt())
     };
     let sent = rt.spawn(async move { client.request_as(op, req).await });
     cx.spawn(async move |_, _| match sent.await {
@@ -1086,7 +1086,7 @@ fn request_as(
 fn request(net: &Entity<Net>, req: Req, cx: &mut Context<Composer>) -> Task<Result<Resp, String>> {
     let (client, rt) = {
         let net = net.read(cx);
-        (net.client(), net.rt())
+        (net.client_for_req(&req), net.rt())
     };
     let sent = rt.spawn(async move { client.request(req).await });
     cx.spawn(async move |_, _| match sent.await {

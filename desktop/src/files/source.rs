@@ -230,7 +230,7 @@ pub(super) async fn ask(net: &Entity<Net>, req: Req, cx: &mut AsyncApp) -> Resul
     // Through a weak handle: it answers with an error, not a panic, once the app is gone.
     let (client, rt) = net
         .downgrade()
-        .read_with(cx, |n, _| (n.client(), n.rt()))
+        .read_with(cx, |n, _| (n.client_for_req(&req), n.rt()))
         .map_err(|_| "the app is closing".to_owned())?;
     match rt.spawn(async move { client.request(req).await }).await {
         Ok(Ok(resp)) => Ok(resp),
