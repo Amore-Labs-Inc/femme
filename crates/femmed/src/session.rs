@@ -170,6 +170,12 @@ impl Sessions {
         if let Some(f) = std::env::var_os("FEMME_ENV") {
             env.push(("FEMME_ENV".to_string(), f.to_string_lossy().into_owned()));
         }
+        if let Some(sock) = &cfg.child_sock {
+            env.push((
+                "FEMME_SOCK".to_string(),
+                sock.to_string_lossy().into_owned(),
+            ));
+        }
         env
     }
 

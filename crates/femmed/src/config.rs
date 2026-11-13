@@ -74,6 +74,10 @@ pub struct Config {
     /// `FEMME_HOLDER_DIRECT=1`: start holders as plain child processes instead of transient
     /// systemd user units (development, tests, a box without a user manager).
     pub holder_direct: bool,
+    /// The socket the sessions' own `femmed show` / `femmed open` reach, handed to them as
+    /// `FEMME_SOCK`; `None` (`serve`) leaves them on [`sock_path`]'s default. Never read from the
+    /// environment: only [`Config::local`] sets it.
+    pub child_sock: Option<PathBuf>,
 }
 
 const DEFAULT_RESEND: &str = "https://api.resend.com/emails";
@@ -145,6 +149,7 @@ impl Config {
                 .then(|| PathBuf::from(get("FEMME_HOLDER_BIN"))),
             femmed_bin: (!get("FEMME_BIN").is_empty()).then(|| PathBuf::from(get("FEMME_BIN"))),
             holder_direct: flag("FEMME_HOLDER_DIRECT"),
+            child_sock: None,
             home,
             state_dir,
         }
@@ -260,10 +265,14 @@ pub fn runtime_dir() -> PathBuf {
     }
 }
 
-/// The daemon's local socket, `$XDG_RUNTIME_DIR/femme/femmed.sock`: what `femmed proxy` connects to
-/// (the SSH fallback transport) and what `femmed serve` binds.
+/// The daemon's local socket, `$XDG_RUNTIME_DIR/femme/femmed.sock`: what `femmed proxy`, `open` and
+/// `show` connect to (the SSH fallback transport) and what `femmed serve` binds. `$FEMME_SOCK`, when
+/// set, wins: `femmed local` gives its sessions its own socket that way.
 pub fn sock_path() -> PathBuf {
-    runtime_dir().join("femme/femmed.sock")
+    match std::env::var_os("FEMME_SOCK") {
+        Some(s) if !s.is_empty() => PathBuf::from(s),
+        _ => runtime_dir().join("femme/femmed.sock"),
+    }
 }
 
 /// `femmed local`'s default state dir: `$XDG_STATE_HOME/femme-local`, else
@@ -285,6 +294,7 @@ impl Config {
     /// This config for `femmed local` on `state`: its own store there, and nothing that belongs to
     /// the server daemon (no board import, no phone pushes, no board API elsewhere).
     pub fn local(mut self, state: PathBuf) -> Config {
+        self.child_sock = Some(local_sock_path(&state));
         self.state_dir = state;
         self.replaces_board = false;
         self.ntfy_topic.clear();
@@ -378,6 +388,7 @@ mod tests {
         assert!(c.autodeploy && c.account_rotation && !c.mosh);
         assert_eq!(c.claude_mcp, ["context7", "posthog"]);
         assert_eq!(c.state_dir, PathBuf::from("/s"));
+        assert_eq!(c.child_sock, Some(PathBuf::from("/s/femmed.sock")));
         assert_eq!(c.http_bind, "127.0.0.1:9999"); // the board's old variable still works
         assert_eq!(c.host, "box");
         let c = Config::from_vars(vars(&[
