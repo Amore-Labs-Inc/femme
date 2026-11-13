@@ -37,7 +37,7 @@ use gpui_component::input::Escape;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
-use crate::net::{self, Link, Model, Net};
+use crate::net::{self, BoxId, Link, Model, Net};
 use crate::session;
 use crate::theme::{
     accent_soft, bad, bar, bar_text, done, ink, muted, on_accent_strong, paper, pause, queue, work,
@@ -248,6 +248,8 @@ fn rows(model: &Model) -> Vec<Row> {
 struct Shown {
     rows: Vec<Row>,
     link: Link,
+    /// `femmed local` is connected: `+ this laptop` is offered.
+    local_up: bool,
 }
 
 impl Shown {
@@ -255,6 +257,7 @@ impl Shown {
         Self {
             rows: rows(model),
             link: model.link.clone(),
+            local_up: matches!(model.local_link, Some(Link::Up(_))),
         }
     }
 
@@ -270,6 +273,11 @@ impl Shown {
     /// Whether a session can be created now.
     fn can_create(&self) -> bool {
         matches!(self.link, Link::Up(_))
+    }
+
+    /// Whether a session can be created on this laptop now.
+    fn can_create_local(&self) -> bool {
+        self.local_up
     }
 }
 
@@ -545,16 +553,16 @@ impl Sidebar {
         cx.stop_propagation();
     }
 
-    /// `+ claude` (`cwd` empty: the daemon's default directory) or a folder header's `+`: a headless
-    /// Claude session there, which becomes the current one.
-    fn create(&mut self, cwd: &str, cx: &mut Context<Self>) {
+    /// `+ claude`, `+ this laptop` (`cwd` empty: the daemon's home directory) or a folder header's
+    /// `+`: a headless Claude session there, on box `on`, which becomes the current one.
+    fn create(&mut self, cwd: &str, on: BoxId, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| n.run(session::new_claude(cwd), cx));
+        let sent = net.update(cx, |n, cx| n.run_on(on, session::new_claude(cwd), cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -621,15 +629,31 @@ impl Sidebar {
         }
     }
 
-    /// The `+ claude` button.
+    /// The `+ claude` button: a session on the remote box.
     fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
         let b = button("sb-new-claude", "+ claude")
-            .on_click(cx.listener(|this, _, _, cx| this.create("", cx)));
+            .on_click(cx.listener(|this, _, _, cx| this.create("", BoxId::Remote, cx)));
         if self.creating {
             b.opacity(0.5)
         } else {
             b
         }
+    }
+
+    /// The `+ this laptop` button: a Claude session on `femmed local`, in the home directory.
+    fn new_local_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let b = button("sb-new-local", "+ this laptop")
+            .on_click(cx.listener(|this, _, _, cx| this.create("", BoxId::Local, cx)));
+        if self.creating {
+            b.opacity(0.5)
+        } else {
+            b
+        }
+    }
+
+    /// Whether `+ this laptop` is offered: `femmed local` is connected.
+    fn can_create_local(&self) -> bool {
+        self.net.is_some() && self.shown.can_create_local()
     }
 
     /// A row of the expanded list: status dot, title, and agent and directory below it.
@@ -707,6 +731,12 @@ impl Sidebar {
         let hover = SharedString::from(format!("sbp-g-{}", g.cwd));
         let tip = SharedString::from(g.dir.clone());
         let new_tip = SharedString::from(format!("New session in {}", g.name));
+        // The folder is on the box of its newest session.
+        let on = if g.rows.first().is_some_and(|r| r.local) {
+            BoxId::Local
+        } else {
+            BoxId::Remote
+        };
         div()
             .id(SharedString::from(format!("sbp-{}", g.cwd)))
             .group(hover.clone())
@@ -751,7 +781,7 @@ impl Sidebar {
                 .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.create(&cwd, cx);
+                    this.create(&cwd, on, cx);
                 })),
             )
     }
@@ -810,7 +840,10 @@ impl Sidebar {
                 .gap(px(8.))
                 .p(px(12.))
                 .child(div().text_color(muted()).child(self.note()))
-                .when(self.can_create(), |d| d.child(self.new_button(cx)));
+                .when(self.can_create(), |d| d.child(self.new_button(cx)))
+                .when(self.can_create_local(), |d| {
+                    d.child(self.new_local_button(cx))
+                });
         }
         let mut rows = Vec::new();
         for g in groups(&shown.rows) {
@@ -827,7 +860,10 @@ impl Sidebar {
             .justify_between()
             .gap(px(8.))
             .p(px(6.))
-            .child(meta(TOGGLE_KEY));
+            .child(meta(TOGGLE_KEY))
+            .when(self.can_create_local(), |d| {
+                d.child(self.new_local_button(cx))
+            });
         div()
             .flex()
             .flex_col()
@@ -989,6 +1025,12 @@ mod tests {
             rows.iter().map(|r| (r.sid.0, r.local)).collect::<Vec<_>>(),
             [(2, true), (1, false)]
         );
+        // `+ this laptop` is offered while the local daemon is connected.
+        assert!(!Shown::of(&m).can_create_local());
+        m.local_link = Some(Link::Up(Transport::Local));
+        assert!(Shown::of(&m).can_create_local());
+        m.local_link = Some(Link::Down("refused".into()));
+        assert!(!Shown::of(&m).can_create_local());
         // The mark is part of what the list is drawn from: placing a session redraws it.
         let before = Shown::of(&m);
         m.boxes.insert(Id(1), net::BoxId::Local);
