@@ -67,6 +67,8 @@ pub struct Config {
     /// `ssh_host` when set. A connection consumes its command, so every dial runs a copy made of
     /// its program, arguments, set or removed environment and folder (not `env_clear`).
     pub ssh_command: Option<tokio::process::Command>,
+    /// A daemon on this machine: its unix socket (`femmed local`). When set, the only transport.
+    pub unix: Option<std::path::PathBuf>,
     /// This device's TLS identity, enrolled with the daemon.
     pub device: DeviceIdentity,
     /// This process, as terminals know it across reconnects: mint it once per process.
@@ -84,6 +86,7 @@ impl Config {
             quic: None,
             ssh_host: None,
             ssh_command: None,
+            unix: None,
             device,
             client_instance,
             cursors: Cursors::default(),
@@ -99,6 +102,8 @@ pub enum Link {
     Quic,
     /// The SSH stdio mux through `femmed proxy`.
     Ssh,
+    /// The mux over a unix socket of a daemon on this machine (`femmed local`).
+    Local,
 }
 
 /// What the app drains from [`Client::events`], in the order it happened.
@@ -195,6 +200,7 @@ pub(crate) struct Shared {
     pub quic: Option<(SocketAddr, [u8; 32])>,
     pub ssh_host: Option<String>,
     pub ssh_command: Option<tokio::process::Command>,
+    pub unix: Option<std::path::PathBuf>,
     pub device: DeviceIdentity,
     pub instance: u128,
     pub reprobe: Duration,
@@ -252,6 +258,7 @@ impl Client {
             quic: cfg.quic,
             ssh_host: cfg.ssh_host,
             ssh_command: cfg.ssh_command,
+            unix: cfg.unix,
             device: cfg.device,
             instance: cfg.client_instance.0,
             reprobe: cfg.quic_reprobe,
