@@ -388,7 +388,6 @@ mod tests {
         assert!(c.autodeploy && c.account_rotation && !c.mosh);
         assert_eq!(c.claude_mcp, ["context7", "posthog"]);
         assert_eq!(c.state_dir, PathBuf::from("/s"));
-        assert_eq!(c.child_sock, Some(PathBuf::from("/s/femmed.sock")));
         assert_eq!(c.http_bind, "127.0.0.1:9999"); // the board's old variable still works
         assert_eq!(c.host, "box");
         let c = Config::from_vars(vars(&[
@@ -469,6 +468,7 @@ mod tests {
         ]))
         .local(PathBuf::from("/s"));
         assert_eq!(c.state_dir, PathBuf::from("/s"));
+        assert_eq!(c.child_sock, Some(PathBuf::from("/s/femmed.sock")));
         assert!(!c.replaces_board && c.ntfy_topic.is_empty() && c.board_api.is_none());
     }
 }
