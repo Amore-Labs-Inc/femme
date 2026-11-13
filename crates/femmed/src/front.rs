@@ -238,16 +238,9 @@ pub async fn serve_front_with(
         .with_context(|| format!("cannot bind QUIC {quic}"))?;
     let quic = listener.local_addr().context("QUIC address")?;
     let sock = daemon.sessions.dirs.runtime.join("femmed.sock");
-    let unix = bind_sock(&sock).await?;
-    // The socket is ours, so its owner is who may connect: the same user's ssh login.
-    let uid = std::fs::metadata(&sock).context("socket owner")?.uid();
-    let hops = Arc::new(Hops::new());
-    let front = Arc::new(Front {
-        daemon: Arc::downgrade(&daemon),
-        waits,
-        hops: hops.clone(),
-        inflight: Mutex::default(),
-    });
+    let front = new_front(&daemon, waits);
+    let hops = front.hops.clone();
+    let sock_task = start_sock(front.clone(), &sock).await?;
     tracing::info!(
         fingerprint = %fp_to_hex(&fingerprint),
         %quic,
@@ -258,8 +251,8 @@ pub async fn serve_front_with(
         front: Arc::downgrade(&front),
     });
     let tasks = vec![
-        tokio::spawn(quic_loop(front.clone(), listener)),
-        tokio::spawn(sock_loop(front, unix, uid)),
+        tokio::spawn(quic_loop(front, listener)),
+        sock_task,
         tokio::spawn(report(hops.clone())),
     ];
     Ok(FrontHandle {
@@ -270,6 +263,65 @@ pub async fn serve_front_with(
         gate,
         tasks,
     })
+}
+
+/// A front that serves only a unix socket (`femmed local`): no QUIC, no phones. Dropping it stops
+/// it: the listener and every connection close, and the socket file goes.
+pub struct SockFront {
+    sock: PathBuf,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl SockFront {
+    /// The socket it serves.
+    pub fn sock_path(&self) -> &Path {
+        &self.sock
+    }
+}
+
+impl Drop for SockFront {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Starts a socket-only front on `sock`: the same connections, frames and handler as the SSH
+/// fallback of [`serve_front_with`], for the same user only. A leftover socket file is replaced;
+/// another live femmed on it is an error.
+pub async fn serve_sock(
+    daemon: Arc<Daemon>,
+    sock: PathBuf,
+    waits: Waits,
+) -> anyhow::Result<SockFront> {
+    let front = new_front(&daemon, waits);
+    let hops = front.hops.clone();
+    let sock_task = start_sock(front, &sock).await?;
+    tracing::info!(sock = %sock.display(), "socket front up");
+    Ok(SockFront {
+        sock,
+        tasks: vec![sock_task, tokio::spawn(report(hops))],
+    })
+}
+
+/// What every connection of a new front shares.
+fn new_front(daemon: &Arc<Daemon>, waits: Waits) -> Arc<Front> {
+    Arc::new(Front {
+        daemon: Arc::downgrade(daemon),
+        waits,
+        hops: Arc::new(Hops::new()),
+        inflight: Mutex::default(),
+    })
+}
+
+/// Binds `sock` ([`bind_sock`]) and accepts its connections on `front` from a task of its own.
+async fn start_sock(front: Arc<Front>, sock: &Path) -> anyhow::Result<JoinHandle<()>> {
+    let unix = bind_sock(sock).await?;
+    // The socket is ours, so its owner is who may connect: the same user's ssh login.
+    let uid = std::fs::metadata(sock).context("socket owner")?.uid();
+    Ok(tokio::spawn(sock_loop(front, unix, uid)))
 }
 
 /// Claims the socket path: its folder is ours alone (0700), a leftover from a crash is replaced,
