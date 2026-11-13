@@ -399,9 +399,15 @@ impl Model {
             let session = self.sessions.get(&pane.sid).map(title).unwrap_or_default();
             format!("{session} · {}", pane.no)
         });
-        match label.char_indices().nth(LABEL) {
+        let label = match label.char_indices().nth(LABEL) {
             Some((end, _)) => format!("{}…", &label[..end]),
             None => label,
+        };
+        // A pane of a laptop session says so in its tab, as the sidebar row does.
+        if self.is_local(pane.sid) {
+            format!("{label} · local")
+        } else {
+            label
         }
     }
 
@@ -1084,6 +1090,9 @@ mod tests {
         assert_eq!(m.tab_label(id(2), Some("htop".into())), "htop");
         assert_eq!(m.tab_label(id(2), Some(String::new())), "vim");
         assert_eq!(m.tab_label(id(9), None), "build · 9");
+        m.boxes.insert(Id(1), BoxId::Local);
+        assert_eq!(m.tab_label(id(1), None), "build · 1 · local");
+        m.boxes.remove(&Id(1));
         let long = "é".repeat(40);
         assert_eq!(
             m.tab_label(id(1), Some(long)),
