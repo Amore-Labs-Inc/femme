@@ -68,6 +68,14 @@ pub struct Cli {
 pub enum Command {
     /// Run the daemon.
     Serve,
+    /// Run a daemon for this machine's own sessions, reachable only on `<state>/femmed.sock`
+    /// (what the desktop spawns on the laptop): no HTTP, QUIC, pushes or issue worker.
+    Local {
+        /// Its state dir: store, hooks, spools and the socket (default
+        /// `$XDG_STATE_HOME/femme-local`, else `~/.local/state/femme-local`).
+        #[arg(long)]
+        state: Option<std::path::PathBuf>,
+    },
     /// Relay stdin and stdout to the daemon's local socket (the SSH fallback: `ssh -T host femmed proxy`).
     Proxy,
     /// Start a headless Claude session in the daemon, in `--cwd` (default: here), and print its id.
@@ -136,18 +144,7 @@ pub enum DevicesCmd {
 /// `femmed serve`: logs to the journal (under systemd) or stderr, opens the store, imports the old
 /// board's files once when `FEMMED=2`, and serves until SIGTERM. Exits 1 with the reason otherwise.
 async fn serve_daemon() -> anyhow::Result<()> {
-    use tracing_subscriber::prelude::*;
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let registry = tracing_subscriber::registry().with(filter);
-    match tracing_journald::layer() {
-        Ok(journald) if std::env::var_os("JOURNAL_STREAM").is_some() => {
-            registry.with(journald).init()
-        }
-        _ => registry
-            .with(tracing_subscriber::fmt::layer().with_writer(io::stderr))
-            .init(),
-    }
+    init_logs(true);
     let cfg = Config::load();
     let daemon = crate::daemon::Daemon::open(cfg.clone())?;
     if cfg.replaces_board {
@@ -169,6 +166,53 @@ async fn serve_daemon() -> anyhow::Result<()> {
         std::sync::Arc::downgrade(&daemon),
     ));
     crate::serve_with(daemon, cfg, Some(front.gate())).await
+}
+
+/// Logs at `info` (or `RUST_LOG`) to stderr, or to the journal when `journal` and systemd gave us
+/// one.
+fn init_logs(journal: bool) {
+    use tracing_subscriber::prelude::*;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let registry = tracing_subscriber::registry().with(filter);
+    match tracing_journald::layer() {
+        Ok(journald) if journal && std::env::var_os("JOURNAL_STREAM").is_some() => {
+            registry.with(journald).init()
+        }
+        _ => registry
+            .with(tracing_subscriber::fmt::layer().with_writer(io::stderr))
+            .init(),
+    }
+}
+
+/// `femmed local`: the daemon core on its own store in `state` ([`config::local_state_dir`] when
+/// `None`), served on [`config::local_sock_path`] only, until SIGTERM or SIGINT; then the socket
+/// file goes. Sessions' holders outlive it, as under `serve`, and the next start reattaches them.
+/// No board import, HTTP, QUIC, phone pushes, issue worker, headless seeding or retention.
+async fn serve_local(state: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    init_logs(false);
+    // Before the socket exists: whoever sees it may stop us at once, and must find us listening.
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    let state = match state {
+        Some(s) => s,
+        None => {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            config::local_state_dir(std::env::var("XDG_STATE_HOME").ok().as_deref(), &home)
+        }
+    };
+    let cfg = Config::load().local(state);
+    let daemon = crate::daemon::Daemon::open(cfg)?;
+    daemon.reconcile().await;
+    let sock = config::local_sock_path(&daemon.cfg.state_dir);
+    let front = crate::front::serve_sock(daemon, sock, crate::front::Waits::default()).await?;
+    tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+    tracing::info!("stopping");
+    drop(front);
+    Ok(())
 }
 
 /// The SSH fallback transport: connects to the daemon's socket `sock`, copies `input` to it and
@@ -322,6 +366,13 @@ pub async fn run(cli: Cli) -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("femmed serve: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Local { state } => match serve_local(state).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("femmed local: {e:#}");
                 ExitCode::FAILURE
             }
         },
