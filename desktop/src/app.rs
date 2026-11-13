@@ -363,7 +363,8 @@ impl FemmeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let net = started.map(|s| cx.new(|cx| Net::new(s.client, None, rt.clone(), s.enroll, cx)));
+        let net =
+            started.map(|s| cx.new(|cx| Net::new(s.client, s.local, rt.clone(), s.enroll, cx)));
         let menu = cx.new(|cx| FemmeMenu::new(net.clone(), cx));
         let sidebar = cx.new(|cx| Sidebar::new(net.clone(), cx));
         let transcript = cx.new(|cx| Transcript::new(net.clone(), cx));

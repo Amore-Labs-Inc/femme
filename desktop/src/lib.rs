@@ -56,7 +56,7 @@ pub fn run(cfg: app::Config) -> anyhow::Result<()> {
         .context("start the side tokio runtime")?;
     let handle = rt.handle().clone();
     // The client dials from here on, while the window opens.
-    let started = cfg
+    let mut started = cfg
         .connect
         .as_ref()
         .map(|c| {
@@ -64,10 +64,18 @@ pub fn run(cfg: app::Config) -> anyhow::Result<()> {
             net::start(c)
         })
         .transpose()?;
+    // `femmed local`, if this app started it: stopped when the app quits (on macOS quitting ends
+    // the process, so not after `run` returns).
+    let mut local_daemon = started.as_mut().and_then(|s| s.daemon.take());
     gpui_platform::application().run(move |cx| {
         gpui_component::init(cx);
         theme::apply(cx);
         app::bind_keys(cx);
+        cx.on_app_quit(move |_| {
+            drop(local_daemon.take());
+            async {}
+        })
+        .detach();
         app::open(cfg, handle, started, cx);
     });
     drop(rt);

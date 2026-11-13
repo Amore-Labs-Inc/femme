@@ -8,6 +8,7 @@
 //! to the client of its box.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -449,13 +450,18 @@ pub fn status_line_with(
 pub struct Started {
     /// The client; it is already dialling.
     pub client: Arc<Client>,
+    /// The client of `femmed local` on this machine, when there is one; it is already dialling.
+    pub local: Option<Arc<Client>>,
+    /// The `femmed local` this app started, stopped when it is dropped (at exit).
+    pub daemon: Option<LocalDaemon>,
     /// The command that enrolls this device with the daemon, for the hint.
     pub enroll: String,
 }
 
 /// Starts the client for `c` with this device's identity and a fresh client instance (one per
-/// process: terminals know it across reconnects). Call inside the side runtime: the client spawns
-/// its tasks on it.
+/// process: terminals know it across reconnects), and the client of `femmed local` (started here
+/// unless its socket is already live). Call inside the side runtime: the clients spawn their tasks
+/// on it.
 pub fn start(c: &Connect) -> anyhow::Result<Started> {
     let device = connect::identity(&c.identity)?;
     let spki = device
@@ -464,10 +470,96 @@ pub fn start(c: &Connect) -> anyhow::Result<Started> {
     let mut cfg = femme_client::Config::new(device, ulid::Ulid::generate());
     cfg.quic = c.quic;
     cfg.ssh_host.clone_from(&c.ssh);
+    let (local, daemon) = match start_local(c) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("femme-desktop: no local sessions: {e:#}");
+            (None, None)
+        }
+    };
     Ok(Started {
         client: Arc::new(Client::start(cfg)),
+        local,
+        daemon,
         enroll: connect::enroll_line(c.ssh.as_deref(), &spki),
     })
+}
+
+/// Where `femmed local` keeps its store, socket and log: `$XDG_STATE_HOME/femme-local`, else
+/// `~/.local/state/femme-local` (what `femmed local` takes by default).
+fn local_state() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/state")))?;
+    Some(base.join("femme-local"))
+}
+
+/// The `femmed` to run: the one beside this executable, else the first on `PATH`.
+fn femmed_bin() -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("femmed")));
+    beside.filter(|p| p.is_file()).or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join("femmed"))
+            .find(|p| p.is_file())
+    })
+}
+
+/// `femmed local`, running as this app's child; stopped (SIGTERM, so it ends its sessions cleanly)
+/// when dropped.
+pub struct LocalDaemon(std::process::Child);
+
+impl Drop for LocalDaemon {
+    fn drop(&mut self) {
+        let pid = self.0.id().to_string();
+        let asked = std::process::Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !asked {
+            self.0.kill().ok();
+        }
+        self.0.wait().ok();
+    }
+}
+
+/// The client of `femmed local` and the daemon itself when this call started it. A live socket is
+/// used as it is (a `systemd --user` unit, another window); otherwise `femmed local` is started with
+/// its output in `<state>/femmed.log`. Without a `femmed` to run there is no local box: `(None, None)`.
+fn start_local(c: &Connect) -> anyhow::Result<(Option<Arc<Client>>, Option<LocalDaemon>)> {
+    let state = local_state().context("no home directory for the local daemon's state")?;
+    let sock = state.join("femmed.sock");
+    let daemon = if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+        None
+    } else {
+        let Some(bin) = femmed_bin() else {
+            eprintln!("femme-desktop: no femmed beside the app or on PATH: no local sessions");
+            return Ok((None, None));
+        };
+        std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(state.join("femmed.log"))
+            .context("open femmed.log")?;
+        let child = std::process::Command::new(&bin)
+            .arg("local")
+            .arg("--state")
+            .arg(&state)
+            .stdin(std::process::Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .spawn()
+            .with_context(|| format!("start {} local", bin.display()))?;
+        Some(LocalDaemon(child))
+    };
+    // The socket may not be up yet: the client dials again with its back-off until it is.
+    let mut cfg =
+        femme_client::Config::new(connect::identity(&c.identity)?, ulid::Ulid::generate());
+    cfg.unix = Some(sock);
+    Ok((Some(Arc::new(Client::start(cfg))), daemon))
 }
 
 /// Every event of the daemon's client, re-emitted for views that keep more than [`Model`] does (the
