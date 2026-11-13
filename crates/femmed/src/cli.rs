@@ -208,10 +208,13 @@ async fn serve_local(state: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     let daemon = crate::daemon::Daemon::open(cfg)?;
     daemon.reconcile().await;
     let sock = config::local_sock_path(&daemon.cfg.state_dir);
-    let front = crate::front::serve_sock(daemon, sock, crate::front::Waits::default()).await?;
+    let front =
+        crate::front::serve_sock(daemon.clone(), sock, crate::front::Waits::default()).await?;
     tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
     tracing::info!("stopping");
+    // The front holds the daemon weakly: it lives until here, then the socket goes.
     drop(front);
+    drop(daemon);
     Ok(())
 }
 
