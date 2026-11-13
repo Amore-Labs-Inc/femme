@@ -188,7 +188,10 @@ fn init_logs(journal: bool) {
 /// `femmed local`: the daemon core on its own store in `state` ([`config::local_state_dir`] when
 /// `None`), served on [`config::local_sock_path`] only, until SIGTERM or SIGINT; then the socket
 /// file goes. Sessions' holders outlive it, as under `serve`, and the next start reattaches them.
-/// No board import, HTTP, QUIC, phone pushes, issue worker, headless seeding or retention.
+/// Besides the socket, `/internal/hook` alone on a loopback port ([`hook_listener`]), which its
+/// sessions get as `HTTP_BIND` (and the socket as `FEMME_SOCK`) so their `femmed hook`, `show` and
+/// `open` reach this daemon. No board import, board API, QUIC, phone pushes, issue worker,
+/// headless seeding or retention.
 async fn serve_local(state: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     init_logs(false);
     // Before the socket exists: whoever sees it may stop us at once, and must find us listening.
@@ -204,18 +207,45 @@ async fn serve_local(state: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             config::local_state_dir(std::env::var("XDG_STATE_HOME").ok().as_deref(), &home)
         }
     };
-    let cfg = Config::load().local(state);
+    let mut cfg = Config::load().local(state);
+    std::fs::create_dir_all(&cfg.state_dir)?;
+    let hooks = hook_listener(&cfg.state_path("hook-port")).await?;
+    cfg.http_bind = hooks.local_addr()?.to_string();
     let daemon = crate::daemon::Daemon::open(cfg)?;
     daemon.reconcile().await;
+    let app = crate::compat::hook_router(daemon.clone())
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let http = tokio::spawn(async move { axum::serve(hooks, app).await });
+    tracing::info!(bind = %daemon.cfg.http_bind, "hook door up");
     let sock = config::local_sock_path(&daemon.cfg.state_dir);
     let front =
         crate::front::serve_sock(daemon.clone(), sock, crate::front::Waits::default()).await?;
     tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
     tracing::info!("stopping");
+    http.abort();
     // The front holds the daemon weakly: it lives until here, then the socket goes.
     drop(front);
     drop(daemon);
     Ok(())
+}
+
+/// `femmed local`'s hook door: loopback, on the port of its last run (kept in `remember`) when
+/// that is free, so the sessions it reattaches, which hold the old `HTTP_BIND`, still reach it;
+/// else a new ephemeral port, remembered for next time.
+async fn hook_listener(remember: &Path) -> anyhow::Result<tokio::net::TcpListener> {
+    use tokio::net::TcpListener;
+    let last = std::fs::read_to_string(remember)
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0);
+    if let Some(port) = last {
+        if let Ok(l) = TcpListener::bind(("127.0.0.1", port)).await {
+            return Ok(l);
+        }
+    }
+    let l = TcpListener::bind("127.0.0.1:0").await?;
+    let _ = std::fs::write(remember, l.local_addr()?.port().to_string());
+    Ok(l)
 }
 
 /// The SSH fallback transport: connects to the daemon's socket `sock`, copies `input` to it and
