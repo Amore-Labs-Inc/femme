@@ -98,21 +98,46 @@ pub fn router_with(core: Arc<dyn Core>, gate: Option<Arc<crate::front::WsGate>>)
     }
 }
 
+/// Only `POST /internal/hook` (loopback only, as in [`router`]); everything else is 404. What
+/// `femmed local` serves so its sessions' agents can report their status: no board, no sign-in.
+pub fn hook_router(core: Arc<dyn Core>) -> Router {
+    Router::new().fallback(hook_only).with_state(app(core))
+}
+
+async fn hook_only(State(app): State<Arc<App>>, http: axum::extract::Request) -> Response {
+    if http.method() != Method::POST || http.uri().path() != "/internal/hook" {
+        return err(404, "only /internal/hook here");
+    }
+    dispatch(State(app), http).await
+}
+
 /// [`router`] plus its state. `background`: start the task that keeps the accounts window fresh
 /// (it shells out to cswap and aws, which tests never want).
 pub(crate) fn build(core: Arc<dyn Core>, background: bool) -> (Router, Arc<App>) {
     let cfg = core.config();
-    let worker_token = fs::read_to_string(cfg.state_path("worker.token"))
-        .ok()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
     if cfg.board_emails.is_empty() || cfg.board_url.is_empty() {
         tracing::warn!("BOARD_EMAIL and BOARD_URL must be set: nobody can sign in to the board");
     }
     if cfg.resend_api_key.is_empty() {
         tracing::warn!("RESEND_API_KEY is not set: sign-in links are logged instead of emailed");
     }
-    let app = Arc::new(App {
+    let app = app(core);
+    if background {
+        accounts::spawn_refresh(&app);
+    }
+    (
+        Router::new().fallback(dispatch).with_state(app.clone()),
+        app,
+    )
+}
+
+/// The compat layer's state over `core`.
+fn app(core: Arc<dyn Core>) -> Arc<App> {
+    let worker_token = fs::read_to_string(core.config().state_path("worker.token"))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    Arc::new(App {
         core,
         worker_token,
         links: Mutex::default(),
@@ -122,14 +147,7 @@ pub(crate) fn build(core: Arc<dyn Core>, background: bool) -> (Router, Arc<App>)
         accounts: Mutex::new(Value::Null),
         logins: Mutex::default(),
         github_errors: Mutex::default(),
-    });
-    if background {
-        accounts::spawn_refresh(&app);
-    }
-    (
-        Router::new().fallback(dispatch).with_state(app.clone()),
-        app,
-    )
+    })
 }
 
 /// One request: its head, the peer and the body (taken once by whichever handler reads it).

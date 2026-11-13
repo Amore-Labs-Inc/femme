@@ -28,6 +28,13 @@ Keep it current: when your module's public API changes, edit your section in the
 - **Top bar**: the `femme` wordmark is a button: hover or click opens a dropdown (version, check for
   updates, pull requests, accounts, dark mode, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
   The link status stays next to it. No lanes, no palette button, no panel buttons.
+- **Local sessions**: the laptop is a second box. The desktop starts `femmed local` (a daemon
+  with its own store in `~/.local/state/femme-local`, one unix socket, nothing public) and shows its
+  sessions in the same list with a `local` pill after the name; their terminal tabs end in
+  `· local`, and the top bar reads `quic 23 ms · local` (`· local: off` while that daemon is down).
+  `+ this laptop` in the sidebar starts a Claude session in the laptop's home folder. Every
+  request goes to the box of its session; the phone never sees local sessions (it cannot reach the
+  laptop). Design: docs/plan-local.md.
 - **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
   and show it. Nothing else on the left (no accounts, no lanes).

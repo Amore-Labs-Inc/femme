@@ -716,6 +716,23 @@ async fn udp_blocked_falls_back_to_ssh_within_two_seconds_and_returns_to_quic_wh
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unix_socket_is_the_local_link_and_needs_no_quic() {
+    let rig = Rig::new().await;
+    let mut cfg = rig.config();
+    cfg.quic = None;
+    cfg.unix = Some(rig.b.runtime().join("femme/femmed.sock"));
+    let (client, mut ev) = rig.start(cfg);
+    ev.connected(Link::Local, WAIT).await;
+    assert_eq!(client.link(), Some(Link::Local));
+    client
+        .subscribe(Scope::Global)
+        .await
+        .expect("subscribes over the socket");
+    let sid = rig.core_shell().await;
+    ev.session_row(sid).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_device_is_reported_even_when_ssh_works() {
     let rig = Rig::new().await;
     let id = rig.d.store.read(auth::list_devices).unwrap()[0].id;

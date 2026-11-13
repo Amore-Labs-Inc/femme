@@ -49,7 +49,7 @@ use crate::frame::{
 };
 use crate::menu::{FemmeMenu, MenuEvent};
 use crate::motion;
-use crate::net::{ClientEvent, Net, Started};
+use crate::net::{BoxId, ClientEvent, Net, Started};
 use crate::projects::{self, Picker};
 use crate::prs::{self, PrsOverlay};
 use crate::session;
@@ -363,7 +363,8 @@ impl FemmeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let net = started.map(|s| cx.new(|cx| Net::new(s.client, rt.clone(), s.enroll, cx)));
+        let net =
+            started.map(|s| cx.new(|cx| Net::new(s.client, s.local, rt.clone(), s.enroll, cx)));
         let menu = cx.new(|cx| FemmeMenu::new(net.clone(), cx));
         let sidebar = cx.new(|cx| Sidebar::new(net.clone(), cx));
         let transcript = cx.new(|cx| Transcript::new(net.clone(), cx));
@@ -447,9 +448,7 @@ impl FemmeApp {
             // A window nobody looks at needs the daemon's attention less often.
             subs.push(cx.observe_window_activation(window, |t, window, cx| {
                 if let Some(net) = &t.net {
-                    net.read(cx)
-                        .client()
-                        .set_background(!window.is_window_active());
+                    net.read(cx).set_background(!window.is_window_active());
                 }
             }));
         }
@@ -494,7 +493,7 @@ impl FemmeApp {
     /// start is asked again. The menu also checks the box's commit: a deploy restarts femmed, so the
     /// reconnect after a merge is when a new commit is there, and the updater starts at once.
     fn on_client_event(&mut self, net: &Entity<Net>, ev: &ClientEvent, cx: &mut Context<Self>) {
-        if matches!(ev.0, Event::Connected { .. }) {
+        if matches!((&ev.0, ev.1), (Event::Connected { .. }, BoxId::Remote)) {
             session::open_at_start(net, cx);
             self.menu.update(cx, |m, cx| m.check_updates(cx));
         }
@@ -639,7 +638,8 @@ impl FemmeApp {
     /// it) and gives it back when the user dismisses it; when nobody had it, the centre takes it.
     fn accounts_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let alert = self.accounts.read(cx).sign_in_bad();
-        self.menu.update(cx, |m, cx| m.set_accounts_alert(alert, cx));
+        self.menu
+            .update(cx, |m, cx| m.set_accounts_alert(alert, cx));
         let open = self.accounts.read(cx).is_open();
         if open != self.modal_open {
             self.modal_open = open;

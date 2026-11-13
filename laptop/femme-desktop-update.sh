@@ -27,9 +27,16 @@ mkdir -p "$src" && rsync -rc --delete "$new/" "$src/" && rm -rf "$new"
 # mold links the app in a second or two where the default linker takes ten (laptop-setup.sh installs it).
 command -v mold >/dev/null && export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
 FEMME_COMMIT=$want ~/.cargo/bin/cargo build -q --profile quick --manifest-path "$src/desktop/Cargo.toml" --target-dir desktop/target
+# The daemon and holder of the same commit, beside the app: the desktop starts `femmed local` from
+# there for sessions that run on this laptop (docs/plan-local.md). Their own target dir: the root
+# workspace and the desktop's are two workspaces, and cargo must not mix them in one.
+~/.cargo/bin/cargo build -q --release --manifest-path "$src/Cargo.toml" --target-dir desktop/target-femmed -p femmed -p femme-holder
 # Copy then rename: the running app keeps its old binary open until it is restarted. Stripped here
 # rather than by the profile, which would make every build strip again.
 install -Dsm755 desktop/target/quick/femme-desktop ~/.local/bin/femme-desktop.new && mv ~/.local/bin/femme-desktop.new ~/.local/bin/femme-desktop
+for b in femmed femme-holder; do
+  install -Dsm755 "desktop/target-femmed/release/$b" ~/.local/bin/$b.new && mv ~/.local/bin/$b.new ~/.local/bin/$b
+done
 mkdir -p "$state" && echo "$want" > "$state/desktop-commit"
 # The launcher entry (app menus); rewritten each time so a moved checkout cannot leave it stale.
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps

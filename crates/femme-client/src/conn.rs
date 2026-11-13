@@ -18,7 +18,7 @@ use femme_proto::{OpId, PROTO_VERSION};
 use femme_transport::quic::{KEEPALIVE_BACKGROUND, KEEPALIVE_FOREGROUND};
 use femme_transport::race::{race, ConnFuture};
 use femme_transport::{
-    command_connect, ssh_connect, Conn, DeviceIdentity, Error, QuicClient, Rx, Tx,
+    command_connect, mux_client, ssh_connect, Conn, DeviceIdentity, Error, QuicClient, Rx, Tx,
 };
 use tokio::task::JoinSet;
 use tokio::time::{interval, sleep, sleep_until, timeout, Instant};
@@ -143,6 +143,14 @@ fn take_kick(sh: &Shared) -> bool {
 
 /// One attempt: the race of the configured transports, then `Hello`.
 async fn dial(sh: &Arc<Shared>) -> Result<Session, String> {
+    if let Some(sock) = &sh.unix {
+        // A daemon on this machine: no race, no QUIC, the mux straight over its socket.
+        let stream = tokio::net::UnixStream::connect(sock)
+            .await
+            .map_err(|e| format!("{}: {e}", sock.display()))?;
+        let (r, w) = stream.into_split();
+        return hello(sh, mux_client(r, w), None).await;
+    }
     let best = race(quic_leg(sh, QUIC_WAIT), ssh_leg(sh))
         .await
         .map_err(|e| e.to_string())?;
@@ -237,6 +245,8 @@ async fn hello(
 ) -> Result<Session, String> {
     let link = if conn.is_quic() {
         Link::Quic
+    } else if sh.unix.is_some() {
+        Link::Local
     } else {
         Link::Ssh
     };

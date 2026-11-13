@@ -74,6 +74,10 @@ pub struct Config {
     /// `FEMME_HOLDER_DIRECT=1`: start holders as plain child processes instead of transient
     /// systemd user units (development, tests, a box without a user manager).
     pub holder_direct: bool,
+    /// The socket the sessions' own `femmed show` / `femmed open` reach, handed to them as
+    /// `FEMME_SOCK`; `None` (`serve`) leaves them on [`sock_path`]'s default. Never read from the
+    /// environment: only [`Config::local`] sets it.
+    pub child_sock: Option<PathBuf>,
 }
 
 const DEFAULT_RESEND: &str = "https://api.resend.com/emails";
@@ -145,6 +149,7 @@ impl Config {
                 .then(|| PathBuf::from(get("FEMME_HOLDER_BIN"))),
             femmed_bin: (!get("FEMME_BIN").is_empty()).then(|| PathBuf::from(get("FEMME_BIN"))),
             holder_direct: flag("FEMME_HOLDER_DIRECT"),
+            child_sock: None,
             home,
             state_dir,
         }
@@ -260,10 +265,42 @@ pub fn runtime_dir() -> PathBuf {
     }
 }
 
-/// The daemon's local socket, `$XDG_RUNTIME_DIR/femme/femmed.sock`: what `femmed proxy` connects to
-/// (the SSH fallback transport) and what `femmed serve` binds.
+/// The daemon's local socket, `$XDG_RUNTIME_DIR/femme/femmed.sock`: what `femmed proxy`, `open` and
+/// `show` connect to (the SSH fallback transport) and what `femmed serve` binds. `$FEMME_SOCK`, when
+/// set, wins: `femmed local` gives its sessions its own socket that way.
 pub fn sock_path() -> PathBuf {
-    runtime_dir().join("femme/femmed.sock")
+    match std::env::var_os("FEMME_SOCK") {
+        Some(s) if !s.is_empty() => PathBuf::from(s),
+        _ => runtime_dir().join("femme/femmed.sock"),
+    }
+}
+
+/// `femmed local`'s default state dir: `$XDG_STATE_HOME/femme-local`, else
+/// `<home>/.local/state/femme-local`. Apart from the server daemon's `femme`, so a laptop's local
+/// sessions never share a store with anything else.
+pub fn local_state_dir(xdg_state_home: Option<&str>, home: &Path) -> PathBuf {
+    match xdg_state_home {
+        Some(d) if !d.is_empty() => PathBuf::from(d).join("femme-local"),
+        _ => home.join(".local/state/femme-local"),
+    }
+}
+
+/// `femmed local`'s only way in: `<state>/femmed.sock`. The desktop computes the same path.
+pub fn local_sock_path(state: &Path) -> PathBuf {
+    state.join("femmed.sock")
+}
+
+impl Config {
+    /// This config for `femmed local` on `state`: its own store there, and nothing that belongs to
+    /// the server daemon (no board import, no phone pushes, no board API elsewhere).
+    pub fn local(mut self, state: PathBuf) -> Config {
+        self.child_sock = Some(local_sock_path(&state));
+        self.state_dir = state;
+        self.replaces_board = false;
+        self.ntfy_topic.clear();
+        self.board_api = None;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -400,5 +437,38 @@ mod tests {
     #[test]
     fn socket_path_is_under_the_runtime_dir() {
         assert!(sock_path().ends_with("femme/femmed.sock"));
+    }
+
+    #[test]
+    fn local_state_follows_xdg_then_home() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            local_state_dir(Some("/x/state"), home),
+            PathBuf::from("/x/state/femme-local")
+        );
+        for unset in [None, Some("")] {
+            assert_eq!(
+                local_state_dir(unset, home),
+                PathBuf::from("/home/me/.local/state/femme-local")
+            );
+        }
+        assert_eq!(
+            local_sock_path(Path::new("/s")),
+            PathBuf::from("/s/femmed.sock")
+        );
+    }
+
+    #[test]
+    fn local_config_is_its_own_store_and_no_board() {
+        let c = Config::from_vars(vars(&[
+            ("HOME", "/home/me"),
+            ("FEMMED", "2"),
+            ("NTFY_TOPIC", "t"),
+            ("FEMME_BOARD_API", "http://x"),
+        ]))
+        .local(PathBuf::from("/s"));
+        assert_eq!(c.state_dir, PathBuf::from("/s"));
+        assert_eq!(c.child_sock, Some(PathBuf::from("/s/femmed.sock")));
+        assert!(!c.replaces_board && c.ntfy_topic.is_empty() && c.board_api.is_none());
     }
 }

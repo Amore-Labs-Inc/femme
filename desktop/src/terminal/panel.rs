@@ -220,9 +220,7 @@ impl TerminalPanel {
 
     fn set_background(&self, window: &Window, cx: &App) {
         if let Some(net) = &self.net {
-            net.read(cx)
-                .client()
-                .set_background(!window.is_window_active());
+            net.read(cx).set_background(!window.is_window_active());
         }
     }
 
@@ -230,7 +228,7 @@ impl TerminalPanel {
     /// (past [`EAGER`] only for the current session's), none for those that went.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
-        let (all, mains, client, rt) = {
+        let (all, mains, clients, rt) = {
             let n = net.read(cx);
             let all = terminals(&n.model);
             let sids: BTreeSet<Sid> = all.iter().map(|p| p.sid).collect();
@@ -238,7 +236,8 @@ impl TerminalPanel {
                 .into_iter()
                 .filter_map(|sid| Some((sid, main_of(&n.model, sid)?)))
                 .collect();
-            (all, mains, n.client(), n.rt())
+            let boxes: Vec<_> = all.iter().map(|p| n.client_for(p.sid)).collect();
+            (all, mains, boxes, n.rt())
         };
         self.mains = mains;
         self.held.retain(|p, _| all.contains(p));
@@ -247,7 +246,8 @@ impl TerminalPanel {
         for (i, p) in all.iter().enumerate() {
             if (i < EAGER || Some(p.sid) == self.session) && !self.held.contains_key(p) {
                 let id = *p;
-                let pane = cx.new(|cx| TerminalPane::attach(client.clone(), id, &rt, cx));
+                let client = clients[i].clone();
+                let pane = cx.new(|cx| TerminalPane::attach(client, id, &rt, cx));
                 let watch = cx.observe(&pane, move |t, pane, cx| t.pane_changed(id, &pane, cx));
                 let title = pane.read(cx).title();
                 self.held.insert(
