@@ -434,6 +434,11 @@ pub fn status_line_with(
     error: Option<&str>,
 ) -> String {
     let mut line = model.status();
+    match &model.local_link {
+        Some(Link::Up(_)) => line.push_str(" · local"),
+        Some(_) => line.push_str(" · local: off"),
+        None => {}
+    }
     if model.quic_error.is_some() {
         line.push_str(&format!(" | quic refused this device, enroll it: {enroll}"));
     }
@@ -1452,6 +1457,46 @@ mod tests {
         );
         assert_eq!(m.link, Link::Connecting);
         assert_eq!(m.local_link, Some(Link::Down("gone".into())));
+    }
+
+    #[test]
+    fn the_status_line_names_the_local_link() {
+        let mut m = Model::default();
+        m.apply(&Event::Connected {
+            link: Transport::Quic,
+            server_version: "1".into(),
+            epoch: 1,
+            quic_error: None,
+        });
+        m.rtt_ms = Some(23);
+        assert_eq!(
+            status_line(&m, "", None),
+            "quic 23 ms",
+            "no local box: not named"
+        );
+        m.local_link = Some(Link::Connecting);
+        assert_eq!(status_line(&m, "", None), "quic 23 ms · local: off");
+        m.apply_from(
+            BoxId::Local,
+            &Event::Connected {
+                link: Transport::Local,
+                server_version: "1".into(),
+                epoch: 1,
+                quic_error: None,
+            },
+        );
+        assert_eq!(m.status(), "quic 23 ms", "the remote link is untouched");
+        assert_eq!(
+            status_line(&m, "", Some("boom")),
+            "quic 23 ms · local | boom"
+        );
+        m.apply_from(
+            BoxId::Local,
+            &Event::Disconnected {
+                reason: "refused".into(),
+            },
+        );
+        assert_eq!(status_line(&m, "", None), "quic 23 ms · local: off");
     }
 
     #[test]

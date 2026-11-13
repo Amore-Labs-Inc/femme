@@ -44,7 +44,8 @@ use crate::theme::{
     BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{
-    button, dot, icon, icon_button, meta, row, ruled, ruled_sides, title_bar, title_button, Glyph,
+    button, dot, icon, icon_button, meta, row, ruled, ruled_sides, st, title_bar, title_button,
+    Glyph,
 };
 
 /// Width of the expanded sidebar, in logical pixels.
@@ -208,6 +209,8 @@ struct Row {
     dir: String,
     /// The folder as the daemon has it: what the project groups by.
     cwd: String,
+    /// The session runs on this machine (`femmed local`): a `local` pill after the title.
+    local: bool,
 }
 
 impl Row {
@@ -222,13 +225,21 @@ impl Row {
             },
             dir: short_dir(&s.cwd),
             cwd: s.cwd.trim_end_matches('/').to_string(),
+            local: false,
         }
     }
 }
 
 /// The rows of the list: the live sessions, newest first.
 fn rows(model: &Model) -> Vec<Row> {
-    model.live().into_iter().map(Row::of).collect()
+    model
+        .live()
+        .into_iter()
+        .map(|s| Row {
+            local: model.is_local(s.id),
+            ..Row::of(s)
+        })
+        .collect()
 }
 
 /// Everything the list is drawn from. The sidebar redraws when this changes, not whenever `Net`
@@ -669,10 +680,18 @@ impl Sidebar {
                     .min_w_0()
                     .child(
                         div()
-                            .truncate()
-                            .text_size(BODY_SIZE)
-                            .line_height(px(20.))
-                            .child(r.title.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(BODY_SIZE)
+                                    .line_height(px(20.))
+                                    .child(r.title.clone()),
+                            )
+                            .when(r.local, |d| d.child(st("local", muted()).flex_none())),
                     )
                     .child(second),
             )
@@ -959,6 +978,21 @@ mod tests {
         ]);
         assert_eq!(ids(&rows(&m)), [5, 2, 1]);
         assert!(rows(&Model::default()).is_empty());
+    }
+
+    #[test]
+    fn a_session_of_this_laptop_is_marked_local() {
+        let mut m = model(vec![session(1, 10), session(2, 20)]);
+        m.boxes.insert(Id(2), net::BoxId::Local);
+        let rows = rows(&m);
+        assert_eq!(
+            rows.iter().map(|r| (r.sid.0, r.local)).collect::<Vec<_>>(),
+            [(2, true), (1, false)]
+        );
+        // The mark is part of what the list is drawn from: placing a session redraws it.
+        let before = Shown::of(&m);
+        m.boxes.insert(Id(1), net::BoxId::Local);
+        assert_ne!(Shown::of(&m), before);
     }
 
     #[test]
