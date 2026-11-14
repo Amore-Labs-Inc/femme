@@ -2436,8 +2436,9 @@ fn answer_text(a: &Answer, options: &[String]) -> String {
 }
 
 /// What raw input answers a question with: Esc cancels, a number picks that option (`Options` for a
-/// multiple-choice question), `y` is the first option and `n` the second (Allow/Deny, Approve/Keep
-/// planning). Anything else answers nothing.
+/// multiple-choice question), `y` is the first option and `n` the second (Allow/Deny), or "Keep
+/// planning" where a plan asks (its second option is an approval too). Anything else answers
+/// nothing.
 pub(crate) fn answer_from_input(bytes: &[u8], q: &Question) -> Option<Answer> {
     if bytes == b"\x1b" {
         return Some(Answer::Cancel);
@@ -2455,7 +2456,12 @@ pub(crate) fn answer_from_input(bytes: &[u8], q: &Question) -> Option<Answer> {
     };
     match s {
         "y" | "Y" => pick(0),
-        "n" | "N" => pick(1),
+        "n" | "N" => pick(
+            q.options
+                .iter()
+                .position(|o| o == "Keep planning")
+                .unwrap_or(1),
+        ),
         _ => s
             .parse::<usize>()
             .ok()
@@ -3278,6 +3284,20 @@ mod tests {
         );
         assert_eq!(answer_from_input(b"0", &q), None);
         assert_eq!(answer_from_input(b"hello", &q), None);
+        // a plan's second option is an approval: `n` is its "Keep planning"
+        let plan = Question {
+            options: [
+                "Approve · bypass",
+                "Approve · accept edits",
+                "Approve · manual",
+                "Keep planning",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            ..question()
+        };
+        assert_eq!(answer_from_input(b"y", &plan), Some(Answer::Option(0)));
+        assert_eq!(answer_from_input(b"n", &plan), Some(Answer::Option(3)));
         let multi = Question { multi: true, ..q };
         assert_eq!(
             answer_from_input(b"2", &multi),
