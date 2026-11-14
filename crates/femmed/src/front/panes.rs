@@ -64,9 +64,8 @@ impl Daemon {
         let s = self.session(sid)?;
         let holder = match self.holder(sid).await {
             Ok(h) => h,
-            // No holder: a herdr pane's chat (mirrored, its agent runs under herdr), or a session
-            // whose agent ended. One is started for its shells alone; `reconcile` leaves a herdr
-            // session's holder be and `end_session` shuts it down with the session.
+            // No holder: a session whose agent ended. One is started for its shells alone;
+            // `end_session` shuts it down with the session.
             Err(CoreError::NotFound) => {
                 self.sessions.spawn_holder(sid).await.map_err(holder_err)?;
                 self.holder(sid).await?

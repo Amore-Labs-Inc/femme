@@ -162,9 +162,6 @@ async fn serve_daemon() -> anyhow::Result<()> {
     tokio::spawn(crate::headless::seed_commands(std::sync::Arc::downgrade(
         &daemon,
     )));
-    tokio::spawn(crate::headless::herdr::run(std::sync::Arc::downgrade(
-        &daemon,
-    )));
     tokio::spawn(crate::daemon::Daemon::retain_daily(
         std::sync::Arc::downgrade(&daemon),
     ));
