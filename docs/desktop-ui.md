@@ -55,6 +55,14 @@ Keep it current: when your module's public API changes, edit your section in the
   A `PushNotification` call (Claude's push to your phone, which femmed sends through ntfy, see
   [notifications.md](notifications.md)) is one line, `🔔 push · <message>`, with
   `sent to your phone` or `not sent: <reason>`.
+- **Chat ↔ terminal**: a live Claude session has a 24 px row over the centre with one button,
+  `open in terminal` on the chat (`Mode::Headless`) and `back to chat` on Claude Code's own TUI
+  (`Mode::Tui`); mod+shift+t does the same (there is no command palette). The click sends
+  `Req::Takeover { sid, to }`; the centre follows `Session::mode` from the `Changes` stream (a TUI
+  session's centre is its main terminal, back on the chat the transcript reloads from the
+  daemon's items), never a local flag. Until the row flips the button reads `open in terminal…`,
+  disabled (20 s at most); `Busy` keeps it waiting, any other refusal frees it and is said in the
+  top bar. (`desktop/src/takeover.rs`, `app/switch.rs`.)
 - **Compaction hand-off**: a compaction shows as one row, `· Conversation compacted`. Claude Code
   restarts the model with a summary it writes itself ("This session is being continued from a
   previous conversation… Summary: …", after an `<artifact-content-authored-by-others/>` preamble
