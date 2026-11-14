@@ -348,6 +348,21 @@ def case_plan(out):
 
 
 @case
+def case_plan_modes(out):
+    """Plan mode reached as three Shift+Tabs reach it in FEMME, the plan approved with a `setMode` back to bypass."""
+    s = Session("plan_modes", out)
+    s.send(INIT)
+    for i, mode in enumerate(("default", "acceptEdits", "plan")):
+        s.send(control("set_permission_mode", "femme-mode-%d" % (i + 1), mode=mode))
+        s.wait_ctl("femme-mode-%d" % (i + 1))
+    s.send(user_msg("Write the one-line plan 'copy a file' and call ExitPlanMode with it at once (no questions, no exploring). "
+                    "After approval run exactly this Bash command and then say done: echo hi > /tmp/femme-capture/plan-modes.txt", uid(1)))
+    drive(s, lambda req: {"behavior": "allow", "updatedInput": req.get("input", {}),
+                          "updatedPermissions": [{"type": "setMode", "mode": "bypassPermissions", "destination": "session"}]})
+    return s.close()
+
+
+@case
 def case_interrupt(out):
     s = Session("interrupt", out)
     first_prompt(s, "Write the numbers from 1 to 400, one per line, nothing else.", 1)

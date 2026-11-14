@@ -25,9 +25,13 @@
 //!   `<tool_use_id>#<i>` when it asks several questions at once; the daemon sees one
 //!   `QuestionAsked` per question and the CLI gets one `control_response` once all are answered).
 //!   `ExitPlanMode` becomes a `Plan` item `<tool_use_id>` plus, when the CLI really asks (plan mode),
-//!   a `Question` item `<tool_use_id>:ask` (Approve / Keep planning). Any other `can_use_tool`
-//!   (only after a plan-mode approval returned the session to `default`) is a `Question` item
-//!   `<tool_use_id>:ask` (Allow / Deny): the driver never answers on its own.
+//!   a `Question` item `<tool_use_id>:ask` (Approve · bypass / Approve · accept edits /
+//!   Approve · manual / Keep planning). An approval also picks the mode the work goes on in, as
+//!   the terminal's dialog does: it is sent as a `setMode` permission update (checked on
+//!   2.1.323). A bare allow would return the session to the mode it had just before `plan`,
+//!   which after Shift+Tab from bypass is `acceptEdits`. Any other `can_use_tool` (the session is
+//!   not in bypass) is a `Question` item `<tool_use_id>:ask` (Allow / Deny): the driver never
+//!   answers on its own.
 //! * An MCP server's `elicitation` (form or URL mode) is a `Question` item `<request_id>:elicit`
 //!   (Accept / Decline, no free text; Accept sends the form with only its schema's defaults). It
 //!   has no tool call: the CLI's echo of our answer ends it `Answered`. A URL one the server
@@ -100,6 +104,16 @@ const CTX_ID: &str = "femme-ctx-";
 const ASK: &str = "AskUserQuestion";
 /// Tool that proposes a plan for approval.
 const PLAN: &str = "ExitPlanMode";
+/// The answers to a plan: an approval and the permission mode the session goes on in
+/// ([`PLAN_MODES`], same order), then the refusal. Bypass is first because every FEMME chat
+/// starts in it, as the terminal lists it first under `--dangerously-skip-permissions`.
+const PLAN_OPTIONS: [&str; 4] = [
+    "Approve · bypass",
+    "Approve · accept edits",
+    "Approve · manual",
+    "Keep planning",
+];
+const PLAN_MODES: [&str; 3] = ["bypassPermissions", "acceptEdits", "default"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
@@ -162,8 +176,11 @@ struct Part {
 enum PendKind {
     /// AskUserQuestion: answers go back as labels in `updatedInput.answers`.
     Ask,
-    /// ExitPlanMode or an ordinary tool permission: option 0 allows, anything else denies.
+    /// An ordinary tool permission: option 0 allows, anything else denies.
     Allow,
+    /// ExitPlanMode: options 0 to 2 allow and set the permission mode ([`PLAN_MODES`]), anything
+    /// else denies.
+    Plan,
     /// An MCP server's `elicitation`: Accept (0), Decline (1) or Cancel go back as its `action`.
     /// It has no tool call: the item ends when the CLI echoes our answer.
     Elicit,
@@ -1404,7 +1421,7 @@ impl ClaudeDriver {
                     .as_str()
                     .map(|a| parse_answer(a, &part.labels, part.q.multi)),
                 // an elicitation has no tool call, so no result reaches here
-                PendKind::Allow | PendKind::Elicit => Some(Answer::Option(0)),
+                PendKind::Allow | PendKind::Plan | PendKind::Elicit => Some(Answer::Option(0)),
             };
             let (status, answered, reason) = match (is_error, part.answer.clone()) {
                 (true, Some(a)) => (ItemStatus::Answered, Some(a), None),
@@ -1744,19 +1761,19 @@ impl ClaudeDriver {
         } else {
             Vec::new()
         };
-        let kind = if parts.is_empty() {
-            PendKind::Allow
-        } else {
-            PendKind::Ask
+        let kind = match (parts.is_empty(), tool == PLAN) {
+            (false, _) => PendKind::Ask,
+            (true, true) => PendKind::Plan,
+            (true, false) => PendKind::Allow,
         };
         if parts.is_empty() {
-            let (prompt, options) = if tool == PLAN {
+            let (prompt, options): (_, &[&str]) = if tool == PLAN {
                 (
                     "Approve this plan and start coding?".to_owned(),
-                    ["Approve", "Keep planning"],
+                    &PLAN_OPTIONS,
                 )
             } else {
-                (allow_prompt(title.unwrap_or(tool)), ["Allow", "Deny"])
+                (allow_prompt(title.unwrap_or(tool)), &["Allow", "Deny"])
             };
             let labels: Vec<String> = options.iter().map(|s| (*s).to_owned()).collect();
             parts.push(Part {
@@ -2809,6 +2826,13 @@ fn response_body(p: &Pending) -> Value {
             Some(Answer::Text(t)) => deny(t),
             _ => deny("The user said no."),
         },
+        PendKind::Plan => match p.parts.first().and_then(|x| x.answer.as_ref()) {
+            Some(Answer::Option(i)) if usize::from(*i) < PLAN_MODES.len() => json!({
+                "behavior":"allow","updatedInput":p.input,
+                "updatedPermissions":[{"type":"setMode","mode":PLAN_MODES[usize::from(*i)],"destination":"session"}]}),
+            Some(Answer::Text(t)) => deny(t),
+            _ => deny("The user said no."),
+        },
         // the CLI hands `{action, content?}` to the MCP server as is (`oDs` in 2.1.319)
         PendKind::Elicit => match p.parts.first().and_then(|x| x.answer.as_ref()) {
             Some(Answer::Option(0)) if p.input["mode"] == "url" => json!({"action":"accept"}),
@@ -2856,8 +2880,8 @@ fn form_defaults(schema: &Value) -> Value {
 
 /// Fill in the parts of `p` nobody answered in this incarnation from the response we wrote to
 /// the CLI (its echo), the inverse of [`response_body`]. What `response_body` cannot tell apart
-/// comes back as the nearer answer: a refusal of an approval is `Option(1)` ("Deny", "Keep
-/// planning"), whether it was that option or a `Cancel`.
+/// comes back as the nearer answer: a refusal of an approval is its refusing option ("Deny",
+/// "Keep planning"), whether it was that option or a `Cancel`.
 fn echoed_answers(p: &mut Pending, resp: &Value) {
     let deny = resp["behavior"] == "deny";
     for part in p.parts.iter_mut().filter(|x| x.answer.is_none()) {
@@ -2874,6 +2898,18 @@ fn echoed_answers(p: &mut Pending, resp: &Value) {
             (PendKind::Allow, false) => Some(Answer::Option(0)),
             (PendKind::Allow, true) => Some(match resp["message"].as_str() {
                 None | Some("The user said no.") => Answer::Option(1),
+                Some(t) => Answer::Text(t.to_owned()),
+            }),
+            // an approval without a mode is one sent before the modes were offered: the nearest
+            // answer is the first approval
+            (PendKind::Plan, false) => Some(Answer::Option(
+                PLAN_MODES
+                    .iter()
+                    .position(|m| resp["updatedPermissions"][0]["mode"] == *m)
+                    .unwrap_or(0) as u16,
+            )),
+            (PendKind::Plan, true) => Some(match resp["message"].as_str() {
+                None | Some("The user said no.") => Answer::Option(PLAN_MODES.len() as u16),
                 Some(t) => Answer::Text(t.to_owned()),
             }),
         };
@@ -4079,5 +4115,200 @@ mod tests {
             .contains("https://support.claude.com/"));
         assert_eq!(model_changes(&ev), ["claude-opus-4-8"]);
         assert_eq!(retracted(&ev), ["m1:0", "t1", "t1:result"]);
+    }
+
+    // ---- plan approval picks the permission mode (2.1.323) ------------------------------------
+
+    fn permission_request(rid: &str, tid: &str, tool: &str, input: Value) -> Value {
+        json!({"type":"control_request","request_id":rid,"request":{"subtype":"can_use_tool",
+            "tool_name":tool,"display_name":tool,"input":input,"tool_use_id":tid}})
+    }
+
+    fn plan_input() -> Value {
+        json!({"plan":"1. do it\n","planFilePath":"/home/user/.claude/plans/p.md"})
+    }
+
+    /// A driver whose CLI just asked to approve a plan (request `rp`, call `tp`), and the events
+    /// of that request.
+    fn plan_asked() -> (ClaudeDriver, Out, u64, Vec<AgentEvent>) {
+        let (mut d, mut out, mut at) = sent_prompt();
+        let ask = permission_request("rp", "tp", PLAN, plan_input());
+        let ev = feed(&mut d, &mut at, &mut out, ask);
+        out.stdin.clear();
+        (d, out, at, ev)
+    }
+
+    /// The `response` of the one `control_response` in `out`.
+    fn answered(out: &Out) -> Value {
+        let lines: Vec<Value> = out
+            .lines()
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["type"] == "control_response")
+            .collect();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["response"]["subtype"], "success");
+        lines[0]["response"]["response"].clone()
+    }
+
+    fn questions(ev: &[AgentEvent]) -> Vec<(&str, &Question)> {
+        ev.iter()
+            .filter_map(|e| match e {
+                AgentEvent::QuestionAsked { item_id, q } => Some((item_id.as_str(), q)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_plan_asks_which_mode_the_work_goes_on_in() {
+        let (_, _, _, ev) = plan_asked();
+        let qs = questions(&ev);
+        assert_eq!(qs.len(), 1, "{ev:?}");
+        assert_eq!(qs[0].0, "tp:ask");
+        assert_eq!(
+            qs[0].1.options,
+            [
+                "Approve · bypass",
+                "Approve · accept edits",
+                "Approve · manual",
+                "Keep planning"
+            ]
+        );
+    }
+
+    #[test]
+    fn approving_a_plan_sets_the_mode_and_keep_planning_denies() {
+        for (i, mode) in ["bypassPermissions", "acceptEdits", "default"]
+            .iter()
+            .enumerate()
+        {
+            let (mut d, mut out, ..) = plan_asked();
+            d.answer("rp", &Answer::Option(i as u16), &mut out).unwrap();
+            assert_eq!(
+                answered(&out),
+                json!({"behavior":"allow","updatedInput":plan_input(),"updatedPermissions":[
+                    {"type":"setMode","mode":mode,"destination":"session"}]})
+            );
+        }
+        let (mut d, mut out, ..) = plan_asked();
+        d.answer("rp", &Answer::Option(3), &mut out).unwrap();
+        assert_eq!(answered(&out)["behavior"], "deny");
+        let (mut d, mut out, ..) = plan_asked();
+        d.answer("rp", &Answer::Text("smaller steps".into()), &mut out)
+            .unwrap();
+        assert_eq!(
+            answered(&out),
+            json!({"behavior":"deny","message":"smaller steps"})
+        );
+        let (mut d, mut out, ..) = plan_asked();
+        assert!(d.answer("rp", &Answer::Option(4), &mut out).is_err());
+    }
+
+    #[test]
+    fn another_tool_still_asks_allow_or_deny_and_answers_a_bare_allow() {
+        let (mut d, mut out, mut at) = sent_prompt();
+        let ask = permission_request("rb", "tb", "Bash", json!({"command":"ls /"}));
+        let ev = feed(&mut d, &mut at, &mut out, ask);
+        let qs = questions(&ev);
+        assert_eq!(qs.len(), 1, "{ev:?}");
+        assert_eq!(qs[0].0, "tb:ask");
+        assert_eq!(qs[0].1.options, ["Allow", "Deny"]);
+        out.stdin.clear();
+        d.answer("rb", &Answer::Option(0), &mut out).unwrap();
+        assert_eq!(
+            answered(&out),
+            json!({"behavior":"allow","updatedInput":{"command":"ls /"}})
+        );
+    }
+
+    /// The daemon restarts between the answer and the CLI's echo of it: the persisted option index
+    /// stands for the same `control_response` (not written twice, not asked again), and without
+    /// one the echo alone says which approval it was.
+    #[test]
+    fn a_plan_answer_survives_a_restart() {
+        let (mut d, mut out, ..) = plan_asked();
+        d.answer("rp", &Answer::Option(1), &mut out).unwrap();
+        let sent = answered(&out);
+        let kept = d.pending_answers();
+        assert_eq!(kept, [("rp".to_owned(), Answer::Option(1))]);
+
+        let ask = permission_request("rp", "tp", PLAN, plan_input());
+        let attach = |answers| Attach {
+            resume_offset: 0,
+            agent_sid: None,
+            model: None,
+            answers,
+            epoch: 1,
+        };
+        let mut d = ClaudeDriver::new();
+        let mut out = Out::default();
+        d.attach(&Launch::default(), &attach(kept.clone()), &mut out);
+        let ev = feed(&mut d, &mut 0, &mut out, ask.clone());
+        assert!(questions(&ev).is_empty(), "{ev:?}");
+        assert!(out.stdin.is_empty(), "the answer was written before");
+        assert_eq!(d.pending_answers(), kept);
+        assert_eq!(response_body(&d.pending["rp"]), sent);
+
+        let mut d = ClaudeDriver::new();
+        d.attach(&Launch::default(), &attach(Vec::new()), &mut out);
+        let mut at = 0;
+        feed(&mut d, &mut at, &mut out, ask);
+        let echo = json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":"rp","response":sent}});
+        feed(&mut d, &mut at, &mut out, echo);
+        assert_eq!(d.pending_answers(), kept);
+        assert_eq!(response_body(&d.pending["rp"]), sent);
+    }
+
+    /// The capture `plan_modes` (2.1.323): plan mode reached as three Shift+Tabs reach it from
+    /// bypass, the plan approved with "Approve · bypass". The CLI reports bypass again and the
+    /// Bash command that writes outside the cwd asks nothing.
+    #[test]
+    fn an_approved_plan_goes_on_in_the_mode_chosen() {
+        let sent = std::fs::read_to_string("fixtures/claude/plan_modes.stdin.jsonl").unwrap();
+        let captured: Value = sent
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|v| v["type"] == "control_response")
+            .unwrap();
+        let text = std::fs::read_to_string("fixtures/claude/plan_modes.jsonl").unwrap();
+        let mut d = ClaudeDriver::new();
+        let mut out = Out::default();
+        d.on_start(&Launch::default(), &mut out);
+        out.stdin.clear();
+        let (mut asked, mut modes, mut tools) = (0, Vec::new(), Vec::new());
+        for (i, l) in text.lines().enumerate() {
+            for e in d.on_line(i as u64, l.as_bytes(), &mut out) {
+                match e {
+                    AgentEvent::QuestionAsked { q, .. } => {
+                        asked += 1;
+                        assert_eq!(q.options[0], "Approve · bypass");
+                        d.answer(&q.request_id, &Answer::Option(0), &mut out)
+                            .unwrap();
+                        let ours: Value =
+                            serde_json::from_str(out.lines().last().unwrap()).unwrap();
+                        assert_eq!(ours, captured);
+                    }
+                    AgentEvent::PermissionMode(m) => modes.push(m),
+                    AgentEvent::ItemCompleted {
+                        kind: ItemKind::ToolCall,
+                        status,
+                        body,
+                        ..
+                    } => tools.push((body["name"].as_str().unwrap_or("").to_owned(), status)),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(asked, 1, "only the plan asks");
+        assert_eq!(
+            modes,
+            ["default", "acceptEdits", "plan", "bypassPermissions"]
+        );
+        assert!(
+            tools.contains(&("Bash".to_owned(), ItemStatus::Completed)),
+            "{tools:?}"
+        );
     }
 }
