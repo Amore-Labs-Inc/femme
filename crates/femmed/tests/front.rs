@@ -1552,6 +1552,62 @@ async fn a_closed_session_ends_its_terminal_streams_with_exited() {
     }
 }
 
+/// A herdr pane's chat is mirrored without a holder (its agent runs under herdr): `+` still gets a
+/// shell in its folder, from a holder started for that alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pane_opens_in_a_session_that_has_no_holder() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let home = rig.home();
+    let s = rig
+        .d
+        .store
+        .write(|tx| {
+            tx.insert_session(&femme_proto::state::Session {
+                id: Id(0),
+                handle: String::new(),
+                rev: 0,
+                name: None,
+                owner: "herdr:test:wA:p1".into(),
+                agent: femme_proto::state::Agent::Claude,
+                mode: femme_proto::state::Mode::Headless,
+                cwd: home.to_string_lossy().into_owned(),
+                label: Some("mirrored".into()),
+                agent_sid: Some("0000-uuid".into()),
+                model: None,
+                status: femme_proto::state::SessionStatus::Idle,
+                attention: femme_proto::state::Attention::None,
+                created: 0,
+                closed: None,
+                permission: None,
+                context: None,
+                effort: None,
+                goal: None,
+            })
+        })
+        .unwrap();
+    let sid = s.id;
+
+    let Ok(Resp::Pane(pane)) = c.call(Req::PaneOpen { sid }).await else {
+        panic!("PaneOpen failed")
+    };
+    assert_eq!(pane, PaneId { sid, no: 2 });
+    let mut t = c.term(pane, RowCache::new()).await;
+    t.bytes("echo pane-$((40+2))\r").await;
+    t.until("the shell's answer", |s| s.text().contains("pane-42"))
+        .await;
+    // Closing the session takes the holder with it.
+    assert!(c.call(Req::SessionClose { sid }).await.is_ok());
+    let sock = rig.b.socket(sid);
+    within("holder gone", async {
+        while tokio::net::UnixStream::connect(&sock).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pane_opens_next_to_the_agents_and_closes_again() {
     let rig = rig().await;
