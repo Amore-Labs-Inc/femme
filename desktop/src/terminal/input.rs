@@ -69,10 +69,13 @@ fn typed(ks: &Keystroke) -> Option<char> {
     })
 }
 
-/// `ctrl+shift+v` (the terminal convention) and `cmd+v` (macOS) paste.
+/// `ctrl+v`, `ctrl+shift+v` (the terminal convention) and `cmd+v` (macOS) paste. Plain `ctrl+v`
+/// pastes too, like a browser does, so a desktop's "paste" chord (Omarchy's super+v sends ctrl+v
+/// to any window it does not know as a terminal) lands here; the shell's literal-next (0x16) is
+/// the price.
 pub fn is_paste(ks: &Keystroke) -> bool {
     let m = ks.modifiers;
-    ks.key == "v" && ((m.control && m.shift && !m.alt && !m.platform) || (m.platform && !m.control))
+    ks.key == "v" && !m.alt && ((m.control && !m.platform) || (m.platform && !m.control))
 }
 
 /// Whether a wheel turn is for the program (it reports the mouse, or sits on the alternate screen
@@ -169,8 +172,9 @@ mod tests {
     fn the_paste_chords() {
         assert!(is_paste(&ks("ctrl-shift-v")));
         assert!(is_paste(&ks("cmd-v")));
-        assert!(!is_paste(&ks("ctrl-v")));
+        assert!(is_paste(&ks("ctrl-v")));
         assert!(!is_paste(&ks("v->v")));
+        assert!(!is_paste(&ks("ctrl-alt-v")));
         assert!(!is_paste(&ks("ctrl-shift-alt-v")));
     }
 
