@@ -182,6 +182,7 @@ pub fn claude(home: &Path) -> CreateSession {
         name: None,
         owner: "board".into(),
         model: None,
+        resume: None,
     }
 }
 

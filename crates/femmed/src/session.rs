@@ -641,6 +641,12 @@ impl Daemon {
             Agent::Shell => (PaneKind::Shell, SessionStatus::Idle),
             _ => (PaneKind::Agent, SessionStatus::Starting),
         };
+        if let Some(uuid) = req.resume.as_deref().filter(|_| headless) {
+            if headless::backfill::held(&self.cfg.home, uuid) {
+                let why = "that conversation is open in another Claude: exit it there first";
+                return Err(CoreError::Conflict(why.into()));
+            }
+        }
         let (session, pane) = self.write(|tx, now| {
             let s = tx.insert_session(&Session {
                 id: Id(0),
@@ -652,7 +658,7 @@ impl Daemon {
                 mode: if headless { Mode::Headless } else { Mode::Tui },
                 cwd: req.cwd.clone(),
                 label: req.label.clone(),
-                agent_sid: None,
+                agent_sid: req.resume.clone().filter(|_| headless),
                 model: req.model.clone(),
                 status,
                 attention: Attention::None,

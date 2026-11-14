@@ -535,6 +535,37 @@ pub(super) fn read_subs(
     out
 }
 
+/// Whether a Claude process on this machine has conversation `uuid` open: Claude Code notes each
+/// of its processes in `~/.claude/sessions/<pid>.json` with its conversation, and a pid that is
+/// gone left its note behind.
+pub(crate) fn held(home: &Path, uuid: &str) -> bool {
+    let Ok(dir) = std::fs::read_dir(home.join(".claude/sessions")) else {
+        return false;
+    };
+    dir.flatten().any(|e| {
+        let Some(v) = std::fs::read(e.path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        else {
+            return false;
+        };
+        v["sessionId"] == uuid
+            && v["pid"]
+                .as_u64()
+                .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
+    })
+}
+
+/// The folder conversation `uuid` ran in, as its transcript's first line says.
+pub(crate) fn cwd_of(home: &Path, uuid: &str) -> Option<String> {
+    let path = find(home, uuid)?;
+    let data = read_from(&path, 0).ok()??;
+    data.split(|b| *b == b'\n').find_map(|line| {
+        let v: Value = serde_json::from_slice(line).ok()?;
+        v["cwd"].as_str().map(str::to_owned)
+    })
+}
+
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
 /// not alphanumeric made '-', so it is looked up, not rebuilt.
 pub(super) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {

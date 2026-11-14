@@ -279,11 +279,15 @@ pub(crate) async fn start(d: &Daemon, s: &Session, holder: Holder) -> Result<(),
     let events = holder.subscribe();
     let up = async {
         a.spool = Some(holder.spool_read(0).await.map_err(|e| e.to_string())?);
-        a.spawn_process(d, None).await
+        a.spawn_process(d, s.agent_sid.clone()).await
     };
     if let Err(e) = up.await {
         let _ = holder.shutdown().await;
         return Err(e);
+    }
+    // a resumed conversation: what it holds, before the stream adds to it
+    if let Some(uuid) = &s.agent_sid {
+        backfill::run(d, s.id, uuid, None, None).await;
     }
     a.launch(d, events);
     Ok(())
