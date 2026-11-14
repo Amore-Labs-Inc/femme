@@ -9,12 +9,10 @@
 //!
 //! - A Claude chat of FEMME's own writes the message under a uuid of ours (the row's `echo`) and
 //!   the CLI echoes it under that uuid: the echo with that id is the row's.
-//! - Any other agent, and a herdr pane (text typed into a terminal), carries no id: the oldest
-//!   waiting row without one whose text is the echo's, `Attached:` lines and `[Image #N]` marks
-//!   left out and spaces collapsed, is the row's.
-//! - Nothing else pairs. An echo that matches no row is a row of its own (a message typed in the
-//!   pane is one), and the row it may have been stays waiting: shown twice at worst, never read
-//!   when it was not.
+//! - Any other agent carries no id: the oldest waiting row without one whose text is the
+//!   echo's, `Attached:` lines and `[Image #N]` marks left out and spaces collapsed, is the row's.
+//! - Nothing else pairs. An echo that matches no row is a row of its own, and the row it may have
+//!   been stays waiting: shown twice at worst, never read when it was not.
 //!
 //! A message the agent did not get is `Failed` (a client offers to send it again) only on a
 //! definite word: the agent refused or discarded it, the session moved to the terminal or failed
@@ -42,11 +40,10 @@ pub(crate) struct Saved {
     pub echo: Option<String>,
 }
 
-/// The id a session's agent echoes a message under: a fresh uuid for a Claude chat of FEMME's own,
-/// none for other agents and for herdr panes (whose text is typed into a terminal).
+/// The id a session's agent echoes a message under: a fresh uuid for a Claude chat, none for
+/// other agents.
 fn echo_for(s: &Session) -> Option<String> {
-    let own = !s.owner.starts_with(crate::headless::herdr::OWNER);
-    (s.agent == Agent::Claude && own).then(femme_agents::uuid_v4)
+    (s.agent == Agent::Claude).then(femme_agents::uuid_v4)
 }
 
 /// Whether a prompt is saved first: a headless session's message. A `/` command is the agent's
@@ -80,28 +77,15 @@ fn saved_item(sid: Sid, text: &str, op: Option<OpId>, echo: Option<&str>, now: i
     }
 }
 
-/// A message's text for comparing: without the `Attached:` lines the daemon adds (and the bare
-/// `Attached:` Claude's terminal leaves when it takes the file as a picture), and the `[Image #N]`
-/// marks and `<pasted_content id="..">` wrapping it adds to what is pasted into it, every run of
-/// spaces and newlines one space.
+/// A message's text for comparing: without the `Attached:` lines the daemon adds and the
+/// `[Image #N]` marks Claude's transcript puts on a pasted picture, every run of spaces and
+/// newlines one space.
 pub(crate) fn normalize(text: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
-        .filter(|l| {
-            let l = l.trim();
-            !l.starts_with("Attached: ") && l != "Attached:"
-        })
+        .filter(|l| !l.trim().starts_with("Attached: "))
         .collect();
     let mut s = kept.join("\n");
-    // the closing tag carries the id too: `</pasted_content id="23c2">`
-    while let Some(i) = [s.find("<pasted_content"), s.find("</pasted_content")]
-        .into_iter()
-        .flatten()
-        .min()
-    {
-        let Some(end) = s[i..].find('>') else { break };
-        s.replace_range(i..i + end + 1, " ");
-    }
     while let Some(i) = s.find("[Image #") {
         let after = &s[i + "[Image #".len()..];
         let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
@@ -129,21 +113,12 @@ fn attached(text: &str) -> Vec<&str> {
     names
 }
 
-/// How much the user may have typed into a pane's input ahead of a message FEMME typed after it,
-/// and the least a message must be to be known by that end alone.
-const LEFTOVER_MAX: usize = 32;
-const KNOWN_MIN: usize = 12;
-
-/// Whether the saved text `a` is the echo `b`: the same words ([`normalize`]); the echo may start
-/// with a little the user had typed into the pane's input before FEMME typed the message after
-/// it (`th` + `i talked…`). With no words at all, the same attached files.
+/// Whether the saved text `a` is the echo `b`: the same words ([`normalize`]); with no words at
+/// all, the same attached files.
 pub(crate) fn same_message(a: &str, b: &str) -> bool {
     let (na, nb) = (normalize(a), normalize(b));
     if !na.is_empty() || !nb.is_empty() {
-        return na == nb
-            || (na.len() >= KNOWN_MIN
-                && nb.len() - na.len().min(nb.len()) <= LEFTOVER_MAX
-                && nb.ends_with(&na));
+        return na == nb;
     }
     let (fa, fb) = (attached(a), attached(b));
     !fa.is_empty() && fa == fb
@@ -474,22 +449,6 @@ impl Daemon {
         }
     }
 
-    /// A herdr pane's Claude went idle: a waiting message it has not echoed was not got (the
-    /// terminal holds nothing FEMME can see). One marked so earlier whose echo is there after
-    /// all (a shape not matched when it came) is paired now ([`repair_in`]).
-    pub(crate) fn idle_unread(&self, sid: Sid) {
-        let agent = self.session(sid).map(|s| s.agent).unwrap_or(Agent::Claude);
-        let r = self.write_items(|tx, _, published| {
-            settle(tx, sid, &Gone::Idle(Vec::new()), published)?;
-            repair_in(tx, sid, agent, published)
-        });
-        match r {
-            Ok(n) if n > 0 => tracing::info!(%sid, n, "saved messages paired with their echo"),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(%sid, %e, "unread messages not marked"),
-        }
-    }
-
     /// `Req::Resend`: the message `item_id` the agent did not get waits again and goes to it
     /// again, after the turn that runs. `Conflict` for any other item.
     pub(crate) async fn resend(&self, sid: Sid, item_id: &str) -> Result<(), CoreError> {
@@ -646,7 +605,7 @@ mod tests {
         let echo = Item {
             item_id: "uuid-echo".into(),
             status: ItemStatus::Completed,
-            body: Some(json!({"text": "<pasted_content id=\"1\">\no things to decide\n</pasted_content id=\"1\">"}).to_string()),
+            body: Some(json!({"text": "o  things to decide\n"}).to_string()),
             ts: 11,
             ..saved.clone()
         };
@@ -693,32 +652,15 @@ mod tests {
         assert_eq!(pick(&rows, "d9", echo), Some(0));
         assert_eq!(normalize("a [Image #x] b"), "a [Image #x] b");
         assert_eq!(normalize("Attached: /a.png"), "");
-        // what Claude's terminal wrote for a paste into a herdr pane (from the box, 2026-11-09)
-        let pasted = "\n\n<pasted_content id=\"b150\">\nlets restart with a blue squirrel\nMerhaba x!\n</pasted_content>";
-        assert_eq!(
-            normalize(pasted),
-            normalize("lets restart with a blue squirrel\nMerhaba x!")
-        );
-        // the three shapes that did not pair on the box (2026-11-10)
-        let closed = "\n\n<pasted_content id=\"23c2\">\no things to decide\n\nWhere the kid lands\n</pasted_content id=\"23c2\">";
         assert!(same_message(
             "o things to decide\n\nWhere the kid lands",
-            closed
+            "o  things to decide\nWhere the kid lands\n"
         ));
-        let saved = "where is it? did you use femmed cli?\n\nAttached: /u/paste-3-4.png";
-        let echo =
-            "where is it? did you use femmed cli?\nAttached:\n\nAttached: /u/paste-304d7f.jpg";
-        assert!(
-            same_message(saved, echo),
-            "the terminal took the file as a picture"
-        );
-        let saved = "i talked with someone about onboarding data\n\nAttached: /u/p.png";
-        let echo = "thi talked with someone about onboarding data\nAttached:\n\nAttached: /u/q.jpg";
-        assert!(same_message(saved, echo), "`th` typed into the pane before");
-        assert!(
-            !same_message("ok", "ok great, what now"),
-            "short: only the same"
-        );
+        assert!(!same_message("ok", "ok great, what now"));
+        assert!(!same_message(
+            "i talked about onboarding",
+            "thi talked about onboarding"
+        ));
         assert!(!same_message(
             "fix the squirrel head",
             "fix the squirrel head too"

@@ -51,7 +51,6 @@ use crate::takeover::{Act, Ev, Phase, Takeover};
 
 pub(crate) mod backfill;
 pub(crate) mod btw;
-pub(crate) mod herdr;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
 /// when their TUIs are wired.
@@ -131,7 +130,7 @@ enum Cmd {
         model: String,
         reply: Reply,
     },
-    /// Claude's permission mode (`plan`, `auto`, ...); a herdr pane steps to its next one.
+    /// Claude's permission mode (`plan`, `auto`, ...).
     SetPermission {
         mode: String,
         reply: Reply,
@@ -165,12 +164,7 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
-    #[cfg(test)]
-    pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
-        self.prompt_as(text, how, None).await
-    }
-
-    /// [`Head::prompt`], echoed by the agent under `id` when it takes one.
+    /// A prompt for the agent, echoed by it under `id` when it takes one.
     pub(crate) async fn prompt_as(
         &self,
         text: &str,

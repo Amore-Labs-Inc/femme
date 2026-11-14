@@ -253,10 +253,10 @@ pub struct ClaudeDriver {
     awaiting_init: bool,
     /// `on_exit` ran: nothing more is written.
     exited: bool,
-    /// Reads a TUI's transcript file (a herdr pane), not a stream-json process: nobody sends
-    /// `control_request`s, so an `AskUserQuestion` tool call on the main thread is the question,
-    /// and the file's `tool_use_result` says how the user answered in the TUI. `ExitPlanMode` is
-    /// only its Plan item: the pane's approval dialog is asked from the screen.
+    /// Reads a transcript file on disk (a TUI's, a resumed conversation's), not a stream-json
+    /// process: nobody sends `control_request`s, so an `AskUserQuestion` tool call on the main
+    /// thread is the question, and the file's `tool_use_result` says how the user answered in the
+    /// TUI. `ExitPlanMode` is only its Plan item: the TUI's approval dialog is its own.
     mirror: bool,
     seq: u64,
     off: Offsets,
@@ -1098,7 +1098,7 @@ impl ClaudeDriver {
                     body(&Plan { text }),
                 ));
                 // a mirror asks nothing here: the pane's own "Would you like to proceed?" dialog is
-                // read from its screen (femmed's herdr side), with the TUI's real options
+                // read from its screen, with the TUI's real options
             }
             ASK => {
                 if self.mirror {
@@ -2096,7 +2096,7 @@ impl Driver for ClaudeDriver {
         };
         let ty = v["type"].as_str().unwrap_or("");
         if ty == "attachment" {
-            // the transcript on disk (a herdr mirror, the daemon's goal tail): only a goal verdict
+            // the transcript on disk (femmed's backfill, the daemon's goal tail): only a goal verdict
             ev.extend(goal_status(&v["attachment"]).map(AgentEvent::Goal));
             return ev;
         }
@@ -4082,7 +4082,7 @@ mod tests {
         assert!(model_changes(&ev).is_empty());
     }
 
-    /// The transcript on disk (a herdr mirror reads it) spells the fields in camelCase: the line
+    /// The transcript on disk (femmed's backfill reads it) spells the fields in camelCase: the line
     /// Claude Code 2.1.302 wrote for a real refusal, ids replaced. It retracts an assistant line
     /// and the tool result under it.
     #[test]

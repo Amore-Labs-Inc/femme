@@ -1,7 +1,7 @@
 //! Claude Code's own transcript on disk (`~/.claude/projects/*/<uuid>.jsonl`), read into
 //! transcript items through the Claude driver's disk mode: what a conversation did while no
-//! stream of FEMME's was watching it. [`Reader`] tails one conversation from an offset on (the
-//! herdr mirror keeps one per pane; [`run`] reads once, for a session back from its TUI).
+//! stream of FEMME's was watching it. [`Reader`] tails one conversation from an offset on;
+//! [`run`] reads once, for a session back from its TUI or one resuming a conversation.
 //!
 //! Subagents (Claude's `Agent` tool) write their own transcripts beside it,
 //! `<uuid>/subagents/agent-<id>.jsonl` with `agent-<id>.meta.json` naming the spawning tool call
@@ -925,9 +925,12 @@ pub(super) fn disk_value(mut v: Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{fold, FoldState};
     use super::*;
     use crate::config::Config;
     use crate::session::MAIN;
+    use femme_agents::driver_for;
+    use femme_proto::state::GoalState;
     use femme_proto::state::{Agent, Attention, Mode, Pane, PaneKind, Session, SessionStatus};
     use femme_proto::{Id, PaneId};
     use femme_store::{items as store_items, sessions};
@@ -1031,5 +1034,562 @@ mod tests {
                 "{id} once: {ids:?}"
             );
         }
+    }
+
+    /// A subagent's transcript beside the conversation's is read once its meta names the call
+    /// that spawned it, and its items nest under that call.
+    #[tokio::test]
+    async fn a_subagents_transcript_is_read_under_its_agent_call() {
+        let (d, dir) = daemon();
+        let proj = dir.path().join(".claude/projects/-w");
+        let subs = proj.join("u-1/subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        std::fs::write(proj.join("u-1.jsonl"), AGENT_TURN).unwrap();
+        // no meta yet: not read
+        std::fs::write(subs.join("agent-x1.jsonl"), SUB).unwrap();
+        let sid = session(&d, "u-1");
+        let mut r = Reader::new(sid, "u-1".into(), 0);
+        let items = |d: &Daemon| {
+            let mut v = d
+                .store
+                .read(|c| store_items::page_items(c, sid, None, 100))
+                .unwrap();
+            v.reverse();
+            v.into_iter()
+                .map(|i| (i.item_id, i.kind, i.status, i.parent))
+                .collect::<Vec<_>>()
+        };
+        r.tail(&d, &mut |_| {}).await;
+        assert!(items(&d).iter().all(|i| i.3.is_none()));
+        assert_eq!(items(&d).len(), 2);
+        std::fs::write(
+            subs.join("agent-x1.meta.json"),
+            r#"{"agentType":"Explore","description":"look","toolUseId":"toolu_A","finished":false}"#,
+        )
+        .unwrap();
+        r.tail(&d, &mut |_| {}).await;
+        let a = Some("toolu_A".to_owned());
+        assert_eq!(
+            items(&d),
+            [
+                (
+                    "m1".into(),
+                    ItemKind::UserMessage,
+                    ItemStatus::Completed,
+                    None
+                ),
+                (
+                    "toolu_A".into(),
+                    ItemKind::ToolCall,
+                    ItemStatus::InProgress,
+                    None
+                ),
+                (
+                    "s0".into(),
+                    ItemKind::UserMessage,
+                    ItemStatus::Completed,
+                    a.clone()
+                ),
+                (
+                    "toolu_B".into(),
+                    ItemKind::ToolCall,
+                    ItemStatus::InProgress,
+                    a.clone()
+                ),
+            ]
+        );
+        assert_eq!(r.subs.values().next().unwrap().read, SUB.len() as u64);
+    }
+
+    const AGENT_TURN: &str = r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"look"}}
+{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"prompt":"ls"}}]}}
+"#;
+
+    const SUB: &str = r#"{"type":"user","isSidechain":true,"uuid":"s0","message":{"role":"user","content":"ls"}}
+{"type":"attachment","isSidechain":true,"attachment":{}}
+{"type":"api-request","agentId":"x"}
+{"type":"assistant","isSidechain":true,"message":{"id":"sm1","content":[{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}]}}
+"#;
+
+    fn line(v: Value) -> Option<Value> {
+        match disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))? {
+            Disk::Feed { line, .. } => Some(serde_json::from_slice(&line).unwrap()),
+            Disk::Unknown(k) => panic!("unknown: {k}"),
+        }
+    }
+
+    fn typed(v: Value) -> Option<(String, String)> {
+        match disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))? {
+            Disk::Feed { typed, .. } => typed,
+            Disk::Unknown(_) => None,
+        }
+    }
+
+    /// A message sent while Claude worked, as Claude Code 2.1 writes it (from a real transcript).
+    fn queued_line(kind: &str, prompt: Value) -> Value {
+        serde_json::json!({"type":"attachment","uuid":"ca3e","timestamp":"2026-11-09T13:55:06.152Z",
+            "isSidechain":false,"attachment":{"type":"queued_command","commandMode":"prompt",
+            "delivery_id":"d9d9","source_uuid":"s1","humanTurn":true,"origin":{"kind":kind},
+            "prompt":prompt,"timestamp":"2026-11-09T13:53:24.095Z"}})
+    }
+
+    #[test]
+    fn a_message_sent_while_claude_worked_is_the_users() {
+        let v = line(queued_line("human", "stasge commit push these btw".into())).unwrap();
+        assert_eq!(
+            (
+                &v["type"],
+                &v["isReplay"],
+                &v["uuid"],
+                &v["message"]["content"]
+            ),
+            (
+                &Value::from("user"),
+                &Value::Bool(true),
+                &Value::from("ca3e"),
+                &Value::from("stasge commit push these btw")
+            )
+        );
+        assert_eq!(
+            typed(queued_line("human", "hi".into())),
+            Some(("ca3e".into(), "hi".into()))
+        );
+        let peer = line(queued_line("peer", "<cross-session-message>x".into())).unwrap();
+        assert_eq!(
+            peer["isReplay"],
+            Value::Null,
+            "another session's: not typed"
+        );
+        assert_eq!(typed(queued_line("peer", "x".into())), None);
+        let mut meta = queued_line("peer", "x".into());
+        meta["attachment"]["isMeta"] = Value::Bool(true);
+        assert_eq!(line(meta), None, "for the model only");
+        let note = line(queued_line(
+            "task",
+            "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n</task-notification>".into(),
+        ))
+        .unwrap();
+        assert_eq!(note["subtype"], "task_notification");
+        let blocks =
+            serde_json::json!([{"type":"text","text":"look"},{"type":"text","text":"here"}]);
+        assert_eq!(
+            typed(queued_line("human", blocks.clone())),
+            Some(("ca3e".into(), "look\nhere".into())),
+            "the text, not the blocks' JSON"
+        );
+        assert_eq!(
+            line(queued_line("human", blocks)).unwrap()["isReplay"],
+            true
+        );
+    }
+
+    #[test]
+    fn a_kind_of_line_not_known_is_said_not_dropped() {
+        let read = |v: Value| disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"));
+        assert!(matches!(
+            read(serde_json::json!({"type":"brand-new"})),
+            Some(Disk::Unknown(k)) if k == "brand-new"
+        ));
+        assert!(matches!(
+            read(serde_json::json!({"type":"attachment","attachment":{"type":"brand_new"}})),
+            Some(Disk::Unknown(k)) if k == "attachment brand_new"
+        ));
+        for known in [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue"}),
+            serde_json::json!({"type":"attachment","attachment":{"type":"hook_success"}}),
+            serde_json::json!({"type":"last-prompt"}),
+        ] {
+            assert!(read(known).is_none());
+        }
+    }
+
+    #[test]
+    fn a_typed_message_the_driver_drops_is_stored_anyway() {
+        let sid = Id(1);
+        let kept = Put::Done(super::super::new_item(
+            sid,
+            "u1".into(),
+            ItemKind::UserMessage,
+            ItemStatus::Completed,
+            None,
+            0,
+        ));
+        assert!(missed(sid, &[kept], ("u1".into(), "hi".into())).is_none());
+        let Some(Put::Done(i)) = missed(sid, &[], ("u1".into(), "hi".into())) else {
+            panic!("not stored");
+        };
+        assert_eq!((i.item_id.as_str(), i.kind), ("u1", ItemKind::UserMessage));
+        assert!(i.preview.contains("hi"));
+    }
+
+    /// The transcript's goal lines, read as a mirrored pane reads them (file, driver, fold), give
+    /// the goal its states in order.
+    #[test]
+    fn the_files_goal_lines_become_the_sessions_goal() {
+        let mut drv = driver_for(Agent::Claude);
+        let mut st = FoldState::default();
+        let mut state = |v: Value| {
+            let Disk::Feed { line, .. } =
+                disk_line(v.to_string().as_bytes(), Path::new("/nonexistent"))?
+            else {
+                return None;
+            };
+            let ev = drv.on_line(0, &line, &mut Out::default());
+            fold(&mut st, Sid::new(), "d0", ev, 0)
+                .goal
+                .map(|g| (g.state, g.reason))
+        };
+        let att = |a: Value| serde_json::json!({"type":"attachment","attachment":a});
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":false,"sentinel":true,"condition":"c"})
+            )),
+            Some((GoalState::Active, None))
+        );
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":false,"condition":"c","reason":"r1"})
+            )),
+            Some((GoalState::NotMet, Some("r1".into())))
+        );
+        assert_eq!(
+            state(att(
+                serde_json::json!({"type":"goal_status","met":true,"condition":"c","reason":"r2"})
+            )),
+            Some((GoalState::Met, Some("r2".into())))
+        );
+        assert_eq!(
+            state(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"text",
+                "text":"<local-command-stdout>Goal cleared: c</local-command-stdout>"}]}})
+            ),
+            Some((GoalState::Cleared, None))
+        );
+        assert_eq!(state(att(serde_json::json!({"type":"other"}))), None);
+    }
+
+    #[test]
+    fn the_file_reads_as_the_stream() {
+        let typed = line(serde_json::json!({"type":"user","message":{"content":"hi"}})).unwrap();
+        assert_eq!(typed["isReplay"], true);
+        let result = serde_json::json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"t"}]}});
+        assert_eq!(line(result).unwrap()["isReplay"], Value::Null);
+        let stop = serde_json::json!({"type":"user","message":{"content":[
+            {"type":"text","text":"[Request interrupted by user]"}]}});
+        assert_eq!(line(stop).unwrap()["isReplay"], Value::Null);
+        let end =
+            line(serde_json::json!({"type":"system","subtype":"turn_duration","durationMs":5}));
+        assert_eq!(end.unwrap()["type"], "result");
+        let note = line(serde_json::json!({"type":"user","uuid":"u1","message":{"content":
+            "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Build done</summary>\n</task-notification>"}}))
+        .unwrap();
+        assert_eq!(
+            (
+                &note["subtype"],
+                &note["tool_use_id"],
+                &note["status"],
+                &note["summary"],
+                &note["uuid"]
+            ),
+            (
+                &Value::from("task_notification"),
+                &Value::from("toolu_1"),
+                &Value::from("completed"),
+                &Value::from("Build done"),
+                &Value::from("u1")
+            ),
+            "the stream's shape, so the driver ends the call's task"
+        );
+        let tick = line(serde_json::json!({"type":"user","uuid":"u2","message":{"content":
+            "<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n<event>tick 1</event>\n</task-notification>"}}))
+        .unwrap();
+        assert_eq!(
+            (&tick["type"], &tick["isReplay"]),
+            (&Value::from("user"), &Value::Null),
+            "a Monitor event is no end and nothing typed: the driver's row"
+        );
+        let mode =
+            line(serde_json::json!({"type":"permission-mode","permissionMode":"plan"})).unwrap();
+        assert_eq!(
+            (&mode["subtype"], &mode["permissionMode"]),
+            (&Value::from("status"), &Value::from("plan"))
+        );
+        for skipped in [
+            serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"x"}}),
+            serde_json::json!({"type":"user","isMeta":true,"message":{"content":"x"}}),
+            serde_json::json!({"type":"file-history-snapshot"}),
+        ] {
+            assert_eq!(line(skipped), None);
+        }
+    }
+
+    /// A compaction's summary (a `user` line marked `isCompactSummary`) is not a message: only the
+    /// `compact_boundary` before it reaches the driver, as the "Conversation compacted" row.
+    #[test]
+    fn a_compaction_summary_is_not_a_message() {
+        use femme_agents::Driver as _;
+        const PLAIN: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. x";
+        let summary = |text: String| {
+            serde_json::json!({"type":"user","uuid":"s1","isCompactSummary":true,
+                "isVisibleInTranscriptOnly":true,"message":{"role":"user","content":text}})
+        };
+        let artifact = format!("<artifact-content-authored-by-others/>\nThe summarized conversation included Artifact content.\n{PLAIN}");
+        for text in [PLAIN.to_owned(), artifact] {
+            assert_eq!(line(summary(text.clone())), None);
+            // either mark alone drops it
+            for mark in ["isCompactSummary", "isVisibleInTranscriptOnly"] {
+                let mut one = summary(text.clone());
+                one.as_object_mut().unwrap().retain(|k, _| {
+                    k == mark
+                        || !matches!(k.as_str(), "isCompactSummary" | "isVisibleInTranscriptOnly")
+                });
+                assert_eq!(line(one), None, "{mark}");
+            }
+            // a subagent's file holds them too
+            let mut side = summary(text);
+            side["isSidechain"] = Value::Bool(true);
+            assert_eq!(sub_line(side.to_string().as_bytes(), "toolu_A"), None);
+        }
+        let typed = line(
+            serde_json::json!({"type":"user","uuid":"u1","message":{"role":"user","content":PLAIN}}),
+        )
+        .expect("an ordinary typed entry still passes");
+        assert_eq!(typed["isReplay"], true);
+
+        // the boundary and its summary, as the file has them: one event row, no user message
+        let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","uuid":"c1",
+            "compactMetadata":{"trigger":"auto","preTokens":310172}});
+        let mut d = femme_agents::claude::ClaudeDriver::new();
+        let mut out = femme_agents::Out::default();
+        d.on_start(&femme_agents::Launch::default(), &mut out);
+        let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"femme-init","response":{}}}"#;
+        d.on_line(0, init, &mut out);
+        let mut kinds = Vec::new();
+        let mut compacted = None;
+        for (n, v) in [boundary, summary(PLAIN.to_owned())]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(l) = line(v) else { continue };
+            for e in d.on_line(n as u64 + 1, l.to_string().as_bytes(), &mut out) {
+                match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        kinds.push((kind, body["text"].clone()))
+                    }
+                    femme_agents::AgentEvent::Compacted { pre_tokens } => compacted = pre_tokens,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            kinds,
+            [(ItemKind::Event, Value::from("Conversation compacted"))]
+        );
+        assert_eq!(compacted, Some(310172));
+    }
+
+    /// A peer's message (SendMessage from another session) passes the `isMeta` drop, whether it
+    /// started a turn (a `user` entry) or landed mid-turn (a `queued_command` attachment), and the
+    /// driver maps both to a `PeerMessage` from the sender, not a `UserMessage`.
+    #[test]
+    fn a_peer_message_reads_as_a_peer_message() {
+        use femme_agents::Driver as _;
+        let framed = "Another Claude session sent a message:\n<cross-session-message from=\"uds:/x.sock\" from-name=\"platform-12\" from-mode=\"bypass\">\nhello\n</cross-session-message>\n\nThis came from another Claude session";
+        let origin = serde_json::json!({"kind":"peer","name":"platform-12","body":"hello"});
+        let entry = serde_json::json!({"type":"user","uuid":"u1","isMeta":true,"promptSource":"system",
+            "turnOrigin":"peer","origin":origin,"message":{"role":"user","content":framed}});
+        let queued = serde_json::json!({"type":"attachment","uuid":"u2","attachment":{"type":"queued_command",
+            "prompt":"<cross-session-message from=\"uds:/x.sock\" from-name=\"platform-12\" from-mode=\"bypass\">\nhello\n</cross-session-message>",
+            "isMeta":true}});
+        for v in [entry, queued] {
+            let l = line(v).unwrap();
+            assert_eq!(
+                (&l["type"], &l["origin"]["kind"]),
+                (&Value::from("user"), &Value::from("peer"))
+            );
+            let mut d = femme_agents::claude::ClaudeDriver::new();
+            let mut out = femme_agents::Out::default();
+            d.on_start(&femme_agents::Launch::default(), &mut out);
+            let init = br#"{"type":"control_response","response":{"subtype":"success","request_id":"femme-init","response":{}}}"#;
+            d.on_line(0, init, &mut out);
+            let ev = d.on_line(1, l.to_string().as_bytes(), &mut out);
+            let kinds: Vec<_> = ev
+                .iter()
+                .filter_map(|e| match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        Some((*kind, body["from"].clone(), body["text"].clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                [(
+                    ItemKind::PeerMessage,
+                    Value::from("platform-12"),
+                    Value::from("hello")
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn a_pasted_picture_is_saved_and_attached() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfake";
+        let data = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(png)
+        };
+        let line = serde_json::json!({"type":"user","message":{"content":[
+            {"type":"text","text":"[Image #177] look at this"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":data}},
+        ]}})
+        .to_string();
+        let read = |l: &str| -> Value {
+            let Some(Disk::Feed { line, .. }) = disk_line(l.as_bytes(), dir.path()) else {
+                panic!("not fed");
+            };
+            serde_json::from_slice(&line).unwrap()
+        };
+        let text = read(&line)["message"]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1);
+        let path = files[0].as_ref().unwrap().path();
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        assert_eq!(
+            text,
+            format!("look at this\n\nAttached: {}", path.display())
+        );
+        assert_eq!(
+            read(&line)["message"]["content"].as_str().unwrap(),
+            text,
+            "read again: the same file"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            strip_image_marks("a [Image #] b [Image #2]c"),
+            "a [Image #] b c"
+        );
+    }
+
+    #[test]
+    fn a_subagents_file_reads_as_its_stream() {
+        let sub = |v: Value| {
+            sub_line(v.to_string().as_bytes(), "toolu_A")
+                .map(|b| serde_json::from_slice::<Value>(&b).unwrap())
+        };
+        let prompt =
+            sub(serde_json::json!({"type":"user","isSidechain":true,"message":{"content":"ls"}}))
+                .unwrap();
+        assert_eq!(prompt["parent_tool_use_id"], "toolu_A");
+        assert_eq!(prompt["isReplay"], true);
+        let said = serde_json::json!({"type":"assistant","isSidechain":true,
+            "message":{"id":"s1","content":[{"type":"text","text":"x"}]}});
+        assert_eq!(sub(said).unwrap()["parent_tool_use_id"], "toolu_A");
+        for skipped in [
+            serde_json::json!({"type":"attachment","isSidechain":true}),
+            serde_json::json!({"type":"api-request","agentId":"a"}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","durationMs":5}),
+            serde_json::json!({"type":"user","isSidechain":true,"isMeta":true,"message":{"content":"x"}}),
+        ] {
+            assert_eq!(sub(skipped), None);
+        }
+    }
+
+    #[test]
+    fn the_compaction_point_is_what_the_settings_say() {
+        use serde_json::json;
+        let user = json!({"autoCompactWindow":534_643,"autoCompactEnabled":true});
+        let m = Some("claude-fable-5-2");
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 1_000_000),
+            Some(501_643)
+        );
+        // the model's own setting wins over the top-level key, whichever file holds it
+        let per = json!({"modelSettings":{"claude-fable-5-2":{"autoCompactWindow":300_000}}});
+        let both = [user.clone(), per];
+        assert_eq!(compact_at(None, &both, m, 1_000_000), Some(267_000));
+        assert_eq!(
+            compact_at(None, &both, Some("claude-fable-5-2[1m]"), 1_000_000),
+            Some(267_000)
+        );
+        assert_eq!(
+            compact_at(None, &both, Some("claude-opus-5-5"), 1_000_000),
+            Some(501_643)
+        );
+        // the env var wins over both
+        assert_eq!(
+            compact_at(Some("200000"), &both, m, 1_000_000),
+            Some(167_000)
+        );
+        // the project's file is listed before the user's
+        let project = json!({"autoCompactWindow":120_000});
+        assert_eq!(
+            compact_at(None, &[project, user.clone()], m, 1_000_000),
+            Some(87_000)
+        );
+        // a window under the CLI's minimum is ignored in a file and raised in the env var
+        let small = json!({"autoCompactWindow":80_000});
+        assert_eq!(
+            compact_at(None, &[small, user.clone()], m, 1_000_000),
+            Some(501_643)
+        );
+        assert_eq!(compact_at(Some("80000"), &[], m, 1_000_000), Some(67_000));
+        // never past the model's window; an unknown window caps nothing
+        assert_eq!(
+            compact_at(None, std::slice::from_ref(&user), m, 200_000),
+            Some(167_000)
+        );
+        assert_eq!(compact_at(None, &[user], m, 0), Some(501_643));
+        // nothing set, or auto-compaction off: the bar fills against the window
+        assert_eq!(compact_at(None, &[], m, 1_000_000), None);
+        let off = json!({"autoCompactWindow":534_643,"autoCompactEnabled":false});
+        assert_eq!(compact_at(None, &[off], m, 1_000_000), None);
+    }
+
+    #[test]
+    fn claude_settings_reads_the_projects_files_before_the_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, cwd) = (dir.path().join("home"), dir.path().join("w"));
+        for (root, text) in [
+            (&home, r#"{"autoCompactWindow":1}"#),
+            (&cwd, r#"{"autoCompactWindow":2}"#),
+        ] {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            std::fs::write(root.join(".claude/settings.json"), text).unwrap();
+        }
+        std::fs::write(cwd.join(".claude/settings.local.json"), "not json").unwrap();
+        let files = claude_settings(&home, &cwd);
+        let windows: Vec<_> = files
+            .iter()
+            .map(|f| f["autoCompactWindow"].as_u64())
+            .collect();
+        assert_eq!(windows, [Some(2), Some(1)]);
+    }
+
+    #[test]
+    fn subagent_transcripts_there_at_a_restart_are_read_from_their_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("agent-x1.jsonl");
+        std::fs::write(&sub, SUB).unwrap();
+        std::fs::write(
+            dir.path().join("agent-x1.meta.json"),
+            r#"{"toolUseId":"toolu_A"}"#,
+        )
+        .unwrap();
+        let fresh = read_subs(dir.path(), &[], false, None);
+        assert_eq!(fresh[0].2, 0, "a session new to the store: from the start");
+        assert_eq!(fresh[0].3.as_ref().unwrap().len(), SUB.len());
+        let restart = read_subs(dir.path(), &[], true, None);
+        assert_eq!(restart[0].2, SUB.len() as u64, "held already: from the end");
+        assert!(
+            restart[0].3.as_ref().unwrap().is_empty(),
+            "nothing read again"
+        );
     }
 }

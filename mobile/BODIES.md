@@ -89,7 +89,6 @@ Enforced by the store at write time, `crates/femme-store/src/items.rs:420-458` (
 | AskUserQuestion question | the tool_use id; `<tool_use_id>#<i>` when it asks several | `claude.rs:2355-2359` |
 | permission / plan approval | `<tool_use_id>:ask` | `claude.rs:1522-1524` |
 | MCP elicitation | `<control request_id>:elicit` | `claude.rs:1404` |
-| TUI-pane screen question | `herdr:<pane>:<unix ms>` | `crates/femmed/src/headless/herdr.rs:55`, `:377` |
 | Plan (Claude) | the ExitPlanMode tool_use id | `claude.rs:872-880` |
 | Codex items | Codex's ids; plan checklist `<turnId>:plan` | `codex.rs:31-36`, `:1077-1086` |
 | subagent offset ids | `<parent>/o<offset>` | `claude.rs:2045-2055` |
@@ -326,7 +325,6 @@ Codex `codex.rs:1395-1411`; Pi `pi.rs:1135-1150`.
 | Claude `ExitPlanMode` approval (plan mode) | item `<tool_use_id>:ask` | `Approve this plan and start coding?` | `["Approve · bypass","Approve · accept edits","Approve · manual","Keep planning"]` | false | `true` |
 | Claude permission (`can_use_tool` for any other tool) | item `<tool_use_id>:ask`, request = control id | `Allow <title\|description\|display_name\|tool>?` (kept as is if it already ends in `?`) | `["Allow","Deny"]` | false | `true` |
 | Claude MCP elicitation | `<request_id>:elicit` / control id | `<server> asks: <message>` + URL line or `Accept leaves the form's fields empty: a, b` | `["Accept","Decline"]` | false | `false` |
-| TUI pane (herdr mirror) dialog read from the screen | `herdr:<pane>:<ms>` | screen text | screen options | false | `false` |
 | Codex `requestUserInput` | `<itemId>` (`#i`) | `question` or `header` | option labels | false | `isOther` or no options |
 | Codex approval (normally off) | `<itemId>:<approvalId>` | ``Allow Codex to run `cmd`?`` (+ reason line) | `["Accept","Decline"]` | false | `false` |
 | Pi extension `select` / `confirm` / `input` / `editor` | pi request id | title (`confirm`/`editor`: title + message/prefill) | select options / `["Yes","No"]` / none | false | `input`, `editor` only |
@@ -410,7 +408,6 @@ Event texts that exist (exhaustive for what the code builds):
 | `Claude read your message` / `Codex …` / `pi …` + `read` | daemon pairing | `sent.rs:252-266` |
 | `Model: <model>` | daemon, provider switch | `headless.rs:1306-1312` |
 | `<Agent> exited (<status>); starting it again in 2 s.` / `… again right after a restart: not started again.` / `<Agent> did not start again: …` | daemon | `headless.rs:1316-1330`, `:1349-1356` |
-| `Claude Code wrote (N) entr(y/ies) FEMME does not read yet: <kind>` | TUI mirror | `herdr.rs:755-772` |
 | `/btw failed: …`, `/btw gave up after 5 minutes` | daemon | `headless/btw.rs:68-90` |
 
 Not events (state lives on the `Session` row instead): model changes (`Session.model`), permission

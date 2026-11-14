@@ -52,7 +52,7 @@ impl Daemon {
     pub fn open(cfg: Config) -> anyhow::Result<Arc<Daemon>> {
         std::fs::create_dir_all(&cfg.state_dir)?;
         let mut store = Store::open(&cfg.state_dir.join("femme.db"))?;
-        recover_messages(&mut store, &cfg);
+        drop_mirrored(&mut store);
         match crate::sent::repair(&store) {
             Ok(n) if n > 0 => tracing::info!(n, "saved messages paired with their echo"),
             Ok(_) => {}
@@ -436,25 +436,22 @@ impl Core for Daemon {
     }
 }
 
-/// Once: the messages sent mid-turn that the herdr reader dropped before it knew them, put back
-/// in their sessions ([`crate::headless::herdr::recover`]). A failure is logged, not fatal: the
-/// daemon starts anyway and tries again next start.
-fn recover_messages(store: &mut Store, cfg: &Config) {
-    let done = cfg.state_path("recovered-queued-messages");
-    if done.exists() {
-        return;
-    }
-    let r = crate::headless::herdr::recover(store, &cfg.home, &cfg.state_path("uploads"));
-    match r {
-        Ok(n) => {
-            if n > 0 {
-                if let Err(e) = store.rotate_epoch() {
-                    tracing::warn!(%e, "epoch not rotated after putting messages back");
-                }
-            }
-            tracing::info!(n, "messages sent mid-turn: put back");
-            let _ = std::fs::write(&done, n.to_string());
+/// The rows the herdr mirror left (Claude chats in herdr panes shown as sessions, until
+/// 2026-11-14): a pane's chat is not a session any more; `femmed open --resume <uuid>` goes on
+/// with its conversation. A failure is logged, not fatal.
+// ponytail: a cleanup for the boxes that ran the mirror; delete after a release
+fn drop_mirrored(store: &mut Store) {
+    let rows = match store.read(|c| femme_store::sessions::list_sessions(c, true)) {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(%e, "mirrored sessions not looked for");
+            return;
         }
-        Err(e) => tracing::warn!(%e, "messages sent mid-turn: not put back"),
+    };
+    for s in rows.into_iter().filter(|s| s.owner.starts_with("herdr:")) {
+        match store.write(|tx| tx.delete_session(s.id)) {
+            Ok(()) => tracing::info!(sid = %s.id, "a herdr pane's session dropped"),
+            Err(e) => tracing::warn!(sid = %s.id, %e, "a herdr pane's session not dropped"),
+        }
     }
 }
