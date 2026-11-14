@@ -86,6 +86,13 @@ a question request without questions with -32602. Codex used to wait for them fo
   planning" (live and on replay, through the echoed control response); `Failed` with
   `QuestionItem.reason` (new, additive) when it was never answered (turn interrupted, process
   exited, request withdrawn or replaced). An empty multi-select pick is `Bad`.
+* Plan approval picks the mode the work goes on in (checked on 2.1.323, `fixtures/claude/plan_modes.*`).
+  The question has four options: "Approve · bypass", "Approve · accept edits", "Approve · manual",
+  "Keep planning". An approval answers `{"behavior":"allow","updatedInput":<input>,"updatedPermissions":[{"type":"setMode","mode":M,"destination":"session"}]}`
+  with M = `bypassPermissions` / `acceptEdits` / `default`, as the terminal's dialog rows do; the
+  CLI then says the mode in a `system/status` line. A bare allow returns the session to the mode it
+  had just before `plan`: after Shift+Tab from bypass (bypass → manual → accept edits → plan) that is
+  `acceptEdits`, which asked before every command outside the project. No auto row yet.
 * A repeated `can_use_tool` request id with the same `tool_use_id` is ignored (an answered question
   is not reopened); a new call under a used id replaces the old one. A second `content_block_start`
   at an index nobody stopped fails the first block, so it cannot pin the resume offset.
