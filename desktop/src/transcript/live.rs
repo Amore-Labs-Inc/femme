@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
-use femme_proto::rpc::{Req, Resp, Scope};
+use femme_proto::rpc::{ErrCode, Req, Resp, Scope};
 use femme_proto::state::{Goal, GoalState, ItemKind, ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
@@ -568,6 +568,13 @@ impl Transcript {
                 }
                 Ok(_) => {
                     this.failed.insert(hash);
+                }
+                // Gone, not broken: a streaming body is re-put with every delta and its earlier
+                // blob deleted at once, and retention evicts old ones. The item's next rev names
+                // the new hash (fetched then); until it lands the preview shows.
+                Err(RequestError::Server { code: ErrCode::NotFound, .. }) => {
+                    this.failed.insert(hash);
+                    this.refresh(cx);
                 }
                 Err(e) => {
                     this.failed.insert(hash);
