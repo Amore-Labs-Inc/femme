@@ -1451,6 +1451,48 @@ mod tests {
         m.apply_from(b, &changes(rows))
     }
 
+    /// `notify` runs `notify-send` with the session's name as the title: a stub on PATH records
+    /// what it was given.
+    #[test]
+    #[cfg(unix)]
+    fn a_notification_is_one_notify_send_call() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("femme-notify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("args");
+        std::fs::write(
+            dir.join("notify-send"),
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", out.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            dir.join("notify-send"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{path}", dir.display()));
+        notify("platform", "finished", "normal");
+        std::env::set_var("PATH", path);
+        let args = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                std::fs::read_to_string(&out).ok().filter(|a| !a.is_empty())
+            })
+            .expect("notify-send ran");
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "--app-name=FEMME",
+                "--urgency",
+                "normal",
+                "platform",
+                "finished"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_listed_session_that_finishes_or_blocks_is_an_alert() {
         let mut m = Model::default();
