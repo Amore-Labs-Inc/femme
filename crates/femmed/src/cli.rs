@@ -80,9 +80,12 @@ pub enum Command {
     Proxy,
     /// Start a headless Claude session in the daemon, in `--cwd` (default: here), and print its id.
     Open {
-        /// The directory to start in.
+        /// The directory to start in (with `--resume`: the conversation's own, by default).
         #[arg(long, value_parser = NonEmptyStringValueParser::new())]
         cwd: Option<String>,
+        /// Go on with an existing Claude conversation: its uuid (`~/.claude/projects/*/<uuid>.jsonl`).
+        #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+        resume: Option<String>,
     },
     /// Show the user a file (a screenshot, a chart) in the transcript, from inside a session.
     Show {
@@ -422,7 +425,7 @@ pub async fn run(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Open { cwd } => finish("open", open(cwd).await),
+        Command::Open { cwd, resume } => finish("open", open(cwd, resume).await),
         Command::Show { file, caption } => finish("show", show(&file, caption).await),
         Command::Hook {
             agent,
@@ -466,11 +469,18 @@ pub async fn run(cli: Cli) -> ExitCode {
 }
 
 /// `femmed open`: asks the daemon, over the socket `femmed proxy` connects to, for a headless Claude
-/// session in `cwd` (default: here) and returns its id. The desktop lists the session like any other.
-async fn open(cwd: Option<String>) -> anyhow::Result<String> {
-    let cwd = match cwd {
-        Some(cwd) => cwd,
-        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+/// session in `cwd` (default: here, or the resumed conversation's folder) and returns its id. The
+/// desktop lists the session like any other.
+async fn open(cwd: Option<String>, resume: Option<String>) -> anyhow::Result<String> {
+    let cwd = match (cwd, &resume) {
+        (Some(cwd), _) => cwd,
+        (None, Some(uuid)) => {
+            let home = Config::load().home;
+            crate::headless::backfill::cwd_of(&home, uuid).ok_or_else(|| {
+                anyhow::anyhow!("{uuid}: no transcript of it under ~/.claude/projects")
+            })?
+        }
+        (None, None) => std::env::current_dir()?.to_string_lossy().into_owned(),
     };
     // The client would wait out ANSWER_WAIT for a daemon that is not there; the shim falls back at once.
     let sock = config::sock_path();
@@ -489,6 +499,7 @@ async fn open(cwd: Option<String>) -> anyhow::Result<String> {
         name: None,
         prompt: None,
         model: None,
+        resume,
     };
     match client.request_timeout(req, ANSWER_WAIT).await? {
         Resp::Session(sid) => Ok(sid.to_string()),
