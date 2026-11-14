@@ -123,7 +123,8 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             name,
             prompt,
             model,
-        } => create(ctx, cwd, agent, mode, label, name, prompt, model).await,
+            resume,
+        } => create(ctx, cwd, agent, mode, label, name, prompt, model, resume).await,
         Req::SessionClose { sid } => done(d.close_session(sid).await),
         Req::Prompt {
             sid,
@@ -417,8 +418,16 @@ async fn create(
     name: Option<String>,
     prompt: Option<String>,
     model: Option<String>,
+    resume: Option<String>,
 ) -> Result<Resp, WireErr> {
     let d = &ctx.daemon;
+    let resume = resume
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty());
+    if resume.is_some() && (agent != Agent::Claude || mode != Mode::Headless) {
+        let why = "only a headless Claude session resumes a conversation";
+        return Err(err(ErrCode::Bad, why));
+    }
     // A name is for an agent: `/api/agents/<name>` finds the session by it and types into it.
     match &name {
         Some(_) if agent == Agent::Shell => {
@@ -460,6 +469,7 @@ async fn create(
             name,
             owner,
             model: model.filter(|m| !m.trim().is_empty()),
+            resume,
         })
         .await
         .map_err(wire)?;

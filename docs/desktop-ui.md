@@ -35,9 +35,18 @@ Keep it current: when your module's public API changes, edit your section in the
   `+ this laptop` in the sidebar starts a Claude session in the laptop's home folder. Every
   request goes to the box of its session; the phone never sees local sessions (it cannot reach the
   laptop). Design: docs/plan-local.md.
-- **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
+- **Left**: sessions only (live ones), newest first, current one marked, grouped by folder under
+  a header that says the folder's way from home (`~/Documents/Web_Apps/Platform`). A row is named
+  by its chat's title: Claude Code's own for a conversation that ran in its TUI (`ai-title` in the
+  transcript, or the user's `/rename`), and for a headless chat one a fork of the conversation
+  gives after its first turn (`headless/title.rs`, the small model, nothing saved); the agents
+  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
-  and show it. Nothing else on the left (no accounts, no lanes).
+  and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
+  `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
+  goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
+  shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
+  is refused until that one exits.
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
@@ -51,13 +60,22 @@ Keep it current: when your module's public API changes, edit your section in the
   A `PushNotification` call (Claude's push to your phone, which femmed sends through ntfy, see
   [notifications.md](notifications.md)) is one line, `🔔 push · <message>`, with
   `sent to your phone` or `not sent: <reason>`.
+- **Chat ↔ terminal**: a live Claude session has a 24 px row over the centre with one button,
+  `open in terminal` on the chat (`Mode::Headless`) and `back to chat` on Claude Code's own TUI
+  (`Mode::Tui`); mod+shift+t does the same (there is no command palette). The click sends
+  `Req::Takeover { sid, to }`; the centre follows `Session::mode` from the `Changes` stream (a TUI
+  session's centre is its main terminal, back on the chat the transcript reloads from the
+  daemon's items), never a local flag. Until the row flips the button reads `open in terminal…`,
+  disabled (20 s at most); `Busy` keeps it waiting, any other refusal frees it and is said in the
+  top bar. (`desktop/src/takeover.rs`, `app/switch.rs`.)
 - **Compaction hand-off**: a compaction shows as one row, `· Conversation compacted`. Claude Code
   restarts the model with a summary it writes itself ("This session is being continued from a
   previous conversation… Summary: …", after an `<artifact-content-authored-by-others/>` preamble
   when the conversation held artifact content): the summary is Claude's, not a message. Its
-  terminal never shows it, the stream of a FEMME chat never carries it, and the mirror of a herdr
-  pane drops the transcript line that holds it (`isCompactSummary` / `isVisibleInTranscriptOnly`).
-  A summary stored as a `UserMessage` before the mirror dropped them is still not drawn as the
+  terminal never shows it, the stream of a FEMME chat never carries it, and the transcript on disk
+  (read for a resumed conversation or after a TUI phase) drops the line that holds it
+  (`isCompactSummary` / `isVisibleInTranscriptOnly`).
+  A summary stored as a `UserMessage` by an older daemon is still not drawn as the
   user's: the compact note and that message fold into one muted row
   (`▸ · conversation compacted · summary`), a click shows the summary. That detection is the
   template's prefix, display only.
@@ -113,8 +131,7 @@ Keep it current: when your module's public API changes, edit your section in the
   row too, `◷ <description> · <event>`: one of several lines shows the first and unfolds on a click.
   The daemon reads the verdicts from the session's transcript on disk
   (`~/.claude/projects/*/<session>.jsonl`, `goal_status` attachment lines), the only place Claude
-  writes them: a headless chat's actor follows that file while a goal is set, a session mirrored
-  from a herdr pane reads it anyway. `Session::goal` (femme-proto) carries condition, state and
+  writes them: a headless chat's actor follows that file while a goal is set. `Session::goal` (femme-proto) carries condition, state and
   reason; the strip's colours are the `goal` and `goal_met` theme tokens.
 - **Background tasks** (Claude Code 2.1.319): a Bash command or an Agent the turn waits for is a
   task (`task_started`), and its tool row shows `⇣ background` at its right while it runs. A click
@@ -122,19 +139,7 @@ Keep it current: when your module's public API changes, edit your section in the
   control request): the call's result says it was backgrounded, the turn goes on, and the row says
   `in background` until the task's end comes as an event (`task_notification`), which starts a turn
   of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
-  of the chat on show, as `Ctrl+B` does in Claude's own TUI (a mirrored pane gets that key).
-- **A mirrored pane's prompts**: Claude in a herdr pane blocked on a prompt its TUI draws never
-  writes it to its transcript, so the daemon reads it off the pane's screen (`herdr agent read`,
-  `headless/herdr.rs` `screen_prompt`) and shows it as a question row with the options as buttons:
-  a permission prompt ("Do you want to proceed? 1. Yes 2. No", an option wrapped over lines is one
-  option), the plan dialog ("Would you like to proceed?"; herdr reads that pane as idle, so the
-  transcript's ExitPlanMode call with no result yet is what marks it blocked), an AskUserQuestion
-  (its options, "Type something.", "Chat about this"), the folder trust dialog (a cursor, no
-  numbers). An answer is read off the screen as it is then and typed into the pane as keys: the
-  option's number, plus Enter where the footer says "Enter to select" (an AskUserQuestion moves its
-  cursor on a digit), up/down from the cursor and Enter for an unnumbered list, Escape for cancel. An
-  answer given in the pane itself closes the row as `answered in the pane`. A message sent while it
-  waits is refused with "Claude is waiting for an answer in its terminal", not `agent_not_ready`.
+  of the chat on show, as `Ctrl+B` does in Claude's own TUI.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
   composer's selection), a double click selects a word, a triple click the paragraph (the text

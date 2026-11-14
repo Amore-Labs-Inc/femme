@@ -162,6 +162,7 @@ async fn a_phone_asks_subscribes_and_is_answered_in_json() {
             name: None,
             owner: "board".into(),
             model: None,
+            resume: None,
         })
         .await
         .expect("a shell opens");

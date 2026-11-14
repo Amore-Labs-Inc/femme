@@ -562,9 +562,6 @@ impl Daemon {
             .unwrap_or_default();
         let claimed: HashSet<Sid> = open.iter().map(|s| s.id).collect();
         for s in open {
-            if s.owner.starts_with(headless::herdr::OWNER) {
-                continue; // a herdr pane's: its poller keeps it
-            }
             // Born headless (it has attach state): its actor takes it over, whatever mode it is in now.
             let managed = s.agent != Agent::Shell
                 && self
@@ -641,6 +638,12 @@ impl Daemon {
             Agent::Shell => (PaneKind::Shell, SessionStatus::Idle),
             _ => (PaneKind::Agent, SessionStatus::Starting),
         };
+        if let Some(uuid) = req.resume.as_deref().filter(|_| headless) {
+            if headless::backfill::held(&self.cfg.home, uuid) {
+                let why = "that conversation is open in another Claude: exit it there first";
+                return Err(CoreError::Conflict(why.into()));
+            }
+        }
         let (session, pane) = self.write(|tx, now| {
             let s = tx.insert_session(&Session {
                 id: Id(0),
@@ -652,7 +655,7 @@ impl Daemon {
                 mode: if headless { Mode::Headless } else { Mode::Tui },
                 cwd: req.cwd.clone(),
                 label: req.label.clone(),
-                agent_sid: None,
+                agent_sid: req.resume.clone().filter(|_| headless),
                 model: req.model.clone(),
                 status,
                 attention: Attention::None,
@@ -757,7 +760,7 @@ impl Daemon {
         };
         let status =
             (s.agent != Agent::Shell).then(|| agent_status(s.status, s.attention).to_string());
-        // Looked at: `done` shows once (herdr's did the same).
+        // Looked at: `done` shows once.
         if s.attention == Attention::Done {
             let _ = self.update(s.id, |s| s.attention = Attention::None);
         }

@@ -23,6 +23,7 @@ pub mod prs;
 pub mod rng;
 pub mod session;
 pub mod sidebar;
+pub mod takeover;
 pub mod terminal;
 pub mod theme;
 pub mod transcript;

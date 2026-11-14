@@ -89,7 +89,6 @@ Enforced by the store at write time, `crates/femme-store/src/items.rs:420-458` (
 | AskUserQuestion question | the tool_use id; `<tool_use_id>#<i>` when it asks several | `claude.rs:2355-2359` |
 | permission / plan approval | `<tool_use_id>:ask` | `claude.rs:1522-1524` |
 | MCP elicitation | `<control request_id>:elicit` | `claude.rs:1404` |
-| TUI-pane screen question | `herdr:<pane>:<unix ms>` | `crates/femmed/src/headless/herdr.rs:55`, `:377` |
 | Plan (Claude) | the ExitPlanMode tool_use id | `claude.rs:872-880` |
 | Codex items | Codex's ids; plan checklist `<turnId>:plan` | `codex.rs:31-36`, `:1077-1086` |
 | subagent offset ids | `<parent>/o<offset>` | `claude.rs:2045-2055` |
@@ -323,10 +322,9 @@ Codex `codex.rs:1395-1411`; Pi `pi.rs:1135-1150`.
 | source | item id / `request_id` | `prompt` | `options` | `multi` | `free_text` |
 |---|---|---|---|---|---|
 | Claude `AskUserQuestion` (main thread only) | item = tool_use id (`#i` when several); request = CLI control `request_id` (`#i`) | `questions[i].question` | `"<label> — <description>"` per option (em dash, description omitted if empty) | `questions[i].multiSelect` | `true` | 
-| Claude `ExitPlanMode` approval (plan mode) | item `<tool_use_id>:ask` | `Approve this plan and start coding?` | `["Approve","Keep planning"]` | false | `true` |
+| Claude `ExitPlanMode` approval (plan mode) | item `<tool_use_id>:ask` | `Approve this plan and start coding?` | `["Approve · bypass","Approve · accept edits","Approve · manual","Keep planning"]` | false | `true` |
 | Claude permission (`can_use_tool` for any other tool) | item `<tool_use_id>:ask`, request = control id | `Allow <title\|description\|display_name\|tool>?` (kept as is if it already ends in `?`) | `["Allow","Deny"]` | false | `true` |
 | Claude MCP elicitation | `<request_id>:elicit` / control id | `<server> asks: <message>` + URL line or `Accept leaves the form's fields empty: a, b` | `["Accept","Decline"]` | false | `false` |
-| TUI pane (herdr mirror) dialog read from the screen | `herdr:<pane>:<ms>` | screen text | screen options | false | `false` |
 | Codex `requestUserInput` | `<itemId>` (`#i`) | `question` or `header` | option labels | false | `isOther` or no options |
 | Codex approval (normally off) | `<itemId>:<approvalId>` | ``Allow Codex to run `cmd`?`` (+ reason line) | `["Accept","Decline"]` | false | `false` |
 | Pi extension `select` / `confirm` / `input` / `editor` | pi request id | title (`confirm`/`editor`: title + message/prefill) | select options / `["Yes","No"]` / none | false | `input`, `editor` only |
@@ -342,7 +340,7 @@ Permission requests are `Question` items (no separate kind). `response_body` (`c
 | question | `Option(0)` | `Option(1)` | `Text(t)` | `Cancel` |
 |---|---|---|---|---|
 | Allow / Deny (`PendKind::Allow`) | allow (input unchanged) | deny "The user said no." | **deny with message `t`** (feedback to Claude) | deny "The user said no." |
-| Approve / Keep planning | approve | keep planning (deny) | deny with `t` | deny |
+| Plan approval (`PendKind::Plan`) | approve, session goes on in `bypassPermissions` (`Option(1)`: `acceptEdits`, `Option(2)`: `default`; each a `setMode` permission update) | `Option(3)`: keep planning (deny) | deny with `t` | deny |
 | AskUserQuestion | answers map `question → label` (`Options` → labels joined `, `, `Text` → the text) then allow | | | deny "The user declined to answer." (cancels the whole request, even with several parts) |
 | Elicitation | `{"action":"accept"}` (form: schema defaults only) | `{"action":"decline"}` | rejected | `{"action":"cancel"}` |
 | Codex approval | `accept` | `decline` | rejected | `cancel` (`codex.rs:1299-1305`) |
@@ -367,7 +365,7 @@ comes because the driver writes nothing until all parts are in (`crates/femmed/s
   `<tool_use_id>:ask` (§3.7). Real sequence (`fixtures/claude/plan.events.json`):
   ```json
   {"ItemCompleted":{"id":"toolu_016h8PFN6VQ4cbAyRzfLGaYg","kind":"Plan","status":"Completed","body":{"text":"create hello.txt\n"}}}
-  {"QuestionAsked":{"item_id":"toolu_016h8PFN6VQ4cbAyRzfLGaYg:ask","q":{"request_id":"deab25a3-3557-44dc-91fe-d31d30be358c","prompt":"Approve this plan and start coding?","options":["Approve","Keep planning"],"multi":false,"free_text":true}}}
+  {"QuestionAsked":{"item_id":"toolu_016h8PFN6VQ4cbAyRzfLGaYg:ask","q":{"request_id":"deab25a3-3557-44dc-91fe-d31d30be358c","prompt":"Approve this plan and start coding?","options":["Approve · bypass","Approve · accept edits","Approve · manual","Keep planning"],"multi":false,"free_text":true}}}
   ```
   Then `Option(0)` → `{"answered":{"Option":0},…}` `Answered`, and the session's `permission` changes.
   `EnterPlanMode` is an ordinary `ToolCall`.
@@ -410,7 +408,6 @@ Event texts that exist (exhaustive for what the code builds):
 | `Claude read your message` / `Codex …` / `pi …` + `read` | daemon pairing | `sent.rs:252-266` |
 | `Model: <model>` | daemon, provider switch | `headless.rs:1306-1312` |
 | `<Agent> exited (<status>); starting it again in 2 s.` / `… again right after a restart: not started again.` / `<Agent> did not start again: …` | daemon | `headless.rs:1316-1330`, `:1349-1356` |
-| `Claude Code wrote (N) entr(y/ies) FEMME does not read yet: <kind>` | TUI mirror | `herdr.rs:755-772` |
 | `/btw failed: …`, `/btw gave up after 5 minutes` | daemon | `headless/btw.rs:68-90` |
 
 Not events (state lives on the `Session` row instead): model changes (`Session.model`), permission

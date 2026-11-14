@@ -1,0 +1,330 @@
+[
+  {
+    "PermissionMode": "default"
+  },
+  {
+    "PermissionMode": "acceptEdits"
+  },
+  {
+    "PermissionMode": "plan"
+  },
+  {
+    "Status": "Working"
+  },
+  "TurnStarted",
+  {
+    "Started": {
+      "agent_sid": "c041d892-f551-4a56-a3e0-668c5ed5be14",
+      "model": "claude-haiku-5-5"
+    }
+  },
+  {
+    "Commands": [
+      "compact",
+      "context",
+      "help"
+    ]
+  },
+  {
+    "ItemCompleted": {
+      "id": "00000001-0000-4000-8000-000000000001",
+      "kind": "UserMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Write the one-line plan 'copy a file' and call ExitPlanMode with it at once (no questions, no exploring). After approval run exactly this Bash command and then say done: echo hi > /tmp/femme-capture/plan-modes.txt"
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 42679,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+      "kind": "ToolCall",
+      "preview": "Write"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+      "body": {
+        "call_id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+        "input": {
+          "content": "copy a file\n",
+          "file_path": "/home/user/.claude/plans/write-the-one-line-plan-shiny-abelson.md"
+        },
+        "name": "Write"
+      }
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+      "kind": "ToolCall",
+      "preview": "ToolSearch"
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+        "input": {
+          "content": "copy a file\n",
+          "file_path": "/home/user/.claude/plans/write-the-one-line-plan-shiny-abelson.md"
+        },
+        "name": "Write"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_017jf4hkS82R5X2TZy5wDAj2:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_017jf4hkS82R5X2TZy5wDAj2",
+        "is_error": false,
+        "output": "File created successfully at: /home/user/.claude/plans/write-the-one-line-plan-shiny-abelson.md (file state is current in your context — no need to Read it back)"
+      }
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+      "body": {
+        "call_id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+        "input": {
+          "max_results": 1,
+          "query": "select:ExitPlanMode"
+        },
+        "name": "ToolSearch"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+        "input": {
+          "max_results": 1,
+          "query": "select:ExitPlanMode"
+        },
+        "name": "ToolSearch"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01Lak9JJ8qjVV3k1QWLCgmqn",
+        "is_error": false,
+        "output": "[tool_reference]"
+      }
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "session",
+      "percent": 35.0,
+      "resets_at": 1794624000
+    }
+  },
+  {
+    "RateLimit": {
+      "kind": "weekly",
+      "percent": 13.0,
+      "resets_at": 1795118400
+    }
+  },
+  {
+    "Context": {
+      "used": 49729,
+      "window": null
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01RFKfT4NHweEo4yPQfX4Zaz",
+      "kind": "Plan",
+      "status": "Completed",
+      "body": {
+        "text": "copy a file\n"
+      }
+    }
+  },
+  {
+    "Status": "Blocked"
+  },
+  {
+    "QuestionAsked": {
+      "item_id": "toolu_01RFKfT4NHweEo4yPQfX4Zaz:ask",
+      "q": {
+        "request_id": "92c4bb04-b67a-439b-8804-c989defa4282",
+        "prompt": "Approve this plan and start coding?",
+        "options": [
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
+          "Keep planning"
+        ],
+        "multi": false,
+        "free_text": true
+      }
+    }
+  },
+  {
+    "QuestionResolved": {
+      "request_id": "92c4bb04-b67a-439b-8804-c989defa4282"
+    }
+  },
+  {
+    "PermissionMode": "bypassPermissions"
+  },
+  {
+    "Status": "Working"
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01RFKfT4NHweEo4yPQfX4Zaz:ask",
+      "kind": "Question",
+      "status": "Answered",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
+          "Keep planning"
+        ],
+        "prompt": "Approve this plan and start coding?",
+        "request_id": "92c4bb04-b67a-439b-8804-c989defa4282"
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 50052,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+      "kind": "ToolCall",
+      "preview": "Bash"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+      "body": {
+        "call_id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+        "input": {
+          "command": "echo hi > /tmp/femme-capture/plan-modes.txt",
+          "description": "Write hi into plan-modes.txt"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+      "kind": "ToolCall",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+        "input": {
+          "command": "echo hi > /tmp/femme-capture/plan-modes.txt",
+          "description": "Write hi into plan-modes.txt"
+        },
+        "name": "Bash"
+      }
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "toolu_01LZLCng5fKhLbWMRCA2eNfv:result",
+      "kind": "ToolResult",
+      "status": "Completed",
+      "body": {
+        "call_id": "toolu_01LZLCng5fKhLbWMRCA2eNfv",
+        "is_error": false,
+        "output": "(Bash completed with no output)"
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 50194,
+      "window": null
+    }
+  },
+  {
+    "ItemStarted": {
+      "id": "msg_011Ch1xSnDFmgArNQ8bXi3Y4:0",
+      "kind": "AssistantMessage",
+      "preview": ""
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011Ch1xSnDFmgArNQ8bXi3Y4:0",
+      "text": "Done"
+    }
+  },
+  {
+    "ItemDelta": {
+      "id": "msg_011Ch1xSnDFmgArNQ8bXi3Y4:0",
+      "text": "."
+    }
+  },
+  {
+    "ItemCompleted": {
+      "id": "msg_011Ch1xSnDFmgArNQ8bXi3Y4:0",
+      "kind": "AssistantMessage",
+      "status": "Completed",
+      "body": {
+        "text": "Done."
+      }
+    }
+  },
+  {
+    "Context": {
+      "used": 50194,
+      "window": 1000000
+    }
+  },
+  {
+    "TurnEnded": {
+      "stop": "EndTurn",
+      "usage": {
+        "input": 8,
+        "output": 751,
+        "cache_read": 142454,
+        "cache_write": 50192
+      },
+      "duration_ms": 6750
+    }
+  },
+  {
+    "Status": "Idle"
+  }
+]

@@ -143,6 +143,7 @@ impl Local {
             name: None,
             prompt: None,
             model: None,
+            resume: None,
         };
         match self.call(req).await {
             Resp::Session(sid) => sid,

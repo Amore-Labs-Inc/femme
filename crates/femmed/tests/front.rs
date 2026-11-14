@@ -148,6 +148,7 @@ impl Rig {
                 name: None,
                 owner: "board".into(),
                 model: None,
+                resume: None,
             })
             .await
             .expect("a shell opens")
@@ -163,6 +164,7 @@ fn shell_req(home: &Path) -> Req {
         name: None,
         prompt: None,
         model: None,
+        resume: None,
     }
 }
 
@@ -596,6 +598,7 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
         name: None,
         prompt: None,
         model: None,
+        resume: None,
     };
     assert_eq!(code(c.call(req).await), ErrCode::Bad);
     // A shell has no agent to prompt: the core's Busy.
@@ -761,6 +764,7 @@ async fn the_front_checks_repos_titles_names_and_folders_the_way_the_board_does(
         name: name.map(Into::into),
         prompt: None,
         model: None,
+        resume: None,
     };
     let home = rig.home().display().to_string();
     for (what, req) in [
@@ -892,6 +896,7 @@ async fn an_internal_failure_is_not_remembered_so_the_retry_runs_the_op_again() 
         name: None,
         prompt: None,
         model: None,
+        resume: None,
     };
     // No claude on the box's PATH: the core's Internal.
     std::fs::rename(&claude, &away).unwrap();
@@ -926,6 +931,7 @@ async fn a_session_made_but_not_prompted_is_one_session_however_often_the_op_is_
         name: None,
         prompt: Some("hello".into()),
         model: None,
+        resume: None,
     };
     let op = OpId::new();
     let told = c.call_op(op, req.clone()).await.unwrap_err();
@@ -1550,6 +1556,62 @@ async fn a_closed_session_ends_its_terminal_streams_with_exited() {
         assert_eq!(t.next().await, TermDown::Exited { status: -1 }, "{pane:?}");
         assert!(matches!(t.rx.recv_msg::<TermDown>().await, Ok(None)));
     }
+}
+
+/// A herdr pane's chat is mirrored without a holder (its agent runs under herdr): `+` still gets a
+/// shell in its folder, from a holder started for that alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pane_opens_in_a_session_that_has_no_holder() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let home = rig.home();
+    let s = rig
+        .d
+        .store
+        .write(|tx| {
+            tx.insert_session(&femme_proto::state::Session {
+                id: Id(0),
+                handle: String::new(),
+                rev: 0,
+                name: None,
+                owner: "herdr:test:wA:p1".into(),
+                agent: femme_proto::state::Agent::Claude,
+                mode: femme_proto::state::Mode::Headless,
+                cwd: home.to_string_lossy().into_owned(),
+                label: Some("mirrored".into()),
+                agent_sid: Some("0000-uuid".into()),
+                model: None,
+                status: femme_proto::state::SessionStatus::Idle,
+                attention: femme_proto::state::Attention::None,
+                created: 0,
+                closed: None,
+                permission: None,
+                context: None,
+                effort: None,
+                goal: None,
+            })
+        })
+        .unwrap();
+    let sid = s.id;
+
+    let Ok(Resp::Pane(pane)) = c.call(Req::PaneOpen { sid }).await else {
+        panic!("PaneOpen failed")
+    };
+    assert_eq!(pane, PaneId { sid, no: 2 });
+    let mut t = c.term(pane, RowCache::new()).await;
+    t.bytes("echo pane-$((40+2))\r").await;
+    t.until("the shell's answer", |s| s.text().contains("pane-42"))
+        .await;
+    // Closing the session takes the holder with it.
+    assert!(c.call(Req::SessionClose { sid }).await.is_ok());
+    let sock = rig.b.socket(sid);
+    within("holder gone", async {
+        while tokio::net::UnixStream::connect(&sock).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2281,6 +2343,7 @@ async fn a_prompt_names_its_uploads_to_the_agent_and_a_missing_one_is_refused() 
         name: None,
         prompt: None,
         model: None,
+        resume: None,
     };
     let Ok(Resp::Session(sid)) = c.call(create).await else {
         panic!("no session")
@@ -2502,4 +2565,94 @@ async fn account_caps_are_set_listed_cleared_and_kept_in_caps_json() {
     assert_eq!(c.call(set(2, None, None)).await, Ok(Resp::Ok));
     let left = vec![cap(10, Some(80), None)];
     assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(left)));
+}
+
+/// `SessionCreate { resume }` goes on with an existing Claude conversation: the session carries
+/// its uuid, its transcript shows what the file holds before the agent says a word, and one that
+/// another Claude has open is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_resumes_an_existing_conversation_with_its_history() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let proj = rig.home().join(".claude/projects/-w");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("u-9.jsonl"),
+        concat!(
+            r#"{"type":"user","uuid":"m1","cwd":"/w","message":{"role":"user","content":"list it"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"a1","content":[{"type":"text","text":"one file"}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"turn_duration","durationMs":12}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let create = |resume: &str| Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some(resume.into()),
+    };
+    let Ok(Resp::Session(sid)) = c.call(create("u-9")).await else {
+        panic!("no session")
+    };
+    let s = rig
+        .d
+        .store
+        .read(|c| sessions::get_session(c, sid))
+        .unwrap()
+        .unwrap();
+    assert_eq!(s.agent_sid.as_deref(), Some("u-9"));
+    let ids: Vec<String> = rig
+        .d
+        .store
+        .read(|c| items::page_items(c, sid, None, 100))
+        .unwrap()
+        .into_iter()
+        .map(|i| i.item_id)
+        .collect();
+    assert!(ids.contains(&"m1".to_string()), "{ids:?}");
+    assert!(ids.contains(&"a1:0".to_string()), "{ids:?}");
+    within("the resumed agent to be idle", async {
+        loop {
+            let s = rig.d.store.read(|c| sessions::get_session(c, sid));
+            if s.unwrap().is_some_and(|s| s.status == SessionStatus::Idle) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    // a conversation open in another Claude (its process note names our own, live, pid)
+    let notes = rig.home().join(".claude/sessions");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(
+        notes.join("1.json"),
+        format!(
+            r#"{{"pid":{},"sessionId":"u-8","kind":"interactive"}}"#,
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    let refused = c.call(create("u-8")).await.unwrap_err();
+    assert_eq!(refused.code, ErrCode::Conflict, "{refused:?}");
+    // a shell cannot resume anything
+    let shell = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Shell,
+        mode: Mode::Tui,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some("u-9".into()),
+    };
+    assert_eq!(c.call(shell).await.unwrap_err().code, ErrCode::Bad);
 }

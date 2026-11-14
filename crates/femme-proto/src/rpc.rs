@@ -104,6 +104,11 @@ pub enum Req {
         /// The agent's model (`None`: its default). A Claude model that names its maker
         /// (`deepseek/deepseek-v4.1-flash-ultrafast`) runs through OpenGateway.
         model: Option<String>,
+        /// An existing conversation of the agent's to go on with (Claude: the uuid of
+        /// `~/.claude/projects/*/<uuid>.jsonl`): the session resumes it and its transcript shows
+        /// what it holds. `Conflict` while another Claude has it open.
+        #[serde(default)]
+        resume: Option<String>,
     },
     SessionClose {
         sid: Sid,

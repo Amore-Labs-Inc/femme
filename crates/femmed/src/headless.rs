@@ -49,8 +49,9 @@ use crate::session::{
 };
 use crate::takeover::{Act, Ev, Phase, Takeover};
 
+pub(crate) mod backfill;
 pub(crate) mod btw;
-pub(crate) mod herdr;
+pub(crate) mod title;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
 /// when their TUIs are wired.
@@ -130,7 +131,7 @@ enum Cmd {
         model: String,
         reply: Reply,
     },
-    /// Claude's permission mode (`plan`, `auto`, ...); a herdr pane steps to its next one.
+    /// Claude's permission mode (`plan`, `auto`, ...).
     SetPermission {
         mode: String,
         reply: Reply,
@@ -164,12 +165,7 @@ impl Head {
         answer.await.map_err(|_| gone())?
     }
 
-    #[cfg(test)]
-    pub(crate) async fn prompt(&self, text: &str, how: PromptHow) -> Result<(), CoreError> {
-        self.prompt_as(text, how, None).await
-    }
-
-    /// [`Head::prompt`], echoed by the agent under `id` when it takes one.
+    /// A prompt for the agent, echoed by it under `id` when it takes one.
     pub(crate) async fn prompt_as(
         &self,
         text: &str,
@@ -278,11 +274,15 @@ pub(crate) async fn start(d: &Daemon, s: &Session, holder: Holder) -> Result<(),
     let events = holder.subscribe();
     let up = async {
         a.spool = Some(holder.spool_read(0).await.map_err(|e| e.to_string())?);
-        a.spawn_process(d, None).await
+        a.spawn_process(d, s.agent_sid.clone()).await
     };
     if let Err(e) = up.await {
         let _ = holder.shutdown().await;
         return Err(e);
+    }
+    // a resumed conversation: what it holds, before the stream adds to it
+    if let Some(uuid) = &s.agent_sid {
+        backfill::run(d, s.id, uuid, None, None).await;
     }
     a.launch(d, events);
     Ok(())
@@ -406,6 +406,9 @@ struct Actor {
     /// The agent's stderr tail from its last exit.
     stderr: String,
     takeover_reply: Option<Reply>,
+    /// Where the conversation's transcript on disk ended, and when, as the TUI started: the
+    /// backfill after it reads from there (`None`: the TUI was running when this daemon started).
+    tui_from: Option<(u64, std::time::SystemTime)>,
     /// The agent died twice or would not start: nothing runs until the session is closed.
     failed: bool,
     /// The agent was stopped to start again on another provider's model.
@@ -421,6 +424,9 @@ struct Actor {
     monitor: Option<GoalTail>,
     /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
     pushes: HashMap<String, String>,
+    /// A title was asked for this chat ([`title`]); once per process.
+    // ponytail: a fork that failed is asked again after the next restart, not before
+    titled: bool,
 }
 
 /// The transcript on disk of a session with a `/goal` (or a `Monitor`), read from where the goal
@@ -478,12 +484,14 @@ impl Actor {
             tick_at: None,
             stderr: String::new(),
             takeover_reply: None,
+            tui_from: None,
             failed: false,
             switching: false,
             stop: false,
             goal: None,
             monitor: None,
             pushes: HashMap::new(),
+            titled: false,
         }
     }
 
@@ -695,7 +703,7 @@ impl Actor {
             .session(self.sid)
             .ok()
             .and_then(|s| s.agent_sid)
-            .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+            .and_then(|uuid| backfill::find(&d.cfg.home, &uuid));
         let read = path
             .as_ref()
             .and_then(|p| std::fs::metadata(p).ok())
@@ -1134,6 +1142,15 @@ impl Actor {
         }
         if f.turn_ended {
             let _ = self.machine.step(Ev::TurnEnded { now: self.ms() });
+            // the first turn done: a chat with no title yet gets one
+            if !self.titled {
+                if let Ok(s) = d.session(self.sid) {
+                    if title::wanted(&s) {
+                        self.titled = true;
+                        title::ask(d, &s);
+                    }
+                }
+            }
         }
         let row = RowFx {
             agent_sid: f.agent_sid,
@@ -1533,6 +1550,14 @@ impl Actor {
                     let held = std::mem::take(&mut self.resend);
                     self.missed.push(sent::Gone::Prompts(held_of(held)));
                     self.commit(d, Vec::new()).await;
+                    let len = d
+                        .session(self.sid)
+                        .ok()
+                        .and_then(|s| s.agent_sid)
+                        .and_then(|u| backfill::find(&d.cfg.home, &u))
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map_or(0, |m| m.len());
+                    self.tui_from = Some((len, std::time::SystemTime::now()));
                     self.spawn_tui(d).await
                 }
                 Act::ClosePane => {
@@ -1540,8 +1565,14 @@ impl Actor {
                     d.sessions.forget(self.sid);
                     r.map_err(|e| e.to_string())
                 }
-                // ponytail: M4 reads what happened in the TUI from the agent's own transcript
-                Act::Backfill => Ok(()),
+                // what happened in the TUI, from the agent's own transcript
+                Act::Backfill => {
+                    let (from, since) = self.tui_from.take().unzip();
+                    if let Some(uuid) = d.session(self.sid).ok().and_then(|s| s.agent_sid) {
+                        backfill::run(d, self.sid, &uuid, from, since).await;
+                    }
+                    Ok(())
+                }
                 Act::SpawnHeadless { resume } => {
                     let id = if resume {
                         d.session(self.sid).ok().and_then(|s| s.agent_sid)
@@ -1721,11 +1752,11 @@ async fn tail_read(t: &mut GoalTail, d: &Daemon, sid: Sid) -> Option<Vec<u8>> {
             .session(sid)
             .ok()
             .and_then(|s| s.agent_sid)
-            .and_then(|uuid| herdr::find(&d.cfg.home, &uuid));
+            .and_then(|uuid| backfill::find(&d.cfg.home, &uuid));
     }
     let path = t.path.clone()?;
     let at = t.read;
-    let mut data = match tokio::task::spawn_blocking(move || herdr::read_from(&path, at)).await {
+    let mut data = match tokio::task::spawn_blocking(move || backfill::read_from(&path, at)).await {
         Ok(Ok(Some(data))) => data,
         Ok(Ok(None)) => {
             t.read = 0; // rewritten: start over
@@ -2463,8 +2494,9 @@ fn answer_text(a: &Answer, options: &[String]) -> String {
 }
 
 /// What raw input answers a question with: Esc cancels, a number picks that option (`Options` for a
-/// multiple-choice question), `y` is the first option and `n` the second (Allow/Deny, Approve/Keep
-/// planning). Anything else answers nothing.
+/// multiple-choice question), `y` is the first option and `n` the second (Allow/Deny), or "Keep
+/// planning" where a plan asks (its second option is an approval too). Anything else answers
+/// nothing.
 pub(crate) fn answer_from_input(bytes: &[u8], q: &Question) -> Option<Answer> {
     if bytes == b"\x1b" {
         return Some(Answer::Cancel);
@@ -2482,7 +2514,12 @@ pub(crate) fn answer_from_input(bytes: &[u8], q: &Question) -> Option<Answer> {
     };
     match s {
         "y" | "Y" => pick(0),
-        "n" | "N" => pick(1),
+        "n" | "N" => pick(
+            q.options
+                .iter()
+                .position(|o| o == "Keep planning")
+                .unwrap_or(1),
+        ),
         _ => s
             .parse::<usize>()
             .ok()
@@ -3305,6 +3342,20 @@ mod tests {
         );
         assert_eq!(answer_from_input(b"0", &q), None);
         assert_eq!(answer_from_input(b"hello", &q), None);
+        // a plan's second option is an approval: `n` is its "Keep planning"
+        let plan = Question {
+            options: [
+                "Approve · bypass",
+                "Approve · accept edits",
+                "Approve · manual",
+                "Keep planning",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            ..question()
+        };
+        assert_eq!(answer_from_input(b"y", &plan), Some(Answer::Option(0)));
+        assert_eq!(answer_from_input(b"n", &plan), Some(Answer::Option(3)));
         let multi = Question { multi: true, ..q };
         assert_eq!(
             answer_from_input(b"2", &multi),

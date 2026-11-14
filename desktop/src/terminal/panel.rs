@@ -380,6 +380,7 @@ impl TerminalPanel {
                 name: None,
                 prompt: None,
                 model: None,
+                resume: None,
             },
         };
         let sent = net.update(cx, |n, cx| n.run(req, cx));

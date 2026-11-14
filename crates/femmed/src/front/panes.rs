@@ -62,7 +62,16 @@ impl Daemon {
     // in the holder and the desktop asks again. Serialize per session if that ever shows.
     pub async fn open_pane(&self, sid: Sid) -> Result<PaneId, CoreError> {
         let s = self.session(sid)?;
-        let holder = self.holder(sid).await?;
+        let holder = match self.holder(sid).await {
+            Ok(h) => h,
+            // No holder: a session whose agent ended. One is started for its shells alone;
+            // `end_session` shuts it down with the session.
+            Err(CoreError::NotFound) => {
+                self.sessions.spawn_holder(sid).await.map_err(holder_err)?;
+                self.holder(sid).await?
+            }
+            Err(e) => return Err(e),
+        };
         // The handle's own `info` is from when it connected; ask again for the panes made since.
         let live = holder.info().await.map_err(holder_err)?;
         let known = self
