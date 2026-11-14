@@ -1617,13 +1617,29 @@ fn head(bin: String, hs: String, pane: String, sid: Sid, d: Weak<Daemon>) -> Hea
                         Some(m) => format!("/model {m}"),
                         None => text,
                     };
-                    let r = herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &text])
-                        .await
-                        .map_err(|e| match e {
-                            // blocked on its prompt: say so, "agent_not_ready" says nothing
-                            CoreError::Busy => CoreError::Conflict(WAITING.into()),
-                            e => e,
-                        });
+                    // The TUI takes a multi-line paste as a `[Pasted text]` chip and sends it
+                    // wrapped in `<pasted_content>`, so a `/command` in it is not a command.
+                    // The command line is typed first; the rest is the paste.
+                    let (first, rest) = match text.split_once('\n') {
+                        Some((f, r)) if text.starts_with('/') && !r.trim().is_empty() => {
+                            (f.to_string(), r.to_string())
+                        }
+                        _ => (String::new(), text),
+                    };
+                    let typed = if first.is_empty() {
+                        Ok(String::new())
+                    } else {
+                        herdr(&bin, Some(&hs), &["pane", "send-text", &pane, &first]).await
+                    };
+                    let r = match typed {
+                        Ok(_) => herdr(&bin, Some(&hs), &["agent", "prompt", &pane, &rest]).await,
+                        Err(e) => Err(e),
+                    }
+                    .map_err(|e| match e {
+                        // blocked on its prompt: say so, "agent_not_ready" says nothing
+                        CoreError::Busy => CoreError::Conflict(WAITING.into()),
+                        e => e,
+                    });
                     if let Err(e) = &r {
                         tracing::debug!(%sid, %e, "prompt not typed into the herdr pane");
                     }
@@ -2510,6 +2526,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
              case \"$1 $2\" in\n\
              \"agent read\") cat {d}/screen ;;\n\
              \"pane send-keys\") echo \"$3 $4\" >> {d}/keys ;;\n\
+             \"pane send-text\") echo \"$3 $4\" >> {d}/prompts ;;\n\
              \"pane close\") echo \"$3\" >> {d}/closes ;;\n\
              \"agent prompt\") [ -e {d}/unblocked ] && echo \"$3 $4\" >> {d}/prompts || {{ echo agent_blocked; exit 1; }} ;;\n\
              *) exit 1 ;;\nesac\n",
@@ -2616,6 +2633,31 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(
             std::fs::read_to_string(dir.path().join("prompts")).unwrap(),
             "wA:p1 /model claude-fable-5-2\nwA:p1 hello\n"
+        );
+    }
+
+    /// A multi-line `/command` is typed as its first line, then the rest pasted: pasted whole,
+    /// the TUI would wrap it in `<pasted_content>` and never see the command.
+    #[tokio::test]
+    async fn a_multi_line_command_is_typed_then_pasted() {
+        let (d, dir) = daemon();
+        std::fs::write(dir.path().join("unblocked"), "").unwrap();
+        let bin = fake_herdr(dir.path());
+        let mut tails = HashMap::new();
+        let mut working = parse_panes("default", BLOCKED);
+        working[0].status = "working".into();
+        sync(&d, &bin, &working, &mut tails).await;
+        let sid = d.store.read(|c| sessions::list_sessions(c, false)).unwrap()[0].id;
+        let head = d.sessions.head(sid).unwrap();
+        head.prompt("/goal make it good\nand fast\n\ngo", PromptHow::Queue)
+            .await
+            .unwrap();
+        head.prompt("plain\ntwo lines", PromptHow::Queue)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompts")).unwrap(),
+            "wA:p1 /goal make it good\nwA:p1 and fast\n\ngo\nwA:p1 plain\ntwo lines\n"
         );
     }
 
