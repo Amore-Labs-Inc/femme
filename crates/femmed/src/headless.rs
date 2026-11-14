@@ -1210,7 +1210,9 @@ impl Actor {
                 s.agent_sid = Some(a.clone());
             }
             if let Some(g) = &fx.goal {
-                s.goal = Some(g.clone());
+                if !outlived_by_clear(s.goal.as_ref(), g) {
+                    s.goal = Some(g.clone());
+                }
             }
             if let Some(m) = &fx.model {
                 s.model = Some(m.clone());
@@ -1919,6 +1921,13 @@ fn goal_line(line: &[u8]) -> Option<Goal> {
         state,
         reason: None,
     })
+}
+
+/// A `/goal clear` was sent (the row says `Cleared`) and the stream now says `not met`: the
+/// CLI runs the clear only when its turn ends, so a verdict from that turn is older than the
+/// clear and does not put the goal back. A new `/goal` (`Active`) or an `achieved` still lands.
+fn outlived_by_clear(now: Option<&Goal>, new: &Goal) -> bool {
+    now.is_some_and(|g| g.state == GoalState::Cleared) && new.state == GoalState::NotMet
 }
 
 /// The mode after `now` in Claude's Shift+Tab order.
@@ -3435,6 +3444,21 @@ mod tests {
         );
         assert_eq!(goal_switch("/goal"), None);
         assert_eq!(goal_switch("/goals x"), None);
+        // the stream's `not met` of the turn that queued the clear does not undo it; a new goal does
+        let g = |state| Goal {
+            condition: "c".into(),
+            state,
+            reason: None,
+        };
+        let cleared = g(GoalState::Cleared);
+        assert!(outlived_by_clear(Some(&cleared), &g(GoalState::NotMet)));
+        assert!(!outlived_by_clear(Some(&cleared), &g(GoalState::Active)));
+        assert!(!outlived_by_clear(Some(&cleared), &g(GoalState::Met)));
+        assert!(!outlived_by_clear(
+            Some(&g(GoalState::Active)),
+            &g(GoalState::NotMet)
+        ));
+        assert!(!outlived_by_clear(None, &g(GoalState::NotMet)));
         let line = br#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"condition":"c","reason":"r"}}"#;
         assert_eq!(
             goal_line(line).map(|g| (g.state, g.reason)),
