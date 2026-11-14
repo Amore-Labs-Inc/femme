@@ -93,6 +93,7 @@ pub(crate) fn create_in(cwd: &str, agent: Agent, mode: Mode, model: Option<&str>
         name: None,
         prompt: None,
         model: model.map(str::to_owned),
+        resume: None,
     }
 }
 
@@ -448,6 +449,7 @@ mod tests {
                 name: None,
                 prompt: None,
                 model: None,
+                resume: None,
             }
         );
         let Req::SessionCreate { agent, mode, .. } = create(Agent::Shell, Mode::Tui, None) else {
@@ -463,6 +465,7 @@ mod tests {
             agent,
             mode,
             model,
+            resume: None,
             ..
         } = new_claude("/srv/x")
         else {

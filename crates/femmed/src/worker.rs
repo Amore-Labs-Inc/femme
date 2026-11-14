@@ -192,6 +192,7 @@ async fn start(d: &Daemon, issue: Issue) -> Result<(), CoreError> {
         name: None,
         owner: format!("issue:{id}"),
         model: None,
+        resume: None,
     };
     let session = match d.create_session(req).await {
         Ok(s) => s,

@@ -271,6 +271,8 @@ pub struct CreateSession {
     pub owner: String,
     /// The agent's model, `None` for its default (see [`crate::session::gateway_env`]).
     pub model: Option<String>,
+    /// The agent's own conversation to resume (its `agent_sid`), `None` for a new one.
+    pub resume: Option<String>,
 }
 
 /// A pane's screen and the status of the agent in it.

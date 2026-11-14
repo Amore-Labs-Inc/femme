@@ -329,6 +329,7 @@ async fn open_agent(
         name: Some(name.into()),
         owner,
         model: None,
+        resume: None,
     };
     let session = app.core.create_session(req).await.map_err(core_err)?;
     let pane = tagged(&session)?;
