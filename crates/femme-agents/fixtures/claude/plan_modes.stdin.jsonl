@@ -1,0 +1,6 @@
+{"type":"control_request","request_id":"femme-init","request":{"subtype":"initialize"}}
+{"type":"control_request","request_id":"femme-mode-1","request":{"subtype":"set_permission_mode","mode":"default"}}
+{"type":"control_request","request_id":"femme-mode-2","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}
+{"type":"control_request","request_id":"femme-mode-3","request":{"subtype":"set_permission_mode","mode":"plan"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Write the one-line plan 'copy a file' and call ExitPlanMode with it at once (no questions, no exploring). After approval run exactly this Bash command and then say done: echo hi > /tmp/femme-capture/plan-modes.txt"}]},"uuid":"00000001-0000-4000-8000-000000000001"}
+{"type":"control_response","response":{"subtype":"success","request_id":"92c4bb04-b67a-439b-8804-c989defa4282","response":{"behavior":"allow","updatedInput":{"plan":"copy a file\n","planFilePath":"/home/user/.claude/plans/write-the-one-line-plan-shiny-abelson.md"},"updatedPermissions":[{"type":"setMode","mode":"bypassPermissions","destination":"session"}]}}}
