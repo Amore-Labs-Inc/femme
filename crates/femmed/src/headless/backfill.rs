@@ -49,6 +49,9 @@ pub(super) struct Reader {
     pub(super) permission: Option<String>,
     /// The `/goal` as the lines read so far last said it, for the row.
     pub(super) goal: Option<Goal>,
+    /// The conversation's title as Claude Code last wrote it (`ai-title`, or the user's own
+    /// `custom-title`), for the row's label (`name` is the agents API's handle on a session).
+    pub(super) title: Option<String>,
     /// A prompt was typed since the last row write: an achieved goal leaves the row.
     pub(super) prompted: bool,
     /// What the lines read so far said of the context, for the row: what the last call read,
@@ -163,6 +166,7 @@ impl Reader {
             model: None,
             permission: None,
             goal: None,
+            title: None,
             prompted: false,
             ctx_used: None,
             ctx_window: None,
@@ -251,6 +255,9 @@ impl Reader {
             if std::mem::take(&mut self.skip) {
                 continue;
             }
+            if let Some(t) = title_line(&line) {
+                self.title = Some(t);
+            }
             let (line, typed) = match disk_line(&line, &uploads) {
                 None => continue,
                 Some(Disk::Unknown(kind)) => {
@@ -334,6 +341,9 @@ impl Reader {
         }
         if let Some(p) = self.permission.take() {
             let _ = d.update(sid, |s| s.permission = Some(p));
+        }
+        if let Some(t) = self.title.take() {
+            let _ = d.update(sid, |s| s.label = Some(t));
         }
         let (goal, prompted) = (self.goal.take(), std::mem::take(&mut self.prompted));
         if goal.is_some() || prompted {
@@ -564,6 +574,22 @@ pub(crate) fn cwd_of(home: &Path, uuid: &str) -> Option<String> {
         let v: Value = serde_json::from_slice(line).ok()?;
         v["cwd"].as_str().map(str::to_owned)
     })
+}
+
+/// The title a transcript line gives the conversation: Claude Code's own (`ai-title`, written
+/// again as the conversation moves on) or the user's `/rename` (`custom-title`).
+pub(super) fn title_line(line: &[u8]) -> Option<String> {
+    let has = |needle: &[u8]| line.windows(needle.len()).any(|w| w == needle);
+    if !has(b"\"ai-title\"") && !has(b"\"custom-title\"") {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(line).ok()?;
+    let t = match v["type"].as_str()? {
+        "ai-title" => v["aiTitle"].as_str()?,
+        "custom-title" => v["customTitle"].as_str()?,
+        _ => return None,
+    };
+    Some(t.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
@@ -1591,5 +1617,34 @@ mod tests {
             restart[0].3.as_ref().unwrap().is_empty(),
             "nothing read again"
         );
+    }
+
+    /// Claude Code's own title of a conversation (and the user's `/rename`) becomes the row's label.
+    #[tokio::test]
+    async fn the_conversations_title_is_the_sessions_name() {
+        assert_eq!(
+            title_line(br#"{"type":"ai-title","aiTitle":" Autonomy branch ","sessionId":"x"}"#),
+            Some("Autonomy branch".into())
+        );
+        assert_eq!(
+            title_line(br#"{"type":"custom-title","customTitle":"Shaolin","sessionId":"x"}"#),
+            Some("Shaolin".into())
+        );
+        assert_eq!(
+            title_line(br#"{"type":"user","message":{"content":"ai-title"}}"#),
+            None
+        );
+        let (d, dir) = daemon();
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let text = format!(
+            "{}{}\n",
+            TURN, r#"{"type":"ai-title","aiTitle":"Listing the files","sessionId":"u-1"}"#
+        );
+        std::fs::write(proj.join("u-1.jsonl"), text).unwrap();
+        let sid = session(&d, "u-1");
+        run(&d, sid, "u-1", Some(0), None).await;
+        let s = d.session(sid).unwrap();
+        assert_eq!(s.label.as_deref(), Some("Listing the files"));
     }
 }
