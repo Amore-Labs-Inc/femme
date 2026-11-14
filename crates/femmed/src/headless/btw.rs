@@ -98,7 +98,7 @@ pub(crate) fn ask(d: &Daemon, s: &Session, q: &str) -> Result<(), CoreError> {
 }
 
 /// The answer in `claude -p --output-format=json`'s result, unless it is an error.
-fn answer_of(stdout: &[u8]) -> Option<String> {
+pub(super) fn answer_of(stdout: &[u8]) -> Option<String> {
     let v: Value = serde_json::from_slice(stdout).ok()?;
     if v["is_error"] == true {
         return None;

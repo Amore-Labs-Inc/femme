@@ -35,7 +35,12 @@ Keep it current: when your module's public API changes, edit your section in the
   `+ this laptop` in the sidebar starts a Claude session in the laptop's home folder. Every
   request goes to the box of its session; the phone never sees local sessions (it cannot reach the
   laptop). Design: docs/plan-local.md.
-- **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
+- **Left**: sessions only (live ones), newest first, current one marked, grouped by folder under
+  a header that says the folder's way from home (`~/Documents/Web_Apps/Platform`). A row is named
+  by its chat's title: Claude Code's own for a conversation that ran in its TUI (`ai-title` in the
+  transcript, or the user's `/rename`), and for a headless chat one a fork of the conversation
+  gives after its first turn (`headless/title.rs`, the small model, nothing saved); the agents
+  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
   and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
   `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`

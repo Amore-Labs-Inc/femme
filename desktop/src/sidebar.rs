@@ -723,8 +723,9 @@ impl Sidebar {
             .children(self.menu_for(sid, cx))
     }
 
-    /// A project's header: the chevron, its folder's name, and on hover `+` for a new Claude
-    /// session there. A click folds it; a folded one says how many sessions it hides.
+    /// A project's header: the chevron, its folder (`~/Documents/Web_Apps/Platform`: the whole
+    /// way from home, so two folders of one name are told apart), and on hover `+` for a new
+    /// Claude session there. A click folds it; a folded one says how many sessions it hides.
     fn project(&self, g: &Group, folded: bool, cx: &Context<Self>) -> Stateful<Div> {
         let cwd = g.cwd.clone();
         let fold = cwd.clone();
@@ -768,7 +769,7 @@ impl Sidebar {
                     .font_family(FONT_MONO)
                     .text_size(META_SIZE)
                     .text_color(ink())
-                    .child(g.name.clone()),
+                    .child(g.dir.clone()),
             )
             .when(folded, |d| d.child(meta(g.rows.len().to_string())))
             .child(
