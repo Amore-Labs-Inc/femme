@@ -28,6 +28,10 @@ Keep it current: when your module's public API changes, edit your section in the
 - **Top bar**: the `femme` wordmark is a button: hover or click opens a dropdown (version, check for
   updates, pull requests, accounts, dark mode, reconnect, quit). It must *look* clickable (border/hover state), not like decor.
   The link status stays next to it. No lanes, no palette button, no panel buttons.
+- **Notifications**: a session that finishes (`finished`) or gets stuck on a question or
+  permission (`needs you`) raises a desktop notification through `notify-send`, named after the
+  session; not for the session on show while the window is active. The phone gets the same through
+  ntfy (Me tab → Push through ntfy, with the ntfy app subscribed to the topic shown there).
 - **Local sessions**: the laptop is a second box. The desktop starts `femmed local` (a daemon
   with its own store in `~/.local/state/femme-local`, one unix socket, nothing public) and shows its
   sessions in the same list with a `local` pill after the name; their terminal tabs end in
