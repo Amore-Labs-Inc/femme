@@ -51,6 +51,7 @@ use crate::takeover::{Act, Ev, Phase, Takeover};
 
 pub(crate) mod backfill;
 pub(crate) mod btw;
+pub(crate) mod title;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
 /// when their TUIs are wired.
@@ -423,6 +424,9 @@ struct Actor {
     monitor: Option<GoalTail>,
     /// Claude's `PushNotification` calls sent to the phone, by call id: the outcome.
     pushes: HashMap<String, String>,
+    /// A title was asked for this chat ([`title`]); once per process.
+    // ponytail: a fork that failed is asked again after the next restart, not before
+    titled: bool,
 }
 
 /// The transcript on disk of a session with a `/goal` (or a `Monitor`), read from where the goal
@@ -487,6 +491,7 @@ impl Actor {
             goal: None,
             monitor: None,
             pushes: HashMap::new(),
+            titled: false,
         }
     }
 
@@ -1133,6 +1138,15 @@ impl Actor {
         }
         if f.turn_ended {
             let _ = self.machine.step(Ev::TurnEnded { now: self.ms() });
+            // the first turn done: a chat with no title yet gets one
+            if !self.titled {
+                if let Ok(s) = d.session(self.sid) {
+                    if title::wanted(&s) {
+                        self.titled = true;
+                        title::ask(d, &s);
+                    }
+                }
+            }
         }
         let row = RowFx {
             agent_sid: f.agent_sid,
