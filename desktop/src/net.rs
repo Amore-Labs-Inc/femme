@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use femme_client::{Client, Event, Link as Transport};
 use femme_proto::rpc::{Req, Resp, Scope};
-use femme_proto::state::{Agent, Entity as Kind, Pane, Row, Session, SessionStatus};
+use femme_proto::state::{Agent, Attention, Entity as Kind, Pane, Row, Session, SessionStatus};
 use femme_proto::{PaneId, Sid};
 use gpui::{Context, EventEmitter, Task};
 
@@ -90,6 +90,9 @@ pub struct Model {
     pub local_link: Option<Link>,
     /// [`Model::load`] of the local box.
     pub local_load: Load,
+    /// Sessions whose attention just turned `Done` or `Blocked` ([`Model::row`]), for a desktop
+    /// notification; [`Net`] drains it after every event.
+    pub alerts: Vec<(Sid, Attention)>,
 }
 
 fn is_live(s: &Session) -> bool {
@@ -280,6 +283,14 @@ impl Model {
     fn row(&mut self, row: &Row) -> bool {
         match row {
             Row::Session(s) if self.sessions.get(&s.id).is_none_or(|old| old.rev < s.rev) => {
+                // a listed session that just finished or got stuck is worth a notification; the
+                // first listing (and the one after a `Reset`) is not news
+                let was = self.sessions.get(&s.id).map(|old| old.attention);
+                if was.is_some_and(|w| w != s.attention)
+                    && matches!(s.attention, Attention::Done | Attention::Blocked)
+                {
+                    self.alerts.push((s.id, s.attention));
+                }
                 self.sessions.insert(s.id, s.clone());
                 true
             }
@@ -630,6 +641,9 @@ pub struct Net {
     local: Option<Arc<Client>>,
     rt: tokio::runtime::Handle,
     _tasks: Vec<Task<()>>,
+    /// Whether the window is the active one ([`Net::set_background`]): a session on show in an
+    /// active window needs no notification.
+    active: std::cell::Cell<bool>,
 }
 
 impl Net {
@@ -664,6 +678,7 @@ impl Net {
             local,
             rt,
             _tasks: tasks,
+            active: std::cell::Cell::new(true),
         }
     }
 
@@ -715,8 +730,28 @@ impl Net {
 
     /// Tells every daemon whether the window is out of sight (they ping less often then).
     pub fn set_background(&self, background: bool) {
+        self.active.set(!background);
         for (_, c) in self.clients() {
             c.set_background(background);
+        }
+    }
+
+    /// Shows a desktop notification for each session that just finished or got stuck
+    /// ([`Model::alerts`]), except the one on show in an active window (the user sees it).
+    fn alert(&mut self) {
+        let active = self.active.get();
+        for (sid, attention) in std::mem::take(&mut self.model.alerts) {
+            if active && self.model.current == Some(sid) {
+                continue;
+            }
+            let Some(s) = self.model.sessions.get(&sid) else {
+                continue;
+            };
+            let (what, urgency) = match attention {
+                Attention::Blocked => ("needs you", "critical"),
+                _ => ("finished", "normal"),
+            };
+            notify(&title(s), what, urgency);
         }
     }
 
@@ -849,6 +884,7 @@ fn drain(
             let alive = this
                 .update(cx, |n, cx| {
                     if n.model.apply_from(b, &ev) {
+                        n.alert();
                         cx.notify();
                     }
                     cx.emit(ClientEvent(ev, b));
@@ -861,10 +897,22 @@ fn drain(
     })
 }
 
+/// A desktop notification through `notify-send` (libnotify: mako, dunst, GNOME): `title` names
+/// the session, `body` says what happened. Fire and forget; a missing `notify-send` is nothing.
+// ponytail: one process per notification; a D-Bus crate when the laptop is not Linux.
+fn notify(title: &str, body: &str, urgency: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["--app-name=FEMME", "--urgency", urgency, title, body])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use femme_proto::state::{Agent, Attention, Mode, PaneKind};
+    use femme_proto::state::{Agent, Mode, PaneKind};
     use femme_proto::Id;
 
     fn session(n: u128, rev: u64, created: i64) -> Session {
@@ -1401,6 +1449,34 @@ mod tests {
 
     fn changes_of(m: &mut Model, b: BoxId, rows: Vec<Row>) -> bool {
         m.apply_from(b, &changes(rows))
+    }
+
+    #[test]
+    fn a_listed_session_that_finishes_or_blocks_is_an_alert() {
+        let mut m = Model::default();
+        let mut s = session(1, 1, 10);
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(s.clone())]);
+        // the first listing is not news
+        assert!(m.alerts.is_empty());
+        s.rev = 2;
+        s.attention = Attention::Done;
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(s.clone())]);
+        assert_eq!(m.alerts, vec![(s.id, Attention::Done)]);
+        // the same attention again is not; a later `needs you` is
+        m.alerts.clear();
+        s.rev = 3;
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(s.clone())]);
+        assert!(m.alerts.is_empty());
+        s.rev = 4;
+        s.attention = Attention::Blocked;
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(s.clone())]);
+        assert_eq!(m.alerts, vec![(s.id, Attention::Blocked)]);
+        // back to work: nothing
+        m.alerts.clear();
+        s.rev = 5;
+        s.attention = Attention::None;
+        changes_of(&mut m, BoxId::Remote, vec![Row::Session(s)]);
+        assert!(m.alerts.is_empty());
     }
 
     #[test]
