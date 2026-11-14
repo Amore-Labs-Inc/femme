@@ -654,8 +654,12 @@ impl Actor {
         self.flush().await;
         let effort = effort_switch(text);
         let goal = goal_switch(text);
-        if goal.as_ref().is_some_and(|g| g.state == GoalState::Active) {
-            self.open_goal_tail(d);
+        match goal.as_ref().map(|g| g.state) {
+            Some(GoalState::Active) => self.open_goal_tail(d),
+            // the CLI runs the clear when its turn ends: no verdict read until then may put the
+            // goal back on the row
+            Some(GoalState::Cleared) => self.goal = None,
+            _ => {}
         }
         // The agent's own turn starts a moment later: say `working` first, so a reader never takes
         // the last task as finished in between.
@@ -1856,11 +1860,34 @@ fn monitor_line(line: &[u8]) -> Option<(String, String)> {
 }
 
 /// A transcript line's goal verdict (`{"type":"attachment","attachment":{"type":"goal_status"..}}`).
+/// A transcript line's word on the goal: a `goal_status` attachment (the checker's verdict), or
+/// `/goal`'s own answer (`Goal set:` / `Goal cleared:` as a local command's output), so a clear
+/// that lands after the last verdict is the last word.
 fn goal_line(line: &[u8]) -> Option<Goal> {
     let v: Value = serde_json::from_slice(line).ok()?;
-    (v["type"] == "attachment")
-        .then(|| femme_agents::claude::goal_status(&v["attachment"]))
-        .flatten()
+    if v["type"] == "attachment" {
+        return femme_agents::claude::goal_status(&v["attachment"]);
+    }
+    if v["subtype"] != "local_command" {
+        return None;
+    }
+    let out = v["content"].as_str()?;
+    let out = out
+        .strip_prefix("<local-command-stdout>")?
+        .strip_suffix("</local-command-stdout>")
+        .unwrap_or(out);
+    let (condition, state) = out
+        .strip_prefix("Goal set:")
+        .map(|c| (c, GoalState::Active))
+        .or_else(|| {
+            out.strip_prefix("Goal cleared:")
+                .map(|c| (c, GoalState::Cleared))
+        })?;
+    Some(Goal {
+        condition: condition.trim().to_owned(),
+        state,
+        reason: None,
+    })
 }
 
 /// The mode after `now` in Claude's Shift+Tab order.
@@ -3363,6 +3390,16 @@ mod tests {
             Some((GoalState::Met, Some("r".into())))
         );
         assert_eq!(goal_line(br#"{"type":"user"}"#), None);
+        // `/goal`'s own answers, as the CLI writes them
+        let cleared = br#"{"type":"system","subtype":"local_command","content":"<local-command-stdout>Goal cleared: love the loras</local-command-stdout>"}"#;
+        assert_eq!(
+            goal_line(cleared).map(|g| (g.state, g.condition)),
+            Some((GoalState::Cleared, "love the loras".to_owned()))
+        );
+        let set = br#"{"type":"system","subtype":"local_command","content":"<local-command-stdout>Goal set: tests pass</local-command-stdout>"}"#;
+        assert_eq!(goal_line(set).map(|g| g.state), Some(GoalState::Active));
+        let other = br#"{"type":"system","subtype":"local_command","content":"<local-command-stdout>Set model to `x`</local-command-stdout>"}"#;
+        assert_eq!(goal_line(other), None);
         let tick = |kind: &str, status: &str| {
             json!({"type":kind,"uuid":"u1","origin":{"kind":"task-notification"},"message":{"content":
                 format!("<task-notification>\n<summary>Monitor event: \"ticks\"</summary>\n{status}<event>tick 2</event>\n</task-notification>")}})
