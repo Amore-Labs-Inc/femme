@@ -37,7 +37,11 @@ Keep it current: when your module's public API changes, edit your section in the
   laptop). Design: docs/plan-local.md.
 - **Left**: sessions only (live ones), newest first, current one marked. `ctrl-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
-  and show it. Nothing else on the left (no accounts, no lanes).
+  and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
+  `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
+  goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
+  shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
+  is refused until that one exits.
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
