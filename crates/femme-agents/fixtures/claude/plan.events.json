@@ -212,7 +212,9 @@
         "request_id": "deab25a3-3557-44dc-91fe-d31d30be358c",
         "prompt": "Approve this plan and start coding?",
         "options": [
-          "Approve",
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
           "Keep planning"
         ],
         "multi": false,
@@ -243,7 +245,9 @@
         "free_text": true,
         "multi": false,
         "options": [
-          "Approve",
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
           "Keep planning"
         ],
         "prompt": "Approve this plan and start coding?",

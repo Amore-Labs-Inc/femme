@@ -96,6 +96,7 @@ golden_cases!(
     question_two,
     question_deny,
     plan,
+    plan_modes,
     interrupt,
     ask_interrupt,
     queue,
@@ -393,7 +394,15 @@ fn plan_mode_shows_a_plan_and_asks_for_approval() {
         unreachable!()
     };
     assert_eq!(item_id, &format!("{}:ask", plan.0));
-    assert_eq!(q.options, ["Approve", "Keep planning"]);
+    assert_eq!(
+        q.options,
+        [
+            "Approve · bypass",
+            "Approve · accept edits",
+            "Approve · manual",
+            "Keep planning"
+        ]
+    );
 }
 
 #[test]
@@ -932,12 +941,12 @@ fn answer_is_what_the_capture_sent() {
         .unwrap();
     assert_eq!(written(&out), [captured_response("question_deny")]);
 
-    // plan approval: allow with the plan input unchanged
-    let (mut d, qs) = up_to_question("plan");
+    // plan approval: allow with the plan input unchanged, and the mode the work goes on in
+    let (mut d, qs) = up_to_question("plan_modes");
     let mut out = Out::default();
     d.answer(&qs[0].request_id, &Answer::Option(0), &mut out)
         .unwrap();
-    assert_eq!(written(&out), [captured_response("plan")]);
+    assert_eq!(written(&out), [captured_response("plan_modes")]);
 }
 
 #[test]

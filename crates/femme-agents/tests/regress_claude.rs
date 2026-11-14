@@ -565,7 +565,7 @@ fn rejected_plan_records_the_users_choice() {
         json!({"plan":"1. do it"}),
     ));
     assert_eq!(asked(&ev), ["rp"]);
-    s.d.answer("rp", &Answer::Option(1), &mut s.out).unwrap();
+    s.d.answer("rp", &Answer::Option(3), &mut s.out).unwrap();
     let resp = s.wrote().remove(0);
     assert_eq!(resp["response"]["response"]["behavior"], "deny");
     s.feed(resp); // the CLI echoes it
@@ -577,7 +577,7 @@ fn rejected_plan_records_the_users_choice() {
     ));
     let (kind, status, body) = completed(&ev, "tp:ask").expect("the question item ends");
     assert_eq!((*kind, *status), (ItemKind::Question, ItemStatus::Answered));
-    assert_eq!(body["answered"], json!({"Option":1}));
+    assert_eq!(body["answered"], json!({"Option":3}));
     assert!(body.get("reason").is_none(), "{body}");
 }
 
