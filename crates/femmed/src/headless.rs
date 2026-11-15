@@ -1342,13 +1342,17 @@ impl Actor {
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
         extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
-        // ponytail: the desktop's chats think at medium; /effort changes it until the next start
-        let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
-            .then(|| "medium".to_owned());
+        // The desktop's chats think at medium until the row says otherwise (`/effort`, or the
+        // effort a resumed conversation last ran on): that survives a restart.
+        let effort =
+            (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref())).then(|| {
+                let known = |e: &String| EFFORTS.contains(&e.as_str());
+                s.effort.filter(known).unwrap_or_else(|| "medium".into())
+            });
         self.update(d, None, |s| s.effort = effort.clone());
         let launch = Launch {
             cwd: s.cwd,
-            model: s.model,
+            model: model_id(self.sid, s.model),
             resume,
             extra_env,
             // the stream is the status here; the hooks are for the TUI
@@ -1380,7 +1384,7 @@ impl Actor {
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
         let launch = Launch {
             cwd: s.cwd,
-            model: s.model,
+            model: model_id(self.sid, s.model),
             resume: s.agent_sid,
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
@@ -1718,6 +1722,21 @@ pub(crate) fn model_switch(text: &str) -> Option<String> {
         m if m.contains('/') || m.starts_with("claude-") => m.to_owned(),
         _ => return None,
     })
+}
+
+/// The levels `claude --effort` takes.
+const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// The row's model as `--model` takes it. A display name ("Fable 5.1", what the TUI's `/model`
+/// answers with) is not an id: Claude Code refuses to start on one, so the process starts without
+/// `--model` and its init says the model.
+fn model_id(sid: Sid, model: Option<String>) -> Option<String> {
+    let name = |m: &String| m.is_empty() || m.contains(char::is_whitespace);
+    if let Some(m) = model.as_ref().filter(|m| name(m)) {
+        tracing::warn!(%sid, model = %m, "the session's model is not an id: started without --model");
+        return None;
+    }
+    model
 }
 
 /// The level an `/effort <level>` prompt sets.
@@ -3502,6 +3521,13 @@ mod tests {
         assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
         assert_eq!(effort_switch("/effort"), None);
         assert_eq!(effort_switch("/effort a b"), None);
+        assert_eq!(model_id(SID, Some("Fable 5.1".into())), None);
+        let id = Some("claude-fable-5-2".to_owned());
+        assert_eq!(model_id(SID, id.clone()), id);
+        assert_eq!(
+            model_id(SID, Some(DEEPSEEK.into())).as_deref(),
+            Some(DEEPSEEK)
+        );
         assert_eq!(model_switch("use the opus model"), None);
         assert!(is_gateway(Some(DEEPSEEK)) && !is_gateway(Some("claude-opus-5-5")));
     }

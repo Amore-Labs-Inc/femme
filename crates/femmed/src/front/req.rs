@@ -440,9 +440,10 @@ async fn create(
     let label = label
         .map(|l| l.trim().chars().take(LABEL_MAX).collect::<String>())
         .filter(|l| !l.is_empty());
-    // a desktop chat starts on Opus 5.5 (at medium effort, `spawn_process`)
+    // a desktop chat starts on Opus 5.5 (at medium effort, `spawn_process`); a resumed
+    // conversation goes on with what it last ran on (`open_session`)
     let model = match model {
-        None if agent == Agent::Claude => Some("claude-opus-5-5".to_owned()),
+        None if agent == Agent::Claude && resume.is_none() => Some("claude-opus-5-5".to_owned()),
         m => m,
     };
     let cwd = match cwd.trim() {
