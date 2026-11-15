@@ -81,7 +81,9 @@ replaces the old; a revoked device's rows are dropped). For `Ntfy` the token is 
 attention change `notify.rs` posts the same `{topic,title,message,priority}` it posts to the box's
 `NTFY_TOPIC` to every registration whose rules allow it: `blocked` ("needs you") or `done`
 ("finished"), the session not in `muted`, the box's local hour not in `quiet` `[from, to)` (wraps
-midnight). One push per session per 10 s. Still to come: the pending question's `item_id`, text and
+midnight). One push per session per 10 s. The app's chat menu, a row's long-press menu and the
+chat's `notifications off` chip edit `muted` (`PushSync.setMuted`: one chat off or on, re-registered
+with the other rules unchanged); the chats list marks a muted row with a crossed bell. Still to come: the pending question's `item_id`, text and
 options in the payload, for answering from the notification.
 
 ### 2. `Scope::Attention` (not built)

@@ -130,6 +130,18 @@ class PushSync extends ChangeNotifier {
     await sync();
   }
 
+  /// Whether pushes about session `sid` are off on this phone.
+  bool isMuted(String sid) => rules.muted.contains(sid);
+
+  /// Turns the pushes about one session off (`muted`) or back on; the rest of the rules stay.
+  Future<void> setMuted(String sid, bool muted) {
+    final r = rules;
+    if (r.muted.contains(sid) == muted) return Future.value();
+    return setRules(
+      r.copyWith(muted: {...r.muted.where((m) => m != sid), if (muted) sid}),
+    );
+  }
+
   Future<void> setRules(PushRules r) async {
     await _keeper.setPush(rulesJson: jsonEncode(r.toJson()));
     notifyListeners();
