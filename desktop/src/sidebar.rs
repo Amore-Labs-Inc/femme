@@ -13,7 +13,7 @@
 //!   [`CollapsedChanged`] (the sidebar's own `‹`/`›` button and a click on a dot of the strip change
 //!   it too, so the shell can follow with its column).
 //! - [`Sidebar::set_selected`] marks the session the centre shows (call it when `Net::current`
-//!   changes); [`Sidebar::set_collapsed`] / [`Sidebar::collapsed`] are what ctrl-b drives.
+//!   changes); [`Sidebar::set_collapsed`] / [`Sidebar::collapsed`] are what ctrl-shift-b drives.
 //! - The sidebar is [`Focusable`]: with the keyboard on it, Up/Down/Home/End move a cursor and Enter
 //!   opens the session under it.
 //!
@@ -62,9 +62,9 @@ const ROW_H: f32 = 46.;
 const CELL_H: f32 = 28.;
 /// The chord the shell binds to collapse and expand, for the hint at the foot of the list.
 const TOGGLE_KEY: &str = if cfg!(target_os = "macos") {
-    "cmd-b"
+    "cmd-shift-b"
 } else {
-    "ctrl-b"
+    "ctrl-shift-b"
 };
 
 /// The user picked a session (a click on its row or dot, or Enter on the keyboard cursor).
@@ -830,7 +830,7 @@ impl Sidebar {
             .vertical_scrollbar(&self.scroll)
     }
 
-    /// The expanded body: the rows and the foot with the ctrl-b hint, or the empty state.
+    /// The expanded body: the rows and the foot with the ctrl-shift-b hint, or the empty state.
     fn list(&self, focused: bool, cx: &Context<Self>) -> Div {
         let shown = &self.shown;
         if shown.rows.is_empty() {

@@ -21,7 +21,7 @@ Keep it current: when your module's public API changes, edit your section in the
 │  ● one   │  …streams from the daemon…                            │ ▸ files       │
 │  ○ two   │                                                       │               │
 │          ├───────────────────────────────────────────────────────┤  (hover strip │
-│ [ctrl-b] │  composer: text + attachment thumbnails   [send]      │   opens panel)│
+│[ctrl-sh-b]│ composer: text + attachment thumbnails   [send]      │   opens panel)│
 └──────────┴───────────────────────────────────────────────────────┴───────────────┘
 ```
 
@@ -44,7 +44,7 @@ Keep it current: when your module's public API changes, edit your section in the
   by its chat's title: Claude Code's own for a conversation that ran in its TUI (`ai-title` in the
   transcript, or the user's `/rename`), and for a headless chat one a fork of the conversation
   gives after its first turn (`headless/title.rs`, the small model, nothing saved); the agents
-  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-b` and a thin edge
+  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-shift-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
   and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
   `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
@@ -142,7 +142,7 @@ Keep it current: when your module's public API changes, edit your section in the
   moves that task to the background (`Req::Background{sid, tool_use_id}`, Claude's `background_tasks`
   control request): the call's result says it was backgrounded, the turn goes on, and the row says
   `in background` until the task's end comes as an event (`task_notification`), which starts a turn
-  of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
+  of its own where Claude reads the output. `ctrl-b` (Claude Code's own key) does the same for every foreground task
   of the chat on show, as `Ctrl+B` does in Claude's own TUI.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the
