@@ -51,6 +51,12 @@ Keep it current: when your module's public API changes, edit your section in the
   goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
   shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
   is refused until that one exits.
+- **Fork**: a row's right-click menu reads `rename`, `fork`, `close`; `fork` shows on Claude chats
+  only, dimmed until the chat has a conversation. It makes a new headless chat that starts as a copy
+  of it, `<title> · fork` in the same folder, same model and effort, the original untouched, no
+  worktree. `/fork [prompt]` typed in a chat does the same and gives the copy the prompt; the
+  original shows `forked into <title>`. From a shell, `femmed open --fork [--resume <uuid>]
+  [--prompt <text>]`; without `--resume`, run inside a FEMME chat, it forks that chat.
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool
