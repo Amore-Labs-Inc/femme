@@ -1344,11 +1344,8 @@ impl Actor {
         extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
         // The desktop's chats think at medium until the row says otherwise (`/effort`, or the
         // effort a resumed conversation last ran on): that survives a restart.
-        let effort =
-            (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref())).then(|| {
-                let known = |e: &String| EFFORTS.contains(&e.as_str());
-                s.effort.filter(known).unwrap_or_else(|| "medium".into())
-            });
+        let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
+            .then(|| known_effort(s.effort).unwrap_or_else(|| "medium".into()));
         self.update(d, None, |s| s.effort = effort.clone());
         let launch = Launch {
             cwd: s.cwd,
@@ -1388,7 +1385,8 @@ impl Actor {
             resume: s.agent_sid,
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
-            effort: None,
+            // the TUI goes on at the chat's effort, as the chat does after it
+            effort: known_effort(s.effort),
         };
         let mut sp = self
             .driver
@@ -1726,6 +1724,11 @@ pub(crate) fn model_switch(text: &str) -> Option<String> {
 
 /// The levels `claude --effort` takes.
 const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// The row's effort when it is a level `--effort` takes (`/effort auto` is none).
+fn known_effort(effort: Option<String>) -> Option<String> {
+    effort.filter(|e| EFFORTS.contains(&e.as_str()))
+}
 
 /// The row's model as `--model` takes it. A display name ("Fable 5.1", what the TUI's `/model`
 /// answers with) is not an id: Claude Code refuses to start on one, so the process starts without
@@ -3521,6 +3524,8 @@ mod tests {
         assert_eq!(effort_switch(" /effort High ").as_deref(), Some("high"));
         assert_eq!(effort_switch("/effort"), None);
         assert_eq!(effort_switch("/effort a b"), None);
+        assert_eq!(known_effort(Some("xhigh".into())).as_deref(), Some("xhigh"));
+        assert_eq!(known_effort(Some("auto".into())), None);
         assert_eq!(model_id(SID, Some("Fable 5.1".into())), None);
         let id = Some("claude-fable-5-2".to_owned());
         assert_eq!(model_id(SID, id.clone()), id);
