@@ -275,6 +275,7 @@ async fn a_phone_registers_for_pushes() {
         femme_proto::rpc::PushRules {
             blocked: true,
             done: false,
+            claude: true,
             muted: vec![muted],
             quiet: Some((23, 7)),
         }

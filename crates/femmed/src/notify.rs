@@ -48,7 +48,18 @@ pub fn wants(rules: &PushRules, sid: Sid, next: Attention, hour: u8) -> bool {
         Attention::Done => rules.done,
         Attention::None => false,
     };
-    kind && !rules.muted.contains(&sid) && !rules.quiet.is_some_and(|q| quiet(q, hour))
+    kind && allowed(rules, sid, hour)
+}
+
+/// Whether a phone with `rules` is pushed Claude's own message from session `sid`
+/// ([`Notifier::claude_push`]) at local hour `hour`. Pure.
+pub fn wants_claude(rules: &PushRules, sid: Sid, hour: u8) -> bool {
+    rules.claude && allowed(rules, sid, hour)
+}
+
+/// The session is not muted and the hour is not quiet.
+fn allowed(rules: &PushRules, sid: Sid, hour: u8) -> bool {
+    !rules.muted.contains(&sid) && !rules.quiet.is_some_and(|q| quiet(q, hour))
 }
 
 /// Whether `hour` falls in `[from, to)`, which wraps midnight when `from > to`.
@@ -172,7 +183,7 @@ impl Notifier {
 
     /// Pushes what Claude asked to tell the user (its `PushNotification` call in session `sid`):
     /// `title` names the session, `message` is Claude's text. Goes to the box's topic and to every
-    /// phone that would hear this session is blocked (its mute and quiet hours hold). Never
+    /// phone whose rules allow Claude's messages (`claude`, its mute and quiet hours hold). Never
     /// debounced: the caller sends one per call. `Err` says why nothing arrived.
     pub async fn claude_push(
         &self,
@@ -198,7 +209,7 @@ impl Notifier {
             let ntfy = regs.iter().filter(|r| r.platform == PushPlatform::Ntfy);
             (
                 ntfy.clone().count(),
-                ntfy.filter(|r| wants(&r.rules, sid, Attention::Blocked, hour))
+                ntfy.filter(|r| wants_claude(&r.rules, sid, hour))
                     .map(|r| r.token.clone())
                     .collect(),
             )
@@ -299,6 +310,7 @@ pub(crate) mod tests {
         PushRules {
             blocked,
             done,
+            claude: true,
             ..PushRules::default()
         }
     }
@@ -315,6 +327,32 @@ pub(crate) mod tests {
         assert!(!wants(&rules(false, true), sid, Attention::Blocked, 12));
         assert!(wants(&rules(false, true), sid, Attention::Done, 12));
         assert!(!wants(&PushRules::default(), sid, Attention::Blocked, 12));
+        // Claude's own message has its own switch, under the same mute and quiet hours
+        assert!(wants_claude(&both, sid, 12));
+        assert!(!wants_claude(
+            &PushRules {
+                claude: false,
+                ..both.clone()
+            },
+            sid,
+            12
+        ));
+        assert!(!wants_claude(
+            &PushRules {
+                muted: vec![sid],
+                ..both.clone()
+            },
+            sid,
+            12
+        ));
+        assert!(!wants_claude(
+            &PushRules {
+                quiet: Some((22, 6)),
+                ..both
+            },
+            sid,
+            23
+        ));
     }
 
     #[test]
@@ -481,12 +519,19 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn claudes_push_goes_to_the_box_and_the_phones_that_would_hear_blocked() {
+    async fn claudes_push_goes_to_the_box_and_the_phones_that_allow_it() {
         let (base, rx) = stub();
         let n = Notifier::new(Some("owner".into())).with_base(base.clone());
         let sid = femme_proto::Id(1);
         n.set_registrations(vec![
-            reg("phone", rules(true, false)),
+            reg("phone", rules(false, false)),
+            reg(
+                "no-claude",
+                PushRules {
+                    claude: false,
+                    ..rules(true, true)
+                },
+            ),
             reg(
                 "muted",
                 PushRules {

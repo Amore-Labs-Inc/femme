@@ -3861,6 +3861,7 @@ fn push_registrations_follow_their_device() {
     let rules = PushRules {
         blocked: true,
         done: true,
+        claude: true,
         muted: vec![Id::new()],
         quiet: Some((23, 7)),
     };
