@@ -2500,6 +2500,12 @@ fn event_item(id: String, text: &str) -> AgentEvent {
 fn task_end(id: String, v: &Value) -> AgentEvent {
     let status = v["status"].as_str().unwrap_or("stopped");
     let summary = v["summary"].as_str().unwrap_or("background task");
+    // a background Agent's summary is its whole answer: kept short, so the row stays inline
+    // (a client reads `task` from it to let the agent go; a blob it has not fetched says nothing)
+    let mut summary: String = summary.chars().take(TASK_END_MAX).collect();
+    if summary.len() < v["summary"].as_str().map_or(0, str::len) {
+        summary.push('…');
+    }
     done(
         id,
         ItemKind::Event,
@@ -2514,6 +2520,9 @@ fn task_end(id: String, v: &Value) -> AgentEvent {
         }),
     )
 }
+
+/// Characters of a task's summary kept in its end row (the store keeps bodies under 4 KiB inline).
+const TASK_END_MAX: usize = 600;
 
 /// The line's own uuid, else a spool-offset id.
 fn item_id(v: &Value, offset: u64) -> String {
@@ -3659,6 +3668,20 @@ mod tests {
             "{ev:?}"
         );
         assert!(f.d.tasks.is_empty());
+        // a background Agent's end carries its whole answer: the row keeps the call and a short text
+        let long = "x".repeat(5000);
+        let ev = f.line(json!({"type":"system","subtype":"task_notification","task_id":"t2","tool_use_id":"toolu_2",
+            "status":"completed","summary":long,"uuid":"u7"}));
+        let [AgentEvent::ItemCompleted { body, .. }] = &ev[..] else {
+            panic!("{ev:?}");
+        };
+        assert_eq!(body["task"]["call"], "toolu_2");
+        let text = body["text"].as_str().unwrap();
+        assert!(
+            text.ends_with("…: completed") && text.len() < 700,
+            "{}",
+            text.len()
+        );
     }
 
     /// A pane's transcript never carries a `control_request`: the mirror asks on the
