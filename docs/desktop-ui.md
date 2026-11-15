@@ -112,7 +112,8 @@ Keep it current: when your module's public API changes, edit your section in the
   the first minute, at most 200 frames; gpui animates a GIF held in memory, not a WebP).
 - **The lightbox**: a click on a picture or video, in the transcript or the files panel, opens it
   over the whole window like the board. A video has play/pause, the time, a track to click or drag,
-  and the sound; space, left/right (5 s) and `m` work too. Esc, `‹` or the backdrop close it.
+  and the sound; space, left/right (5 s) and `m` work too. `↓` in its title saves the file under
+  its name in this machine's Downloads folder and says where. Esc, `‹` or the backdrop close it.
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has

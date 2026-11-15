@@ -22,6 +22,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
 };
 
+use crate::files::transfer::{downloads_dir, save_new, tilde};
 use crate::theme::{
     self, bad, bar, bar_text, ink, muted, neon, panel, paper, FONT_MONO, FONT_PIXEL, FONT_UI,
     TB_SIZE,
@@ -49,6 +50,8 @@ enum Body {
 struct Open {
     name: SharedString,
     body: Body,
+    /// Where `↓` put it on this machine, or why it could not.
+    saved: Option<Result<String, String>>,
 }
 
 /// The layer over the window: empty while nothing is open.
@@ -134,11 +137,30 @@ impl Lightbox {
         self.open = Some(Open {
             name: name.to_owned().into(),
             body,
+            saved: None,
         });
         cx.notify();
     }
 
     /// Lets go of what is open: a video stops and its frames leave the sprite atlas.
+    /// `↓`: the picture's bytes or the video's file, saved under its name in this machine's
+    /// Downloads folder (a free name, never over an older one).
+    fn download(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = &mut self.open else {
+            return;
+        };
+        let name = open.name.to_string();
+        let saved = match &open.body {
+            Body::Picture(image) => save_new(&downloads_dir(), &name, image.bytes()),
+            Body::Video(p) => std::fs::read(p.path())
+                .map_err(|e| format!("{}: {e}", p.path().display()))
+                .and_then(|data| save_new(&downloads_dir(), &name, &data)),
+            Body::Opening | Body::Failed(_) => return,
+        };
+        open.saved = Some(saved.map(|at| format!("saved to {}", tilde(&at))));
+        cx.notify();
+    }
+
     fn forget(&mut self, cx: &mut App) {
         self.scrubbing = false;
         if let Some(Open {
@@ -373,6 +395,8 @@ impl Render for Lightbox {
             return div().into_any_element();
         };
         let name = open.name.clone();
+        let saved = open.saved.clone();
+        let can_save = matches!(open.body, Body::Picture(_) | Body::Video(_));
         let body: AnyElement = match &open.body {
             Body::Picture(image) => div()
                 .relative()
@@ -409,7 +433,17 @@ impl Render for Lightbox {
                 title_button("lightbox-close", Glyph::Back)
                     .on_click(cx.listener(|t, _, window, cx| t.close(window, cx))),
             )
-            .child(div().flex_1().truncate().child(name));
+            .child(div().flex_1().truncate().child(name))
+            .when_some(saved, |d, s| match s {
+                Ok(where_) => d.child(div().flex_none().text_color(muted()).child(where_)),
+                Err(why) => d.child(div().flex_none().text_color(bad()).child(why)),
+            })
+            .when(can_save, |d| {
+                d.child(
+                    title_button("lightbox-download", Glyph::Download)
+                        .on_click(cx.listener(|t, _, _, cx| t.download(cx))),
+                )
+            });
         let card = ruled(div().flex().flex_col().bg(paper()))
             .shadow(theme::hard_shadow())
             .w(relative(CARD_W))
