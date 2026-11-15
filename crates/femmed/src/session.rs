@@ -638,12 +638,36 @@ impl Daemon {
             Agent::Shell => (PaneKind::Shell, SessionStatus::Idle),
             _ => (PaneKind::Agent, SessionStatus::Starting),
         };
-        if let Some(uuid) = req.resume.as_deref().filter(|_| headless) {
+        let fork = match req.resume.as_deref().filter(|_| req.fork) {
+            Some(parent) if headless && req.agent == Agent::Claude => {
+                Some(self.plan_fork(parent, &req)?)
+            }
+            _ if req.fork => {
+                let why = "only a headless Claude session forks a conversation";
+                return Err(CoreError::Bad(why.into()));
+            }
+            _ => None,
+        };
+        // A copy leaves the original alone, open elsewhere or not (`/btw` copies a live one too).
+        if let Some(uuid) = req.resume.as_deref().filter(|_| headless && fork.is_none()) {
             if headless::backfill::held(&self.cfg.home, uuid) {
                 let why = "that conversation is open in another Claude: exit it there first";
                 return Err(CoreError::Conflict(why.into()));
             }
         }
+        let saved = match (&fork, &req.resume) {
+            (Some(f), Some(parent)) => headless::Saved::forked(parent.clone(), f.copy.clone()),
+            _ => headless::Saved::default(),
+        };
+        let (label, agent_sid, model, effort) = match fork {
+            Some(f) => (Some(f.label), Some(f.copy), f.model, f.effort),
+            None => (
+                req.label.clone(),
+                req.resume.clone().filter(|_| headless),
+                req.model.clone(),
+                None,
+            ),
+        };
         let (session, pane) = self.write(|tx, now| {
             let s = tx.insert_session(&Session {
                 id: Id(0),
@@ -654,16 +678,16 @@ impl Daemon {
                 agent: req.agent,
                 mode: if headless { Mode::Headless } else { Mode::Tui },
                 cwd: req.cwd.clone(),
-                label: req.label.clone(),
-                agent_sid: req.resume.clone().filter(|_| headless),
-                model: req.model.clone(),
+                label: label.clone(),
+                agent_sid: agent_sid.clone(),
+                model: model.clone(),
                 status,
                 attention: Attention::None,
                 created: now,
                 closed: None,
                 permission: None,
                 context: None,
-                effort: None,
+                effort: effort.clone(),
                 goal: None,
             })?;
             let p = tx.upsert_pane(&Pane {
@@ -677,7 +701,7 @@ impl Daemon {
             })?;
             if headless {
                 // its presence marks the session as the actor's, for `reconcile`
-                tx.set_agent_state(s.id, 0, &headless::Saved::default().json())?;
+                tx.set_agent_state(s.id, 0, &saved.json())?;
             }
             Ok((s, p))
         })?;
@@ -689,7 +713,7 @@ impl Daemon {
                 .await
                 .map_err(|e| e.to_string())?;
             if headless {
-                return headless::start(self, &session, holder).await;
+                return headless::start(self, &session, holder, saved.clone()).await;
             }
             let env = self.sessions.child_env(&self.cfg, &path);
             if let Err(e) = holder
@@ -709,6 +733,74 @@ impl Daemon {
                 Err(not_started(e))
             }
         }
+    }
+
+    /// What a fork of conversation `parent` starts as: an id of its own, the label that says
+    /// whose copy it is, and the model and effort of the session that holds the original (none
+    /// does, as for a conversation of a terminal: the model its transcript last ran on).
+    fn plan_fork(&self, parent: &str, req: &CreateSession) -> Result<Fork, CoreError> {
+        if headless::backfill::find(&self.cfg.home, parent).is_none() {
+            let why = "nothing to fork: that conversation has no transcript yet";
+            return Err(CoreError::Bad(why.into()));
+        }
+        let all = self
+            .store
+            .read(|c| sessions::list_sessions(c, true))
+            .map_err(core_err)?;
+        let (open, closed): (Vec<Session>, Vec<Session>) =
+            all.into_iter().partition(|s| s.closed.is_none());
+        let holds = |s: &&Session| s.agent_sid.as_deref() == Some(parent);
+        let row = open
+            .iter()
+            .find(holds)
+            .or_else(|| closed.iter().find(holds));
+        let label = match &req.label {
+            Some(l) => l.clone(),
+            None => headless::fork::label(row, &req.cwd, &open),
+        };
+        Ok(Fork {
+            copy: femme_agents::uuid_v4(),
+            label,
+            model: row
+                .and_then(|s| s.model.clone())
+                .or_else(|| headless::backfill::last_model(&self.cfg.home, parent))
+                .or_else(|| req.model.clone()),
+            effort: row.and_then(|s| s.effort.clone()),
+        })
+    }
+
+    /// `/fork [prompt]` typed in headless Claude chat `s`: a copy of its conversation as a chat
+    /// of its own (same folder, model and effort), given `first` when there is one. The chat
+    /// itself only gets a row that says so.
+    async fn fork_chat(&self, s: &Session, first: &str) -> Result<(), CoreError> {
+        let Some(conv) = s.agent_sid.clone() else {
+            let why = "/fork: the session has no conversation yet";
+            return Err(CoreError::Bad(why.into()));
+        };
+        let new = self
+            .open_session(CreateSession {
+                cwd: s.cwd.clone(),
+                agent: Agent::Claude,
+                mode: Mode::Headless,
+                label: None,
+                name: None,
+                owner: s.owner.clone(),
+                model: None,
+                resume: Some(conv),
+                fork: true,
+            })
+            .await?;
+        headless::fork::note(self, s.id, new.label.as_deref().unwrap_or("a new chat"));
+        if first.is_empty() {
+            return Ok(());
+        }
+        let pane = PaneRef {
+            machine: new.machine,
+            handle: new.handle,
+            no: MAIN,
+        };
+        // boxed: `pane_prompt` is where this is called from
+        Box::pin(self.pane_prompt(&pane, first, PromptHow::Queue, None)).await
     }
 
     pub(crate) async fn end_session(&self, sid: Sid) -> Result<(), CoreError> {
@@ -782,10 +874,13 @@ impl Daemon {
         if s.agent == Agent::Shell || p.kind != PaneKind::Agent {
             return Err(CoreError::Busy);
         }
-        // a TUI has its own `/btw`
+        // a TUI has its own `/btw` and `/fork`
         if s.agent == Agent::Claude && s.mode == Mode::Headless {
             if let Some(q) = headless::btw::question(text) {
                 return headless::btw::ask(self, &s, q);
+            }
+            if let Some(first) = headless::fork::prompt(text) {
+                return self.fork_chat(&s, first).await;
             }
         }
         if s.mode == Mode::Headless {
@@ -869,6 +964,15 @@ impl Daemon {
         }
         Ok(())
     }
+}
+
+/// A fork about to be made ([`Daemon::plan_fork`]).
+struct Fork {
+    /// The copy's conversation id (Claude's `--session-id`).
+    copy: String,
+    label: String,
+    model: Option<String>,
+    effort: Option<String>,
 }
 
 /// Whether reconcile stops a live holder: only one whose session this store knows (a row, open or

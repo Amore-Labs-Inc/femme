@@ -2651,6 +2651,27 @@ async fn a_session_resumes_an_existing_conversation_with_its_history() {
     .unwrap();
     let refused = c.call(create("u-8")).await.unwrap_err();
     assert_eq!(refused.code, ErrCode::Conflict, "{refused:?}");
+    // a fork copies the conversation the first session holds, under an id of its own
+    let fork = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some("u-9".into()),
+        fork: true,
+    };
+    let Ok(Resp::Session(copy)) = c.call(fork).await else {
+        panic!("no fork")
+    };
+    let get = |sid| rig.d.store.read(|c| sessions::get_session(c, sid));
+    let (s, copy) = (get(sid).unwrap().unwrap(), get(copy).unwrap().unwrap());
+    assert_eq!(s.agent_sid.as_deref(), Some("u-9"));
+    assert!(copy.agent_sid.is_some() && copy.agent_sid != s.agent_sid);
+    assert!(copy.label.is_some_and(|l| l.ends_with(" · fork")));
+    assert_eq!(copy.model, s.model);
     // a shell cannot resume anything
     let shell = Req::SessionCreate {
         cwd: rig.home().display().to_string(),

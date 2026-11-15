@@ -576,6 +576,20 @@ pub(crate) fn cwd_of(home: &Path, uuid: &str) -> Option<String> {
     })
 }
 
+/// The model conversation `uuid` last ran on, as the last assistant line of its transcript says
+/// (Claude Code's own `<synthetic>` lines aside): what a fork of a conversation no FEMME session
+/// holds starts on.
+pub(crate) fn last_model(home: &Path, uuid: &str) -> Option<String> {
+    let path = find(home, uuid)?;
+    let len = std::fs::metadata(&path).ok()?.len();
+    let data = read_from(&path, len.saturating_sub(BACKFILL)).ok()??;
+    data.rsplit(|b| *b == b'\n').find_map(|line| {
+        let v: Value = serde_json::from_slice(line).ok()?;
+        let m = v["message"]["model"].as_str()?;
+        (!m.starts_with('<')).then(|| m.to_owned())
+    })
+}
+
 /// The title a transcript line gives the conversation: Claude Code's own (`ai-title`, written
 /// again as the conversation moves on) or the user's `/rename` (`custom-title`).
 pub(super) fn title_line(line: &[u8]) -> Option<String> {
@@ -594,7 +608,7 @@ pub(super) fn title_line(line: &[u8]) -> Option<String> {
 
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
 /// not alphanumeric made '-', so it is looked up, not rebuilt.
-pub(super) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
+pub(crate) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
     let name = format!("{uuid}.jsonl");
     std::fs::read_dir(home.join(".claude/projects"))
         .ok()?
