@@ -635,6 +635,51 @@ fn spawn_line_matches_the_capture() {
     );
 }
 
+/// A fork (2.1.325): the parent is resumed with `--fork-session`, and the copy gets the id the
+/// driver planned (or the one the daemon stored for it), so it is known before the CLI says it.
+#[test]
+fn a_fork_resumes_the_parent_under_an_id_of_its_own() {
+    let arg = |cmd: &[String], name: &str| -> Option<String> {
+        let a = cmd.iter().find(|a| a.starts_with(name))?;
+        Some(a[name.len()..].to_owned())
+    };
+    let mut d = ClaudeDriver::new();
+    let fork = Launch {
+        fork_from: Some("parent-1".into()),
+        ..launch()
+    };
+    let sp = d.spawn(&fork);
+    d.on_start(&fork, &mut Out::default());
+    assert_eq!(arg(&sp.cmd, "--resume=").as_deref(), Some("parent-1"));
+    assert!(sp.cmd.contains(&"--fork-session".to_owned()));
+    let planned = d.agent_session_id().expect("planned");
+    assert_eq!(arg(&sp.cmd, "--session-id="), Some(planned.to_string()));
+    // the daemon's id for the copy wins over the planned one
+    let stored = Launch {
+        resume: Some("copy-1".into()),
+        ..fork
+    };
+    let sp = ClaudeDriver::new().spawn(&stored);
+    assert_eq!(arg(&sp.cmd, "--resume=").as_deref(), Some("parent-1"));
+    assert_eq!(arg(&sp.cmd, "--session-id=").as_deref(), Some("copy-1"));
+    // without it nothing changes: a resume is a resume, a new session gets its id
+    let sp = ClaudeDriver::new().spawn(&Launch {
+        resume: Some("abc".into()),
+        ..launch()
+    });
+    assert!(sp.cmd.contains(&"--resume=abc".to_owned()));
+    assert!(!sp
+        .cmd
+        .iter()
+        .any(|a| a == "--fork-session" || a.starts_with("--session-id=")));
+    let sp = ClaudeDriver::new().spawn(&launch());
+    assert!(!sp
+        .cmd
+        .iter()
+        .any(|a| a == "--fork-session" || a.starts_with("--resume=")));
+    assert!(arg(&sp.cmd, "--session-id=").is_some());
+}
+
 #[test]
 fn handshake_interrupt_and_set_model_match_the_capture() {
     let mut d = ClaudeDriver::new();

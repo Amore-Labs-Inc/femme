@@ -2021,9 +2021,16 @@ impl Driver for ClaudeDriver {
         if let Some(e) = &l.effort {
             cmd.push(format!("--effort={e}"));
         }
-        match &l.resume {
-            Some(id) => cmd.push(format!("--resume={id}")),
-            None => cmd.push(format!("--session-id={}", self.planned)),
+        match (&l.fork_from, &l.resume) {
+            // a copy under an id known from the start, so `on_start` and `tui` name it as ever
+            (Some(parent), copy) => {
+                let copy = copy.as_deref().unwrap_or(&self.planned);
+                cmd.push(format!("--resume={parent}"));
+                cmd.push("--fork-session".to_owned());
+                cmd.push(format!("--session-id={copy}"));
+            }
+            (None, Some(id)) => cmd.push(format!("--resume={id}")),
+            (None, None) => cmd.push(format!("--session-id={}", self.planned)),
         }
         if let Some(p) = &l.hooks_path {
             cmd.push(format!("--settings={p}"));

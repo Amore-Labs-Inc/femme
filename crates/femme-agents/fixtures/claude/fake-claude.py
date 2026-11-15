@@ -30,7 +30,9 @@ def arg(prefix, default):
     return next((a.split("=", 1)[1] for a in ARGV if a.startswith(prefix)), default)
 
 
-SID = arg("--resume=", None) or arg("--session-id=", "fake-1")
+# a fork (`--resume=<parent> --fork-session --session-id=<copy>`) is the copy, as in the real CLI
+FORK = "--fork-session" in ARGV
+SID = (None if FORK else arg("--resume=", None)) or arg("--session-id=", "fake-1")
 MODEL = arg("--model=", "claude-haiku-5-5")
 HOME = os.environ.get("HOME", "/tmp")
 

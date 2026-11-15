@@ -110,6 +110,10 @@ pub struct Launch {
     /// The agent's own session/thread id to continue (`claude --resume`, Codex `thread/resume`,
     /// Pi `--session-id` or `--session <path>`); `None` starts a new conversation.
     pub resume: Option<String>,
+    /// Claude only: start as a copy of this conversation (`--resume=<it> --fork-session`), which
+    /// goes on untouched. The copy's id is `resume` when set (the id the daemon already stored
+    /// for it), else the one the driver planned.
+    pub fork_from: Option<String>,
     /// Extra environment for the process (FEMME_SID and the like).
     pub extra_env: Vec<(String, String)>,
     /// Settings/hook file the daemon wrote (see [`hooks`]); drivers pass it to the agent when it
