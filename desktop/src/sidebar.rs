@@ -211,6 +211,10 @@ struct Row {
     cwd: String,
     /// The session runs on this machine (`femmed local`): a `local` pill after the title.
     local: bool,
+    /// A Claude chat (whatever model it runs): the only kind the row menu can fork.
+    claude: bool,
+    /// The agent's conversation id, once it has one: what a fork copies.
+    agent_sid: Option<String>,
 }
 
 impl Row {
@@ -226,6 +230,8 @@ impl Row {
             dir: short_dir(&s.cwd),
             cwd: s.cwd.trim_end_matches('/').to_string(),
             local: false,
+            claude: s.agent == Agent::Claude,
+            agent_sid: s.agent_sid.clone(),
         }
     }
 }
@@ -556,13 +562,19 @@ impl Sidebar {
     /// `+ claude`, `+ this laptop` (`cwd` empty: the daemon's home directory) or a folder header's
     /// `+`: a headless Claude session there, on box `on`, which becomes the current one.
     fn create(&mut self, cwd: &str, on: BoxId, cx: &mut Context<Self>) {
+        self.start(on, session::new_claude(cwd), cx);
+    }
+
+    /// Sends the session-making `req` to box `on`; the session it answers with becomes the
+    /// current one. One at a time: a second click while the first is on its way does nothing.
+    fn start(&mut self, on: BoxId, req: Req, cx: &mut Context<Self>) {
         let Some(net) = self.net.clone() else { return };
         if self.creating {
             return;
         }
         self.creating = true;
         cx.notify();
-        let sent = net.update(cx, |n, cx| n.run_on(on, session::new_claude(cwd), cx));
+        let sent = net.update(cx, |n, cx| n.run_on(on, req, cx));
         cx.spawn(async move |this, cx| {
             let answer = sent.await;
             this.update(cx, |this, cx| {
@@ -1070,6 +1082,11 @@ mod tests {
         assert_eq!(Row::of(&deep).agent, "deepseek");
         deep.model = Some("opus".into());
         assert_eq!(Row::of(&deep).agent, "claude");
+        // Any Claude chat can be forked, once it has a conversation to copy.
+        assert!(Row::of(&deep).claude && Row::of(&deep).agent_sid.is_none());
+        deep.agent_sid = Some("0b5e-uuid".into());
+        assert_eq!(Row::of(&deep).agent_sid.as_deref(), Some("0b5e-uuid"));
+        assert!(!rows[1].claude);
     }
 
     #[test]

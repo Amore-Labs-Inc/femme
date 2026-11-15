@@ -1,6 +1,8 @@
-//! The session row's menu, on a right click: `rename` and `close`. It replaced the `×` every row
-//! carried, which was too easy to hit by accident. Close ends the session for real (the daemon
-//! stops its holder and the agent with it); rename sets the row's label.
+//! The session row's menu, on a right click: `rename`, `fork` (Claude chats only) and `close`. It
+//! replaced the `×` every row carried, which was too easy to hit by accident. Close ends the
+//! session for real (the daemon stops its holder and the agent with it); rename sets the row's
+//! label; fork makes a new headless chat that starts as a copy of this one's conversation, dimmed
+//! until there is a conversation to copy.
 
 use femme_proto::rpc::Req;
 use femme_proto::Sid;
@@ -11,6 +13,8 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use super::Sidebar;
+use crate::net::BoxId;
+use crate::session;
 use crate::ui::ctx::{card, Item, WIDTH};
 use crate::ui::menu;
 
@@ -80,10 +84,35 @@ impl Sidebar {
             .detach();
     }
 
+    /// `fork`: a copy of the row's conversation, made on the row's box in the row's folder; the
+    /// copy becomes the current session. A row with no conversation yet does nothing.
+    fn fork(&mut self, sid: Sid, cx: &mut Context<Self>) {
+        let Some(r) = self.shown.rows.iter().find(|r| r.sid == sid) else {
+            return;
+        };
+        let Some(agent_sid) = &r.agent_sid else {
+            return;
+        };
+        let on = if r.local { BoxId::Local } else { BoxId::Remote };
+        let req = session::fork_of(&r.cwd, agent_sid);
+        self.start(on, req, cx);
+    }
+
     /// The menu under `sid`'s row, when it is open there: drawn after the list so it lies over
     /// the rows below. A press inside stays inside (the sidebar's own press closes the menu).
     pub(super) fn menu_for(&self, sid: Sid, cx: &Context<Self>) -> Option<AnyElement> {
         let m = self.menu.as_ref().filter(|m| m.sid == sid)?;
+        let row = self.shown.rows.iter().find(|r| r.sid == sid);
+        let fork = row.filter(|r| r.claude).map(|r| {
+            Item::new(
+                "fork",
+                cx.listener(move |this, _, _, cx| {
+                    this.close_menu(cx);
+                    this.fork(sid, cx);
+                }),
+            )
+            .disabled(r.agent_sid.is_none())
+        });
         let body = match &m.rename {
             Some((input, _)) => menu().w(px(200.)).child(
                 div()
@@ -95,20 +124,20 @@ impl Sidebar {
             None => card(
                 &format!("sb-ctx-{sid}"),
                 WIDTH,
-                [
-                    Item::new(
-                        "rename",
-                        cx.listener(|this, _, window, cx| this.start_rename(window, cx)),
-                    ),
-                    Item::new(
-                        "close",
-                        cx.listener(move |this, _, _, cx| {
-                            this.close_menu(cx);
-                            this.close(sid, cx);
-                        }),
-                    )
-                    .danger(),
-                ],
+                [Item::new(
+                    "rename",
+                    cx.listener(|this, _, window, cx| this.start_rename(window, cx)),
+                )]
+                .into_iter()
+                .chain(fork)
+                .chain([Item::new(
+                    "close",
+                    cx.listener(move |this, _, _, cx| {
+                        this.close_menu(cx);
+                        this.close(sid, cx);
+                    }),
+                )
+                .danger()]),
             ),
         };
         Some(

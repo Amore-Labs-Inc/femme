@@ -83,6 +83,22 @@ pub(crate) fn new_claude(cwd: &str) -> Req {
     create_in(cwd, Agent::Claude, Mode::Headless, Some(CLAUDE_MODEL))
 }
 
+/// The session row menu's `fork`: a new headless Claude chat in `cwd` that starts as a copy of the
+/// conversation `agent_sid`. The daemon gives the copy the parent's model, effort and label.
+pub(crate) fn fork_of(cwd: &str, agent_sid: &str) -> Req {
+    Req::SessionCreate {
+        cwd: cwd.to_owned(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some(agent_sid.to_owned()),
+        fork: true,
+    }
+}
+
 /// [`create`] in the folder `cwd` (absolute; empty is the daemon's home).
 pub(crate) fn create_in(cwd: &str, agent: Agent, mode: Mode, model: Option<&str>) -> Req {
     Req::SessionCreate {
@@ -305,6 +321,24 @@ mod tests {
             rows: sessions.into_iter().map(Row::Session).collect(),
         });
         m
+    }
+
+    #[test]
+    fn fork_resumes_the_conversation_as_a_copy_and_leaves_model_and_label_to_the_daemon() {
+        assert_eq!(
+            fork_of("/home/u/app", "0b5e-uuid"),
+            Req::SessionCreate {
+                cwd: "/home/u/app".into(),
+                agent: Agent::Claude,
+                mode: Mode::Headless,
+                label: None,
+                name: None,
+                prompt: None,
+                model: None,
+                resume: Some("0b5e-uuid".into()),
+                fork: true,
+            }
+        );
     }
 
     #[test]
