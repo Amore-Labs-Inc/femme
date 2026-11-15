@@ -27,6 +27,7 @@ void main() {
     const r = PushRules(
       blocked: true,
       done: false,
+      claude: false,
       quiet: (23, 7),
       muted: {'B', 'A'},
     );
@@ -34,11 +35,14 @@ void main() {
     expect(j, {
       'blocked': true,
       'done': false,
+      'claude': false,
       'muted': ['A', 'B'],
       'quiet': [23, 7],
     });
     expect(PushRules.fromJson(j), r);
     expect(PushRules.fromJson(null), const PushRules());
+    // rules saved before the switch existed: Claude's messages allowed
+    expect(PushRules.fromJson({'blocked': true, 'done': true}).claude, true);
     expect(jsonDecode(jsonEncode(Req.pushRegister('femme-x', r))), {
       'PushRegister': {'platform': 'Ntfy', 'token': 'femme-x', 'rules': j},
     });

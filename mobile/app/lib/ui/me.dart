@@ -274,6 +274,14 @@ class _PushSection extends StatelessWidget {
             ),
           ),
           CupertinoListTile(
+            title: const Text('When Claude sends you a message'),
+            subtitle: const Text('its own pushes, when it has something to tell you'),
+            trailing: CupertinoSwitch(
+              value: rules.claude,
+              onChanged: (v) => p.setRules(rules.copyWith(claude: v)),
+            ),
+          ),
+          CupertinoListTile(
             title: const Text('Quiet from 23:00 to 07:00'),
             trailing: CupertinoSwitch(
               value: rules.quiet != null,
