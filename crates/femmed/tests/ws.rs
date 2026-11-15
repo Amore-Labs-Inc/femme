@@ -163,6 +163,7 @@ async fn a_phone_asks_subscribes_and_is_answered_in_json() {
             owner: "board".into(),
             model: None,
             resume: None,
+            fork: false,
         })
         .await
         .expect("a shell opens");

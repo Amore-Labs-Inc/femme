@@ -381,6 +381,7 @@ impl TerminalPanel {
                 prompt: None,
                 model: None,
                 resume: None,
+                fork: false,
             },
         };
         let sent = net.update(cx, |n, cx| n.run(req, cx));

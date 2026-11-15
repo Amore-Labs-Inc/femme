@@ -497,6 +497,7 @@ async fn open(cwd: Option<String>, resume: Option<String>) -> anyhow::Result<Str
         prompt: None,
         model: None,
         resume,
+        fork: false,
     };
     match client.request_timeout(req, ANSWER_WAIT).await? {
         Resp::Session(sid) => Ok(sid.to_string()),

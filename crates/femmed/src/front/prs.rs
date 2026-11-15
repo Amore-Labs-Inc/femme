@@ -293,6 +293,7 @@ async fn start_fix(d: &Daemon, owner: String, number: u64) -> Result<Sid, WireEr
             owner,
             model: Some("claude-opus-5-5".into()),
             resume: None,
+            fork: false,
         })
         .await
         .map_err(wire)?;

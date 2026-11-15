@@ -114,6 +114,7 @@ pub(super) async fn create(app: &Arc<App>, req: &mut Req) -> Response {
         owner: "board".into(),
         model: None,
         resume: None,
+        fork: false,
     };
     match app.core.create_session(open).await {
         Ok(s) => match s.main_pane_id() {

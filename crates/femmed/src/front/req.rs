@@ -124,7 +124,13 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             prompt,
             model,
             resume,
-        } => create(ctx, cwd, agent, mode, label, name, prompt, model, resume).await,
+            fork,
+        } => {
+            create(
+                ctx, cwd, agent, mode, label, name, prompt, model, resume, fork,
+            )
+            .await
+        }
         Req::SessionClose { sid } => done(d.close_session(sid).await),
         Req::Prompt {
             sid,
@@ -419,6 +425,7 @@ async fn create(
     prompt: Option<String>,
     model: Option<String>,
     resume: Option<String>,
+    fork: bool,
 ) -> Result<Resp, WireErr> {
     let d = &ctx.daemon;
     let resume = resume
@@ -427,6 +434,9 @@ async fn create(
     if resume.is_some() && (agent != Agent::Claude || mode != Mode::Headless) {
         let why = "only a headless Claude session resumes a conversation";
         return Err(err(ErrCode::Bad, why));
+    }
+    if fork && resume.is_none() {
+        return Err(err(ErrCode::Bad, "a fork needs the conversation to copy"));
     }
     // A name is for an agent: `/api/agents/<name>` finds the session by it and types into it.
     match &name {
@@ -440,9 +450,10 @@ async fn create(
     let label = label
         .map(|l| l.trim().chars().take(LABEL_MAX).collect::<String>())
         .filter(|l| !l.is_empty());
-    // a desktop chat starts on Opus 5.5 (at medium effort, `spawn_process`)
+    // a desktop chat starts on Opus 5.5 (at medium effort, `spawn_process`); a fork on what the
+    // original runs on (`open_session`)
     let model = match model {
-        None if agent == Agent::Claude => Some("claude-opus-5-5".to_owned()),
+        None if agent == Agent::Claude && !fork => Some("claude-opus-5-5".to_owned()),
         m => m,
     };
     let cwd = match cwd.trim() {
@@ -470,6 +481,7 @@ async fn create(
             owner,
             model: model.filter(|m| !m.trim().is_empty()),
             resume,
+            fork,
         })
         .await
         .map_err(wire)?;
