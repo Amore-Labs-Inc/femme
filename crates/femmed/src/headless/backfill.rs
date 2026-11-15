@@ -566,6 +566,36 @@ pub(crate) fn held(home: &Path, uuid: &str) -> bool {
     })
 }
 
+/// The model id and the effort conversation `uuid` last ran on: what its last main-thread
+/// assistant lines say (`message.model`, `effort`), read from the transcript's end. A subagent's
+/// lines and the CLI's own `<synthetic>` replies say nothing of the conversation's.
+pub(crate) fn last_run(home: &Path, uuid: &str) -> (Option<String>, Option<String>) {
+    let (mut model, mut effort) = (None, None);
+    let Some(path) = find(home, uuid) else {
+        return (model, effort);
+    };
+    let at = std::fs::metadata(&path).map_or(0, |m| m.len().saturating_sub(BACKFILL));
+    let Ok(Some(data)) = read_from(&path, at) else {
+        return (model, effort);
+    };
+    // a first line cut by the window does not parse, which skips it
+    for line in data.rsplit(|b| *b == b'\n') {
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let m = v["message"]["model"].as_str();
+        if v["type"] != "assistant" || v["isSidechain"] == true || m == Some("<synthetic>") {
+            continue;
+        }
+        model = model.or(m.map(str::to_owned));
+        effort = effort.or(v["effort"].as_str().map(str::to_owned));
+        if model.is_some() && effort.is_some() {
+            break;
+        }
+    }
+    (model, effort)
+}
+
 /// The folder conversation `uuid` ran in, as its transcript's first line says.
 pub(crate) fn cwd_of(home: &Path, uuid: &str) -> Option<String> {
     let path = find(home, uuid)?;
@@ -969,6 +999,37 @@ mod tests {
 {"type":"assistant","message":{"id":"a2","model":"claude-fable-5-1","content":[{"type":"text","text":"one file"}],"usage":{"input_tokens":2,"output_tokens":6}}}
 {"type":"system","subtype":"turn_duration","durationMs":12}
 "#;
+
+    #[test]
+    fn last_run_is_the_last_main_thread_reply_s_model_and_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join(".claude/projects/-w");
+        std::fs::create_dir_all(&proj).unwrap();
+        let line = |model: &str, effort: &str, side: bool| {
+            serde_json::json!({"type":"assistant","isSidechain":side,"effort":effort,
+                "message":{"id":"a","model":model,"content":[]}})
+            .to_string()
+        };
+        let lines = [
+            line("claude-opus-5-5", "medium", false),
+            line("claude-fable-5-2", "xhigh", false),
+            r#"{"type":"user","uuid":"m1","message":{"role":"user","content":"hi"}}"#.to_owned(),
+            line("claude-haiku-5-5", "low", true),
+            line("<synthetic>", "high", false),
+        ];
+        std::fs::write(proj.join("u-1.jsonl"), lines.join("\n") + "\n").unwrap();
+        assert_eq!(
+            last_run(dir.path(), "u-1"),
+            (Some("claude-fable-5-2".into()), Some("xhigh".into()))
+        );
+        // a transcript of before `effort` was written, and no transcript at all
+        std::fs::write(proj.join("u-2.jsonl"), TURN).unwrap();
+        assert_eq!(
+            last_run(dir.path(), "u-2"),
+            (Some("claude-fable-5-1".into()), None)
+        );
+        assert_eq!(last_run(dir.path(), "u-3"), (None, None));
+    }
 
     fn daemon() -> (std::sync::Arc<Daemon>, tempfile::TempDir) {
         let dir = tempfile::Builder::new()
