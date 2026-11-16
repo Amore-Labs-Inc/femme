@@ -659,7 +659,7 @@ impl Daemon {
             (Some(f), Some(parent)) => headless::Saved::forked(parent.clone(), f.copy.clone()),
             _ => headless::Saved::default(),
         };
-        let (label, agent_sid, model, effort) = match fork {
+        let (label, agent_sid, mut model, mut effort) = match fork {
             Some(f) => (Some(f.label), Some(f.copy), f.model, f.effort),
             None => (
                 req.label.clone(),
@@ -668,6 +668,17 @@ impl Daemon {
                 None,
             ),
         };
+        // A resumed conversation goes on with the model and effort it last ran on, as Claude
+        // Code's own `--resume` does, unless a model was asked for. A fork has its own (`plan_fork`).
+        if let Some(uuid) = req
+            .resume
+            .as_deref()
+            .filter(|_| headless && !req.fork && model.is_none())
+        {
+            let (m, e) = headless::backfill::last_run(&self.cfg.home, uuid);
+            model = m.or_else(|| Some("claude-opus-5-5".to_owned()));
+            effort = e;
+        }
         let (session, pane) = self.write(|tx, now| {
             let s = tx.insert_session(&Session {
                 id: Id(0),
@@ -758,14 +769,15 @@ impl Daemon {
             Some(l) => l.clone(),
             None => headless::fork::label(row, &req.cwd, &open),
         };
+        let (model, effort) = match row {
+            Some(s) => (s.model.clone(), s.effort.clone()),
+            None => headless::backfill::last_run(&self.cfg.home, parent),
+        };
         Ok(Fork {
             copy: femme_agents::uuid_v4(),
             label,
-            model: row
-                .and_then(|s| s.model.clone())
-                .or_else(|| headless::backfill::last_model(&self.cfg.home, parent))
-                .or_else(|| req.model.clone()),
-            effort: row.and_then(|s| s.effort.clone()),
+            model: model.or_else(|| req.model.clone()),
+            effort,
         })
     }
 

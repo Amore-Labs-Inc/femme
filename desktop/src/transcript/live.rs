@@ -572,7 +572,10 @@ impl Transcript {
                 // Gone, not broken: a streaming body is re-put with every delta and its earlier
                 // blob deleted at once, and retention evicts old ones. The item's next rev names
                 // the new hash (fetched then); until it lands the preview shows.
-                Err(RequestError::Server { code: ErrCode::NotFound, .. }) => {
+                Err(RequestError::Server {
+                    code: ErrCode::NotFound,
+                    ..
+                }) => {
                     this.failed.insert(hash);
                     this.refresh(cx);
                 }
@@ -1029,6 +1032,17 @@ impl Render for Transcript {
         }
         self.glide_step(window);
         self.chips = agents::chips(&self.items);
+        // a task's end row may be a blob (a background Agent's long answer): fetched, so the
+        // chip of an agent that stopped goes even when its row is not on screen
+        let wanted: Vec<_> = self
+            .items
+            .iter()
+            .filter(|e| e.item.kind == ItemKind::Event)
+            .filter_map(|e| self.items.wants_blob(e))
+            .collect();
+        for hash in wanted {
+            self.fetch_blob(hash, cx);
+        }
         let working = self.working_line(cx);
         let sent = self.sent_now(cx);
         if working.is_some() != self.working.is_some() || sent != self.sent {

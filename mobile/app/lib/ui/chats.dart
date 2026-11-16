@@ -251,7 +251,23 @@ class _ChatsTabState extends State<ChatsTab> {
                         leadingSize: 8,
                         title: Text(s.title),
                         subtitle: Text(sessionSubtitle(s)),
-                        trailing: const CupertinoListTileChevron(),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // pushes about this chat are off on this phone
+                            if (f.push?.isMuted(s.id) ?? false)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Icon(
+                                  CupertinoIcons.bell_slash,
+                                  size: 14,
+                                  color: muted,
+                                  semanticLabel: 'notifications off',
+                                ),
+                              ),
+                            const CupertinoListTileChevron(),
+                          ],
+                        ),
                         onTap: () {
                           tapHaptic();
                           pushChat(context, s.id);

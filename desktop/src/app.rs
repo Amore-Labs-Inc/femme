@@ -98,8 +98,8 @@ macro_rules! modkey {
     };
 }
 
-/// Binds the shell's keys: mod+b sidebar, mod+shift+b moves the shown chat's foreground tasks to
-/// the background, mod+j the terminal tab, mod+k closes the right-hand panel, F6 and shift+F6
+/// Binds the shell's keys: mod+b moves the shown chat's foreground tasks to the background (as
+/// in Claude Code), mod+shift+b the sidebar, mod+j the terminal tab, mod+k closes the right-hand panel, F6 and shift+F6
 /// walk the focus, mod+shift+t hands a Claude chat to its terminal and back, mod+shift+d the
 /// drawing board. (The accounts card and the
 /// board hear escape themselves.) The board has the keyboard while it is open, so the "Femme"
@@ -109,8 +109,8 @@ pub fn bind_keys(cx: &mut App) {
     // The terminal panel's own chords (ctrl-tab, ctrl-shift-tab), in the keymap before the panel exists.
     crate::terminal::panel::bind_keys(cx);
     cx.bind_keys([
-        KeyBinding::new(modkey!("b"), ToggleSidebar, Some("Femme")),
-        KeyBinding::new(modkey!("shift-b"), BackgroundAll, Some("Femme")),
+        KeyBinding::new(modkey!("b"), BackgroundAll, Some("Femme")),
+        KeyBinding::new(modkey!("shift-b"), ToggleSidebar, Some("Femme")),
         KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
         KeyBinding::new(modkey!("shift-t"), Takeover, Some("Femme")),
@@ -585,7 +585,7 @@ impl FemmeApp {
     }
 
     /// Called from `render`. A handle that no element carries leaves the keyboard on nothing, and then
-    /// every key of the shell (ctrl-b, F6, ...) is dead until a click. So when a module's
+    /// every key of the shell (ctrl-shift-b, F6, ...) is dead until a click. So when a module's
     /// handle has just taken the keyboard, look once the frame that should carry it is out: if the
     /// shell does not contain the focus, the centre's own stop takes it back.
     fn verify_focus(&mut self, window: &mut Window) {
@@ -602,7 +602,7 @@ impl FemmeApp {
 
     /// The keyboard lost its owner (a panel closed, a session changed): the centre takes it. A centre
     /// with nothing to type into gets its region handle, because a focused handle that is not drawn
-    /// leaves every key of the shell (ctrl-b, F6, ...) without its context.
+    /// leaves every key of the shell (ctrl-shift-b, F6, ...) without its context.
     fn land_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.want_focus = true;
         if !self.focus_centre(window, cx) {
@@ -730,7 +730,7 @@ impl FemmeApp {
         cx.notify();
     }
 
-    /// mod+b: the sessions column collapses to its strip of dots, or expands again.
+    /// mod+shift+b: the sessions column collapses to its strip of dots, or expands again.
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |s, cx| {
             let collapsed = s.collapsed();

@@ -305,6 +305,11 @@ pub struct Player {
 
 impl Player {
     /// Probes `clip` and starts it playing. Blocking (it runs `ffprobe`): off the main thread.
+    /// The file it plays.
+    pub fn path(&self) -> &Path {
+        &self.clip.path
+    }
+
     pub fn open(clip: Arc<Clip>) -> Result<Self, String> {
         let probe = probe(&clip.path)?;
         let mut p = Self {

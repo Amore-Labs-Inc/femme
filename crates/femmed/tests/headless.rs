@@ -10,7 +10,7 @@ use common::{headless, pane_of, port_of, wait_for, wait_screen, Box_};
 use femme_proto::rpc::{Answer, Attachment, PromptHow};
 use femme_proto::state::{Attention, Context, Item, ItemKind, ItemStatus, Mode, SessionStatus};
 use femme_proto::Sid;
-use femmed::core::{Core, CoreError, PaneRef};
+use femmed::core::{Core, CoreError, CreateSession, PaneRef};
 use femmed::daemon::Daemon;
 use serde_json::Value;
 
@@ -616,6 +616,60 @@ async fn an_agent_that_dies_is_restarted_once_with_resume_and_fails_on_the_secon
         d.prompt(&pane, "hi").await.is_err(),
         "a failed session takes no prompt"
     );
+    d.close_session(sid).await.unwrap();
+}
+
+/// A chat's effort is the row's at every process start (`/effort` survives a restart), and a row
+/// model that is a display name, not an id, is never passed as `--model`: the init's model
+/// replaces it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_chat_keeps_its_effort_and_never_gets_a_display_name_as_its_model() {
+    let b = Box_::new();
+    let (d, _stop) = b.start(None).await;
+    let req = CreateSession {
+        owner: "device:t".into(),
+        model: Some("Fable 5.1".into()),
+        ..headless(&b.home())
+    };
+    let s = d.create_session(req).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    let idle = |what| {
+        wait_for(&d, sid, what, |s| {
+            s.is_some_and(|s| s.status == SessionStatus::Idle)
+        })
+    };
+    idle("idle").await;
+    let args = b.claude_args();
+    assert!(!args.iter().any(|a| a.starts_with("--model")), "{args:?}");
+    assert!(args.contains(&"--effort=medium".to_string()), "{args:?}");
+    let row = || {
+        d.store
+            .read(|c| femme_store::sessions::get_session(c, sid))
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(row().model.as_deref(), Some("claude-haiku-5-5"));
+
+    d.prompt(&pane, "/effort xhigh").await.unwrap();
+    wait_items(&d, sid, "the turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: /effort xhigh")
+    })
+    .await;
+    idle("idle after /effort").await;
+    let pid1 = b.claude_pid();
+    d.prompt(&pane, "crash").await.unwrap();
+    let t0 = Instant::now();
+    while b.claude_pid() == pid1 {
+        assert!(t0.elapsed() < Duration::from_secs(10), "no restart");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let args = b.claude_args();
+    assert!(args.contains(&"--effort=xhigh".to_string()), "{args:?}");
+    assert!(
+        args.contains(&"--model=claude-haiku-5-5".to_string()),
+        "{args:?}"
+    );
+    assert_eq!(row().effort.as_deref(), Some("xhigh"));
     d.close_session(sid).await.unwrap();
 }
 

@@ -142,6 +142,14 @@ impl Box_ {
             .join(format!("{sid}.sock"))
     }
 
+    /// The arguments the fake `claude` last started with.
+    pub fn claude_args(&self) -> Vec<String> {
+        let cmd = std::fs::read(format!("/proc/{}/cmdline", self.claude_pid())).unwrap_or_default();
+        cmd.split(|b| *b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect()
+    }
+
     /// The pid the fake `claude` last wrote (each launch overwrites it).
     pub fn claude_pid(&self) -> String {
         std::fs::read_to_string(self.home().join("claude.pid"))

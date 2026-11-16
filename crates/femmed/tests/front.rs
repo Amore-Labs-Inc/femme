@@ -2574,6 +2574,76 @@ async fn account_caps_are_set_listed_cleared_and_kept_in_caps_json() {
     assert_eq!(c.call(Req::Caps).await, Ok(Resp::Caps(left)));
 }
 
+/// A resumed conversation goes on with the model and effort it last ran on, as Claude Code's own
+/// `--resume` does; a new one starts on Opus 5.5 at medium.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_conversation_keeps_its_model_and_effort() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let proj = rig.home().join(".claude/projects/-w");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("u-7.jsonl"),
+        concat!(
+            r#"{"type":"user","uuid":"m1","cwd":"/w","message":{"role":"user","content":"list it"}}"#,
+            "\n",
+            r#"{"type":"assistant","effort":"xhigh","message":{"id":"a1","model":"claude-fable-5-2","content":[{"type":"text","text":"one file"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","isSidechain":true,"effort":"low","message":{"id":"s1","model":"claude-haiku-5-5","content":[]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"a2","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    for (resume, model, effort) in [
+        (Some("u-7"), "claude-fable-5-2", "xhigh"),
+        (None, "claude-opus-5-5", "medium"),
+    ] {
+        let create = Req::SessionCreate {
+            cwd: rig.home().display().to_string(),
+            agent: Agent::Claude,
+            mode: Mode::Headless,
+            label: None,
+            name: None,
+            prompt: None,
+            model: None,
+            resume: resume.map(str::to_owned),
+            fork: false,
+        };
+        let Ok(Resp::Session(sid)) = c.call(create).await else {
+            panic!("no session")
+        };
+        let row = || {
+            rig.d
+                .store
+                .read(|c| sessions::get_session(c, sid))
+                .unwrap()
+                .unwrap()
+        };
+        within("the agent to be idle", async {
+            while row().status != SessionStatus::Idle {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        let args = rig.b.claude_args();
+        for want in [format!("--model={model}"), format!("--effort={effort}")] {
+            assert!(args.contains(&want), "{want} not in {args:?}");
+        }
+        assert_eq!(
+            args.contains(&"--resume=u-7".to_string()),
+            resume.is_some(),
+            "{args:?}"
+        );
+        assert_eq!(
+            (row().model.as_deref(), row().effort.as_deref()),
+            (Some(model), Some(effort))
+        );
+    }
+}
+
 /// `SessionCreate { resume }` goes on with an existing Claude conversation: the session carries
 /// its uuid, its transcript shows what the file holds before the agent says a word, and one that
 /// another Claude has open is refused.

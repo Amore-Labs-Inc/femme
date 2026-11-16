@@ -17,6 +17,7 @@ class PushRules {
   const PushRules({
     this.blocked = true,
     this.done = true,
+    this.claude = true,
     this.quiet,
     this.muted = const {},
   });
@@ -27,6 +28,9 @@ class PushRules {
   /// "finished": a session went idle after working.
   final bool done;
 
+  /// Claude's own message: what it chose to tell you (its `PushNotification` tool).
+  final bool claude;
+
   /// Local hours `[from, to)` with no pushes, e.g. `(23, 7)`; wraps midnight.
   final (int, int)? quiet;
 
@@ -36,12 +40,14 @@ class PushRules {
   PushRules copyWith({
     bool? blocked,
     bool? done,
+    bool? claude,
     (int, int)? quiet,
     bool clearQuiet = false,
     Set<String>? muted,
   }) => PushRules(
     blocked: blocked ?? this.blocked,
     done: done ?? this.done,
+    claude: claude ?? this.claude,
     quiet: clearQuiet ? null : (quiet ?? this.quiet),
     muted: muted ?? this.muted,
   );
@@ -50,6 +56,7 @@ class PushRules {
   Map<String, Object?> toJson() => {
     'blocked': blocked,
     'done': done,
+    'claude': claude,
     'muted': muted.toList()..sort(),
     'quiet': quiet == null ? null : [quiet!.$1, quiet!.$2],
   };
@@ -60,6 +67,7 @@ class PushRules {
     return PushRules(
       blocked: j['blocked'] != false,
       done: j['done'] != false,
+      claude: j['claude'] != false,
       quiet: q is List && q.length == 2
           ? ((q[0] as num).toInt(), (q[1] as num).toInt())
           : null,
@@ -128,6 +136,18 @@ class PushSync extends ChangeNotifier {
     await _keeper.setPush(topic: _keeper.pushTopic ?? newTopic(), on: on);
     notifyListeners();
     await sync();
+  }
+
+  /// Whether pushes about session `sid` are off on this phone.
+  bool isMuted(String sid) => rules.muted.contains(sid);
+
+  /// Turns the pushes about one session off (`muted`) or back on; the rest of the rules stay.
+  Future<void> setMuted(String sid, bool muted) {
+    final r = rules;
+    if (r.muted.contains(sid) == muted) return Future.value();
+    return setRules(
+      r.copyWith(muted: {...r.muted.where((m) => m != sid), if (muted) sid}),
+    );
   }
 
   Future<void> setRules(PushRules r) async {

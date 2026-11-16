@@ -6,6 +6,7 @@ import '../net/models.dart' hide Row;
 import '../net/rpc.dart';
 import '../state/box.dart';
 import 'chat.dart';
+import 'chat/look.dart' show toast;
 import 'femme.dart';
 import 'files.dart';
 import 'follow.dart';
@@ -452,6 +453,33 @@ Future<bool> closeSession(BuildContext context, Session s) async {
   }
 }
 
+/// Whether the menus offer to mute `sid`: pushes are on for this phone (without them there is
+/// nothing to turn off).
+bool canMute(BuildContext context) => Femme.of(context).push?.on ?? false;
+
+/// Turns the phone's pushes about one chat off or on (the box leaves it out of "needs you",
+/// "finished" and Claude's own pushes), and says what it did.
+Future<void> toggleMute(BuildContext context, String sid) async {
+  final push = Femme.of(context).push;
+  if (push == null) return;
+  final mute = !push.isMuted(sid);
+  actionHaptic();
+  await push.setMuted(sid, mute);
+  if (!context.mounted) return;
+  toast(
+    context,
+    mute
+        ? 'Notifications for this chat are off'
+        : 'Notifications for this chat are on',
+  );
+}
+
+/// The menu line that goes with [toggleMute].
+String muteLabel(BuildContext context, String sid) =>
+    Femme.of(context).push?.isMuted(sid) ?? false
+    ? 'Unmute notifications'
+    : 'Mute notifications';
+
 /// A session row: tap opens the chat (the terminal for a shell / TUI session), swipe left closes
 /// (confirmed), long-press opens a menu (Rename, Terminal or Chat, Files, Close).
 class SessionActions extends StatelessWidget {
@@ -513,6 +541,17 @@ class SessionActions extends StatelessWidget {
             onPressed: () => go(FilesScreen(sid: s.id)),
             child: const Text('Files'),
           ),
+          if (canMute(context))
+            CupertinoContextMenuAction(
+              trailingIcon: Femme.of(context).push!.isMuted(s.id)
+                  ? CupertinoIcons.bell
+                  : CupertinoIcons.bell_slash,
+              onPressed: () {
+                Navigator.of(context, rootNavigator: true).pop();
+                toggleMute(context, s.id);
+              },
+              child: Text(muteLabel(context, s.id)),
+            ),
           CupertinoContextMenuAction(
             isDestructiveAction: true,
             trailingIcon: CupertinoIcons.xmark_circle,

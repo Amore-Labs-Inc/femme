@@ -21,7 +21,7 @@ Keep it current: when your module's public API changes, edit your section in the
 │  ● one   │  …streams from the daemon…                            │ ▸ files       │
 │  ○ two   │                                                       │               │
 │          ├───────────────────────────────────────────────────────┤  (hover strip │
-│ [ctrl-b] │  composer: text + attachment thumbnails   [send]      │   opens panel)│
+│[ctrl-sh-b]│ composer: text + attachment thumbnails   [send]      │   opens panel)│
 └──────────┴───────────────────────────────────────────────────────┴───────────────┘
 ```
 
@@ -44,13 +44,14 @@ Keep it current: when your module's public API changes, edit your section in the
   by its chat's title: Claude Code's own for a conversation that ran in its TUI (`ai-title` in the
   transcript, or the user's `/rename`), and for a headless chat one a fork of the conversation
   gives after its first turn (`headless/title.rs`, the small model, nothing saved); the agents
-  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-b` and a thin edge
+  API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-shift-b` and a thin edge
   handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
   and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
   `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
   goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
   shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
-  is refused until that one exits.
+  is refused until that one exits. A resumed conversation keeps the model and effort it last ran
+  on (its transcript's last reply), and a chat keeps its effort across restarts.
 - **Fork**: a row's right-click menu reads `rename`, `fork`, `close`; `fork` shows on Claude chats
   only, dimmed until the chat has a conversation. It makes a new headless chat that starts as a copy
   of it, `<title> · fork` in the same folder, same model and effort, the original untouched, no
@@ -118,7 +119,8 @@ Keep it current: when your module's public API changes, edit your section in the
   the first minute, at most 200 frames; gpui animates a GIF held in memory, not a WebP).
 - **The lightbox**: a click on a picture or video, in the transcript or the files panel, opens it
   over the whole window like the board. A video has play/pause, the time, a track to click or drag,
-  and the sound; space, left/right (5 s) and `m` work too. Esc, `‹` or the backdrop close it.
+  and the sound; space, left/right (5 s) and `m` work too. `↓` in its title saves the file under
+  its name in this machine's Downloads folder and says where. Esc, `‹` or the backdrop close it.
 - **Subagents** (`Agent` tool calls): the transcript shows one thread at a time. While the turn
   has subagents, a 24 px strip sits at the foot of the transcript box, above the composer:
   `‹ main` first, then one chip per subagent (`● description 1m 12s`, grey `done` when its call has
@@ -148,7 +150,7 @@ Keep it current: when your module's public API changes, edit your section in the
   moves that task to the background (`Req::Background{sid, tool_use_id}`, Claude's `background_tasks`
   control request): the call's result says it was backgrounded, the turn goes on, and the row says
   `in background` until the task's end comes as an event (`task_notification`), which starts a turn
-  of its own where Claude reads the output. `ctrl-shift-b` does the same for every foreground task
+  of its own where Claude reads the output. `ctrl-b` (Claude Code's own key) does the same for every foreground task
   of the chat on show, as `Ctrl+B` does in Claude's own TUI.
 - **Selecting text**: all of the transcript's text is selectable, like text on a web page: a drag
   selects across paragraphs, list items and rows, in reading order (pink, the colour of the

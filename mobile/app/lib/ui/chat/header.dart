@@ -104,6 +104,13 @@ class SubtitleStrip extends StatelessWidget {
             ),
           ),
           if (s.agent != Agent.shell) Chip(label: modelEffort(s)),
+          // pushes about this chat are off: a tap turns them back on
+          if (f.push?.isMuted(sid) ?? false)
+            Chip(
+              label: 'notifications off',
+              color: muted(context),
+              onTap: () => toggleMute(context, sid),
+            ),
           if (claude)
             Chip(
               label: permissionLabel(s.permission),
@@ -133,11 +140,12 @@ Future<void> showChatMenu(BuildContext context, String sid) async {
             onPressed: () => Navigator.pop(ctx, 'background'),
             child: const Text('Background all'),
           ),
-        for (final (k, label) in const [
+        for (final (k, label) in [
           ('terminal', 'Terminal'),
           ('files', 'Files'),
           ('info', 'Session info'),
           ('rename', 'Rename'),
+          if (canMute(context)) ('mute', muteLabel(context, sid)),
         ])
           CupertinoActionSheetAction(
             onPressed: () => Navigator.pop(ctx, k),
@@ -170,6 +178,8 @@ Future<void> showChatMenu(BuildContext context, String sid) async {
       showSessionInfo(context, sid);
     case 'rename':
       renameChat(context, sid);
+    case 'mute':
+      toggleMute(context, sid);
     case 'close':
       closeChat(context, sid);
   }

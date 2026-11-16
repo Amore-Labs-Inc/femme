@@ -332,11 +332,19 @@ pub struct PushRules {
     pub blocked: bool,
     /// "finished": a session's turn ended.
     pub done: bool,
+    /// Claude's own message: what it chose to tell you with its `PushNotification` tool. Absent
+    /// on the wire (an older phone): allowed.
+    #[serde(default = "yes")]
+    pub claude: bool,
     /// Sessions never pushed.
     pub muted: Vec<Sid>,
     /// Hours `[from, to)` of the box's local time with no pushes, e.g. `(23, 7)`; it may wrap
     /// midnight. `from == to` is never quiet.
     pub quiet: Option<(u8, u8)>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// One open pull request, as `Resp::Prs` lists it.
@@ -522,6 +530,7 @@ mod tests {
             rules: PushRules {
                 blocked: true,
                 done: false,
+                claude: true,
                 muted: vec![sid],
                 quiet: Some((23, 7)),
             },
@@ -530,9 +539,14 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({"PushRegister": {"platform": "Ntfy", "token": "femme-abc",
-                "rules": {"blocked": true, "done": false, "muted": [sid.to_string()], "quiet": [23, 7]}}})
+                "rules": {"blocked": true, "done": false, "claude": true, "muted": [sid.to_string()], "quiet": [23, 7]}}})
         );
         assert_eq!(serde_json::from_value::<Req>(json).unwrap(), req);
+        // an older phone's rules have no `claude`: allowed
+        let old: PushRules =
+            serde_json::from_str(r#"{"blocked":true,"done":false,"muted":[],"quiet":null}"#)
+                .unwrap();
+        assert!(old.claude);
         let bytes = postcard::to_stdvec(&req).unwrap();
         assert_eq!(postcard::from_bytes::<Req>(&bytes).unwrap(), req);
     }
