@@ -50,7 +50,8 @@ Keep it current: when your module's public API changes, edit your section in the
   `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
   goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
   shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
-  is refused until that one exits.
+  is refused until that one exits. A resumed conversation keeps the model and effort it last ran
+  on (its transcript's last reply), and a chat keeps its effort across restarts.
 - **Centre**: for a Claude/Codex/Pi session the transcript (top) + composer (bottom). For a shell
   session the terminal pane fills it. The transcript shows what the agent streams: the user's own
   messages (with their attachments as thumbnails, hover = preview), assistant text as markdown, tool

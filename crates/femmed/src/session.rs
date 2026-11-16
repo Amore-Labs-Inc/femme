@@ -644,6 +644,18 @@ impl Daemon {
                 return Err(CoreError::Conflict(why.into()));
             }
         }
+        // A resumed conversation goes on with the model and effort it last ran on, as Claude
+        // Code's own `--resume` does, unless a model was asked for.
+        let (mut model, mut effort) = (req.model.clone(), None);
+        if let Some(uuid) = req
+            .resume
+            .as_deref()
+            .filter(|_| headless && model.is_none())
+        {
+            let (m, e) = headless::backfill::last_run(&self.cfg.home, uuid);
+            model = m.or_else(|| Some("claude-opus-5-5".to_owned()));
+            effort = e;
+        }
         let (session, pane) = self.write(|tx, now| {
             let s = tx.insert_session(&Session {
                 id: Id(0),
@@ -656,14 +668,14 @@ impl Daemon {
                 cwd: req.cwd.clone(),
                 label: req.label.clone(),
                 agent_sid: req.resume.clone().filter(|_| headless),
-                model: req.model.clone(),
+                model: model.clone(),
                 status,
                 attention: Attention::None,
                 created: now,
                 closed: None,
                 permission: None,
                 context: None,
-                effort: None,
+                effort: effort.clone(),
                 goal: None,
             })?;
             let p = tx.upsert_pane(&Pane {

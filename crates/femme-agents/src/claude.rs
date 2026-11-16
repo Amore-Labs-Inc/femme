@@ -1158,8 +1158,10 @@ impl ClaudeDriver {
         }
         let m = &v["message"];
         // a transcript read from disk has no `init`: the message says the model
-        if self.parent.is_none() && self.model.is_none() {
-            if let Some(model) = m["model"].as_str() {
+        // (a mirror follows every line: the TUI's `/model` says a name, the reply the id)
+        if self.parent.is_none() && (self.model.is_none() || self.mirror) {
+            let said = m["model"].as_str().filter(|m| *m != "<synthetic>");
+            if let Some(model) = said.filter(|m| self.model.as_deref() != Some(*m)) {
                 self.model = Some(model.to_owned());
                 ev.push(AgentEvent::ModelChanged(model.to_owned()));
             }
@@ -1271,10 +1273,11 @@ impl ClaudeDriver {
             if let Some(m) = out
                 .strip_prefix("Set model to `")
                 .and_then(|r| r.split('`').next())
+                .and_then(model_id)
             {
-                if self.model.as_deref() != Some(m) {
-                    self.model = Some(m.to_owned());
-                    ev.push(AgentEvent::ModelChanged(m.to_owned()));
+                if self.model.as_deref() != Some(m.as_str()) {
+                    self.model = Some(m.clone());
+                    ev.push(AgentEvent::ModelChanged(m));
                 }
             }
             if let Some(c) = out.strip_prefix("Goal set:") {
@@ -2594,6 +2597,19 @@ pub fn monitor_event(text: &str) -> Option<String> {
 }
 
 /// Text without its ANSI escape sequences (`ESC [ ... letter`).
+/// The model id of what `/model` answered with. The TUI says a display name ("Fable 5.2"), which
+/// `--model` refuses: `claude-fable-5-2` it is. An id stays; anything else is no model to store.
+fn model_id(said: &str) -> Option<String> {
+    if said.starts_with("claude-") || said.contains('/') {
+        return Some(said.to_owned());
+    }
+    let id = format!("claude-{}", said.to_lowercase().replace([' ', '.'], "-"));
+    let (family, version) = said.split_once(' ')?;
+    let ok = family.chars().all(|c| c.is_ascii_alphabetic())
+        && version.split('.').all(|n| n.parse::<u8>().is_ok());
+    ok.then_some(id)
+}
+
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
@@ -3577,6 +3593,64 @@ mod tests {
             .split(|b| *b == b'\n')
             .rfind(|l| !l.is_empty())
             .unwrap()
+    }
+
+    /// The TUI's `/model` answers with a display name, which `--model` refuses: the row gets the
+    /// id, and in a mirror the reply that follows says which model really ran.
+    #[test]
+    fn a_models_display_name_is_stored_as_its_id_and_a_mirror_follows_the_replies() {
+        let set = |name: &str| {
+            json!({"type":"user","message":{"role":"user","content": format!(
+                "<local-command-stdout>Set model to `{name}` for this session only</local-command-stdout>")}})
+        };
+        let reply = |model: &str, side: Value| {
+            json!({"type":"assistant","parent_tool_use_id":side,"message":{"id":"msg_1","model":model,
+                "role":"assistant","content":[{"type":"text","text":"ok"}]}})
+        };
+        let changed = |ev: Vec<AgentEvent>| -> Vec<String> {
+            ev.into_iter()
+                .filter_map(|e| match e {
+                    AgentEvent::ModelChanged(m) => Some(m),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut f = Feed::new();
+        f.d = ClaudeDriver::mirror();
+        assert_eq!(changed(f.line(set("Fable 5.2"))), ["claude-fable-5-2"]);
+        assert_eq!(
+            changed(f.line(reply("claude-fable-5-2", Value::Null))),
+            [""; 0]
+        );
+        // a subagent's model and the CLI's own replies are not the conversation's
+        assert_eq!(
+            changed(f.line(reply("claude-haiku-5-5", json!("toolu_1")))),
+            [""; 0]
+        );
+        assert_eq!(changed(f.line(reply("<synthetic>", Value::Null))), [""; 0]);
+        assert_eq!(
+            changed(f.line(reply("claude-opus-5-5", Value::Null))),
+            ["claude-opus-5-5"]
+        );
+        // a name that is no model's is not stored
+        assert_eq!(changed(f.line(set("Default (recommended)"))), [""; 0]);
+        assert_eq!(model_id("Opus 5.5").as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(
+            model_id("claude-haiku-5-5").as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        assert_eq!(model_id("deepseek/v4").as_deref(), Some("deepseek/v4"));
+        assert_eq!(model_id("x"), None);
+        // the stream has its init for the model: a reply does not change it there
+        let mut f = Feed::new();
+        assert_eq!(
+            changed(f.line(reply("claude-fable-5-2", Value::Null))),
+            ["claude-fable-5-2"]
+        );
+        assert_eq!(
+            changed(f.line(reply("claude-opus-5-5", Value::Null))),
+            [""; 0]
+        );
     }
 
     /// Claude 2.1.319: `task_started` says which call waits in the foreground, `task_updated`
