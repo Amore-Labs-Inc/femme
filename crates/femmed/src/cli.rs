@@ -4,7 +4,8 @@
 //! - `femmed proxy`: `ssh -T host femmed proxy` turns the SSH channel into a byte pipe to the
 //!   daemon's unix socket ([`config::sock_path`]); the client speaks the same frames over it as
 //!   over QUIC.
-//! - `femmed open`: asks the daemon for a headless Claude session in this directory and prints its id.
+//! - `femmed open`: asks the daemon for a headless Claude session in this directory and prints its id
+//!   (`--resume <uuid>`: an existing conversation; `--fork`: a copy of it).
 //!   A bare `claude` typed in a FEMME shell pane runs it (`server/claude-shim.sh`).
 //! - `femmed show <file> [caption]`: run by the agent inside a session, puts the file in the
 //!   transcript for the user to see (a screenshot of its work, say); the daemon keeps a copy.
@@ -86,6 +87,13 @@ pub enum Command {
         /// Go on with an existing Claude conversation: its uuid (`~/.claude/projects/*/<uuid>.jsonl`).
         #[arg(long, value_parser = NonEmptyStringValueParser::new())]
         resume: Option<String>,
+        /// Start as a copy of the `--resume` conversation, which goes on untouched; without
+        /// `--resume`, inside a FEMME chat, a copy of that chat.
+        #[arg(long)]
+        fork: bool,
+        /// The session's first message.
+        #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+        prompt: Option<String>,
     },
     /// Show the user a file (a screenshot, a chart) in the transcript, from inside a session.
     Show {
@@ -422,7 +430,12 @@ pub async fn run(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Open { cwd, resume } => finish("open", open(cwd, resume).await),
+        Command::Open {
+            cwd,
+            resume,
+            fork,
+            prompt,
+        } => finish("open", open(cwd, resume, fork, prompt).await),
         Command::Show { file, caption } => finish("show", show(&file, caption).await),
         Command::Hook {
             agent,
@@ -467,8 +480,20 @@ pub async fn run(cli: Cli) -> ExitCode {
 
 /// `femmed open`: asks the daemon, over the socket `femmed proxy` connects to, for a headless Claude
 /// session in `cwd` (default: here, or the resumed conversation's folder) and returns its id. The
-/// desktop lists the session like any other.
-async fn open(cwd: Option<String>, resume: Option<String>) -> anyhow::Result<String> {
+/// desktop lists the session like any other. `fork`: a copy of the resumed conversation, or, with
+/// none named, of the one this process runs in (the Claude above it: "fork yourself").
+async fn open(
+    cwd: Option<String>,
+    resume: Option<String>,
+    fork: bool,
+    prompt: Option<String>,
+) -> anyhow::Result<String> {
+    let resume = match resume {
+        None if fork => Some(own_conversation(&home_dir()?).ok_or_else(|| {
+            anyhow::anyhow!("--fork: no --resume <uuid>, and no Claude above this process to copy")
+        })?),
+        r => r,
+    };
     let cwd = match (cwd, &resume) {
         (Some(cwd), _) => cwd,
         (None, Some(uuid)) => {
@@ -494,9 +519,10 @@ async fn open(cwd: Option<String>, resume: Option<String>) -> anyhow::Result<Str
         mode: Mode::Headless,
         label: None,
         name: None,
-        prompt: None,
+        prompt,
         model: None,
         resume,
+        fork,
     };
     match client.request_timeout(req, ANSWER_WAIT).await? {
         Resp::Session(sid) => Ok(sid.to_string()),

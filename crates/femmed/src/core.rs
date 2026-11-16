@@ -273,6 +273,8 @@ pub struct CreateSession {
     pub model: Option<String>,
     /// The agent's own conversation to resume (its `agent_sid`), `None` for a new one.
     pub resume: Option<String>,
+    /// With `resume`: a copy of that conversation ([`femme_proto::rpc::Req::SessionCreate`]).
+    pub fork: bool,
 }
 
 /// A pane's screen and the status of the agent in it.

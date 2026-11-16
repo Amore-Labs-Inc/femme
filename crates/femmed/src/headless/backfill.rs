@@ -624,7 +624,7 @@ pub(super) fn title_line(line: &[u8]) -> Option<String> {
 
 /// `<home>/.claude/projects/*/<uuid>.jsonl`. The folder is the cwd with every character that is
 /// not alphanumeric made '-', so it is looked up, not rebuilt.
-pub(super) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
+pub(crate) fn find(home: &Path, uuid: &str) -> Option<PathBuf> {
     let name = format!("{uuid}.jsonl");
     std::fs::read_dir(home.join(".claude/projects"))
         .ok()?

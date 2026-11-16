@@ -149,6 +149,7 @@ impl Rig {
                 owner: "board".into(),
                 model: None,
                 resume: None,
+                fork: false,
             })
             .await
             .expect("a shell opens")
@@ -165,6 +166,7 @@ fn shell_req(home: &Path) -> Req {
         prompt: None,
         model: None,
         resume: None,
+        fork: false,
     }
 }
 
@@ -599,6 +601,7 @@ async fn errors_keep_their_meaning_and_what_is_not_built_says_so() {
         prompt: None,
         model: None,
         resume: None,
+        fork: false,
     };
     assert_eq!(code(c.call(req).await), ErrCode::Bad);
     // A shell has no agent to prompt: the core's Busy.
@@ -765,6 +768,7 @@ async fn the_front_checks_repos_titles_names_and_folders_the_way_the_board_does(
         prompt: None,
         model: None,
         resume: None,
+        fork: false,
     };
     let home = rig.home().display().to_string();
     for (what, req) in [
@@ -897,6 +901,7 @@ async fn an_internal_failure_is_not_remembered_so_the_retry_runs_the_op_again() 
         prompt: None,
         model: None,
         resume: None,
+        fork: false,
     };
     // No claude on the box's PATH: the core's Internal.
     std::fs::rename(&claude, &away).unwrap();
@@ -932,6 +937,7 @@ async fn a_session_made_but_not_prompted_is_one_session_however_often_the_op_is_
         prompt: Some("hello".into()),
         model: None,
         resume: None,
+        fork: false,
     };
     let op = OpId::new();
     let told = c.call_op(op, req.clone()).await.unwrap_err();
@@ -2344,6 +2350,7 @@ async fn a_prompt_names_its_uploads_to_the_agent_and_a_missing_one_is_refused() 
         prompt: None,
         model: None,
         resume: None,
+        fork: false,
     };
     let Ok(Resp::Session(sid)) = c.call(create).await else {
         panic!("no session")
@@ -2603,6 +2610,7 @@ async fn a_resumed_conversation_keeps_its_model_and_effort() {
             prompt: None,
             model: None,
             resume: resume.map(str::to_owned),
+            fork: false,
         };
         let Ok(Resp::Session(sid)) = c.call(create).await else {
             panic!("no session")
@@ -2667,6 +2675,7 @@ async fn a_session_resumes_an_existing_conversation_with_its_history() {
         prompt: None,
         model: None,
         resume: Some(resume.into()),
+        fork: false,
     };
     let Ok(Resp::Session(sid)) = c.call(create("u-9")).await else {
         panic!("no session")
@@ -2712,6 +2721,27 @@ async fn a_session_resumes_an_existing_conversation_with_its_history() {
     .unwrap();
     let refused = c.call(create("u-8")).await.unwrap_err();
     assert_eq!(refused.code, ErrCode::Conflict, "{refused:?}");
+    // a fork copies the conversation the first session holds, under an id of its own
+    let fork = Req::SessionCreate {
+        cwd: rig.home().display().to_string(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some("u-9".into()),
+        fork: true,
+    };
+    let Ok(Resp::Session(copy)) = c.call(fork).await else {
+        panic!("no fork")
+    };
+    let get = |sid| rig.d.store.read(|c| sessions::get_session(c, sid));
+    let (s, copy) = (get(sid).unwrap().unwrap(), get(copy).unwrap().unwrap());
+    assert_eq!(s.agent_sid.as_deref(), Some("u-9"));
+    assert!(copy.agent_sid.is_some() && copy.agent_sid != s.agent_sid);
+    assert!(copy.label.is_some_and(|l| l.ends_with(" · fork")));
+    assert_eq!(copy.model, s.model);
     // a shell cannot resume anything
     let shell = Req::SessionCreate {
         cwd: rig.home().display().to_string(),
@@ -2722,6 +2752,7 @@ async fn a_session_resumes_an_existing_conversation_with_its_history() {
         prompt: None,
         model: None,
         resume: Some("u-9".into()),
+        fork: false,
     };
     assert_eq!(c.call(shell).await.unwrap_err().code, ErrCode::Bad);
 }

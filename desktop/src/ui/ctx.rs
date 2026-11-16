@@ -23,7 +23,7 @@ use gpui::{
 };
 
 use super::{menu, menu_item};
-use crate::theme::bad;
+use crate::theme::{bad, muted_text};
 
 /// How wide a menu is.
 pub const WIDTH: Pixels = px(140.);
@@ -39,6 +39,9 @@ pub struct Item {
     pub label: SharedString,
     /// The row is drawn in the warning colour: picking it throws something away.
     pub danger: bool,
+    /// The row is shown dimmed and a click on it does nothing: the action exists but cannot run
+    /// yet (a chat with no conversation has nothing to fork).
+    pub disabled: bool,
     /// What a click on the row does.
     pub run: Run,
 }
@@ -52,6 +55,7 @@ impl Item {
         Item {
             label: label.into(),
             danger: false,
+            disabled: false,
             run: Rc::new(run),
         }
     }
@@ -59,6 +63,12 @@ impl Item {
     /// The same row in the warning colour.
     pub fn danger(mut self) -> Self {
         self.danger = true;
+        self
+    }
+
+    /// The same row, dimmed and inert when `disabled`.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -70,14 +80,28 @@ pub fn card(prefix: &str, width: Pixels, items: impl IntoIterator<Item = Item>) 
         .into_iter()
         .enumerate()
         .fold(menu().w(width), |card, (ix, item)| {
-            let Item { label, danger, run } = item;
+            let Item {
+                label,
+                danger,
+                disabled,
+                run,
+            } = item;
             card.child(
                 menu_item(SharedString::from(format!("{prefix}-{ix}")))
                     .when(danger, |row| row.text_color(bad()))
+                    // No highlight, no hand: nothing happens on a click.
+                    .when(disabled, |row| {
+                        row.text_color(muted_text())
+                            .cursor_default()
+                            .hover(|s| s)
+                            .active(|s| s)
+                    })
                     .child(label)
                     .on_click(move |ev, window, cx| {
                         cx.stop_propagation();
-                        run(ev, window, cx);
+                        if !disabled {
+                            run(ev, window, cx);
+                        }
                     }),
             )
         })
@@ -208,6 +232,7 @@ impl Render for Menu {
             Body::Items(items) => {
                 let rows = items.iter().enumerate().map(|(ix, item)| Item {
                     danger: item.danger,
+                    disabled: item.disabled,
                     ..Item::new(
                         item.label.clone(),
                         cx.listener(move |this, ev: &ClickEvent, window, cx| {

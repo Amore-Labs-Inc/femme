@@ -2,7 +2,8 @@
 # Fork the focused local agent onto the VPS and keep the local one running.
 # Puts the agent's folder (git repo root, or cwd) in live two-way sync with the
 # same path on the VPS (laptop/sync-dir.sh), copies the session file, then starts the
-# agent there in its own fork mode, like forkr does locally.
+# copy there: a Claude fork opens as a FEMME chat (femmed open --fork), codex and pi
+# start in a new herdr workspace in their own fork mode, like forkr does locally.
 #
 # Usage: fork-remote.sh [pane-id]     Host: $FEMME_HOST (default agentbox)
 set -u
@@ -21,6 +22,9 @@ fail() {
   exit 1
 }
 
+# One word for the remote shell: single quotes, each ' inside as '\'' (POSIX sh, no %q).
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
 command -v jq >/dev/null 2>&1 || fail "jq is required but not on PATH"
 command -v mutagen >/dev/null 2>&1 || fail "mutagen is required: https://mutagen.io"
 
@@ -37,9 +41,9 @@ cwd=$(field foreground_cwd)
 ref=$(field agent_session.value)
 [ -n "$ref" ] || fail "herdr has no session for the $kind in $target. Install its integration: herdr integration install $kind"
 
-# Session file to copy, then the agent's own fork argv (same recipes as forkr).
+# Session file to copy, then the agent's own fork argv (same recipes as forkr; claude's is femmed's).
 case $kind in
-  claude) file=$(find ~/.claude/projects -name "$ref.jsonl" 2>/dev/null | head -n 1); set -- --resume "$ref" --fork-session ;;
+  claude) file=$(find ~/.claude/projects -name "$ref.jsonl" 2>/dev/null | head -n 1) ;;
   codex)  file=$(find ~/.codex/sessions -name "*$ref*.jsonl" 2>/dev/null | head -n 1); set -- fork "$ref" ;;
   pi)     case $ref in /*) file=$ref ;; *) file=$(find ~/.pi -name "*$ref*.jsonl" 2>/dev/null | head -n 1) ;; esac
           set -- --fork "$ref" ;;
@@ -53,9 +57,20 @@ case $root in
     notify "Syncing $root with $host"
     sh "${HERDR_PLUGIN_ROOT:-$(dirname "$0")}/../laptop/sync-dir.sh" "$root" >/dev/null 2>&1 \
       || fail "could not sync $root with $host" ;;
-  *) ssh "$host" mkdir -p "$(printf %q "$cwd")" ;;  # never ship /tmp or all of $HOME
+  *) ssh "$host" mkdir -p "$(q "$cwd")" ;;  # never ship /tmp or all of $HOME
 esac
 rsync -az --mkpath "$file" "$host:$file" || fail "could not copy the session file to $host"
+
+# Claude: the copy is a FEMME chat. femmed lives in ~/.local/bin, off a non-interactive PATH;
+# ssh starts in the remote home, so the path is relative. cwd and ref are quoted here on purpose.
+if [ "$kind" = claude ]; then
+  # shellcheck disable=SC2029
+  out=$(ssh "$host" ".local/bin/femmed open --cwd $(q "$cwd") --resume $(q "$ref") --fork" 2>&1) \
+    || fail "femmed on $host could not fork the claude session: $out"
+  notify "Forked claude to $host: $target -> FEMME chat $out"
+  printf '%s\n' "$out"
+  exit 0
+fi
 
 out=$(remote workspace create --cwd "$cwd" --focus 2>&1) || fail "could not create a workspace on $host: $out"
 new_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')

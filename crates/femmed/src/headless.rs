@@ -51,6 +51,7 @@ use crate::takeover::{Act, Ev, Phase, Takeover};
 
 pub(crate) mod backfill;
 pub(crate) mod btw;
+pub(crate) mod fork;
 pub(crate) mod title;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
@@ -81,9 +82,21 @@ const STDERR_MAX: usize = 4096;
 pub(crate) struct Saved {
     answers: Vec<(String, Answer)>,
     held: Vec<HeldPrompt>,
+    /// The session began as a fork: the conversation it copies and the id of the copy. While the
+    /// copy has no transcript on disk (no turn of its own yet) a new process forks again.
+    #[serde(default)]
+    fork_from: Option<(String, String)>,
 }
 
 impl Saved {
+    /// The state of a new session that is `copy`, a fork of conversation `parent`.
+    pub(crate) fn forked(parent: String, copy: String) -> Saved {
+        Saved {
+            fork_from: Some((parent, copy)),
+            ..Saved::default()
+        }
+    }
+
     pub(crate) fn json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
@@ -269,8 +282,14 @@ fn driver_err(e: DriverError) -> CoreError {
 
 /// Starts the agent of a new session in its holder and the actor that drives it. On failure the
 /// holder is stopped (the caller deletes the session).
-pub(crate) async fn start(d: &Daemon, s: &Session, holder: Holder) -> Result<(), String> {
-    let mut a = Actor::new(d, s, holder.clone(), 0, 0, Saved::default());
+pub(crate) async fn start(
+    d: &Daemon,
+    s: &Session,
+    holder: Holder,
+    saved: Saved,
+) -> Result<(), String> {
+    let parent = saved.fork_from.as_ref().map(|(parent, _)| parent.clone());
+    let mut a = Actor::new(d, s, holder.clone(), 0, 0, saved);
     let events = holder.subscribe();
     let up = async {
         a.spool = Some(holder.spool_read(0).await.map_err(|e| e.to_string())?);
@@ -280,9 +299,15 @@ pub(crate) async fn start(d: &Daemon, s: &Session, holder: Holder) -> Result<(),
         let _ = holder.shutdown().await;
         return Err(e);
     }
-    // a resumed conversation: what it holds, before the stream adds to it
-    if let Some(uuid) = &s.agent_sid {
+    // a resumed conversation: what it holds, before the stream adds to it. A fork's own file
+    // comes with its first turn: until then what it holds is what the original does.
+    if let Some(uuid) = parent.as_ref().or(s.agent_sid.as_ref()) {
         backfill::run(d, s.id, uuid, None, None).await;
+    }
+    if parent.is_some() {
+        // the original's title, read with its history, is not the copy's
+        let label = s.label.clone();
+        let _ = d.update(s.id, |s| s.label = label);
     }
     a.launch(d, events);
     Ok(())
@@ -331,6 +356,7 @@ pub(crate) async fn reattach(d: &Daemon, s: &Session, holder: Holder) -> Result<
             cwd: s.cwd.clone(),
             model: s.model.clone(),
             resume: s.agent_sid.clone(),
+            fork_from: None,
             extra_env: d.sessions.child_env(&d.cfg, &path),
             hooks_path: None,
             effort: None,
@@ -1275,6 +1301,7 @@ impl Actor {
                 .into_iter()
                 .chain(self.resend.iter().cloned())
                 .collect(),
+            fork_from: self.saved.fork_from.clone(),
         };
         // not while replaying: the driver has not seen the questions it holds answers for yet
         let state = (self.replay_until.is_none() && saved != self.saved).then(|| saved.json());
@@ -1342,15 +1369,33 @@ impl Actor {
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
         extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
         extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
+        // A fork with no turn of its own has no transcript to resume: it is forked (again) from
+        // the original, under the id its row carries. Once it has one, or after a `/clear` gave
+        // it another conversation, it resumes like any session.
+        let fork_from = match (&self.saved.fork_from, &resume) {
+            (Some((parent, copy)), Some(id))
+                if id == copy && backfill::find(&d.cfg.home, copy).is_none() =>
+            {
+                Some(parent.clone())
+            }
+            _ => None,
+        };
         // The desktop's chats think at medium until the row says otherwise (`/effort`, or the
-        // effort a resumed conversation last ran on): that survives a restart.
-        let effort = (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
-            .then(|| known_effort(s.effort).unwrap_or_else(|| "medium".into()));
+        // effort a resumed conversation last ran on): that survives a restart. A fork starts at
+        // the effort of the original (its row was made with it).
+        let effort = fork_from
+            .as_ref()
+            .and(known_effort(s.effort.clone()))
+            .or_else(|| {
+                (s.owner.starts_with("device:") && !is_gateway(s.model.as_deref()))
+                    .then(|| known_effort(s.effort).unwrap_or_else(|| "medium".into()))
+            });
         self.update(d, None, |s| s.effort = effort.clone());
         let launch = Launch {
             cwd: s.cwd,
             model: model_id(self.sid, s.model),
             resume,
+            fork_from,
             extra_env,
             // the stream is the status here; the hooks are for the TUI
             hooks_path: None,
@@ -1383,6 +1428,7 @@ impl Actor {
             cwd: s.cwd,
             model: model_id(self.sid, s.model),
             resume: s.agent_sid,
+            fork_from: None,
             extra_env,
             hooks_path: d.sessions.hooks_path(self.agent),
             // the TUI goes on at the chat's effort, as the chat does after it
@@ -1977,13 +2023,14 @@ fn save_commands(d: &Daemon, names: &[String]) {
     }
 }
 
-/// The `/` commands a Claude session takes: the saved list plus FEMME's own `btw`, sorted.
+/// The `/` commands a Claude session takes: the saved list plus FEMME's own `btw` and `fork`,
+/// sorted.
 pub(crate) fn commands(d: &Daemon) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_to_string(d.cfg.state_path("commands.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    names.push("btw".into());
+    names.extend(["btw".into(), "fork".into()]);
     names.sort();
     names.dedup();
     names

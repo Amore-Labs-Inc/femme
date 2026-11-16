@@ -109,6 +109,11 @@ pub enum Req {
         /// what it holds. `Conflict` while another Claude has it open.
         #[serde(default)]
         resume: Option<String>,
+        /// With `resume`: start as a copy of that conversation (Claude's `--fork-session`) instead
+        /// of taking it over. The original goes on untouched, open elsewhere or not; the copy
+        /// gets the model and effort of the session that holds the original.
+        #[serde(default)]
+        fork: bool,
     },
     SessionClose {
         sid: Sid,
