@@ -436,6 +436,12 @@ impl Model {
     }
 }
 
+/// A smoothed round trip rounded to 5 ms, so the readout (and the frame it costs) changes only
+/// when the link really moved.
+pub fn rtt_step(ms: u32) -> u32 {
+    ms.saturating_add(2) / 5 * 5
+}
+
 /// The nav bar's line: the link, then what to do when QUIC refused this device (the hint names the
 /// command that enrolls it) and the last request that failed.
 pub fn status_line(model: &Model, enroll: &str, error: Option<&str>) -> String {
@@ -451,6 +457,9 @@ pub fn status_line_with(
     error: Option<&str>,
 ) -> String {
     let mut line = model.status();
+    if crate::power::low() {
+        line.push_str(" · low power");
+    }
     match &model.local_link {
         Some(Link::Up(_)) => line.push_str(" · local"),
         Some(_) => line.push_str(" · local: off"),
@@ -641,6 +650,8 @@ pub struct Net {
     local: Option<Arc<Client>>,
     rt: tokio::runtime::Handle,
     _tasks: Vec<Task<()>>,
+    /// One frame per budget for the daemon's events ([`crate::power::Throttle`]).
+    throttle: crate::power::Throttle,
     /// Whether the window is the active one ([`Net::set_background`]): a session on show in an
     /// active window needs no notification.
     active: std::cell::Cell<bool>,
@@ -678,19 +689,21 @@ impl Net {
             local,
             rt,
             _tasks: tasks,
+            throttle: crate::power::Throttle::default(),
             active: std::cell::Cell::new(true),
         }
     }
 
-    /// The round trip is not an event: look at it once a second, and redraw only when it moved.
+    /// The round trip is not an event: look at it once a second, and redraw only when it moved
+    /// by a step ([`rtt_step`]), and only in an active window (a redraw is the whole window).
     fn poll(&mut self, cx: &mut Context<Self>) {
         let rtt = self
             .client
             .rtt()
-            .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX));
+            .map(|d| rtt_step(u32::try_from(d.as_millis()).unwrap_or(u32::MAX)));
         if rtt != self.model.rtt_ms {
             self.model.rtt_ms = rtt;
-            if self.model.link == Link::Up(Transport::Quic) {
+            if self.model.link == Link::Up(Transport::Quic) && self.active.get() {
                 cx.notify();
             }
         }
@@ -885,7 +898,7 @@ fn drain(
                 .update(cx, |n, cx| {
                     if n.model.apply_from(b, &ev) {
                         n.alert();
-                        cx.notify();
+                        n.throttle.hit(|n| &mut n.throttle, cx);
                     }
                     cx.emit(ClientEvent(ev, b));
                 })
@@ -1491,6 +1504,15 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_round_trip_readout_moves_in_steps_of_five() {
+        assert_eq!(rtt_step(0), 0);
+        assert_eq!(rtt_step(22), 20);
+        assert_eq!(rtt_step(23), 25);
+        assert_eq!(rtt_step(40), 40);
+        assert_eq!(rtt_step(u32::MAX - 1), (u32::MAX / 5) * 5);
     }
 
     #[test]

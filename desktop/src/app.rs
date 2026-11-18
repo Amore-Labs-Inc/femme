@@ -145,6 +145,9 @@ pub struct Config {
     pub window: (f32, f32),
     /// The daemon to show; `None` shows the frame with "no daemon configured".
     pub connect: Option<Connect>,
+    /// Fewer and cheaper frames ([`crate::power`]): no motion, a flat desk, bursts of events
+    /// drawn at 20 fps, an unfocused window at 10.
+    pub low_power: bool,
 }
 
 impl Default for Config {
@@ -160,6 +163,7 @@ impl Default for Config {
             motion: false,
             window: (1440., 900.),
             connect: None,
+            low_power: false,
         }
     }
 }
@@ -186,6 +190,10 @@ impl Config {
 /// is working. `started` is the client of the daemon when `cfg.connect` asked for one.
 pub fn open(cfg: Config, rt: tokio::runtime::Handle, started: Option<Started>, cx: &mut App) {
     let bench = cfg.bench.is_some();
+    crate::power::set(cfg.low_power);
+    if cfg.low_power {
+        cx.set_reduce_motion(true);
+    }
     let place = crate::display::place(cx, size(px(cfg.window.0), px(cfg.window.1)));
     let opts = WindowOptions {
         display_id: place.display_id,
@@ -199,6 +207,8 @@ pub fn open(cfg: Config, rt: tokio::runtime::Handle, started: Option<Started>, c
         // A benchmark must not be throttled to 30 fps just because the compositor did not focus it.
         inactive_frame_interval: if bench {
             None
+        } else if cfg.low_power {
+            Some(Duration::from_millis(100))
         } else {
             WindowOptions::default().inactive_frame_interval
         },

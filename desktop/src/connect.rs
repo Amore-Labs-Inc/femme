@@ -140,6 +140,18 @@ pub fn load(flags: Flags, identity: Option<PathBuf>) -> anyhow::Result<Option<Co
     Ok(connect)
 }
 
+/// Whether the environment or `~/.config/femme/desktop.env` (`FEMME_LOW_POWER`) or the machine
+/// itself (a Raspberry Pi) asks for [`crate::power`]'s low power mode.
+pub fn low_power() -> anyhow::Result<bool> {
+    let file = env_file()?;
+    let file = parse_env_file(&file);
+    let setting = pick(None, "FEMME_LOW_POWER", &|k| std::env::var(k).ok(), &file);
+    Ok(crate::power::wanted(
+        setting.as_deref(),
+        crate::power::device_model().as_deref(),
+    ))
+}
+
 /// This machine's name as the daemon will list the device: `/etc/hostname`, `$HOSTNAME`,
 /// `hostname(1)`, else a fixed word; made safe to paste into a shell line.
 pub fn hostname() -> String {

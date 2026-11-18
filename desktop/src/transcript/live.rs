@@ -818,7 +818,7 @@ impl Transcript {
         }
         if self.ticker.is_none() {
             self.ticker = Some(cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                cx.background_executor().timer(crate::power::tick()).await;
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }

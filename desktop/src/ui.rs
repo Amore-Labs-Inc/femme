@@ -692,6 +692,10 @@ impl Element for DotGrid {
         _: &mut App,
     ) {
         window.paint_quad(fill(bounds, desk()));
+        // low power: the flat desk alone (a full-window textured fill is a frame's biggest quad)
+        if crate::power::low() {
+            return;
+        }
         let tile_image = if theme::is_dark() {
             &self.dark
         } else {

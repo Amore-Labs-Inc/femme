@@ -52,6 +52,10 @@ struct Cli {
     /// Requested window size in logical pixels, WIDTHxHEIGHT (a compositor may override it).
     #[arg(long, default_value = "1440x900", value_parser = parse_size, value_name = "WxH")]
     size: (f32, f32),
+    /// Fewer and cheaper frames for a weak GPU (a Raspberry Pi turns it on by itself;
+    /// `FEMME_LOW_POWER=0` keeps it off).
+    #[arg(long)]
+    low_power: bool,
     /// The daemon's QUIC address (needs --fingerprint).
     #[arg(long, value_name = "ADDR:PORT")]
     daemon: Option<String>,
@@ -107,8 +111,10 @@ fn main() -> anyhow::Result<()> {
     } else {
         connect::load(flags, cli.identity)?
     };
+    let low_power = cli.low_power || connect::low_power()?;
     femme_desktop::run(Config {
         connect,
+        low_power,
         bench: cli.bench,
         panes: cli.panes,
         hz: cli.hz,

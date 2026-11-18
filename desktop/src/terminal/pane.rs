@@ -371,6 +371,8 @@ pub struct TerminalPane {
     label: SharedString,
     refused: Arc<AtomicU64>,
     _pump: Task<()>,
+    /// One frame per budget for the holder's frames ([`crate::power::Throttle`]).
+    throttle: crate::power::Throttle,
 }
 
 impl TerminalPane {
@@ -424,9 +426,9 @@ impl TerminalPane {
         let pump = cx.spawn(async move |this, cx| {
             while let Some(msg) = rx.recv().await {
                 let alive = this
-                    .update(cx, |_, cx| {
+                    .update(cx, |t, cx| {
                         pump_state.borrow_mut().down(msg);
-                        cx.notify();
+                        t.throttle.hit(|t| &mut t.throttle, cx);
                     })
                     .is_ok();
                 if !alive {
@@ -440,6 +442,7 @@ impl TerminalPane {
             label,
             refused,
             _pump: pump,
+            throttle: crate::power::Throttle::default(),
         }
     }
 
