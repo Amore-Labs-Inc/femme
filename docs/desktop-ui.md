@@ -32,6 +32,14 @@ Keep it current: when your module's public API changes, edit your section in the
   permission (`needs you`) raises a desktop notification through `notify-send`, named after the
   session; not for the session on show while the window is active. The phone gets the same through
   ntfy (Me tab → Push through ntfy, with the ntfy app subscribed to the topic shown there).
+- **Low power** (a Raspberry Pi, or `FEMME_LOW_POWER=1` as a flag, in the environment or in
+  `~/.config/femme/desktop.env`; `=0` keeps it off): gpui redraws the whole window on every
+  change, so `desktop/src/power.rs` holds bursts (the daemon's events, a terminal's frames) to
+  one frame per 50 ms (33 ms everywhere else), turns motion off, draws the desk flat without the
+  dot grid, ticks the "thinking… 42s" line every 2 s and lets an unfocused window animate at 10
+  fps. The status line says `· low power`. The QUIC readout moves in 5 ms steps and never
+  redraws an inactive window. Left as is: the composer's cursor blink (2 frames/s while it has
+  the keyboard).
 - **Local sessions**: the laptop is a second box. The desktop starts `femmed local` (a daemon
   with its own store in `~/.local/state/femme-local`, one unix socket, nothing public) and shows its
   sessions in the same list with a `local` pill after the name; their terminal tabs end in
