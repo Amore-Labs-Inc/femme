@@ -18,6 +18,7 @@ pub mod lightbox;
 pub mod menu;
 pub mod motion;
 pub mod net;
+pub mod power;
 pub mod projects;
 pub mod prs;
 pub mod rng;
