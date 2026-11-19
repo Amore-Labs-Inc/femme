@@ -153,6 +153,14 @@ Keep it current: when your module's public API changes, edit your section in the
   (`~/.claude/projects/*/<session>.jsonl`, `goal_status` attachment lines), the only place Claude
   writes them: a headless chat's actor follows that file while a goal is set. `Session::goal` (femme-proto) carries condition, state and
   reason; the strip's colours are the `goal` and `goal_met` theme tokens.
+- **Turns Claude starts itself** (Claude Code 2.1.327): a background task's end, a Monitor event
+  and a scheduled run (`ScheduleWakeup`, a cron, `/loop`) each start a turn nobody typed. The
+  driver says so (`AgentEvent::TurnUnprompted`), the daemon stores a `TurnStart` item for it, and
+  the working line counts from that item, so such a turn shows `✻ Thinking…` like any other. A
+  scheduled run also gets a muted row before it: `⏰ scheduled run` for a cron, `⏰ wakeup · <the
+  reason Claude gave to ScheduleWakeup>` for a wakeup (from the stream's `command_lifecycle`
+  `wakeup_source`); read back from a transcript on disk, the row comes from the fire's hidden
+  prompt line or the TUI's own `Running scheduled task (<time>)` line, one row per fire.
 - **Background tasks** (Claude Code 2.1.319): a Bash command or an Agent the turn waits for is a
   task (`task_started`), and its tool row shows `⇣ background` at its right while it runs. A click
   moves that task to the background (`Req::Background{sid, tool_use_id}`, Claude's `background_tasks`

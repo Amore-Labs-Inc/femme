@@ -145,6 +145,7 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::PromptDropped { .. } => "dropped".into(),
             AgentEvent::Status(s) => format!("status:{s:?}"),
             AgentEvent::TurnStarted => "turn+".into(),
+            AgentEvent::TurnUnprompted => "unprompted".into(),
             AgentEvent::TurnEnded { stop, .. } => format!("turn-:{stop:?}"),
             AgentEvent::Started { .. } => "started".into(),
             AgentEvent::ModelChanged(m) => format!("model:{m}"),

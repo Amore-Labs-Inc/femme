@@ -259,6 +259,10 @@ pub enum AgentEvent {
     },
     /// A turn began (the agent is working).
     TurnStarted,
+    /// The turn that just began (the `TurnStarted` before this) has no prompt: the agent started
+    /// it itself, when a background task ended, a Monitor event arrived or a scheduled run fired.
+    /// No user or peer message item opens it, so the daemon marks its start.
+    TurnUnprompted,
     /// A turn ended; the agent is idle again (or blocked, never: questions end up in the turn).
     TurnEnded {
         /// Why.
