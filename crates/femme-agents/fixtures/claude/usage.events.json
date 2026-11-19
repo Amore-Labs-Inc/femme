@@ -16,6 +16,7 @@
     "PermissionMode": "bypassPermissions"
   },
   "TurnStarted",
+  "TurnUnprompted",
   {
     "Status": "Working"
   },
