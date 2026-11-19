@@ -165,7 +165,9 @@ fn req_sid(req: &Req) -> Option<Sid> {
         | Req::SessionLabel { sid, .. }
         | Req::Show { sid, .. }
         | Req::Resend { sid, .. }
-        | Req::TakeBack { sid } => Some(*sid),
+        | Req::TakeBack { sid }
+        | Req::TaskStop { sid, .. }
+        | Req::TaskOutput { sid, .. } => Some(*sid),
         Req::PaneClose { pane } => Some(pane.sid),
         _ => None,
     }
