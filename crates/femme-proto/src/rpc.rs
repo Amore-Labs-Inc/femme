@@ -314,6 +314,19 @@ pub enum Req {
     TakeBack {
         sid: Sid,
     },
+    /// Stops the background task `task_id` of a headless Claude session (one of
+    /// [`Session::bg_tasks`](crate::state::Session::bg_tasks)), as `x` does in Claude's `/tasks`.
+    /// Its end comes as an event and the next task list no longer has it.
+    TaskStop {
+        sid: Sid,
+        task_id: String,
+    },
+    /// The end of a background shell's or Monitor's output (Claude's last 8 KiB). Answered with
+    /// `Resp::TaskOutput`; `NotFound` when Claude has no such task.
+    TaskOutput {
+        sid: Sid,
+        task_id: String,
+    },
 }
 
 /// Where a phone's pushes are delivered.
@@ -444,6 +457,11 @@ pub enum Resp {
     /// The answer to `TakeBack` when the message came back: its text.
     TakenBack {
         text: String,
+    },
+    /// The tail of a background task's output; `truncated` when there was more before it.
+    TaskOutput {
+        output: String,
+        truncated: bool,
     },
 }
 

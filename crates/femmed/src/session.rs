@@ -247,6 +247,7 @@ impl Sessions {
 fn interrupted(s: &mut Session) {
     s.status = SessionStatus::Interrupted;
     s.attention = Attention::None;
+    s.bg_tasks.clear();
 }
 
 /// `name` as an absolute path: itself when it has a slash, else the first match on `path`.
@@ -432,6 +433,7 @@ async fn follow(
                     if s.closed.is_none() {
                         s.status = SessionStatus::Crashed;
                         s.attention = Attention::None;
+                        s.bg_tasks.clear();
                     }
                 })
             });

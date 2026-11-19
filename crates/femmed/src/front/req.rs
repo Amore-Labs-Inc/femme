@@ -48,7 +48,8 @@ pub(crate) fn wire(e: CoreError) -> WireErr {
 /// Nor is a `BoardApi` GET: it reads, and its answer (the accounts and their emails, up to 1 MiB
 /// each time the desktop polls) would sit in the `ops` table for a day for nothing. A POST or
 /// DELETE is, so a retry gets what the first try got (a new key's secret is shown once, and a
-/// second `POST /api/keys` would only say the name is taken).
+/// second `POST /api/keys` would only say the name is taken). A `TaskOutput` reads too, every two
+/// seconds while its panel is open: its 8 KiB answers are not kept.
 pub(crate) fn mutates(req: &Req) -> bool {
     if let Req::BoardApi { method, .. } = req {
         return !method.eq_ignore_ascii_case("GET");
@@ -70,6 +71,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::Prs
             | Req::PrVideo { .. }
             | Req::PrAutoFix { on: None }
+            | Req::TaskOutput { .. }
     )
 }
 
@@ -148,6 +150,11 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
         Req::TakeBack { sid } => match d.take_back(sid).await {
             Ok(Some(text)) => Ok(Resp::TakenBack { text }),
             Ok(None) => Ok(Resp::Ok),
+            Err(e) => Err(wire(e)),
+        },
+        Req::TaskStop { sid, task_id } => done(d.stop_task(sid, &task_id).await),
+        Req::TaskOutput { sid, task_id } => match d.task_output(sid, &task_id).await {
+            Ok((output, truncated)) => Ok(Resp::TaskOutput { output, truncated }),
             Err(e) => Err(wire(e)),
         },
         Req::Background { sid, tool_use_id } => {
