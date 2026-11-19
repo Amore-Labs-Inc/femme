@@ -77,6 +77,23 @@ pub struct Session {
     /// Claude's `/goal`, while one is set or was just judged: the condition and the checker's
     /// last verdict. `None` when the session never had one, or the next prompt after `Met`.
     pub goal: Option<Goal>,
+    /// Claude's live background work (2.1.327): the shells, Monitors and agents that go on
+    /// running across turns, as its last `background_tasks_changed` listed them. Empty when the
+    /// agent process is not running.
+    #[serde(default)]
+    pub bg_tasks: Vec<BgTask>,
+}
+
+/// One background task of a Claude session, as `system/background_tasks_changed` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BgTask {
+    pub task_id: String,
+    /// `local_bash`, `local_agent`, `monitor_*`, ...
+    pub task_type: String,
+    pub description: String,
+    /// Unix ms when the daemon first saw the task listed (0 from a driver).
+    #[serde(default)]
+    pub since: i64,
 }
 
 /// A `/goal` of a Claude session (2.1.319+): a Stop hook keeps Claude working until a checker

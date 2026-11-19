@@ -55,6 +55,7 @@ fn session(name: Option<&str>) -> Session {
         context: None,
         effort: None,
         goal: None,
+        bg_tasks: Vec::new(),
     }
 }
 
@@ -193,7 +194,7 @@ fn every_connection_gets_the_pragmas() {
     let version: i64 = s
         .read(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     // the file holds API keys: private from the first byte, and SQLite gives its side files the same mode
     for file in [
         path.clone(),
@@ -556,6 +557,27 @@ fn a_session_keeps_its_context_window() {
         .write(|tx| tx.update_session(a.id, |s| s.context = Some(ctx)))
         .unwrap();
     assert_eq!(same.rev, up.rev);
+}
+
+#[test]
+fn a_session_keeps_its_background_tasks() {
+    let s = store();
+    let a = insert_session(&s, Some("alpha"));
+    assert!(a.bg_tasks.is_empty());
+    let tasks = vec![femme_proto::state::BgTask {
+        task_id: "bzt5ke571".into(),
+        task_type: "local_bash".into(),
+        description: "Save a room snapshot".into(),
+        since: 1_795_000_000_000,
+    }];
+    s.write(|tx| tx.update_session(a.id, |s| s.bg_tasks = tasks.clone()))
+        .unwrap();
+    let back = s.read(|c| sessions::get_session(c, a.id)).unwrap().unwrap();
+    assert_eq!(back.bg_tasks, tasks);
+    s.write(|tx| tx.update_session(a.id, |s| s.bg_tasks.clear()))
+        .unwrap();
+    let back = s.read(|c| sessions::get_session(c, a.id)).unwrap().unwrap();
+    assert!(back.bg_tasks.is_empty());
 }
 
 #[test]

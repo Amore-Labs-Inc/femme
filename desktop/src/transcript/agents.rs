@@ -1,9 +1,10 @@
 //! The subagents on show: the `Agent` calls of the main thread since the last turn ended, plus
 //! the ones an earlier turn left running in the background, one chip each in the strip under
 //! the transcript. A chip opens the subagent's own view (its items are the ones whose `parent`
-//! is the call's id).
+//! is the call's id). Next to them, one chip per background shell or Monitor of the session
+//! (Claude Code 2.1.327's list of live background tasks), which stay across turns.
 
-use femme_proto::state::{ItemKind, ItemStatus};
+use femme_proto::state::{BgTask, ItemKind, ItemStatus};
 
 use super::body::{Parsed, ToolCall};
 use super::items::{Entry, Items};
@@ -119,6 +120,69 @@ pub fn chips(items: &Items) -> Vec<Chip> {
     out
 }
 
+/// One background shell or Monitor on the strip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskChip {
+    /// Claude's task id: what `Req::TaskOutput` and `Req::TaskStop` name.
+    pub id: String,
+    /// `⟳ <description>` for a shell, `◷ <description>` for a Monitor, cut to [`TASK_LABEL`].
+    pub label: String,
+    /// The whole description, for the tooltip.
+    pub tip: String,
+    /// Unix ms when the daemon first saw the task.
+    pub since: i64,
+}
+
+/// How many characters of a task's description its chip shows.
+const TASK_LABEL: usize = 40;
+
+/// The chips of the session's background tasks, in Claude's order. A `local_agent` task has
+/// none: it is a subagent, which [`chips`] already shows.
+pub fn task_chips(tasks: &[BgTask]) -> Vec<TaskChip> {
+    tasks
+        .iter()
+        .filter(|t| t.task_type != "local_agent")
+        .map(|t| {
+            let mark = if t.task_type.starts_with("monitor") {
+                '◷'
+            } else {
+                '⟳'
+            };
+            let text = t
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = if text.is_empty() {
+                t.task_type.clone()
+            } else {
+                text
+            };
+            let label = if text.chars().count() > TASK_LABEL {
+                let cut: String = text.chars().take(TASK_LABEL).collect();
+                format!("{mark} {}…", cut.trim_end())
+            } else {
+                format!("{mark} {text}")
+            };
+            TaskChip {
+                id: t.task_id.clone(),
+                label,
+                tip: t.description.clone(),
+                since: t.since,
+            }
+        })
+        .collect()
+}
+
+/// The last `n` lines of a task's output, for the panel under the strip.
+pub fn last_lines(output: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = output.trim_end().lines().collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|l| (*l).to_owned())
+        .collect()
+}
+
 /// `1m 12s` since `since` at `now` (both unix ms).
 pub fn elapsed(since: i64, now: i64) -> String {
     let s = ((now - since) / 1000).max(0);
@@ -134,6 +198,55 @@ mod tests {
     use super::*;
     use femme_proto::state::{Item, Row};
     use femme_proto::Id;
+
+    fn bg(id: &str, task_type: &str, description: &str) -> BgTask {
+        BgTask {
+            task_id: id.into(),
+            task_type: task_type.into(),
+            description: description.into(),
+            since: 0,
+        }
+    }
+
+    /// A background shell gets a chip of its own; an agent's task does not (its subagent chip
+    /// covers it); no tasks, no chips.
+    #[test]
+    fn a_background_shell_or_monitor_gets_a_chip_and_an_agent_does_not() {
+        let shell = bg(
+            "bzt5ke571",
+            "local_bash",
+            "Save a room snapshot now and every 3 minutes until 21:20",
+        );
+        let chips = task_chips(std::slice::from_ref(&shell));
+        assert_eq!(chips.len(), 1);
+        assert_eq!(chips[0].id, "bzt5ke571");
+        assert!(
+            chips[0].label.starts_with("⟳ Save a room snapshot"),
+            "{}",
+            chips[0].label
+        );
+        assert!(chips[0].label.ends_with('…') && chips[0].label.chars().count() <= 43);
+        assert_eq!(chips[0].tip, shell.description);
+
+        let monitor = task_chips(&[bg("m1", "monitor_mcp", "errors in\nthe log")]);
+        assert_eq!(monitor[0].label, "◷ errors in the log");
+
+        assert!(task_chips(&[bg("a1", "local_agent", "Explore the repo")]).is_empty());
+        assert!(task_chips(&[]).is_empty());
+        // an agent's task among others: only the others
+        let mixed = task_chips(&[bg("a1", "local_agent", "x"), shell]);
+        assert_eq!(mixed.len(), 1);
+    }
+
+    #[test]
+    fn the_output_panel_shows_the_last_lines() {
+        assert_eq!(
+            last_lines("tick 1\ntick 2\ntick 3\n", 2),
+            ["tick 2", "tick 3"]
+        );
+        assert_eq!(last_lines("tick 1", 12), ["tick 1"]);
+        assert!(last_lines("", 12).is_empty());
+    }
 
     fn item(seq: u64, kind: ItemKind, id: &str, preview: &str, body: Option<&str>) -> Row {
         child(seq, kind, id, preview, body, None)

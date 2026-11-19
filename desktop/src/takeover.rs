@@ -96,6 +96,7 @@ mod tests {
             context: None,
             effort: None,
             goal: None,
+            bg_tasks: Vec::new(),
         }
     }
 

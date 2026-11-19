@@ -10,7 +10,7 @@
 //! get no tombstones of their own. Issues that pointed at the session keep a dangling
 //! `session` id: clear it with [`Tx::update_issue`](crate::Tx::update_issue) if that matters.
 
-use femme_proto::state::{Context, Entity, Goal, Pane, Session, SessionStatus};
+use femme_proto::state::{BgTask, Context, Entity, Goal, Pane, Session, SessionStatus};
 use femme_proto::{Id, PaneId, Sid};
 use rusqlite::{params, Connection, Row};
 
@@ -19,7 +19,7 @@ use crate::{all, blob_id, enum_col, exists, id_blob, one, Error, Result, Tx};
 
 macro_rules! session_cols {
     () => {
-        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission, ctx_used, ctx_window, compactions, effort, goal, ctx_compact_at"
+        "id, handle, rev, name, owner, agent, mode, cwd, label, agent_sid, model, status, attention, created, closed, permission, ctx_used, ctx_window, compactions, effort, goal, ctx_compact_at, bg_tasks"
     };
 }
 macro_rules! pane_cols {
@@ -51,6 +51,7 @@ pub(crate) fn session_from_row(r: &Row<'_>) -> Result<Session> {
         context: context_cols(r.get(16)?, r.get(17)?, r.get(18)?, r.get(21)?),
         effort: r.get(19)?,
         goal: goal_col(r.get(20)?),
+        bg_tasks: bg_tasks_col(r.get(22)?),
     })
 }
 
@@ -62,6 +63,17 @@ fn goal_col(json: Option<String>) -> Option<Goal> {
 /// A `Goal` for the `goal` column.
 fn goal_json(g: Option<&Goal>) -> Option<String> {
     g.map(|g| serde_json::to_string(g).unwrap_or_default())
+}
+
+/// The `bg_tasks` column (JSON) as the list; NULL or a value this build cannot read is none.
+fn bg_tasks_col(json: Option<String>) -> Vec<BgTask> {
+    json.and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
+}
+
+/// The list for the `bg_tasks` column: NULL when empty.
+fn bg_tasks_json(t: &[BgTask]) -> Option<String> {
+    (!t.is_empty()).then(|| serde_json::to_string(t).unwrap_or_default())
 }
 
 /// Four nullable columns make one `Context`: NULL `ctx_used` means the agent never said.
@@ -263,7 +275,7 @@ impl Tx<'_> {
         self.prepare_cached(concat!(
             "INSERT INTO sessions (",
             session_cols!(),
-            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"
+            ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)"
         ))?
         .execute(params![
             id_blob(s.id),
@@ -288,6 +300,7 @@ impl Tx<'_> {
             s.effort,
             goal_json(s.goal.as_ref()),
             s.context.and_then(|c| c.compact_at).map(|n| n as i64),
+            bg_tasks_json(&s.bg_tasks),
         ])?;
         self.clear_tombstone(Entity::Session, &s.id.to_string())?; // an explicit id may come back (restore)
         Ok(s)
@@ -318,7 +331,7 @@ impl Tx<'_> {
         self.prepare_cached(
             "UPDATE sessions SET rev = ?2, name = ?3, owner = ?4, agent = ?5, mode = ?6, cwd = ?7, label = ?8,
                     agent_sid = ?9, model = ?10, status = ?11, attention = ?12, closed = ?13,
-                    permission = ?14, ctx_used = ?15, ctx_window = ?16, compactions = ?17, effort = ?18, goal = ?19, ctx_compact_at = ?20
+                    permission = ?14, ctx_used = ?15, ctx_window = ?16, compactions = ?17, effort = ?18, goal = ?19, ctx_compact_at = ?20, bg_tasks = ?21
              WHERE id = ?1",
         )?
         .execute(params![
@@ -342,6 +355,7 @@ impl Tx<'_> {
             after.effort,
             goal_json(after.goal.as_ref()),
             after.context.and_then(|c| c.compact_at).map(|n| n as i64),
+            bg_tasks_json(&after.bg_tasks),
         ])?;
         Ok(after)
     }

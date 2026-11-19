@@ -61,6 +61,9 @@
     }
   },
   {
+    "BackgroundTasks": []
+  },
+  {
     "QuestionResolved": {
       "request_id": "0b9ac20b-a8bf-41ae-9569-2ac28e818b26"
     }
