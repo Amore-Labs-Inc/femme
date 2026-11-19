@@ -1596,6 +1596,7 @@ async fn a_pane_opens_in_a_session_that_has_no_holder() {
                 context: None,
                 effort: None,
                 goal: None,
+                bg_tasks: Vec::new(),
             })
         })
         .unwrap();

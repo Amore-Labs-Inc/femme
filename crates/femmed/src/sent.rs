@@ -695,6 +695,7 @@ mod tests {
             context: None,
             effort: None,
             goal: None,
+            bg_tasks: Vec::new(),
         };
         let sid = store.write(|tx| Ok(tx.insert_session(&s)?.id)).unwrap();
         (store, sid)

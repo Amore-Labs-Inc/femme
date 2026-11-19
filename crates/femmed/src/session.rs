@@ -700,6 +700,7 @@ impl Daemon {
                 context: None,
                 effort: effort.clone(),
                 goal: None,
+                bg_tasks: Vec::new(),
             })?;
             let p = tx.upsert_pane(&Pane {
                 id: PaneId {
@@ -1019,6 +1020,7 @@ mod tests {
             context: None,
             effort: None,
             goal: None,
+            bg_tasks: Vec::new(),
         }
     }
 
