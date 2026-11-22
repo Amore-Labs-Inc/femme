@@ -472,7 +472,7 @@ pub(super) async fn run(
 pub(super) fn missed(sid: Sid, puts: &[Put], (id, text): (String, String)) -> Option<Put> {
     let held = puts.iter().any(|p| match p {
         Put::Start(i) | Put::Done(i) => i.item_id == id && i.kind == ItemKind::UserMessage,
-        Put::Update(..) | Put::Remove(_) => false,
+        Put::Update(..) | Put::Remove(_) | Put::Clear => false,
     });
     if held {
         return None;

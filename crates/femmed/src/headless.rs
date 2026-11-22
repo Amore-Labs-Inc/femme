@@ -1133,7 +1133,11 @@ impl Actor {
             Src::Line(at) => format!("d{at}"),
             Src::Exit => format!("x{}", Id::new()),
         };
-        let f = fold(&mut self.fold, self.sid, &base, events, now_ms());
+        let mut f = fold(&mut self.fold, self.sid, &base, events, now_ms());
+        // a replayed clear would wipe what the new conversation has written since
+        if !live_line {
+            f.puts.retain(|p| !matches!(p, Put::Clear));
+        }
         if !replay {
             for (id, offset, text) in f.deltas {
                 d.hub.publish_delta(self.sid, id, offset, text);
@@ -2099,12 +2103,14 @@ enum Put {
     Update(String, Value),
     /// The agent took an item back: deleted, with a tombstone ([`Daemon::say_removed`]).
     Remove(String),
+    /// `/clear`: every item of the session goes, with a tombstone each ([`Daemon::say_removed`]).
+    Clear,
 }
 
 /// The store's rev before a write that holds a [`Put::Remove`], for [`Daemon::say_removed`].
 fn removes(d: &Daemon, puts: &[Put]) -> Option<u64> {
     puts.iter()
-        .any(|p| matches!(p, Put::Remove(_)))
+        .any(|p| matches!(p, Put::Remove(_) | Put::Clear))
         .then(|| d.store.rev().ok())
         .flatten()
 }
@@ -2288,9 +2294,18 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 if kind == ItemKind::UserMessage && parent.is_none() {
                     f.prompted = true;
                 }
+                // the CLI echoes `/clear` after the reset: it belongs to the chat just emptied
+                let echo = kind == ItemKind::UserMessage
+                    && parent.is_none()
+                    && matches!(
+                        body["text"].as_str().map(str::trim),
+                        Some("/clear" | "/reset" | "/new")
+                    );
                 let mut item = new_item(sid, id, kind, status, Some(&body), now);
                 item.parent = parent;
-                f.puts.push(Put::Done(item));
+                if !echo {
+                    f.puts.push(Put::Done(item));
+                }
             }
             AgentEvent::QuestionAsked { item_id, q } => {
                 f.asked = Some(q.prompt.clone());
@@ -2374,6 +2389,13 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.ctx_used = Some(used);
                 f.ctx_window = window.or(f.ctx_window);
                 f.ctx_compact_at = compact_at.or(f.ctx_compact_at);
+            }
+            // an empty chat and an empty context bar; `Started` follows with the new session id
+            AgentEvent::Cleared => {
+                st.streams.clear();
+                st.last_end = None;
+                f.puts.push(Put::Clear);
+                f.ctx_used = Some(0);
             }
             // The bar empties at the level up; the next model call says the new size.
             AgentEvent::Compacted { .. } => {
@@ -2468,6 +2490,11 @@ fn put(tx: &mut Tx<'_>, sid: Sid, p: &Put, published: &mut Vec<Item>) -> femme_s
             }
             None => sent::unsend(tx, sid, id)?,
         },
+        // ponytail: a message saved while the clear ran is deleted with the rest; its echo makes
+        // it a row again
+        Put::Clear => {
+            tx.delete_items(sid)?;
+        }
     }
     Ok(())
 }
@@ -2948,6 +2975,38 @@ mod tests {
             .read(|c| store_items::page_items(c, sid, None, 10))
             .unwrap();
         assert_eq!(all.len(), 2, "the message and where it was read: {all:?}");
+    }
+
+    #[test]
+    fn a_clear_empties_the_transcript_and_the_context_bar() {
+        let (store, sid) = store_with_session();
+        let mut a = item(ItemKind::AssistantMessage, ItemStatus::Completed, "hello");
+        a.sid = sid;
+        a.item_id = "a1".into();
+        apply_puts(&store, sid, vec![Put::Done(a)]);
+        let mut st = FoldState::default();
+        let f = fold(&mut st, sid, "d0", vec![AgentEvent::Cleared], 1);
+        assert_eq!(f.ctx_used, Some(0));
+        assert!(matches!(f.puts[..], [Put::Clear]));
+        apply_puts(&store, sid, f.puts);
+        // the CLI's echo of the command comes after the reset: no row for it, one for the next
+        // message
+        let said = |id: &str, text: &str| AgentEvent::ItemCompleted {
+            id: id.into(),
+            kind: ItemKind::UserMessage,
+            status: ItemStatus::Completed,
+            body: json!({ "text": text }),
+            parent: None,
+        };
+        let f = fold(&mut st, sid, "d1", vec![said("c1", "/clear")], 2);
+        assert!(f.puts.is_empty());
+        let f = fold(&mut st, sid, "d2", vec![said("u1", "hello again")], 3);
+        apply_puts(&store, sid, f.puts);
+        let all = store
+            .read(|c| store_items::page_items(c, sid, None, 10))
+            .unwrap();
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].item_id, "u1");
     }
 
     #[test]
