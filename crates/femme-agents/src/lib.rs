@@ -96,7 +96,7 @@ pub mod pi;
 pub use common::uuid_v4;
 
 use femme_proto::rpc::{Answer, PromptHow};
-use femme_proto::state::{Agent, Goal, ItemKind, ItemStatus, Question, Usage};
+use femme_proto::state::{Agent, BgTask, Goal, ItemKind, ItemStatus, Question, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -396,6 +396,19 @@ pub enum AgentEvent {
     /// Claude's `/goal` changed: set, judged by its checker, or cleared (see
     /// [`femme_proto::state::Goal`]).
     Goal(Goal),
+    /// Claude's live background tasks changed (2.1.327): the whole set as it is now (shells,
+    /// Monitors, agents), which replaces the one before; empty when none is left.
+    BackgroundTasks(Vec<BgTask>),
+    /// The answer to [`Driver::task_output`]: the end of the task's output, `None` when the
+    /// agent has no such task (it ended, or it is not a shell or a Monitor).
+    TaskOutput {
+        /// The task asked about.
+        task_id: String,
+        /// The last bytes of its output (Claude: 8 KiB).
+        output: Option<String>,
+        /// There was more output before `output`.
+        truncated: bool,
+    },
     /// The process exited (from [`Driver::on_exit`]).
     Exited {
         /// Exit code, `None` if it was signalled.
@@ -508,6 +521,18 @@ pub trait Driver: Send {
     /// it finishes. `Error::State` when nothing runs in the foreground, `Error::Unsupported` for
     /// agents without background tasks.
     fn background(&mut self, _tool_use_id: Option<&str>, _out: &mut Out) -> Result<(), Error> {
+        Err(Error::Unsupported("background tasks"))
+    }
+
+    /// Stop the background task `task_id` (one of [`AgentEvent::BackgroundTasks`]), as `x` does in
+    /// Claude's `/tasks`: its task-end event follows and the next list no longer has it.
+    fn stop_task(&mut self, _task_id: &str, _out: &mut Out) -> Result<(), Error> {
+        Err(Error::Unsupported("background tasks"))
+    }
+
+    /// Ask for the end of the output of the background task `task_id` (a shell or a Monitor).
+    /// The answer comes from [`Driver::on_line`] as [`AgentEvent::TaskOutput`].
+    fn task_output(&mut self, _task_id: &str, _out: &mut Out) -> Result<(), Error> {
         Err(Error::Unsupported("background tasks"))
     }
 

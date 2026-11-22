@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use femme_client::{Client, Event, RequestError};
 use femme_proto::rpc::{ErrCode, Req, Resp, Scope};
-use femme_proto::state::{Goal, GoalState, ItemKind, ItemStatus, SessionStatus};
+use femme_proto::state::{BgTask, Goal, GoalState, ItemKind, ItemStatus, SessionStatus};
 use femme_proto::Sid;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -57,6 +57,15 @@ const RETRY: Duration = Duration::from_secs(3);
 /// and back does not make it blink.
 const PILL_AFTER: Duration = Duration::from_millis(150);
 
+/// How often the output of the background task on show is read again.
+const TASK_POLL: Duration = Duration::from_secs(2);
+
+/// How many lines of a background task's output the panel under the strip shows.
+const TASK_LINES: usize = 12;
+
+/// The height of one of those lines.
+const TASK_LINE: Pixels = px(15.);
+
 /// How long the scroll back to the end takes when the pill is clicked.
 const GLIDE: Duration = Duration::from_millis(200);
 
@@ -69,6 +78,13 @@ pub struct Transcript {
     pub(super) view: Option<String>,
     /// The subagents of the turn, for the strip under the list.
     chips: Vec<Chip>,
+    /// The session's background tasks as the model last listed them: the strip's other chips.
+    tasks: Vec<BgTask>,
+    /// The task whose output shows under the strip (its chip was clicked), and that output's
+    /// last lines once the daemon answered.
+    task_open: Option<(String, Option<Vec<String>>)>,
+    /// Asks for that output again every [`TASK_POLL`].
+    task_poll: Option<Task<()>>,
     /// The session's `/goal` as the model last said it, for the strip above the composer.
     goal: Option<Goal>,
     /// The goal strip was clicked: the whole condition and the last reason show under it.
@@ -159,6 +175,9 @@ impl Transcript {
                     this.goal_open = false;
                     cx.notify();
                 }
+                if this.tasks_now(cx) != this.tasks {
+                    cx.notify();
+                }
                 if this.busy(cx) != this.ticker.is_some() || ver != this.sent_ver {
                     this.sent_ver = ver;
                     cx.notify();
@@ -170,6 +189,9 @@ impl Transcript {
             items: Items::new(None),
             view: None,
             chips: Vec::new(),
+            tasks: Vec::new(),
+            task_open: None,
+            task_poll: None,
             goal: None,
             goal_open: false,
             layout: Layout::default(),
@@ -210,6 +232,8 @@ impl Transcript {
         self.items.switch(sid);
         self.view = None;
         self.chips.clear();
+        self.tasks.clear();
+        self.close_task();
         self.goal = None;
         self.goal_open = false;
         self.layout = Layout::default();
@@ -812,7 +836,9 @@ impl Transcript {
             .as_ref()
             .is_some_and(|v| !self.chips.iter().any(|c| c.running && c.id == *v));
         let work = working::working(&self.items, self.view.as_deref());
-        if !self.busy(cx) || view_done || work.ended {
+        let line = self.busy(cx) && !view_done && !work.ended;
+        // a background task's chip counts too, also while the session is idle
+        if !line && self.tasks.is_empty() {
             self.ticker = None;
             return None;
         }
@@ -824,13 +850,91 @@ impl Transcript {
                 }
             }));
         }
-        Some(working::line(&work, now_ms()))
+        line.then(|| working::line(&work, now_ms()))
     }
 
-    /// The strip under the list: the main thread first, then one chip per subagent of the turn;
-    /// the thread on show is lit. Nothing while the turn has no subagents.
+    /// The background tasks of the session shown, as the model has them.
+    fn tasks_now(&self, cx: &App) -> Vec<BgTask> {
+        let Some((net, sid)) = self.net.as_ref().zip(self.items.sid()) else {
+            return Vec::new();
+        };
+        let s = net.read(cx).model.sessions.get(&sid);
+        s.map(|s| s.bg_tasks.clone()).unwrap_or_default()
+    }
+
+    fn close_task(&mut self) {
+        self.task_open = None;
+        self.task_poll = None;
+    }
+
+    /// A click on a task's chip: its output shows under the strip and is read again every
+    /// [`TASK_POLL`] until the chip is clicked again or the task is gone.
+    fn toggle_task(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.task_open.as_ref().is_some_and(|(open, _)| *open == id) {
+            self.close_task();
+        } else {
+            self.task_open = Some((id, None));
+            self.task_poll = Some(cx.spawn(async move |this, cx| loop {
+                if this.update(cx, |t, cx| t.read_task(cx)).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(TASK_POLL).await;
+            }));
+        }
+        cx.notify();
+    }
+
+    /// Asks the daemon for the end of the open task's output.
+    fn read_task(&mut self, cx: &mut Context<Self>) {
+        let (Some(sid), Some((id, _))) = (self.items.sid(), self.task_open.clone()) else {
+            return;
+        };
+        let req = Req::TaskOutput {
+            sid,
+            task_id: id.clone(),
+        };
+        self.request(req, cx, move |this, res, cx| {
+            let Some((open, lines)) = &mut this.task_open else {
+                return;
+            };
+            if *open != id {
+                return;
+            }
+            *lines = Some(match res {
+                Ok(Resp::TaskOutput { output, truncated }) => {
+                    let mut l = agents::last_lines(&output, TASK_LINES);
+                    if l.is_empty() {
+                        l.push(if truncated { "…" } else { "(no output yet)" }.to_owned());
+                    }
+                    l
+                }
+                Ok(_) => return,
+                Err(e) => vec![format!("no output: {e}")],
+            });
+            cx.notify();
+        });
+    }
+
+    /// The `✕` of a task's chip: Claude stops the task; its chip goes with the next task list.
+    fn stop_task(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(sid) = self.items.sid() else {
+            return;
+        };
+        self.request(Req::TaskStop { sid, task_id: id }, cx, |this, res, cx| {
+            if let Err(e) = res {
+                this.note = Some(format!("not stopped: {e}"));
+                cx.notify();
+            }
+        });
+    }
+
+    /// The strip under the list: the main thread first, then one chip per subagent of the turn
+    /// (the thread on show is lit), then one per background shell or Monitor of the session
+    /// (`⟳ description · 14m ✕`), which stay between turns. A click on a task's chip shows the end
+    /// of its output under the strip; only its `✕` stops it. Nothing while there is neither.
     fn strip(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.chips.is_empty() && self.view.is_none() {
+        let tasks = agents::task_chips(&self.tasks);
+        if self.chips.is_empty() && self.view.is_none() && tasks.is_empty() {
             return None;
         }
         let now = now_ms();
@@ -885,14 +989,86 @@ impl Transcript {
                 )
                 .child(div().flex_none().text_color(muted()).child(when))
         });
+        let open = self.task_open.as_ref();
+        let task_chips = tasks.into_iter().enumerate().map(|(ix, t)| {
+            let on = open.is_some_and(|(id, _)| *id == t.id);
+            let (show, stop, tip) = (t.id.clone(), t.id, t.tip);
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(18.))
+                .max_w(px(340.))
+                .when(on, |d| d.bg(panel()))
+                .child(
+                    div()
+                        .id(("task", ix))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .min_w_0()
+                        .h_full()
+                        .pl(px(6.))
+                        .pr(px(4.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(panel()))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_task(show.clone(), cx);
+                        }))
+                        .child(div().min_w_0().truncate().text_color(ink()).child(t.label))
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(format!("· {}", agents::elapsed(t.since, now))),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(("task-stop", ix))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h_full()
+                        .px(px(4.))
+                        .cursor_pointer()
+                        .text_color(ink())
+                        .hover(|s| s.bg(panel()).text_color(bad()))
+                        .tooltip(|window, cx| Tooltip::new("stop").build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.stop_task(stop.clone(), cx);
+                        }))
+                        .child("✕"),
+                )
+        });
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .h(px(24.))
+            .px(px(6.))
+            .overflow_hidden()
+            .child(main)
+            .children(chips)
+            .children(task_chips);
+        // the open task's output: its last lines, one row each. The panel has its full height
+        // from the start, so the chips do not move while the lines come in
+        let output = open.map(|(_, lines)| {
+            let lines = lines.clone().unwrap_or_else(|| vec!["…".to_owned()]);
+            div()
+                .flex()
+                .flex_col()
+                .h(TASK_LINE * TASK_LINES as f32 + px(6.))
+                .px(px(12.))
+                .line_height(TASK_LINE)
+                .text_color(ink())
+                .children(lines.into_iter().map(|l| div().truncate().child(l)))
+        });
         Some(
             div()
                 .flex_none()
                 .flex()
-                .items_center()
-                .gap(px(4.))
-                .h(px(24.))
-                .px(px(6.))
+                .flex_col()
                 .border_t_1()
                 .border_color(Rgba { a: 0.16, ..ink() })
                 .bg(paper())
@@ -900,8 +1076,8 @@ impl Transcript {
                 .text_size(px(11.))
                 .text_color(muted())
                 .overflow_hidden()
-                .child(main)
-                .children(chips),
+                .child(row)
+                .children(output),
         )
     }
 
@@ -1032,6 +1208,13 @@ impl Render for Transcript {
         }
         self.glide_step(window);
         self.chips = agents::chips(&self.items);
+        self.tasks = self.tasks_now(cx);
+        // the task on show is gone (it ended, or was stopped): so is its output
+        if let Some((id, _)) = &self.task_open {
+            if !self.tasks.iter().any(|t| t.task_id == *id) {
+                self.close_task();
+            }
+        }
         // a task's end row may be a blob (a background Agent's long answer): fetched, so the
         // chip of an agent that stopped goes even when its row is not on screen
         let wanted: Vec<_> = self

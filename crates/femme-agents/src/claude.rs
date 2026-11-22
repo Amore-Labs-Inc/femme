@@ -81,7 +81,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use femme_proto::rpc::{Answer, PromptHow};
-use femme_proto::state::{Agent, Goal, GoalState, ItemKind, ItemStatus, Question, Usage};
+use femme_proto::state::{Agent, BgTask, Goal, GoalState, ItemKind, ItemStatus, Question, Usage};
 use serde_json::{json, Value};
 
 use crate::common::{
@@ -285,6 +285,8 @@ pub struct ClaudeDriver {
     subs: BTreeMap<String, Thread>,
     /// Tasks the CLI reported (`task_started`) and has not ended, by task id.
     tasks: BTreeMap<String, Task>,
+    /// Our `get_task_output` requests the CLI has not answered: request id to task id.
+    tails: BTreeMap<String, String>,
     /// The CLI's last `session_state_changed` was `requires_action`: it waits for someone, also
     /// when no request of ours says what for (`Blocked` until its next state).
     waits: bool,
@@ -351,6 +353,7 @@ impl ClaudeDriver {
             parent: None,
             subs: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            tails: BTreeMap::new(),
             waits: false,
             waits_ours: false,
             waits_logged: false,
@@ -567,6 +570,17 @@ impl ClaudeDriver {
         }
     }
 
+    /// Whether the CLI reads a control request of ours now.
+    fn can_ask(&self) -> Result<(), Error> {
+        if self.exited {
+            return Err(Error::State("claude has exited"));
+        }
+        if self.awaiting_init {
+            return Err(Error::State("claude has not finished starting"));
+        }
+        Ok(())
+    }
+
     /// Writes a control request; its request id.
     fn control(&mut self, what: &str, request: Value, out: &mut Out) -> String {
         self.seq += 1;
@@ -723,19 +737,27 @@ impl ClaudeDriver {
                     self.task_set(v["task_id"].as_str().unwrap_or(""), None, bg, ev);
                 }
             }
-            // the list of tasks running in the background
+            // the whole list of tasks running in the background, each time it changes
             "background_tasks_changed" => {
-                let ids: Vec<String> = v["tasks"]
+                let s = |t: &Value, k: &str| t[k].as_str().unwrap_or("").to_owned();
+                let tasks: Vec<BgTask> = v["tasks"]
                     .as_array()
                     .map(|a| {
                         a.iter()
-                            .filter_map(|t| t["task_id"].as_str().map(str::to_owned))
+                            .filter(|t| t["task_id"].is_string())
+                            .map(|t| BgTask {
+                                task_id: s(t, "task_id"),
+                                task_type: s(t, "task_type"),
+                                description: s(t, "description"),
+                                since: 0,
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
-                for id in ids {
-                    self.task_set(&id, None, true, ev);
+                for t in &tasks {
+                    self.task_set(&t.task_id, None, true, ev);
                 }
+                ev.push(AgentEvent::BackgroundTasks(tasks));
             }
             "task_notification" => {
                 if let Some(id) = v["task_id"].as_str() {
@@ -1983,6 +2005,15 @@ impl ClaudeDriver {
             } else {
                 self.resolve(rid, ev);
             }
+        } else if let Some(task_id) = self.tails.remove(rid) {
+            // an error is a task that is gone (or an agent's: only shells and Monitors have one)
+            let resp = &r["response"];
+            ev.push(AgentEvent::TaskOutput {
+                task_id,
+                output: (r["subtype"] == "success")
+                    .then(|| resp["output"].as_str().unwrap_or("").to_owned()),
+                truncated: resp["truncated"].as_bool().unwrap_or(false),
+            });
         } else if rid.starts_with(CTX_ID) {
             // an error is a CLI older than the request: the bar keeps filling against the window
             if r["subtype"] == "success" {
@@ -2255,12 +2286,7 @@ impl Driver for ClaudeDriver {
     }
 
     fn background(&mut self, tool_use_id: Option<&str>, out: &mut Out) -> Result<(), Error> {
-        if self.exited {
-            return Err(Error::State("claude has exited"));
-        }
-        if self.awaiting_init {
-            return Err(Error::State("claude has not finished starting"));
-        }
+        self.can_ask()?;
         let foreground = |t: &Task| !t.background && tool_use_id.is_none_or(|id| t.call == id);
         if !self.tasks.values().any(foreground) {
             return Err(Error::State("nothing runs in the foreground"));
@@ -2270,6 +2296,27 @@ impl Driver for ClaudeDriver {
             req["tool_use_id"] = Value::String(id.to_owned());
         }
         self.control("bg", req, out);
+        Ok(())
+    }
+
+    fn stop_task(&mut self, task_id: &str, out: &mut Out) -> Result<(), Error> {
+        self.can_ask()?;
+        self.control(
+            "stop",
+            json!({"subtype":"stop_task","task_id":task_id}),
+            out,
+        );
+        Ok(())
+    }
+
+    fn task_output(&mut self, task_id: &str, out: &mut Out) -> Result<(), Error> {
+        self.can_ask()?;
+        let rid = self.control(
+            "tail",
+            json!({"subtype":"get_task_output","task_id":task_id}),
+            out,
+        );
+        self.tails.insert(rid, task_id.to_owned());
         Ok(())
     }
 
@@ -3676,6 +3723,91 @@ mod tests {
         );
     }
 
+    /// Claude 2.1.327: `background_tasks_changed` is the whole live set each time; an empty list
+    /// clears it.
+    #[test]
+    fn the_background_task_list_replaces_the_one_before() {
+        let mut f = Feed::new();
+        let ev = f.line(
+            json!({"type":"system","subtype":"background_tasks_changed","tasks":[
+            {"task_id":"bzt5ke571","task_type":"local_bash",
+             "description":"Save a room snapshot now and every 3 minutes until 21:20"}],
+            "uuid":"u1","session_id":"s"}),
+        );
+        assert_eq!(
+            ev,
+            [AgentEvent::BackgroundTasks(vec![BgTask {
+                task_id: "bzt5ke571".into(),
+                task_type: "local_bash".into(),
+                description: "Save a room snapshot now and every 3 minutes until 21:20".into(),
+                since: 0,
+            }])]
+        );
+        let ev = f.line(
+            json!({"type":"system","subtype":"background_tasks_changed","tasks":[],
+            "uuid":"u2","session_id":"s"}),
+        );
+        assert_eq!(ev, [AgentEvent::BackgroundTasks(Vec::new())]);
+    }
+
+    /// `stop_task` and `get_task_output` are one control request each; the output's
+    /// `control_response` comes back as the task's tail, an error as no output.
+    #[test]
+    fn a_background_task_can_be_stopped_and_its_output_read() {
+        let mut f = Feed::new();
+        let mut out = Out::default();
+        f.d.on_start(&Launch::default(), &mut out);
+        assert!(matches!(
+            f.d.stop_task("bzt5ke571", &mut out),
+            Err(Error::State(_))
+        ));
+        f.line(json!({"type":"control_response","response":{"subtype":"success","request_id":INIT_ID,"response":{}}}));
+
+        let mut out = Out::default();
+        f.d.stop_task("bzt5ke571", &mut out).unwrap();
+        assert_eq!(out.stdin.iter().filter(|b| **b == b'\n').count(), 1);
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(line["type"], "control_request");
+        assert_eq!(
+            line["request"],
+            json!({"subtype":"stop_task","task_id":"bzt5ke571"})
+        );
+
+        f.d.task_output("bzt5ke571", &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        assert_eq!(
+            line["request"],
+            json!({"subtype":"get_task_output","task_id":"bzt5ke571"})
+        );
+        let rid = line["request_id"].as_str().unwrap();
+        let ev = f.line(
+            json!({"type":"control_response","response":{"subtype":"success","request_id":rid,
+            "response":{"output":"tick 1\ntick 2","total_bytes":14,"truncated":false}}}),
+        );
+        assert_eq!(
+            ev,
+            [AgentEvent::TaskOutput {
+                task_id: "bzt5ke571".into(),
+                output: Some("tick 1\ntick 2".into()),
+                truncated: false,
+            }]
+        );
+
+        f.d.task_output("gone", &mut out).unwrap();
+        let line: Value = serde_json::from_slice(last_line(&out)).unwrap();
+        let rid = line["request_id"].as_str().unwrap();
+        let ev = f.line(json!({"type":"control_response","response":{"subtype":"error","request_id":rid,
+            "error":"get_task_output: no shell or Monitor task with that task_id in this session"}}));
+        assert_eq!(
+            ev,
+            [AgentEvent::TaskOutput {
+                task_id: "gone".into(),
+                output: None,
+                truncated: false,
+            }]
+        );
+    }
+
     /// Claude 2.1.319: `task_started` says which call waits in the foreground, `task_updated`
     /// (after a `background_tasks` request) that it moved; the call's row sees both, and the
     /// request itself is the control line, with or without a call id.
@@ -3733,10 +3865,12 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // said again by the task list: nothing new
-        assert!(f
-            .line(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1"}],"uuid":"u4"}))
-            .is_empty());
+        // said again by the task list: nothing new for the call's row
+        let ev = f.line(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1"}],"uuid":"u4"}));
+        assert!(
+            matches!(&ev[..], [AgentEvent::BackgroundTasks(t)] if t.len() == 1),
+            "{ev:?}"
+        );
         assert!(
             matches!(f.d.background(None, &mut out), Err(Error::State(_))),
             "nothing left in the foreground"

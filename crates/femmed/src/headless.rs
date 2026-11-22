@@ -29,7 +29,7 @@ use femme_agents::{
 use femme_proto::holder::{HolderEvent, Target};
 use femme_proto::rpc::{Answer, PromptHow};
 use femme_proto::state::{
-    Agent, Attention, Context, Goal, GoalState, Item, ItemKind, ItemStatus, Mode, Question,
+    Agent, Attention, BgTask, Context, Goal, GoalState, Item, ItemKind, ItemStatus, Mode, Question,
     Session, SessionStatus,
 };
 use femme_proto::{Id, Sid};
@@ -114,6 +114,12 @@ type Taken = oneshot::Sender<Result<Option<String>, CoreError>>;
 // is answered "only interrupted" after this; make the driver say it if the wait ever shows.
 const TAKE_BACK_WAIT: Duration = Duration::from_secs(20);
 
+/// Where a background task's output goes: `(tail, truncated)`.
+type Tail = oneshot::Sender<Result<(String, bool), CoreError>>;
+
+/// How long a task's output is waited for (the CLI answers at once; a client asks again anyway).
+const TASK_OUTPUT_WAIT: Duration = Duration::from_secs(5);
+
 enum Cmd {
     Prompt {
         text: String,
@@ -134,6 +140,16 @@ enum Cmd {
     Background {
         tool_use_id: Option<String>,
         reply: Reply,
+    },
+    /// Stop a background task.
+    StopTask {
+        task_id: String,
+        reply: Reply,
+    },
+    /// The end of a background task's output.
+    TaskOutput {
+        task_id: String,
+        reply: Tail,
     },
     Answer {
         request_id: String,
@@ -217,6 +233,28 @@ impl Head {
             reply,
         })
         .await
+    }
+
+    pub(crate) async fn stop_task(&self, task_id: &str) -> Result<(), CoreError> {
+        self.call(|reply| Cmd::StopTask {
+            task_id: task_id.into(),
+            reply,
+        })
+        .await
+    }
+
+    /// The end of the task's output and whether there was more before it.
+    pub(crate) async fn task_output(&self, task_id: &str) -> Result<(String, bool), CoreError> {
+        let (reply, answer) = oneshot::channel();
+        let task_id = task_id.into();
+        self.tx
+            .send(Cmd::TaskOutput { task_id, reply })
+            .await
+            .map_err(|_| gone())?;
+        match tokio::time::timeout(TASK_OUTPUT_WAIT, answer).await {
+            Ok(r) => r.map_err(|_| gone())?,
+            Err(_) => Err(CoreError::Busy),
+        }
     }
 
     pub(crate) async fn answer(&self, request_id: &str, answer: Answer) -> Result<(), CoreError> {
@@ -422,6 +460,8 @@ struct Actor {
     pending_puts: Vec<Put>,
     /// Who waits for the take-back under way.
     taking: Option<Taken>,
+    /// Who waits for a background task's output, by task id.
+    tails: Vec<(String, Tail)>,
     /// What the agent said about the saved messages, for the next commit ([`sent::settle`]).
     missed: Vec<sent::Gone>,
     /// Prompts for the next process: the ones the last one dropped, the ones saved before a restart.
@@ -503,6 +543,7 @@ impl Actor {
             fold: FoldState::default(),
             pending_puts: Vec::new(),
             taking: None,
+            tails: Vec::new(),
             missed: Vec::new(),
             resend: Vec::new(),
             restart_at: None,
@@ -608,6 +649,25 @@ impl Actor {
             Cmd::Background { tool_use_id, reply } => {
                 let r = self.background(tool_use_id.as_deref()).await;
                 let _ = reply.send(r);
+            }
+            Cmd::StopTask { task_id, reply } => {
+                let r = self.task_call(|dr, out| dr.stop_task(&task_id, out)).await;
+                let _ = reply.send(r);
+            }
+            Cmd::TaskOutput { task_id, reply } => {
+                match self
+                    .task_call(|dr, out| dr.task_output(&task_id, out))
+                    .await
+                {
+                    Ok(()) => {
+                        // askers that gave up (the wait ran out) go
+                        self.tails.retain(|(_, t)| !t.is_closed());
+                        self.tails.push((task_id, reply));
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                }
             }
             Cmd::Answer {
                 request_id,
@@ -821,6 +881,17 @@ impl Actor {
         Ok(())
     }
 
+    /// A driver call about a background task (stop it, ask for its output), written to the agent.
+    async fn task_call(
+        &mut self,
+        f: impl FnOnce(&mut dyn Driver, &mut Out) -> Result<(), DriverError>,
+    ) -> Result<(), CoreError> {
+        self.ready()?;
+        f(self.driver.as_mut(), &mut self.out).map_err(driver_err)?;
+        self.flush().await;
+        Ok(())
+    }
+
     async fn answer(&mut self, d: &Daemon, request_id: &str, a: &Answer) -> Result<(), CoreError> {
         self.ready()?;
         self.driver
@@ -970,6 +1041,7 @@ impl Actor {
                 if s.closed.is_none() {
                     s.status = SessionStatus::Crashed;
                     s.attention = Attention::None;
+                    s.bg_tasks.clear();
                 }
             })
         });
@@ -1197,7 +1269,15 @@ impl Actor {
             ctx_compact_at: f.ctx_compact_at,
             compacted: if live_line { f.compacted } else { 0 },
             goal: f.goal,
+            bg_tasks: f.bg_tasks,
         };
+        for (task_id, output, truncated) in f.tails {
+            // the oldest asker of that task: the CLI answers in the order it was asked
+            if let Some(i) = self.tails.iter().position(|(id, _)| *id == task_id) {
+                let (_, reply) = self.tails.remove(i);
+                let _ = reply.send(output.map(|o| (o, truncated)).ok_or(CoreError::NotFound));
+            }
+        }
         let first = row_first(row.state);
         if first {
             self.row(d, &row);
@@ -1224,6 +1304,7 @@ impl Actor {
             && fx.ctx_compact_at.is_none()
             && fx.compacted == 0
             && fx.goal.is_none()
+            && fx.bg_tasks.is_none()
             && !fx.ready
         {
             return;
@@ -1243,6 +1324,20 @@ impl Actor {
                 if !outlived_by_clear(s.goal.as_ref(), g) {
                     s.goal = Some(g.clone());
                 }
+            }
+            if let Some(tasks) = &fx.bg_tasks {
+                // a task listed before keeps the time it was first seen
+                let since = |t: &BgTask| {
+                    let old = s.bg_tasks.iter().find(|o| o.task_id == t.task_id);
+                    old.map_or(t.since, |o| o.since)
+                };
+                s.bg_tasks = tasks
+                    .iter()
+                    .map(|t| BgTask {
+                        since: since(t),
+                        ..t.clone()
+                    })
+                    .collect();
             }
             if let Some(m) = &fx.model {
                 s.model = Some(m.clone());
@@ -1480,6 +1575,9 @@ impl Actor {
         let events = self.driver.on_exit(Some(code));
         self.apply(d, Src::Exit, events).await;
         self.fold.streams.clear();
+        // its background tasks died with it, and nobody answers for their output any more
+        self.tails.clear();
+        self.update(d, None, |s| s.bg_tasks.clear());
         let acts = self.machine.step(Ev::AgentExited);
         if !acts.is_empty() {
             self.run_acts(d, acts).await;
@@ -2146,6 +2244,10 @@ struct Folded {
     turn_ended: bool,
     /// Claude's `/goal` as the batch last said it.
     goal: Option<Goal>,
+    /// Claude's background tasks as the batch last listed them.
+    bg_tasks: Option<Vec<BgTask>>,
+    /// Answers to `Driver::task_output`: `(task id, tail, truncated)`.
+    tails: Vec<(String, Option<String>, bool)>,
     /// A prompt of the main thread landed (a mirrored pane's typed line).
     prompted: bool,
     /// The agent gave a prompt back: its text.
@@ -2170,6 +2272,7 @@ struct RowFx {
     /// the daemon was away are read as that same replay, so they are not counted either.
     compacted: u32,
     goal: Option<Goal>,
+    bg_tasks: Option<Vec<BgTask>>,
 }
 
 fn new_item(
@@ -2403,6 +2506,14 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.ctx_used = Some(0);
             }
             AgentEvent::Goal(g) => f.goal = Some(g),
+            AgentEvent::BackgroundTasks(t) => {
+                f.bg_tasks = Some(t.into_iter().map(|t| BgTask { since: now, ..t }).collect());
+            }
+            AgentEvent::TaskOutput {
+                task_id,
+                output,
+                truncated,
+            } => f.tails.push((task_id, output, truncated)),
             AgentEvent::Exited { .. } | AgentEvent::Raw(_) => {}
         }
     }
@@ -2776,6 +2887,28 @@ impl Daemon {
             .await
     }
 
+    /// The actor of a headless Claude session, for its background tasks.
+    fn task_head(&self, sid: Sid) -> Result<Head, CoreError> {
+        let s = self.session(sid)?;
+        if s.agent != Agent::Claude || s.mode != Mode::Headless {
+            return Err(CoreError::Bad(
+                "background tasks are a headless Claude session's".into(),
+            ));
+        }
+        self.sessions.head(sid).ok_or(CoreError::Busy)
+    }
+
+    /// `Req::TaskStop`: stops the background task `task_id` of the session.
+    pub async fn stop_task(&self, sid: Sid, task_id: &str) -> Result<(), CoreError> {
+        self.task_head(sid)?.stop_task(task_id).await
+    }
+
+    /// `Req::TaskOutput`: the end of the task's output and whether there was more before it;
+    /// `NotFound` when Claude has no such shell or Monitor.
+    pub async fn task_output(&self, sid: Sid, task_id: &str) -> Result<(String, bool), CoreError> {
+        self.task_head(sid)?.task_output(task_id).await
+    }
+
     pub(crate) async fn answer_question(
         &self,
         sid: Sid,
@@ -2920,6 +3053,7 @@ mod tests {
             context: None,
             effort: None,
             goal: None,
+            bg_tasks: Vec::new(),
         }
     }
 
@@ -3917,6 +4051,73 @@ mod tests {
             last.rev,
             row.rev
         );
+    }
+
+    /// Claude's task list is the session's, a task keeps the time it was first seen, and the
+    /// tasks go with the process: a restart starts with none.
+    #[tokio::test]
+    async fn the_background_tasks_are_the_sessions_until_the_agent_exits() {
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        rig.a.spawn_process(&rig.d, None).await.unwrap();
+        let task = |id: &str| BgTask {
+            task_id: id.into(),
+            task_type: "local_bash".into(),
+            description: "Save a room snapshot".into(),
+            since: 0,
+        };
+        let list = |ids: &[&str]| {
+            vec![AgentEvent::BackgroundTasks(
+                ids.iter().map(|i| task(i)).collect(),
+            )]
+        };
+        rig.a
+            .apply(&rig.d, Src::Line(0), list(&["bzt5ke571"]))
+            .await;
+        let first = rig.d.session(SID).unwrap().bg_tasks;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].task_id, "bzt5ke571");
+        assert!(first[0].since > 0, "stamped by the daemon");
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        rig.a
+            .apply(&rig.d, Src::Line(100), list(&["bzt5ke571", "b2"]))
+            .await;
+        let both = rig.d.session(SID).unwrap().bg_tasks;
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0], first[0], "a task listed again keeps its time");
+        assert!(both[1].since > first[0].since);
+
+        // someone waits for a task's output when the agent dies: answered, not left hanging
+        let (reply, mut answer) = oneshot::channel();
+        rig.a.tails.push(("b2".into(), reply));
+        rig.a.agent_exited(&rig.d, -9).await;
+        assert!(rig.d.session(SID).unwrap().bg_tasks.is_empty());
+        assert!(
+            answer.try_recv().is_err(),
+            "the asker hears the actor let go"
+        );
+    }
+
+    /// The output of a task goes to who asked for that task; no output is `NotFound`.
+    #[tokio::test]
+    async fn a_tasks_output_goes_to_its_asker() {
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        let (r1, mut a1) = oneshot::channel();
+        let (r2, mut a2) = oneshot::channel();
+        rig.a.tails.push(("t1".into(), r1));
+        rig.a.tails.push(("t2".into(), r2));
+        let out = |id: &str, output: Option<&str>| AgentEvent::TaskOutput {
+            task_id: id.into(),
+            output: output.map(str::to_owned),
+            truncated: false,
+        };
+        let events = vec![out("t2", Some("tick 1\ntick 2")), out("t1", None)];
+        rig.a.apply(&rig.d, Src::Line(0), events).await;
+        assert_eq!(a2.try_recv().unwrap(), Ok(("tick 1\ntick 2".into(), false)));
+        assert_eq!(a1.try_recv().unwrap(), Err(CoreError::NotFound));
+        assert!(rig.a.tails.is_empty());
     }
 
     #[tokio::test]

@@ -89,6 +89,7 @@ mod tests {
             context: None,
             effort: None,
             goal: None,
+            bg_tasks: Vec::new(),
         };
         let parent = row(Some("Fix the cart"));
         assert_eq!(label(Some(&parent), "/x", &[]), "Fix the cart · fork");

@@ -156,6 +156,8 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Cleared => "cleared".into(),
             AgentEvent::Exited { .. } => "exited".into(),
             AgentEvent::Goal(g) => format!("goal:{:?}", g.state),
+            AgentEvent::BackgroundTasks(t) => format!("bg-tasks:{}", t.len()),
+            AgentEvent::TaskOutput { task_id, .. } => format!("task-output:{task_id}"),
             AgentEvent::Raw(_) => "raw".into(),
             AgentEvent::ItemRetracted { id } => format!("retracted:{id}"),
             AgentEvent::TakenBack { prompt_id, .. } => format!("taken-back:{prompt_id}"),
