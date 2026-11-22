@@ -14,7 +14,8 @@ const STARS: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
 pub struct Working {
     /// `Thinking`, `Writing` or `Running a tool`.
     pub verb: &'static str,
-    /// Since the user's last message (unix ms of its row), `None` when it is not loaded.
+    /// Since the turn's start: the user's last message or the mark of a turn the agent started
+    /// itself (unix ms of its row), `None` when it is not loaded.
     pub since: Option<i64>,
     /// Bytes the agent has produced this turn: its text, thoughts and tool calls.
     pub bytes: usize,
@@ -23,15 +24,16 @@ pub struct Working {
     pub ended: bool,
 }
 
-/// The turn so far: everything after the last user message of the thread shown (`view`, as in
-/// [`Items::view`]; a subagent's first item is its prompt).
+/// The turn so far: everything after the last start of a turn (a user message, mostly) in the
+/// thread shown (`view`, as in [`Items::view`]; a subagent's first item is its prompt).
 pub fn working(items: &Items, view: Option<&str>) -> Working {
     let all: Vec<_> = items.view(view).collect();
-    // a peer's message starts a turn as a prompt does
+    // a peer's message starts a turn as a prompt does, and so does the mark of a turn the agent
+    // started itself (a background task ended, a scheduled run fired)
     let start = all.iter().rposition(|e| {
         matches!(
             e.item.kind,
-            ItemKind::UserMessage | ItemKind::PeerMessage
+            ItemKind::UserMessage | ItemKind::PeerMessage | ItemKind::TurnStart
         )
     });
     let turn = &all[start.map_or(0, |i| i + 1)..];
@@ -147,6 +149,27 @@ mod tests {
         ]);
         let w = working(&it, None);
         assert_eq!((w.verb, w.since), ("Writing", Some(10_000)));
+    }
+
+    #[test]
+    fn a_turn_the_agent_started_itself_has_its_line() {
+        use ItemKind::*;
+        use ItemStatus::*;
+        let it = items(vec![
+            item(1, UserMessage, Completed, "run it in the background", 1_000),
+            item(2, AssistantMessage, Completed, "ok", 2_000),
+            item(3, TurnEnd, Completed, "", 3_000),
+            item(4, TurnStart, Completed, "", 20_000),
+            item(5, AssistantMessage, InProgress, "the build is done", 21_000),
+        ]);
+        let w = working(&it, None);
+        assert_eq!((w.ended, w.verb, w.since), (false, "Writing", Some(20_000)));
+        let done = items(vec![
+            item(1, UserMessage, Completed, "go", 1_000),
+            item(2, AssistantMessage, Completed, "ok", 2_000),
+            item(3, TurnEnd, Completed, "", 3_000),
+        ]);
+        assert!(working(&done, None).ended);
     }
 
     #[test]

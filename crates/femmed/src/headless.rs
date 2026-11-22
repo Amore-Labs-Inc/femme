@@ -2334,6 +2334,17 @@ fn fold(st: &mut FoldState, sid: Sid, base: &str, events: Vec<AgentEvent>, now: 
                 f.turn_started = true;
                 f.state = Some((SessionStatus::Working, Attention::None));
             }
+            // A turn nobody prompted has no message item to open it: this item does, so a
+            // client can tell the turn (and that it runs) from the one before. Its id is not one
+            // of `next_id`'s, which the `TurnEnd` of lines stored before this item existed keep.
+            AgentEvent::TurnUnprompted => f.puts.push(Put::Done(new_item(
+                sid,
+                format!("{base}-start"),
+                ItemKind::TurnStart,
+                ItemStatus::Completed,
+                None,
+                now,
+            ))),
             AgentEvent::TurnEnded {
                 stop,
                 usage,
@@ -3014,6 +3025,24 @@ mod tests {
             },
             AgentEvent::Status(AgentStatus::Idle),
         ]
+    }
+
+    /// A turn the agent started itself gets an item for its start; a prompt's turn has its
+    /// message for that.
+    #[test]
+    fn an_unprompted_turn_stores_its_start() {
+        let starts = |events: Vec<AgentEvent>| {
+            let f = fold(&mut FoldState::default(), SID, "d1", events, 7);
+            let kinds = f.puts.iter().filter_map(|p| match p {
+                Put::Done(i) if i.kind == ItemKind::TurnStart => Some((i.item_id.clone(), i.ts)),
+                _ => None,
+            });
+            kinds.collect::<Vec<_>>()
+        };
+        let mut own = turn(StopReason::EndTurn);
+        own.insert(1, AgentEvent::TurnUnprompted);
+        assert_eq!(starts(own), [("d1-start".to_owned(), 7)]);
+        assert_eq!(starts(turn(StopReason::EndTurn)), []);
     }
 
     fn item(kind: ItemKind, status: ItemStatus, preview: &str) -> Item {
@@ -3982,8 +4011,8 @@ mod tests {
         );
         assert_eq!(
             rig.a.pending_puts.len(),
-            2,
-            "the message and the end of the turn wait"
+            3,
+            "the turn's start (nobody prompted it), the message and the turn's end wait"
         );
 
         rig.row();

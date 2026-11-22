@@ -905,6 +905,21 @@ pub(super) fn sub_line(line: &[u8], parent: &str) -> Option<Vec<u8>> {
 
 /// [`disk_line`] on a parsed line, sidechain or not.
 pub(super) fn disk_value(mut v: Value) -> Option<Value> {
+    // The prompt of a scheduled run (a cron, a `ScheduleWakeup`): text nobody typed, which the
+    // terminal hides too. The stream says the fire with a `started` frame; here it becomes the
+    // line the driver draws its row from.
+    if v["isMeta"] == true
+        && v["type"] == "user"
+        && (v["wakeupSource"].is_string() || v["turnOrigin"] == "scheduled")
+    {
+        return Some(serde_json::json!({
+            "type": "system",
+            "subtype": "scheduled_task_fire",
+            "wakeup_source": v["wakeupSource"],
+            "taskId": v["scheduledTaskId"],
+            "uuid": v["uuid"],
+        }));
+    }
     if v["isMeta"] == true && v["origin"]["kind"] != "peer" {
         return None;
     }
@@ -1708,5 +1723,50 @@ mod tests {
         run(&d, sid, "u-1", Some(0), None).await;
         let s = d.session(sid).unwrap();
         assert_eq!(s.label.as_deref(), Some("Listing the files"));
+    }
+
+    /// A scheduled run's prompt is nothing the user typed: the fire's row, never a message. The
+    /// TUI's own `scheduled_task_fire` row and the prompt line after it are one row.
+    #[test]
+    fn a_scheduled_fire_is_one_row_and_no_message() {
+        use femme_agents::Driver as _;
+        let rows = |lines: &[Value]| {
+            let mut driver = femme_agents::claude::ClaudeDriver::mirror();
+            let mut out = femme_agents::Out::default();
+            let mut ev = Vec::new();
+            for (i, l) in lines.iter().enumerate() {
+                let l = disk_value(l.clone()).expect("kept").to_string();
+                ev.extend(driver.on_line(i as u64 * 1000, l.as_bytes(), &mut out));
+            }
+            ev.into_iter()
+                .filter_map(|e| match e {
+                    femme_agents::AgentEvent::ItemCompleted { kind, body, .. } => {
+                        Some((kind, body["text"].as_str().unwrap_or("").to_owned()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let wakeup = serde_json::json!({"type":"user","uuid":"w1","isMeta":true,
+            "wakeupSource":"loop_wakeup","turnOrigin":"scheduled",
+            "message":{"role":"user","content":"Check dig NS …"}});
+        assert_eq!(
+            rows(&[wakeup]),
+            [(ItemKind::Event, "⏰ wakeup".to_owned())],
+            "the prompt's text stays hidden"
+        );
+        let fire = serde_json::json!({"type":"system","subtype":"scheduled_task_fire",
+            "uuid":"f1","isMeta":false,"content":"Running scheduled task (Nov 13 5:06pm)",
+            "taskId":"8405232e"});
+        let prompt = serde_json::json!({"type":"user","uuid":"f2","isMeta":true,
+            "turnOrigin":"scheduled","scheduledTaskId":"8405232e","scheduledFireId":"x",
+            "message":{"role":"user","content":"Agent check-in"}});
+        assert_eq!(
+            rows(&[fire, prompt]),
+            [(
+                ItemKind::Event,
+                "⏰ Running scheduled task (Nov 13 5:06pm)".to_owned()
+            )]
+        );
     }
 }

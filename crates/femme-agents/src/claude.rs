@@ -302,6 +302,11 @@ pub struct ClaudeDriver {
     /// A mirror's last typed line, while no assistant line follows it: its `parentUuid` and its
     /// item id.
     typed: Option<(Value, String)>,
+    /// The `reason` of the last `ScheduleWakeup` call, for the row of the wakeup it asked for.
+    wake_reason: Option<String>,
+    /// The `taskId` of the last `scheduled_task_fire` line of a transcript: the prompt line of
+    /// the same fire, which follows it, adds no second row.
+    fired: Option<Value>,
     /// The items built from each wire line of the open turn, by the line's uuid: what a
     /// `model_refusal_fallback` retracts.
     lines: BTreeMap<String, Vec<String>>,
@@ -361,6 +366,8 @@ impl ClaudeDriver {
             turn_items: BTreeSet::new(),
             take: None,
             typed: None,
+            wake_reason: None,
+            fired: None,
             lines: BTreeMap::new(),
         }
     }
@@ -692,13 +699,46 @@ impl ClaudeDriver {
         }
     }
 
+    /// Something of a turn was seen: it opens one when none runs, a turn nobody prompted (a
+    /// background task ended, a Monitor event, a scheduled fire, a reply after a restart).
     fn activity(&mut self, offset: u64, ev: &mut Vec<AgentEvent>) {
+        self.open_turn(offset, false, ev);
+    }
+
+    /// [`Self::activity`] of a prompt (the user's, a peer's): the turn it opens is `prompted`.
+    /// Told from the line alone, never from the uuids this driver wrote: a driver made after a
+    /// daemon restart replays the spool and knows none of them.
+    fn open_turn(&mut self, offset: u64, prompted: bool, ev: &mut Vec<AgentEvent>) {
         if !self.turn && self.parent.is_none() {
             self.turn = true;
             self.off.turn_begin(offset);
             ev.push(AgentEvent::TurnStarted);
+            if !prompted {
+                ev.push(AgentEvent::TurnUnprompted);
+            }
             set_status(&mut self.status, AgentStatus::Working, ev);
         }
+    }
+
+    /// A scheduled run fired (a cron, a `ScheduleWakeup`): the row that says why a turn starts
+    /// with nobody typing. `source` is the CLI's `wakeup_source`, `said` its own words for the
+    /// fire when the line has them.
+    fn fire_row(&mut self, id: String, source: Option<&str>, said: Option<&str>) -> AgentEvent {
+        let mut text = match (said, source) {
+            (Some(s), _) => format!("⏰ {s}"),
+            (None, Some("loop_wakeup")) => "⏰ wakeup".to_owned(),
+            (None, _) => "⏰ scheduled run".to_owned(),
+        };
+        // the reason is the wakeup's alone: a cron fires with none
+        // ponytail: a driver made after a daemon restart has not seen the call, so a fire it
+        // replays loses its reason; read it from the stored call if that ever shows
+        if source == Some("loop_wakeup") {
+            if let Some(r) = self.wake_reason.take() {
+                text.push_str(" · ");
+                text.push_str(&r);
+            }
+        }
+        event_item(id, &text)
     }
 
     /// Status follows from state: blocked while a question is unanswered or the CLI says it waits
@@ -764,6 +804,20 @@ impl ClaudeDriver {
                     self.tasks.remove(id);
                 }
                 ev.push(task_end(item_id(v, offset), v));
+            }
+            // A transcript's record of a fire (the stream has only the `started` frame): the
+            // TUI's own row with its words, or the fire's prompt line as the daemon hands it over
+            // (no `content`), which is the only record of a wakeup and the second of a cron.
+            "scheduled_task_fire" => {
+                let said = v["content"].as_str();
+                let task = v.get("taskId").filter(|t| !t.is_null());
+                if said.is_some() {
+                    self.fired = task.cloned();
+                } else if task.is_some() && self.fired.take().as_ref() == task {
+                    return;
+                }
+                let row = self.fire_row(item_id(v, offset), v["wakeup_source"].as_str(), said);
+                ev.push(row);
             }
             "compact_boundary" => {
                 ev.push(event_item(item_id(v, offset), "Conversation compacted"));
@@ -1211,6 +1265,13 @@ impl ClaudeDriver {
                     let id = b["id"].as_str().map_or(bid, str::to_owned);
                     let name = b["name"].as_str().unwrap_or("tool").to_owned();
                     let input = b["input"].clone();
+                    if name == "ScheduleWakeup" && self.parent.is_none() {
+                        self.wake_reason = input["reason"]
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|r| !r.is_empty())
+                            .map(str::to_owned);
+                    }
                     if !streamed && !self.hides(&name) {
                         ev.push(AgentEvent::ItemStarted {
                             id: id.clone(),
@@ -1314,7 +1375,7 @@ impl ClaudeDriver {
             ev.push(event_item(id, &format!("◎ goal not met yet · {r}")));
         } else if v["origin"]["kind"] == "peer" {
             // another Claude session's SendMessage, delivered as a user line the user did not type
-            self.activity(offset, ev);
+            self.open_turn(offset, true, ev);
             ev.push(done(
                 id,
                 ItemKind::PeerMessage,
@@ -1323,7 +1384,7 @@ impl ClaudeDriver {
             ));
         } else if v["isReplay"].as_bool() == Some(true) || self.parent.is_some() {
             // a subagent's text is the prompt it was given
-            self.activity(offset, ev);
+            self.open_turn(offset, true, ev);
             // The TUI took the line before back (Esc before any reply) and this one is what was
             // sent in its place: both hang off the same line of the file.
             if let (true, None, Some(p)) = (self.mirror, &self.parent, v.get("parentUuid")) {
@@ -1634,7 +1695,14 @@ impl ClaudeDriver {
                 c.acked = true;
                 c.ours = None; // running now; its echo becomes the UserMessage item
                 self.off.item_close(&cmd_anchor(u)); // the turn that opens here holds the offset from now on
-                self.activity(offset, ev);
+
+                // a scheduled fire is a command the CLI made itself, with no user line after it
+                let wakeup = v["wakeup_source"].as_str();
+                if let Some(source) = wakeup {
+                    let row = self.fire_row(item_id(v, offset), Some(source), None);
+                    ev.push(row);
+                }
+                self.open_turn(offset, wakeup.is_none(), ev);
             }
             Some("completed") => self.cmd_end(u, None, ev),
             Some(s @ ("cancelled" | "discarded" | "refused")) => {
@@ -4564,5 +4632,142 @@ mod tests {
             tools.contains(&("Bash".to_owned(), ItemStatus::Completed)),
             "{tools:?}"
         );
+    }
+
+    // ---- turns claude starts itself (shapes of claude 2.1.327) ---------------------------------
+
+    /// The texts of the Event rows in `ev`, and where its turn marks are.
+    fn fire_rows(ev: &[AgentEvent]) -> Vec<String> {
+        ev.iter()
+            .filter_map(|e| match e {
+                AgentEvent::ItemCompleted {
+                    kind: ItemKind::Event,
+                    body,
+                    ..
+                } => body["text"].as_str().map(str::to_owned),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pos(ev: &[AgentEvent], what: &AgentEvent) -> Option<usize> {
+        ev.iter().position(|e| e == what)
+    }
+
+    fn reply(id: &str, content: Value) -> Value {
+        json!({"type":"assistant","message":{"id":id,"role":"assistant","content":[content]}})
+    }
+
+    /// A scheduled fire reaches the stream as a `started` frame of a command the CLI made itself:
+    /// a row says why the turn starts, and the turn is marked as nobody's prompt.
+    #[test]
+    fn a_scheduled_fire_gets_a_row_and_an_unprompted_turn() {
+        for (source, row) in [
+            ("schedule_wakeup", "⏰ scheduled run"),
+            ("loop_wakeup", "⏰ wakeup"),
+        ] {
+            let mut f = Feed::new();
+            let ev = f.line(json!({"type":"command_lifecycle","command_uuid":"9e046b82",
+                "state":"started","wakeup_source":source}));
+            assert_eq!(fire_rows(&ev), [row], "{source}");
+            let started = pos(&ev, &AgentEvent::TurnStarted).expect("a turn");
+            assert!(
+                matches!(ev[0], AgentEvent::ItemCompleted { .. }),
+                "the row first"
+            );
+            assert_eq!(pos(&ev, &AgentEvent::TurnUnprompted), Some(started + 1));
+            let ev = f.line(reply("m1", json!({"type":"text","text":"PING"})));
+            assert!(pos(&ev, &AgentEvent::TurnStarted).is_none(), "one turn");
+            let ev = f.line(json!({"type":"result","subtype":"success","is_error":false}));
+            assert!(ev.iter().any(|e| matches!(e, AgentEvent::TurnEnded { .. })));
+        }
+    }
+
+    /// The wakeup's row carries the reason Claude gave when it asked for it; a cron's does not.
+    #[test]
+    fn a_wakeup_says_the_reason_it_was_asked_with() {
+        let mut f = Feed::new();
+        f.line(json!({"type":"command_lifecycle","command_uuid":"p1","state":"started"}));
+        f.line(reply(
+            "m1",
+            json!({"type":"tool_use","id":"toolu_1","name":"ScheduleWakeup",
+                "input":{"delaySeconds":60,"reason":"check the build","prompt":"look"}}),
+        ));
+        f.line(json!({"type":"result","subtype":"success","is_error":false}));
+        let wake = |f: &mut Feed, source: &str| {
+            let ev = f.line(json!({"type":"command_lifecycle","command_uuid":"w1",
+                "state":"started","wakeup_source":source}));
+            f.line(json!({"type":"result","subtype":"success","is_error":false}));
+            fire_rows(&ev)
+        };
+        assert_eq!(wake(&mut f, "schedule_wakeup"), ["⏰ scheduled run"]);
+        assert_eq!(wake(&mut f, "loop_wakeup"), ["⏰ wakeup · check the build"]);
+        assert_eq!(wake(&mut f, "loop_wakeup"), ["⏰ wakeup"], "said once");
+    }
+
+    /// A prompt's `started` frame opens a turn that is somebody's: no row, no mark. Also for a
+    /// uuid this driver never wrote (it replays the spool after a daemon restart).
+    #[test]
+    fn a_prompts_turn_is_not_unprompted() {
+        let (mut d, mut out, mut at) = (ClaudeDriver::new(), Out::default(), 0);
+        d.prompt_with_id(P, "x", PromptHow::Queue, &mut out)
+            .unwrap();
+        let ev = feed(
+            &mut d,
+            &mut at,
+            &mut out,
+            json!({"type":"command_lifecycle","command_uuid":P,"state":"started","uuid":"s"}),
+        );
+        assert!(pos(&ev, &AgentEvent::TurnStarted).is_some());
+        assert_eq!(pos(&ev, &AgentEvent::TurnUnprompted), None);
+        assert_eq!(fire_rows(&ev), [] as [&str; 0]);
+
+        let mut f = Feed::new();
+        let ev =
+            f.line(json!({"type":"command_lifecycle","command_uuid":"other","state":"started"}));
+        assert!(pos(&ev, &AgentEvent::TurnStarted).is_some());
+        assert_eq!(pos(&ev, &AgentEvent::TurnUnprompted), None);
+    }
+
+    /// A background task's end or a Monitor event starts a turn with no `started` frame at all
+    /// (2.1.325: `init`, `status: requesting`, the reply): unprompted.
+    #[test]
+    fn a_turn_after_a_background_task_is_unprompted() {
+        let mut f = Feed::new();
+        let ev = f.line(json!({"type":"system","subtype":"status","status":"requesting"}));
+        let started = pos(&ev, &AgentEvent::TurnStarted).expect("a turn");
+        assert_eq!(pos(&ev, &AgentEvent::TurnUnprompted), Some(started + 1));
+    }
+
+    /// A transcript's records of a fire, as the daemon hands them over: the TUI's own row keeps
+    /// its words and the prompt line of the same task adds nothing; a wakeup has only its
+    /// prompt line.
+    #[test]
+    fn a_transcripts_fire_is_one_row() {
+        let mut f = Feed {
+            d: ClaudeDriver::mirror(),
+            at: 0,
+        };
+        let ev = f.line(
+            json!({"type":"system","subtype":"scheduled_task_fire","uuid":"f1",
+            "content":"Running scheduled task (Nov 13 5:06pm)","taskId":"8405232e"}),
+        );
+        assert_eq!(
+            fire_rows(&ev),
+            ["⏰ Running scheduled task (Nov 13 5:06pm)"]
+        );
+        let prompt = json!({"type":"system","subtype":"scheduled_task_fire","uuid":"f2",
+            "wakeup_source":null,"taskId":"8405232e"});
+        assert_eq!(fire_rows(&f.line(prompt.clone())), [] as [&str; 0]);
+        assert_eq!(
+            fire_rows(&f.line(prompt)),
+            ["⏰ scheduled run"],
+            "a fire with no row of the TUI's before it"
+        );
+        let ev = f.line(
+            json!({"type":"system","subtype":"scheduled_task_fire","uuid":"f3",
+            "wakeup_source":"loop_wakeup","taskId":null}),
+        );
+        assert_eq!(fire_rows(&ev), ["⏰ wakeup"]);
     }
 }
