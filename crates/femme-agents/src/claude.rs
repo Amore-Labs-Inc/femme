@@ -2141,6 +2141,8 @@ impl Driver for ClaudeDriver {
             "user" => self.user(offset, &v, &mut ev),
             "result" => self.result(offset, &v, &mut ev),
             "rate_limit_event" => self.rate_limit(&v, &mut ev),
+            // `/clear`: the CLI says so before the new conversation's `init`
+            "conversation_reset" if v["trigger"] == "clear" => ev.push(AgentEvent::Cleared),
             "command_lifecycle" => self.lifecycle(offset, &v, &mut ev),
             "control_request" => match v["request"]["subtype"].as_str() {
                 Some("can_use_tool") => self.can_use_tool(
@@ -3191,6 +3193,20 @@ mod tests {
             self.at += text.len() as u64 + 1;
             ev
         }
+    }
+
+    #[test]
+    fn a_clear_is_an_event_and_other_resets_are_not() {
+        let mut f = Feed::new();
+        let reset = |trigger: &str| {
+            json!({"type":"conversation_reset","trigger":trigger,"session_id":"s",
+                   "new_conversation_id":"n","uuid":"n"})
+        };
+        assert!(matches!(f.line(reset("clear"))[..], [AgentEvent::Cleared]));
+        assert!(!f
+            .line(reset("compact"))
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Cleared)));
     }
 
     #[test]

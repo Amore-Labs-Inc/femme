@@ -153,6 +153,7 @@ fn kinds(ev: &[AgentEvent]) -> Vec<String> {
             AgentEvent::RateLimit { kind, .. } => format!("rl:{kind}"),
             AgentEvent::Context { .. } => "context".into(),
             AgentEvent::Compacted { .. } => "compacted".into(),
+            AgentEvent::Cleared => "cleared".into(),
             AgentEvent::Exited { .. } => "exited".into(),
             AgentEvent::Goal(g) => format!("goal:{:?}", g.state),
             AgentEvent::Raw(_) => "raw".into(),

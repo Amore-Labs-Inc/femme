@@ -388,6 +388,9 @@ pub enum AgentEvent {
         /// Tokens before compaction, when reported.
         pre_tokens: Option<u64>,
     },
+    /// The conversation was cleared (`/clear`): a new one begins, under a new session id (a
+    /// `Started` follows), and nothing said before is in the agent's context any more.
+    Cleared,
     /// Coarse state transition; only emitted when the state actually changes.
     Status(AgentStatus),
     /// Claude's `/goal` changed: set, judged by its checker, or cleared (see
