@@ -287,6 +287,8 @@ pub struct ClaudeDriver {
     tasks: BTreeMap<String, Task>,
     /// Our `get_task_output` requests the CLI has not answered: request id to task id.
     tails: BTreeMap<String, String>,
+    /// Our `set_model` requests the CLI has not answered: request id to the model asked for.
+    model_asks: BTreeMap<String, String>,
     /// The CLI's last `session_state_changed` was `requires_action`: it waits for someone, also
     /// when no request of ours says what for (`Blocked` until its next state).
     waits: bool,
@@ -359,6 +361,7 @@ impl ClaudeDriver {
             subs: BTreeMap::new(),
             tasks: BTreeMap::new(),
             tails: BTreeMap::new(),
+            model_asks: BTreeMap::new(),
             waits: false,
             waits_ours: false,
             waits_logged: false,
@@ -2073,6 +2076,21 @@ impl ClaudeDriver {
             } else {
                 self.resolve(rid, ev);
             }
+        } else if let Some(model) = self.model_asks.remove(rid) {
+            // said either way: the row follows a yes, and a no is a row of its own with the CLI's
+            // reason (a model the account cannot use, a name it does not know)
+            if r["subtype"] == "success" {
+                if self.model.as_deref() != Some(model.as_str()) {
+                    self.model = Some(model.clone());
+                    ev.push(AgentEvent::ModelChanged(model));
+                }
+            } else {
+                let why = r["error"].as_str().unwrap_or("no reason given");
+                ev.push(event_item(
+                    format!("o{offset}"),
+                    &format!("Could not switch to {model}: {why}"),
+                ));
+            }
         } else if let Some(task_id) = self.tails.remove(rid) {
             // an error is a task that is gone (or an agent's: only shells and Monitors have one)
             let resp = &r["response"];
@@ -2423,7 +2441,8 @@ impl Driver for ClaudeDriver {
         if self.exited {
             return Err(Error::State("claude has exited"));
         }
-        self.control("model", json!({"subtype":"set_model","model":model}), out);
+        let rid = self.control("model", json!({"subtype":"set_model","model":model}), out);
+        self.model_asks.insert(rid, model.to_owned());
         Ok(())
     }
 
