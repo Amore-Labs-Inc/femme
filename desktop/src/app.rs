@@ -61,7 +61,6 @@ use crate::transcript::{select, Transcript};
 use crate::ui::{self, ruled, DotGrid};
 
 mod right;
-mod switch;
 
 use right::CLOSE_AFTER;
 
@@ -76,8 +75,7 @@ mod actions_def {
             FocusNext,
             FocusPrev,
             ToggleBoard,
-            BackgroundAll,
-            Takeover
+            BackgroundAll
         ]
     );
 }
@@ -100,7 +98,7 @@ macro_rules! modkey {
 
 /// Binds the shell's keys: mod+b moves the shown chat's foreground tasks to the background (as
 /// in Claude Code), mod+shift+b the sidebar, mod+j the terminal tab, mod+k closes the right-hand panel, F6 and shift+F6
-/// walk the focus, mod+shift+t hands a Claude chat to its terminal and back, mod+shift+d the
+/// walk the focus, mod+shift+d the
 /// drawing board. (The accounts card and the
 /// board hear escape themselves.) The board has the keyboard while it is open, so the "Femme"
 /// context, which holds all of these but the last, is off then; the board's key has no context, so it
@@ -113,7 +111,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(modkey!("shift-b"), ToggleSidebar, Some("Femme")),
         KeyBinding::new(modkey!("j"), ToggleTerminal, Some("Femme")),
         KeyBinding::new(modkey!("k"), CloseRight, Some("Femme")),
-        KeyBinding::new(modkey!("shift-t"), Takeover, Some("Femme")),
         KeyBinding::new("f6", FocusNext, Some("Femme")),
         KeyBinding::new("shift-f6", FocusPrev, Some("Femme")),
         KeyBinding::new(modkey!("shift-d"), ToggleBoard, None),
@@ -365,8 +362,6 @@ pub struct FemmeApp {
     /// A line of the shell's own after the link's status in the top bar, and the timer that takes it away.
     note: Option<SharedString>,
     note_timer: Option<Task<()>>,
-    /// The chat ↔ terminal switch the user asked for, while the session's row has not flipped.
-    switch: Option<crate::takeover::Switch>,
     _subs: Vec<Subscription>,
     _bench: Option<Task<()>>,
 }
@@ -499,7 +494,6 @@ impl FemmeApp {
             settle: None,
             note: None,
             note_timer: None,
-            switch: None,
             _subs: subs,
             _bench: bench,
         }
@@ -879,21 +873,10 @@ impl FemmeApp {
                 }))
                 .into_any_element();
         }
-        let body = self.centre_body(window, cx);
-        match self.switch_bar(cx) {
-            Some(bar) => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(bar)
-                .child(div().flex_1().min_h_0().child(body))
-                .into_any_element(),
-            None => body,
-        }
+        self.centre_body(window, cx)
     }
 
-    /// The centre under the switch row: a transcript over its composer, a terminal, or a card.
+    /// The centre: a transcript over its composer, a terminal, or a card.
     fn centre_body(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let full = StyleRefinement::default().size_full();
         match &self.shown.centre {
@@ -1023,7 +1006,6 @@ impl Render for FemmeApp {
             .on_action(cx.listener(|t, _: &FocusNext, window, cx| t.focus_cycle(false, window, cx)))
             .on_action(cx.listener(|t, _: &FocusPrev, window, cx| t.focus_cycle(true, window, cx)))
             .on_action(cx.listener(|t, _: &ToggleBoard, window, cx| t.toggle_board(window, cx)))
-            .on_action(cx.listener(|t, _: &Takeover, _, cx| t.take_over(cx)))
             .size_full()
             .relative()
             .font_family(FONT_UI)
