@@ -5,7 +5,8 @@ cd "$(dirname "$0")/.."  # the checkout root: .env and every path below are rela
 . ./.env
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 # FEMMED (docs/plan-desktop.md): 0 the herdr-based setup; 1 the Rust daemon (femmed) runs beside it, for the
-# desktop app; 2 femmed replaces the board, the worker and herdr (M1 cutover).
+# desktop app; 2 femmed replaces the board and the worker (M1 cutover). herdr is not FEMME's any more: its
+# units and panes (the owner's own terminals) are left running as they are, never stopped from here.
 femmed=${FEMMED:-0}
 
 # Toolchains + claude/codex/pi/gh from the synced ~/.config/mise/config.toml
@@ -177,8 +178,9 @@ units="$units femme-box-health.timer"
 cp server/systemd/femme-pane-restart.service server/systemd/femme-pane-restart.timer ~/.config/systemd/user/
 units="$units femme-pane-restart.timer"
 systemctl --user daemon-reload
-# femmed replaces the board, the worker and herdr: an upgraded box still has their units enabled.
-[ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker herdr-server herdr-instinct herdr-notify 2>/dev/null || true
+# femmed replaces the board and the worker: an upgraded box still has their units enabled. herdr's
+# units stay as they are: stopping its server would end every terminal Claude running in its panes.
+[ "$femmed" != 2 ] || systemctl --user disable --now femme-board femme-worker 2>/dev/null || true
 systemctl --user enable --now $units
 if [ "$femmed" != 2 ]; then
   # The plugin runs from this checkout (deploy.sh keeps it at main). sync.sh just copied the laptop's
