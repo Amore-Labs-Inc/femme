@@ -464,6 +464,16 @@ impl FilesPanel {
         cx.notify();
     }
 
+    /// The keyboard back to the editor: a press on the bar's `save` or the strip's `overwrite`
+    /// took it into the panel, and the user goes on typing after a save.
+    fn focus_edit(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Page::Viewer(open) = &self.page {
+            if let Some(e) = &open.edit {
+                e.focus(window, cx);
+            }
+        }
+    }
+
     /// A save ended: the view, the cache and the listing follow a saved file.
     fn saved_edit(&mut self, text: String, r: Saved, cx: &mut Context<Self>) {
         let Page::Viewer(open) = &mut self.page else {
@@ -1405,10 +1415,12 @@ impl FilesPanel {
                         .child(st("saving", bar_dim()))
                 })
                 .when(!saving, |bar| {
-                    bar.child(
-                        small(button("files-save", "save"))
-                            .on_click(cx.listener(|t, _, _, cx| t.save_edit(false, cx))),
-                    )
+                    bar.child(small(button("files-save", "save")).on_click(cx.listener(
+                        |t, _, window, cx| {
+                            t.save_edit(false, cx);
+                            t.focus_edit(window, cx);
+                        },
+                    )))
                     .child(
                         small(button(
                             "files-done",
@@ -1429,10 +1441,12 @@ impl FilesPanel {
                             small(button("files-reload", "reload"))
                                 .on_click(cx.listener(|t, _, _, cx| t.reload_edit(cx))),
                         )
-                        .child(
-                            small(button("files-overwrite", "overwrite"))
-                                .on_click(cx.listener(|t, _, _, cx| t.save_edit(true, cx))),
-                        ),
+                        .child(small(button("files-overwrite", "overwrite")).on_click(
+                            cx.listener(|t, _, window, cx| {
+                                t.save_edit(true, cx);
+                                t.focus_edit(window, cx);
+                            }),
+                        )),
                 )
             } else {
                 e.error.as_ref().map(|why| {
