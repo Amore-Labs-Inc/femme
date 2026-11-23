@@ -1166,11 +1166,14 @@ impl Actor {
             return;
         }
         for h in std::mem::take(&mut self.resend) {
-            let r = match &h.id {
-                Some(id) => self
+            // a `/model` held from before: the control request, as `prompt` sends it, never the
+            // typed command (the CLI's own `fable` is still Fable 5.1)
+            let r = match (model_switch(&h.text), &h.id) {
+                (Some(m), _) => self.driver.set_model(&m, &mut self.out),
+                (None, Some(id)) => self
                     .driver
                     .prompt_with_id(id, &h.text, h.how, &mut self.out),
-                None => self.driver.prompt(&h.text, h.how, &mut self.out),
+                (None, None) => self.driver.prompt(&h.text, h.how, &mut self.out),
             };
             if let Err(e) = r {
                 tracing::warn!(sid = %self.sid, %e, "a held prompt was not sent again");
@@ -4152,6 +4155,44 @@ mod tests {
         assert_eq!(a2.try_recv().unwrap(), Ok(("tick 1\ntick 2".into(), false)));
         assert_eq!(a1.try_recv().unwrap(), Err(CoreError::NotFound));
         assert!(rig.a.tails.is_empty());
+    }
+
+    /// A `/model` that waited for a restart goes out as the control request with the exact id,
+    /// as `prompt` sends it, not as the typed command (the CLI's own `fable` is Fable 5.1).
+    #[tokio::test]
+    async fn a_held_model_switch_is_sent_again_as_set_model() {
+        let mut rig = Rig::new(Mode::Headless).await;
+        rig.row();
+        rig.a.spawn_process(&rig.d, None).await.unwrap();
+        rig.a.live = true;
+        let held = |text: &str| HeldPrompt {
+            text: text.into(),
+            how: PromptHow::Queue,
+            queued_at_ms: 0,
+            id: None,
+        };
+        rig.a.resend = vec![held("/model fable"), held("/effort high")];
+        rig.a.send_held(&rig.d).await;
+        let written: Vec<u8> = rig
+            .fake
+            .asked()
+            .into_iter()
+            .filter_map(|r| match r {
+                HolderReq::AgentWrite(b) => Some(b),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let written = String::from_utf8(written).unwrap();
+        assert!(
+            written.contains(r#""model":"claude-fable-5-2","subtype":"set_model""#),
+            "{written}"
+        );
+        assert!(!written.contains("/model fable"), "{written}");
+        // the other one is a prompt as before: held until the agent answers `initialize`
+        let held: Vec<_> = rig.a.driver.held_prompts();
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].text, "/effort high");
     }
 
     #[tokio::test]
