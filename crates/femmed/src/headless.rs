@@ -726,18 +726,11 @@ impl Actor {
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
         if let Some(m) = model_switch(text) {
-            // A prompt that is a `/` command waits for the running turn to end, so the switch
-            // would show minutes late (or never, while a long turn goes on): a running session
-            // switches at once, as the CLI's own control request, and the row says so now.
-            let running = row.status == SessionStatus::Working;
-            if is_gateway(row.model.as_deref()) != is_gateway(Some(&m)) {
-                return self.set_model(d, &m).await;
-            }
-            if running {
-                self.set_model(d, &m).await?;
-                self.update(d, None, |s| s.model = Some(m));
-                return Ok(());
-            }
+            // Not a queued prompt: a `/` command waits for the running turn to end, so the pick
+            // would show (and act) minutes late, and the CLI's own `fable` is still Fable 5.1.
+            // The id goes out now as the CLI's control request; its answer says yes (the row
+            // follows) or why not (a row in the chat).
+            return self.set_model(d, &m).await;
         }
         let takes = matches!(
             row.status,
@@ -927,7 +920,10 @@ impl Actor {
             // Another provider is another process: this one ends between turns, and the next
             // continues the conversation on the new model (`agent_exited`).
             if self.driver.status() != AgentStatus::Idle {
-                return Err(CoreError::Busy);
+                return Err(CoreError::Conflict(
+                    "another provider restarts the agent: wait for the turn to end, or interrupt it"
+                        .into(),
+                ));
             }
             self.update(d, None, |s| s.model = Some(model.to_owned()));
             self.switching = true;
