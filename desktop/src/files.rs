@@ -29,9 +29,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     div, px, relative, transparent_black, uniform_list, AnyElement, App, AppContext as _,
     ClickEvent, ClipboardEntry, ClipboardItem, Context, Div, Entity, ExternalPaths, FocusHandle,
-    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement as _, Render, Rgba, ScrollHandle, ScrollStrategy, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Task, UniformListScrollHandle, Window,
+    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Render, Rgba, ScrollHandle, ScrollStrategy, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Task, UniformListScrollHandle, Window,
 };
 use gpui_component::scroll::Scrollbar;
 
@@ -1560,11 +1560,10 @@ impl Render for FilesPanel {
                 let root = t.tree.root().to_owned();
                 t.dropped(root, paths, cx)
             }))
+            // A press takes the keyboard into the panel through `track_focus`, which leaves it to
+            // a child that took it on that press (the editor); a listener of our own here would
+            // run after the editor's and take it back, and nothing could be typed in it.
             .track_focus(&self.focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
-            )
             .on_key_down(cx.listener(Self::on_key))
             .child(page)
     }
