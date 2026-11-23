@@ -1436,7 +1436,15 @@ impl FilesPanel {
                 Some(
                     strip(panel())
                         .child(st("changed on disk", bad()))
-                        .child(div().flex_1().child("the file is not the one you opened"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child("the file is not the one you opened"),
+                        )
                         .child(
                             small(button("files-reload", "reload"))
                                 .on_click(cx.listener(|t, _, _, cx| t.reload_edit(cx))),
