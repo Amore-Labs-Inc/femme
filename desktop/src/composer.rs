@@ -821,6 +821,11 @@ impl Composer {
                 });
             }
         }
+        // A `/` command (the model's switch aside, which the daemon does at once) waits for the
+        // running turn to end: say so, or it looks as if nothing happened.
+        let t = text.trim_start();
+        let waits =
+            result.is_ok() && t.starts_with('/') && !t.starts_with("/model ") && self.working(cx);
         let Some(draft) = self.drafts.get_mut(sid) else {
             return;
         };
@@ -841,7 +846,8 @@ impl Composer {
                 }
             }
             Ok(_) => {
-                draft.notice = None;
+                draft.notice =
+                    waits.then(|| format!("{t} is queued: it runs when the current turn ends"));
                 let gone = draft.sent(&ids);
                 if draft.text == text {
                     draft.text.clear();
