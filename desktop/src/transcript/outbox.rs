@@ -86,6 +86,15 @@ impl Outbox {
             }
             if let Some(op) = op_of(item) {
                 list.retain(|s| s.op.to_string() != op);
+            } else if item.body.is_none() && item.blob_hash.is_some() {
+                // A long message is stored as a blob, so its op is not in the row; the start of its
+                // text is (the preview). The oldest prompt that starts so is the one.
+                let at = list.iter().position(|s| {
+                    !s.text.trim().is_empty() && matches(&item.preview, false, &s.text)
+                });
+                if let Some(at) = at {
+                    list.remove(at);
+                }
             }
         }
         let gone = list.len() != n;
@@ -186,6 +195,31 @@ mod tests {
             "a message without an op (typed in the pane) takes nothing off"
         );
         assert_eq!(ops(&o, t), [Id(100)]);
+    }
+
+    /// A message over 4 KiB is stored as a blob: the row has no body to name the op in, only the
+    /// start of the text as its preview. The prompt must still come off (it stayed as a faded
+    /// copy under every later message).
+    #[test]
+    fn a_long_message_stored_as_a_blob_takes_off_its_prompt_by_its_text() {
+        let t = Instant::now();
+        let mut o = Outbox::default();
+        let long = format!("No Cloudflare token needed. {}", "and so on. ".repeat(600));
+        o.push(SID, Id(1), "an unrelated one".into(), vec![], t);
+        o.push(SID, Id(2), long.clone(), vec![], t);
+        let Row::Item(mut item) = user("01JC", &long, None) else {
+            unreachable!()
+        };
+        item.body = None;
+        item.blob_hash = Some([7; 32]);
+        item.preview = long.chars().take(512).collect();
+        assert!(o.seen(SID, [&item]));
+        assert_eq!(ops(&o, t), [Id(1)]);
+        // an attachments-only prompt (no text) is never taken for a long message
+        let mut p = Outbox::default();
+        p.push(SID, Id(3), String::new(), vec!["a.png".into()], t);
+        assert!(!p.seen(SID, [&item]));
+        assert_eq!(ops(&p, t), [Id(3)]);
     }
 
     #[test]
