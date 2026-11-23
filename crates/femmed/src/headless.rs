@@ -726,8 +726,17 @@ impl Actor {
         let row = d.session(self.sid)?;
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
         if let Some(m) = model_switch(text) {
+            // A prompt that is a `/` command waits for the running turn to end, so the switch
+            // would show minutes late (or never, while a long turn goes on): a running session
+            // switches at once, as the CLI's own control request, and the row says so now.
+            let running = row.status == SessionStatus::Working;
             if is_gateway(row.model.as_deref()) != is_gateway(Some(&m)) {
                 return self.set_model(d, &m).await;
+            }
+            if running {
+                self.set_model(d, &m).await?;
+                self.update(d, None, |s| s.model = Some(m));
+                return Ok(());
             }
         }
         let takes = matches!(
