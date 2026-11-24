@@ -220,8 +220,8 @@ pub enum Settle {
 
 /// The right-hand hover panel: which tab is open, where the pointer is, how wide it is.
 ///
-/// It opens on the tab whose icon the pointer rests on (the strip itself opens the tab used last),
-/// and closes when the pointer is on neither the strip nor the panel and nothing inside the panel has
+/// It opens on the tab whose icon the pointer rests on (the strip between the icons opens nothing,
+/// it only keeps an open panel open), and closes when the pointer is on neither the strip nor the panel and nothing inside the panel has
 /// the keyboard. A drag of its edge never closes it. The caller reports the pointer with
 /// `hover_*`, asks [`Right::settle`] after a short delay, and tells it what it cannot know
 /// (the focus, a drag in progress).
@@ -265,7 +265,7 @@ impl Right {
         self.open
     }
 
-    /// The tab the strip opens when the pointer is on it but on no icon.
+    /// The tab used last: the one a key opens.
     pub fn last(&self) -> Tab {
         self.last
     }
@@ -280,7 +280,7 @@ impl Right {
         self.icon
     }
 
-    /// Opens `tab` (a click, a key): it also becomes the tab the strip opens next time.
+    /// Opens `tab` (a click, a key): it also becomes the tab used last.
     pub fn show(&mut self, tab: Tab) {
         self.open = Some(tab);
         self.last = tab;
@@ -324,12 +324,13 @@ impl Right {
         self.over_grip = on;
     }
 
-    /// The tab the pointer asks for: its icon's, else the strip's (the last one used).
+    /// The tab the pointer asks for: the one whose icon it is on. The rest of the strip asks for
+    /// none, or a pointer passing along the window's edge would open the panel.
     pub fn wanted(&self) -> Option<Tab> {
         if self.suppressed {
             return None;
         }
-        self.icon.or(self.over_strip.then_some(self.last))
+        self.icon
     }
 
     /// Whether the panel is due to close: it is open, the pointer is on neither it nor the strip,
@@ -739,14 +740,17 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_alone_opens_the_tab_used_last() {
+    fn the_strip_alone_opens_nothing_and_keeps_an_open_panel() {
         let mut r = on_strip();
-        assert_eq!(r.settle(false, false), Settle::Open(Tab::Terminal));
-        r.show(Tab::Files);
-        r.hide();
-        r.hover_strip(false);
-        r.hover_strip(true);
+        assert_eq!(r.settle(false, false), Settle::Nothing);
+        assert_eq!(r.open(), None);
+        // Off the icon but still on the strip: the panel it opened stays.
+        r.hover_icon(Tab::Files, true);
         assert_eq!(r.settle(false, false), Settle::Open(Tab::Files));
+        r.hover_icon(Tab::Files, false);
+        assert_eq!(r.settle(false, false), Settle::Nothing);
+        r.hover_strip(false);
+        assert_eq!(r.settle(false, false), Settle::Close);
     }
 
     #[test]
@@ -813,6 +817,7 @@ mod tests {
         r.hover_icon(Tab::Terminal, false);
         r.hover_strip(false);
         r.hover_strip(true);
+        r.hover_icon(Tab::Terminal, true);
         assert_eq!(r.settle(false, false), Settle::Open(Tab::Terminal));
     }
 

@@ -24,7 +24,7 @@ use crate::motion::Appear;
 use crate::theme::{self, surface, GUTTER, STRIP_W, TOP_BAR_H};
 use crate::ui::{self, Glyph};
 
-/// How long the pointer rests on the strip before the panel opens.
+/// How long the pointer rests on an icon before the panel opens.
 const OPEN_AFTER: Duration = Duration::from_millis(120);
 /// How long the pointer is away before the panel closes: long enough to cross a seam or overshoot.
 pub(super) const CLOSE_AFTER: Duration = Duration::from_millis(280);
@@ -167,7 +167,7 @@ impl FemmeApp {
             .on_click(cx.listener(|t, _, window, cx| t.toggle_board(window, cx)))
     }
 
-    /// The strip on the right edge: hovering it opens the panel.
+    /// The strip on the right edge: its icons open the panel, the rest of it only keeps it open.
     pub(super) fn strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         ui::strip("strip")
             .h_full()

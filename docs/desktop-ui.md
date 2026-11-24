@@ -202,8 +202,8 @@ Keep it current: when your module's public API changes, edit your section in the
   hover preview on screen until Esc or a click elsewhere. `Esc` and a click outside close the menu;
   `Esc` goes no further, so it does not interrupt a working session, and while the menu is up nothing
   behind it takes a hover or a click.
-- **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking opens
-  the panel (320–480 px, resizable) with that tab; it closes when the pointer leaves it and nothing
+- **Right**: a 28 px hover strip with two icons, `terminal` and `files`. Hovering or clicking an icon
+  opens the panel (320–480 px, resizable) with that tab (the strip between the icons opens nothing); it closes when the pointer leaves it and nothing
   is focused inside, or on `ctrl-k`. `terminal`: the session's panes as tabs, `+` opens a shell in
   the session's directory, `close` closes the pane. `files`: the session's directory as a tree;
   a click shows the file in the panel (images, PDF, text/code, markdown). Files dropped on the
