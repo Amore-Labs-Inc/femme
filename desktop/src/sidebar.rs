@@ -565,6 +565,12 @@ impl Sidebar {
         self.start(on, session::new_claude(cwd), cx);
     }
 
+    /// `+ deepseek`: a headless pi session on the remote box, on DeepSeek, which becomes the
+    /// current one.
+    fn create_deepseek(&mut self, cx: &mut Context<Self>) {
+        self.start(BoxId::Remote, session::new_deepseek(""), cx);
+    }
+
     /// Sends the session-making `req` to box `on`; the session it answers with becomes the
     /// current one. One at a time: a second click while the first is on its way does nothing.
     fn start(&mut self, on: BoxId, req: Req, cx: &mut Context<Self>) {
@@ -645,6 +651,17 @@ impl Sidebar {
     fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
         let b = button("sb-new-claude", "+ claude")
             .on_click(cx.listener(|this, _, _, cx| this.create("", BoxId::Remote, cx)));
+        if self.creating {
+            b.opacity(0.5)
+        } else {
+            b
+        }
+    }
+
+    /// The `+ deepseek` button: a pi session on the remote box.
+    fn new_deepseek_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let b = button("sb-new-deepseek", "+ deepseek")
+            .on_click(cx.listener(|this, _, _, cx| this.create_deepseek(cx)));
         if self.creating {
             b.opacity(0.5)
         } else {
@@ -854,6 +871,7 @@ impl Sidebar {
                 .p(px(12.))
                 .child(div().text_color(muted()).child(self.note()))
                 .when(self.can_create(), |d| d.child(self.new_button(cx)))
+                .when(self.can_create(), |d| d.child(self.new_deepseek_button(cx)))
                 .when(self.can_create_local(), |d| {
                     d.child(self.new_local_button(cx))
                 });
@@ -874,9 +892,15 @@ impl Sidebar {
             .gap(px(8.))
             .p(px(6.))
             .child(meta(TOGGLE_KEY))
-            .when(self.can_create_local(), |d| {
-                d.child(self.new_local_button(cx))
-            });
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .when(self.can_create(), |d| d.child(self.new_deepseek_button(cx)))
+                    .when(self.can_create_local(), |d| {
+                        d.child(self.new_local_button(cx))
+                    }),
+            );
         div()
             .flex()
             .flex_col()

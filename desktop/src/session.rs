@@ -83,6 +83,16 @@ pub(crate) fn new_claude(cwd: &str) -> Req {
     create_in(cwd, Agent::Claude, Mode::Headless, Some(CLAUDE_MODEL))
 }
 
+/// The model of `+ deepseek`: DeepSeek through OpenGateway, a provider of pi's own `models.json`
+/// (`provider/model id`), so the chat runs on pi, not on Claude Code.
+pub(crate) const DEEPSEEK_MODEL: &str = "opengateway/deepseek/deepseek-v4.1-flash-ultrafast";
+
+/// The sidebar's `+ deepseek`: a headless pi session in `cwd` (empty: the daemon's home) on
+/// [`DEEPSEEK_MODEL`].
+pub(crate) fn new_deepseek(cwd: &str) -> Req {
+    create_in(cwd, Agent::Pi, Mode::Headless, Some(DEEPSEEK_MODEL))
+}
+
 /// The session row menu's `fork`: a new headless Claude chat in `cwd` that starts as a copy of the
 /// conversation `agent_sid`. The daemon gives the copy the parent's model, effort and label.
 pub(crate) fn fork_of(cwd: &str, agent_sid: &str) -> Req {
