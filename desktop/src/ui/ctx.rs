@@ -22,8 +22,8 @@ use gpui::{
     Subscription, Window,
 };
 
-use super::{menu, menu_item};
-use crate::theme::{bad, muted_text};
+use super::{menu, menu_item, menu_item_off};
+use crate::theme::bad;
 
 /// How wide a menu is.
 pub const WIDTH: Pixels = px(140.);
@@ -87,22 +87,18 @@ pub fn card(prefix: &str, width: Pixels, items: impl IntoIterator<Item = Item>) 
                 run,
             } = item;
             card.child(
-                menu_item(SharedString::from(format!("{prefix}-{ix}")))
-                    .when(danger, |row| row.text_color(bad()))
-                    // No highlight, no hand: nothing happens on a click.
-                    .when(disabled, |row| {
-                        row.text_color(muted_text())
-                            .cursor_default()
-                            .hover(|s| s)
-                            .active(|s| s)
-                    })
-                    .child(label)
-                    .on_click(move |ev, window, cx| {
-                        cx.stop_propagation();
-                        if !disabled {
-                            run(ev, window, cx);
-                        }
-                    }),
+                // No highlight, no hand when disabled: nothing happens on a click.
+                (if disabled { menu_item_off } else { menu_item })(SharedString::from(format!(
+                    "{prefix}-{ix}"
+                )))
+                .when(danger, |row| row.text_color(bad()))
+                .child(label)
+                .on_click(move |ev, window, cx| {
+                    cx.stop_propagation();
+                    if !disabled {
+                        run(ev, window, cx);
+                    }
+                }),
             )
         })
 }

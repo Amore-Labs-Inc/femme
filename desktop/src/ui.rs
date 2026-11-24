@@ -21,9 +21,9 @@ use gpui::{
 };
 
 use crate::theme::{
-    self, accent, accent_soft, accent_strong, bar, bar_text, desk, ink, muted, on_accent_strong,
-    panel, paper, Palette, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, RULE, STRIP_W,
-    TITLE_SIZE,
+    self, accent, accent_soft, accent_strong, bar, bar_text, desk, ink, muted, muted_text,
+    on_accent_strong, panel, paper, Palette, BODY_SIZE, BTN_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI,
+    RULE, STRIP_W, TITLE_SIZE,
 };
 
 pub mod clip;
@@ -121,6 +121,15 @@ pub fn menu() -> Div {
 /// anything after it) with `.child(..)`; wrap a key hint in [`meta`] and push it right with a
 /// `div().flex_1()` before it.
 pub fn menu_item(id: impl Into<ElementId>) -> Stateful<Div> {
+    menu_item_off(id)
+        .text_color(ink())
+        .cursor_pointer()
+        .hover(|s| s.bg(accent()))
+        .active(|s| s.bg(accent_strong()).text_color(on_accent_strong()))
+}
+
+/// A [`menu_item`] that cannot be picked now: muted, no highlight, no hand.
+pub fn menu_item_off(id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -130,10 +139,7 @@ pub fn menu_item(id: impl Into<ElementId>) -> Stateful<Div> {
         .px(px(8.))
         .font_family(FONT_UI)
         .text_size(BODY_SIZE)
-        .text_color(ink())
-        .cursor_pointer()
-        .hover(|s| s.bg(accent()))
-        .active(|s| s.bg(accent_strong()).text_color(on_accent_strong()))
+        .text_color(muted_text())
 }
 
 /// A row of a list (sessions, files, accounts): at least 30 px, paper, a soft pink wash on hover and
