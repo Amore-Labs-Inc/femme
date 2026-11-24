@@ -390,7 +390,7 @@ mod tests {
             of(Pick::Inkling),
             (
                 Agent::Pi,
-                "inkling/inkling-2-mini-uncensored".into(),
+                "inkling/inkling-2-mini-sq-10".into(),
                 String::new()
             )
         );

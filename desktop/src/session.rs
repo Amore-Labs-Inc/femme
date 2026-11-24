@@ -95,7 +95,7 @@ pub(crate) fn new_deepseek(cwd: &str) -> Req {
 
 /// The model of the `+` menu's `inkling 2 mini (uncensored)`: a provider of the laptop pi's own
 /// `models.json` that points at a llama.cpp server on that machine, so it runs only there.
-pub(crate) const INKLING_MODEL: &str = "inkling/inkling-2-mini-uncensored";
+pub(crate) const INKLING_MODEL: &str = "inkling/inkling-2-mini-sq-10";
 
 /// The `+` menu's inkling chat: a headless pi session in `cwd` (empty: the daemon's home) on
 /// [`INKLING_MODEL`].
