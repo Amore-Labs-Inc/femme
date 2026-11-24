@@ -77,20 +77,30 @@ pub(crate) fn create(agent: Agent, mode: Mode, model: Option<&str>) -> Req {
     create_in("", agent, mode, model)
 }
 
-/// The sidebar's `+ claude`, a folder header's `+` and the projects picker: a headless Claude
+/// The `+` menu's claude chat, a folder header's `+` and the projects picker: a headless Claude
 /// session in `cwd` (empty: the daemon's home) on [`CLAUDE_MODEL`].
 pub(crate) fn new_claude(cwd: &str) -> Req {
     create_in(cwd, Agent::Claude, Mode::Headless, Some(CLAUDE_MODEL))
 }
 
-/// The model of `+ deepseek`: DeepSeek through OpenGateway, a provider of pi's own `models.json`
-/// (`provider/model id`), so the chat runs on pi, not on Claude Code.
+/// The model of the `+` menu's `deepseek`: DeepSeek through OpenGateway, a provider of pi's own
+/// `models.json` (`provider/model id`), so the chat runs on pi, not on Claude Code.
 pub(crate) const DEEPSEEK_MODEL: &str = "opengateway/deepseek/deepseek-v4.1-flash-ultrafast";
 
-/// The sidebar's `+ deepseek`: a headless pi session in `cwd` (empty: the daemon's home) on
+/// The `+` menu's deepseek chat: a headless pi session in `cwd` (empty: the daemon's home) on
 /// [`DEEPSEEK_MODEL`].
 pub(crate) fn new_deepseek(cwd: &str) -> Req {
     create_in(cwd, Agent::Pi, Mode::Headless, Some(DEEPSEEK_MODEL))
+}
+
+/// The model of the `+` menu's `inkling 2 mini (uncensored)`: a provider of the laptop pi's own
+/// `models.json` that points at a llama.cpp server on that machine, so it runs only there.
+pub(crate) const INKLING_MODEL: &str = "inkling/inkling-2-mini-uncensored";
+
+/// The `+` menu's inkling chat: a headless pi session in `cwd` (empty: the daemon's home) on
+/// [`INKLING_MODEL`].
+pub(crate) fn new_inkling(cwd: &str) -> Req {
+    create_in(cwd, Agent::Pi, Mode::Headless, Some(INKLING_MODEL))
 }
 
 /// The session row menu's `fork`: a new headless Claude chat in `cwd` that starts as a copy of the

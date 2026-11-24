@@ -17,9 +17,10 @@
 //! - The sidebar is [`Focusable`]: with the keyboard on it, Up/Down/Home/End move a cursor and Enter
 //!   opens the session under it.
 //!
-//! `+ claude` (the empty state) creates a headless Claude session in the
-//! daemon's default directory and makes it the current one on [`Net`]; a folder header's `+` does
-//! the same in that folder. Shells start from the terminal panel's own `+`.
+//! The title bar's `+` opens a menu that starts a chat (claude, deepseek or inkling, on the box or
+//! this laptop) in the daemon's home directory and makes it the current one on [`Net`], or opens
+//! the projects picker (`sidebar/new.rs`); a folder header's `+` starts a Claude chat in that
+//! folder. Shells start from the terminal panel's own `+`.
 
 use std::collections::HashSet;
 
@@ -44,8 +45,7 @@ use crate::theme::{
     BODY_SIZE, FONT_MONO, FONT_PIXEL, FONT_UI, META_SIZE, RULE, TB_SIZE,
 };
 use crate::ui::{
-    button, dot, icon, icon_button, meta, row, ruled, ruled_sides, st, title_bar, title_button,
-    Glyph,
+    dot, icon, icon_button, meta, row, ruled, ruled_sides, st, title_bar, title_button, Glyph,
 };
 
 /// Width of the expanded sidebar, in logical pixels.
@@ -56,6 +56,7 @@ pub const STRIP: f32 = 28.;
 const _: () = assert!(STRIP < WIDTH);
 /// Height of a row of the expanded list.
 mod ctx;
+mod new;
 
 const ROW_H: f32 = 46.;
 /// Height of a dot cell of the collapsed strip.
@@ -76,7 +77,7 @@ pub struct OpenSession(pub Sid);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CollapsedChanged(pub bool);
 
-/// The title bar's add project button: the shell opens the folder picker.
+/// The `+` menu's `project…`: the shell opens the folder picker.
 pub struct AddProject;
 
 /// What a session's dot says: what it is doing, or what it waits for. Rows keep the lane, not its
@@ -254,7 +255,7 @@ fn rows(model: &Model) -> Vec<Row> {
 struct Shown {
     rows: Vec<Row>,
     link: Link,
-    /// `femmed local` is connected: `+ this laptop` is offered.
+    /// `femmed local` is connected: chats can start on this laptop.
     local_up: bool,
 }
 
@@ -352,10 +353,14 @@ pub struct Sidebar {
     collapsed: bool,
     /// The projects folded shut, by folder.
     folded: HashSet<String>,
-    /// A `+ claude` request is out: a second click would queue a second session.
+    /// A session request is out: a second pick would queue a second session.
     creating: bool,
     /// The right-click menu open on a row.
     menu: Option<ctx::Menu>,
+    /// The `+` menu, while it is open.
+    new_menu: Option<new::NewMenu>,
+    /// The `+` menu's keys, heard wherever the keyboard is.
+    _keys: Subscription,
     focus: FocusHandle,
     scroll: ScrollHandle,
     _net: Option<Subscription>,
@@ -378,6 +383,10 @@ impl Sidebar {
             .as_ref()
             .map(|n| Shown::of(&n.read(cx).model))
             .unwrap_or_default();
+        let this = cx.weak_entity();
+        let keys = cx.intercept_keystrokes(move |ev, window, cx| {
+            this.update(cx, |t, cx| t.new_key(ev, window, cx)).ok();
+        });
         Self {
             net,
             shown,
@@ -390,6 +399,8 @@ impl Sidebar {
             scroll: ScrollHandle::new(),
             _net: watch,
             menu: None,
+            new_menu: None,
+            _keys: keys,
             _focus: Vec::new(),
         }
     }
@@ -439,7 +450,7 @@ impl Sidebar {
         }
     }
 
-    /// Whether `+ claude` is offered: there is a daemon and it is connected.
+    /// Whether a chat can start on the box: there is a daemon and it is connected.
     fn can_create(&self) -> bool {
         self.net.is_some() && self.shown.can_create()
     }
@@ -449,7 +460,7 @@ impl Sidebar {
         let Some(net) = &self.net else { return };
         let shown = Shown::of(&net.read(cx).model);
         if shown != self.shown {
-            // A session made current before its row arrived (a `+ claude` answer beats the row) is
+            // A session made current before its row arrived (a `+` answer beats the row) is
             // scrolled to once the row is here.
             let was_row = self
                 .selected
@@ -559,16 +570,10 @@ impl Sidebar {
         cx.stop_propagation();
     }
 
-    /// `+ claude`, `+ this laptop` (`cwd` empty: the daemon's home directory) or a folder header's
-    /// `+`: a headless Claude session there, on box `on`, which becomes the current one.
+    /// A folder header's `+`: a headless Claude session in `cwd`, on box `on`, which becomes the
+    /// current one.
     fn create(&mut self, cwd: &str, on: BoxId, cx: &mut Context<Self>) {
         self.start(on, session::new_claude(cwd), cx);
-    }
-
-    /// `+ deepseek`: a headless pi session on the remote box, on DeepSeek, which becomes the
-    /// current one.
-    fn create_deepseek(&mut self, cx: &mut Context<Self>) {
-        self.start(BoxId::Remote, session::new_deepseek(""), cx);
     }
 
     /// Sends the session-making `req` to box `on`; the session it answers with becomes the
@@ -615,8 +620,9 @@ impl Sidebar {
         }
     }
 
-    /// The black bar: "sessions" and the button that collapses, or just the button that expands.
-    fn header(&self, cx: &Context<Self>) -> Div {
+    /// The black bar: "sessions", the `+` menu and the button that collapses, or just the button
+    /// that expands.
+    fn header(&self, window: &Window, cx: &Context<Self>) -> Div {
         let collapsed = self.collapsed;
         let toggle = title_button(
             // One id per form: gpui keeps a tooltip by id, and "hide sessions" must not outlive the
@@ -640,47 +646,27 @@ impl Sidebar {
         if collapsed {
             bare_bar().justify_center().child(toggle)
         } else {
-            let add = title_button("sb-add-project", Glyph::Plus)
-                .tooltip(|window, cx| Tooltip::new("Add project").build(window, cx))
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(AddProject)));
-            title_bar("sessions").child(add).child(toggle)
+            // Opens on the press, which goes no further: the sidebar's own press would take the
+            // keyboard from the composer.
+            let add = title_button("sb-new", Glyph::Plus)
+                .when(self.creating, |b| b.opacity(0.5))
+                .tooltip(|window, cx| Tooltip::new("New chat").build(window, cx))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_new(window, cx);
+                    }),
+                );
+            title_bar("sessions")
+                .relative()
+                .child(add)
+                .child(toggle)
+                .children(self.new_menu_view(window, cx))
         }
     }
 
-    /// The `+ claude` button: a session on the remote box.
-    fn new_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let b = button("sb-new-claude", "+ claude")
-            .on_click(cx.listener(|this, _, _, cx| this.create("", BoxId::Remote, cx)));
-        if self.creating {
-            b.opacity(0.5)
-        } else {
-            b
-        }
-    }
-
-    /// The `+ deepseek` button: a pi session on the remote box.
-    fn new_deepseek_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let b = button("sb-new-deepseek", "+ deepseek")
-            .on_click(cx.listener(|this, _, _, cx| this.create_deepseek(cx)));
-        if self.creating {
-            b.opacity(0.5)
-        } else {
-            b
-        }
-    }
-
-    /// The `+ this laptop` button: a Claude session on `femmed local`, in the home directory.
-    fn new_local_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let b = button("sb-new-local", "+ this laptop")
-            .on_click(cx.listener(|this, _, _, cx| this.create("", BoxId::Local, cx)));
-        if self.creating {
-            b.opacity(0.5)
-        } else {
-            b
-        }
-    }
-
-    /// Whether `+ this laptop` is offered: `femmed local` is connected.
+    /// Whether a chat can start on this laptop: `femmed local` is connected.
     fn can_create_local(&self) -> bool {
         self.net.is_some() && self.shown.can_create_local()
     }
@@ -870,10 +856,8 @@ impl Sidebar {
                 .gap(px(8.))
                 .p(px(12.))
                 .child(div().text_color(muted()).child(self.note()))
-                .when(self.can_create(), |d| d.child(self.new_button(cx)))
-                .when(self.can_create(), |d| d.child(self.new_deepseek_button(cx)))
-                .when(self.can_create_local(), |d| {
-                    d.child(self.new_local_button(cx))
+                .when(self.can_create() || self.can_create_local(), |d| {
+                    d.child(meta("+ above starts a chat"))
                 });
         }
         let mut rows = Vec::new();
@@ -891,16 +875,7 @@ impl Sidebar {
             .justify_between()
             .gap(px(8.))
             .p(px(6.))
-            .child(meta(TOGGLE_KEY))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .when(self.can_create(), |d| d.child(self.new_deepseek_button(cx)))
-                    .when(self.can_create_local(), |d| {
-                        d.child(self.new_local_button(cx))
-                    }),
-            );
+            .child(meta(TOGGLE_KEY));
         div()
             .flex()
             .flex_col()
@@ -979,7 +954,7 @@ impl Render for Sidebar {
             .text_size(BODY_SIZE)
             .line_height(relative(1.3))
             .text_color(ink())
-            .child(self.header(cx))
+            .child(self.header(window, cx))
             .child(body)
     }
 }
@@ -1063,7 +1038,7 @@ mod tests {
             rows.iter().map(|r| (r.sid.0, r.local)).collect::<Vec<_>>(),
             [(2, true), (1, false)]
         );
-        // `+ this laptop` is offered while the local daemon is connected.
+        // Chats can start on this laptop while the local daemon is connected.
         assert!(!Shown::of(&m).can_create_local());
         m.local_link = Some(Link::Up(Transport::Local));
         assert!(Shown::of(&m).can_create_local());
