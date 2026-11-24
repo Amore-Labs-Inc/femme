@@ -1474,7 +1474,11 @@ impl Actor {
         let s = d.session(self.sid).map_err(|e| e.to_string())?;
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
-        extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        // only Claude Code is pointed at the gateway by environment: pi has its provider in its own
+        // `models.json`
+        if self.agent == Agent::Claude {
+            extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        }
         extra_env.extend(artifact_env(self.agent, s.model.as_deref()));
         // A fork with no turn of its own has no transcript to resume: it is forked (again) from
         // the original, under the id its row carries. Once it has one, or after a `/clear` gave
@@ -1530,7 +1534,11 @@ impl Actor {
         let s = d.session(self.sid).map_err(|e| e.to_string())?;
         let path = d.sessions.path(&d.cfg);
         let mut extra_env = d.sessions.child_env(&d.cfg, &path);
-        extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        // only Claude Code is pointed at the gateway by environment: pi has its provider in its own
+        // `models.json`
+        if self.agent == Agent::Claude {
+            extra_env.extend(gateway_env(&d.cfg.home, s.model.as_deref())?);
+        }
         let launch = Launch {
             cwd: s.cwd,
             model: model_id(self.sid, s.model),
