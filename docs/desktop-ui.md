@@ -44,7 +44,7 @@ Keep it current: when your module's public API changes, edit your section in the
   with its own store in `~/.local/state/femme-local`, one unix socket, nothing public) and shows its
   sessions in the same list with a `local` pill after the name; their terminal tabs end in
   `· local`, and the top bar reads `quic 23 ms · local` (`· local: off` while that daemon is down).
-  `+ this laptop` in the sidebar starts a Claude session in the laptop's home folder. Every
+  The sidebar's `+` menu offers `this laptop` as the place of a claude or deepseek chat. Every
   request goes to the box of its session; the phone never sees local sessions (it cannot reach the
   laptop). Design: docs/plan-local.md.
 - **Left**: sessions only (live ones), newest first, current one marked, grouped by folder under
@@ -53,8 +53,16 @@ Keep it current: when your module's public API changes, edit your section in the
   transcript, or the user's `/rename`), and for a headless chat one a fork of the conversation
   gives after its first turn (`headless/title.rs`, the small model, nothing saved); the agents
   API's name and a label already set win; a chat with no title yet shows its folder. `ctrl-shift-b` and a thin edge
-  handle collapse/expand it. At the foot `+ shell` and `+ claude` (headless, home directory) start a session
-  and show it. Nothing else on the left (no accounts, no lanes). From a shell on the box,
+  handle collapse/expand it. The title bar's `+` is the one place a chat starts
+  (`sidebar/new.rs`): a menu under it asks the model (`claude`, `deepseek`, `inkling 2 mini
+  (uncensored)`), then, for claude and deepseek while `femmed local` is connected, the box (`femme`
+  or `this laptop`); without the local daemon they start on femme at once. Inkling is served on the
+  laptop only (pi's `inkling` provider, a local llama.cpp server): it starts there without asking,
+  and is dimmed with `needs this laptop` while the local daemon is down. The last row, `project…`,
+  opens the projects picker. The chat starts headless in the home directory and is shown; one
+  request at a time (the `+` dims meanwhile). Up/Down/Enter/Esc drive the menu wherever the keyboard
+  is, a press outside closes it. The foot keeps only the `ctrl-shift-b` hint; the empty list points
+  at the `+`. A folder header's `+` starts a Claude chat in that folder. Nothing else on the left (no accounts, no lanes). From a shell on the box,
   `femmed open [--cwd <dir>]` starts the same kind of session, and `femmed open --resume <uuid>`
   goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
   shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
