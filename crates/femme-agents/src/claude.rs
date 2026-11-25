@@ -4762,8 +4762,10 @@ mod tests {
         let mut f = Feed::new();
         f.line(json!({"type":"system","subtype":"init","session_id":"s","model":"m"}));
         assert_eq!(f.d.version(), None);
-        f.line(json!({"type":"system","subtype":"init","session_id":"s","model":"m",
-            "claude_code_version":"2.1.330"}));
+        f.line(
+            json!({"type":"system","subtype":"init","session_id":"s","model":"m",
+            "claude_code_version":"2.1.330"}),
+        );
         assert_eq!(f.d.version(), Some("2.1.330"));
     }
 
@@ -4780,17 +4782,31 @@ mod tests {
             f.line(json!({"type":"result","subtype":"success","is_error":false}));
         };
         assert!(!f.d.wakeup_pending() && !f.d.cron_made());
-        call(&mut f, "ScheduleWakeup", json!({"delaySeconds":60,"prompt":"look"}));
+        call(
+            &mut f,
+            "ScheduleWakeup",
+            json!({"delaySeconds":60,"prompt":"look"}),
+        );
         assert!(f.d.wakeup_pending());
-        f.line(json!({"type":"command_lifecycle","command_uuid":"w1","state":"started",
-            "wakeup_source":"loop_wakeup"}));
+        f.line(
+            json!({"type":"command_lifecycle","command_uuid":"w1","state":"started",
+            "wakeup_source":"loop_wakeup"}),
+        );
         f.line(json!({"type":"result","subtype":"success","is_error":false}));
         assert!(!f.d.wakeup_pending(), "it fired");
-        call(&mut f, "ScheduleWakeup", json!({"delaySeconds":60,"prompt":"look"}));
+        call(
+            &mut f,
+            "ScheduleWakeup",
+            json!({"delaySeconds":60,"prompt":"look"}),
+        );
         call(&mut f, "ScheduleWakeup", json!({"stop":true}));
         assert!(!f.d.wakeup_pending(), "the loop was stopped");
         assert!(!f.d.cron_made());
-        call(&mut f, "CronCreate", json!({"cron":"0 9 * * *","prompt":"look"}));
+        call(
+            &mut f,
+            "CronCreate",
+            json!({"cron":"0 9 * * *","prompt":"look"}),
+        );
         assert!(f.d.cron_made());
     }
 
