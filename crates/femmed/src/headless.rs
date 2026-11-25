@@ -39,6 +39,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::Instant;
 
+use crate::config::Config;
 use crate::core::CoreError;
 use crate::daemon::{core_err, now_ms, Daemon};
 use crate::holder_client::{Holder, SpoolLines};
@@ -53,6 +54,7 @@ pub(crate) mod backfill;
 pub(crate) mod btw;
 pub(crate) mod fork;
 pub(crate) mod title;
+pub(crate) mod upgrade;
 
 /// What ends the agent's TUI politely. ponytail: Claude's, for every agent; Codex and Pi get theirs
 /// when their TUIs are wired.
@@ -65,6 +67,12 @@ const FAIL_WINDOW: Duration = Duration::from_secs(30);
 const DRAIN: Duration = Duration::from_secs(2);
 /// The takeover machine's clock.
 const TICK: Duration = Duration::from_millis(100);
+
+/// How often a chat looks whether it may move to a newly installed Claude Code: a few times per
+/// `upgrade_idle`, a minute at most.
+fn upgrade_every(cfg: &Config) -> Duration {
+    (cfg.upgrade_idle / 4).clamp(Duration::from_secs(1), Duration::from_secs(60))
+}
 /// Items on a headless session's `/screen`, and the most of one item shown.
 // ponytail: the last 50 items, each cut at 4000 bytes, no paging; the desktop reads the store's
 // pages, add a cursor to `/screen` if a client wants the rest.
@@ -86,6 +94,12 @@ pub(crate) struct Saved {
     /// copy has no transcript on disk (no turn of its own yet) a new process forks again.
     #[serde(default)]
     fork_from: Option<(String, String)>,
+    /// The Claude Code the agent's process runs ([`Actor::version`]).
+    #[serde(default)]
+    version: Option<String>,
+    /// The process made a scheduled task ([`Driver::cron_made`]).
+    #[serde(default)]
+    cron: bool,
 }
 
 impl Saved {
@@ -479,6 +493,21 @@ struct Actor {
     failed: bool,
     /// The agent was stopped to start again on another provider's model.
     switching: bool,
+    /// The agent was stopped to start again on a newly installed Claude Code: the version it ran
+    /// and the new one.
+    upgrading: Option<(String, String)>,
+    /// The installed version the last such restart was for: not tried twice, should the new
+    /// process not say that version.
+    upgraded_to: Option<String>,
+    /// The Claude Code this process runs: the one installed when it started, then what its `init`
+    /// says (the CLI prints that with the first turn only).
+    version: Option<String>,
+    /// This process made a scheduled task, which a restart would end.
+    cron: bool,
+    /// When the agent last said something or was given a prompt.
+    quiet_since: Instant,
+    /// The next look at whether a newer Claude Code is installed (Claude chats only).
+    upgrade_at: Option<Instant>,
     stop: bool,
     /// Claude's `/goal` is on (set, or judged not met yet): the transcript on disk is followed for
     /// the checker's verdicts, which the stream never carries (see [`GoalTail`]).
@@ -520,6 +549,7 @@ impl Actor {
         epoch: u64,
         saved: Saved,
     ) -> Actor {
+        let (version, cron) = (saved.version.clone(), saved.cron);
         Actor {
             d: d.me.clone(),
             sid: s.id,
@@ -554,6 +584,12 @@ impl Actor {
             tui_from: None,
             failed: false,
             switching: false,
+            upgrading: None,
+            upgraded_to: None,
+            version,
+            cron,
+            quiet_since: Instant::now(),
+            upgrade_at: (s.agent == Agent::Claude).then(|| Instant::now() + upgrade_every(&d.cfg)),
             stop: false,
             goal: None,
             monitor: None,
@@ -582,7 +618,10 @@ impl Actor {
             self.begin(&d).await;
         }
         while !self.stop {
-            let wake = [self.restart_at, self.tick_at].into_iter().flatten().min();
+            let wake = [self.restart_at, self.tick_at, self.upgrade_at]
+                .into_iter()
+                .flatten()
+                .min();
             tokio::select! {
                 cmd = rx.recv() => {
                     let Some(cmd) = cmd else { break };
@@ -727,7 +766,8 @@ impl Actor {
         // `/model deepseek` and back: the CLI cannot change provider, the daemon restarts it
         if let Some(m) = model_switch(text) {
             // Not a queued prompt: a `/` command waits for the running turn to end, so the pick
-            // would show (and act) minutes late, and the CLI's own `fable` is still Fable 5.1.
+            // would show (and act) minutes late, and a chat still on a Claude Code older than
+            // 2.1.321 takes `fable` for Fable 5.1 (since then it is Fable 5.2).
             // The id goes out now as the CLI's control request; its answer says yes (the row
             // follows) or why not (a row in the chat).
             return self.set_model(d, &m).await;
@@ -748,6 +788,7 @@ impl Actor {
         }
         .map_err(driver_err)?;
         self.flush().await;
+        self.quiet_since = Instant::now();
         let effort = effort_switch(text);
         let goal = goal_switch(text);
         match goal.as_ref().map(|g| g.state) {
@@ -1070,6 +1111,72 @@ impl Actor {
             let acts = self.machine.step(Ev::Tick { now: self.ms() });
             self.run_acts(d, acts).await;
         }
+        if self.upgrade_at.is_some_and(|t| t <= now) {
+            self.upgrade_at = Some(now + upgrade_every(&d.cfg));
+            self.upgrade_check(d).await;
+        }
+    }
+
+    /// Nothing would be lost if the agent's process ended now, and has not for `upgrade_idle`: a
+    /// Claude chat, headless, idle with nothing asked, no background task (they die with the
+    /// process), no goal pursued, no wakeup or scheduled task waiting, nothing held to send.
+    fn restartable(&self, d: &Daemon) -> bool {
+        let Ok(s) = d.session(self.sid) else {
+            return false;
+        };
+        let pursuing = |g: &Goal| matches!(g.state, GoalState::Active | GoalState::NotMet);
+        self.agent == Agent::Claude
+            && self.live
+            && self.ready().is_ok()
+            && !self.switching
+            && self.upgrading.is_none()
+            && s.status == SessionStatus::Idle
+            && s.attention != Attention::Blocked
+            && s.bg_tasks.is_empty()
+            && self.goal.is_none()
+            && !s.goal.as_ref().is_some_and(pursuing)
+            && self.driver.status() == AgentStatus::Idle
+            // ponytail: a wakeup asked for before a daemon restart is not known to the new driver;
+            // it fires within the hour (the tool's longest delay), which the default threshold
+            // waits out. Keep it in `agent_state` like `cron` if a shorter threshold is ever used.
+            && !self.driver.wakeup_pending()
+            && !self.cron
+            && !self.driver.cron_made()
+            && self.driver.held_prompts().is_empty()
+            && self.resend.is_empty()
+            && self.quiet_since.elapsed() >= d.cfg.upgrade_idle
+    }
+
+    /// The Claude Code the agent's process runs, as far as known.
+    fn running(&self) -> Option<&str> {
+        self.driver.version().or(self.version.as_deref())
+    }
+
+    /// The terminal's `/restart`, by itself: a chat that has been quiet long enough and runs
+    /// another Claude Code than the installed one ends between turns (its stdin is closed), and
+    /// [`Actor::agent_exited`] starts it again on the same conversation.
+    async fn upgrade_check(&mut self, d: &Daemon) {
+        if !self.restartable(d) {
+            return;
+        }
+        let path = d.sessions.path(&d.cfg);
+        let env = d.sessions.child_env(&d.cfg, &path);
+        let Some(new) = upgrade::installed(&path, &env, upgrade::FRESH).await else {
+            return;
+        };
+        let Some(old) = self.running().map(str::to_owned) else {
+            return;
+        };
+        if old == new || self.upgraded_to.as_deref() == Some(new.as_str()) {
+            return;
+        }
+        match self.holder.agent_close_stdin().await {
+            Ok(()) => {
+                self.upgraded_to = Some(new.clone());
+                self.upgrading = Some((old, new));
+            }
+            Err(e) => tracing::debug!(sid = %self.sid, %e, "upgrade: stdin not closed"),
+        }
     }
 
     // ---- the spool ------------------------------------------------------------------------------
@@ -1088,6 +1195,9 @@ impl Actor {
         self.recv_end = self.recv_end.max(offset + data.len() as u64);
         while let Some((at, line)) = self.lines.next_line() {
             let events = self.driver.on_line(at, &line, &mut self.out);
+            if !events.is_empty() {
+                self.quiet_since = Instant::now();
+            }
             self.flush().await;
             self.apply(d, Src::Line(at), events).await;
         }
@@ -1167,7 +1277,7 @@ impl Actor {
         }
         for h in std::mem::take(&mut self.resend) {
             // a `/model` held from before: the control request, as `prompt` sends it, never the
-            // typed command (the CLI's own `fable` is still Fable 5.1)
+            // typed command (a Claude Code older than 2.1.321 takes `fable` for Fable 5.1)
             let r = match (model_switch(&h.text), &h.id) {
                 (Some(m), _) => self.driver.set_model(&m, &mut self.out),
                 (None, Some(id)) => self
@@ -1400,6 +1510,10 @@ impl Actor {
             .chain(puts)
             .collect();
         let committed = self.committed.max(self.driver.resume_offset());
+        if let Some(v) = self.driver.version() {
+            self.version = Some(v.to_owned());
+        }
+        self.cron |= self.driver.cron_made();
         let saved = Saved {
             answers: self.driver.pending_answers(),
             held: self
@@ -1409,6 +1523,8 @@ impl Actor {
                 .chain(self.resend.iter().cloned())
                 .collect(),
             fork_from: self.saved.fork_from.clone(),
+            version: self.version.clone(),
+            cron: self.cron,
         };
         // not while replaying: the driver has not seen the questions it holds answers for yet
         let state = (self.replay_until.is_none() && saved != self.saved).then(|| saved.json());
@@ -1513,6 +1629,13 @@ impl Actor {
             effort,
         };
         self.driver = driver_for(self.agent);
+        // what this process will run, until its `init` says so itself: asked now, not from memory
+        self.version = match self.agent {
+            Agent::Claude => upgrade::installed(&path, &launch.extra_env, Duration::ZERO).await,
+            _ => None,
+        };
+        self.cron = false;
+        self.quiet_since = Instant::now();
         let mut sp = self.driver.spawn(&launch);
         let prog = sp.cmd.first().cloned().ok_or("empty command")?;
         sp.cmd[0] =
@@ -1607,6 +1730,14 @@ impl Actor {
             );
             self.restart(d).await;
             // a switch is not a crash: the next exit may restart it again
+            self.restarted_at = None;
+            return;
+        }
+        if let Some((old, new)) = self.upgrading.take() {
+            tracing::info!(sid = %self.sid, %old, %new, "chat restarted on the installed Claude Code");
+            self.event(d, &format!("Claude Code {old} → {new}"));
+            self.restart(d).await;
+            // nor is this one
             self.restarted_at = None;
             return;
         }
@@ -3942,6 +4073,11 @@ mod tests {
     /// A daemon over temp dirs whose only tool is an empty `claude` (the holder is fake: nothing
     /// is run).
     fn daemon() -> (Arc<Daemon>, tempfile::TempDir) {
+        daemon_with(|_| {})
+    }
+
+    /// [`daemon`] with `tweak` applied to its config first.
+    fn daemon_with(tweak: impl FnOnce(&mut Config)) -> (Arc<Daemon>, tempfile::TempDir) {
         let dir = tempfile::Builder::new()
             .prefix("femmed-u-")
             .tempdir_in("/tmp")
@@ -3953,6 +4089,7 @@ mod tests {
         cfg.state_dir = dir.path().join("state");
         cfg.runtime_dir = dir.path().join("rt");
         cfg.tool_path = Some(bin.display().to_string());
+        tweak(&mut cfg);
         (Daemon::open(cfg).unwrap(), dir)
     }
 
@@ -3977,7 +4114,10 @@ mod tests {
 
     impl Rig {
         async fn new(mode: Mode) -> Rig {
-            let (d, dir) = daemon();
+            Rig::over(mode, daemon()).await
+        }
+
+        async fn over(mode: Mode, (d, dir): (Arc<Daemon>, tempfile::TempDir)) -> Rig {
             let fake = FakeHolder::start(&d, SID, false);
             let holder = Holder::connect(&d.sessions.dirs, SID).await.unwrap();
             let s = session_row(SID, mode, SessionStatus::Starting);
@@ -4166,7 +4306,8 @@ mod tests {
     }
 
     /// A `/model` that waited for a restart goes out as the control request with the exact id,
-    /// as `prompt` sends it, not as the typed command (the CLI's own `fable` is Fable 5.1).
+    /// as `prompt` sends it, not as the typed command (before Claude Code 2.1.321 the CLI's own
+    /// `fable` was Fable 5.1).
     #[tokio::test]
     async fn a_held_model_switch_is_sent_again_as_set_model() {
         let mut rig = Rig::new(Mode::Headless).await;
@@ -4201,6 +4342,216 @@ mod tests {
         let held: Vec<_> = rig.a.driver.held_prompts();
         assert_eq!(held.len(), 1, "{held:?}");
         assert_eq!(held[0].text, "/effort high");
+    }
+
+    /// A rig whose chat may be restarted for a new Claude Code at once (no quiet time asked): its
+    /// process runs 2.1.330 and has ended a turn, and the box's `claude` says 2.1.331.
+    async fn upgradable(idle_secs: u64) -> Rig {
+        let cfg = |cfg: &mut Config| cfg.upgrade_idle = Duration::from_secs(idle_secs);
+        let mut rig = Rig::over(Mode::Headless, daemon_with(cfg)).await;
+        rig.row();
+        let claude = rig._dir.path().join("bin/claude");
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.331 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        rig.a.spawn_process(&rig.d, None).await.unwrap();
+        // the process was started before the install: its init says the older version
+        let init = json!({"type":"system","subtype":"init","session_id":"conv-1",
+            "model":"claude-haiku-5-5","claude_code_version":"2.1.330"});
+        let lines = format!("{init}\n{}", turn_lines("m1", "one"));
+        rig.a.ingest(&rig.d, 0, Bytes::from(lines)).await;
+        rig
+    }
+
+    fn closed_stdin(rig: &Rig) -> usize {
+        let asked = rig.fake.asked();
+        let closes = asked
+            .iter()
+            .filter(|r| matches!(r, HolderReq::AgentCloseStdin));
+        closes.count()
+    }
+
+    /// The stdin of an idle chat on an older Claude Code is closed; its exit is then a restart on
+    /// the same conversation with one row, and a prompt sent in between runs on the new process.
+    #[tokio::test]
+    async fn an_upgrade_restart_resumes_the_conversation_and_keeps_a_prompt_sent_meanwhile() {
+        let mut rig = upgradable(0).await;
+        assert_eq!(rig.d.session(SID).unwrap().status, SessionStatus::Idle);
+        assert_eq!(rig.a.running(), Some("2.1.330"));
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 1);
+        assert_eq!(
+            rig.a.upgrading,
+            Some(("2.1.330".to_owned(), "2.1.331".to_owned()))
+        );
+        // not asked twice while it ends
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 1);
+
+        rig.a
+            .prompt(&rig.d, "meanwhile", PromptHow::Queue, None)
+            .await
+            .unwrap();
+        rig.a.agent_exited(&rig.d, 0).await;
+        assert!(rig.a.live && rig.a.restart_at.is_none(), "started at once");
+        assert!(rig.a.restarted_at.is_none(), "not a crash");
+        let spawns: Vec<Vec<String>> = rig
+            .fake
+            .asked()
+            .into_iter()
+            .filter_map(|r| match r {
+                HolderReq::SpawnAgent { cmd, .. } => Some(cmd),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spawns.len(), 2);
+        assert!(
+            spawns[1].contains(&"--resume=conv-1".to_string()),
+            "{spawns:?}"
+        );
+        // the prompt: once, with the new process (which holds it until `initialize` is answered)
+        let waiting: Vec<_> = rig
+            .a
+            .driver
+            .held_prompts()
+            .into_iter()
+            .chain(rig.a.resend.clone())
+            .collect();
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert_eq!(waiting[0].text, "meanwhile");
+        let items = rig
+            .d
+            .store
+            .read(|c| store_items::page_items(c, SID, None, 100))
+            .unwrap();
+        let rows: Vec<String> = items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Event)
+            .map(|i| {
+                body_value(&rig.d.store, i)["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .filter(|t| t.starts_with("Claude Code"))
+            .collect();
+        assert_eq!(rows, ["Claude Code 2.1.330 → 2.1.331"]);
+        // the new process runs the installed version: nothing more to do
+        assert_eq!(rig.a.running(), Some("2.1.331"));
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 1);
+    }
+
+    /// What a restart would lose, or interrupt, keeps the chat on its old version for now.
+    #[tokio::test]
+    async fn a_chat_that_is_busy_or_would_lose_something_is_not_restarted_for_an_upgrade() {
+        let bg = BgTask {
+            task_id: "t1".into(),
+            task_type: "local_bash".into(),
+            description: "sleep".into(),
+            since: 0,
+        };
+        let goal = |state| Goal {
+            condition: "done".into(),
+            state,
+            reason: None,
+        };
+        type Row = Box<dyn Fn(&mut Session)>;
+        let rows: Vec<(&str, Row)> = vec![
+            ("working", Box::new(|s| s.status = SessionStatus::Working)),
+            ("starting", Box::new(|s| s.status = SessionStatus::Starting)),
+            (
+                "blocked on a question",
+                Box::new(|s| {
+                    s.status = SessionStatus::Blocked;
+                    s.attention = Attention::Blocked;
+                }),
+            ),
+            (
+                "a background task",
+                Box::new(move |s| s.bg_tasks = vec![bg.clone()]),
+            ),
+            (
+                "a goal set",
+                Box::new(move |s| s.goal = Some(goal(GoalState::Active))),
+            ),
+            (
+                "a goal not met",
+                Box::new(move |s| s.goal = Some(goal(GoalState::NotMet))),
+            ),
+        ];
+        for (what, change) in rows {
+            let mut rig = upgradable(0).await;
+            assert!(rig.a.restartable(&rig.d), "{what}: before");
+            rig.d.update(SID, |s| change(s)).unwrap();
+            rig.a.upgrade_check(&rig.d).await;
+            assert_eq!(closed_stdin(&rig), 0, "{what}");
+        }
+        // an achieved goal is nothing to lose
+        let rig = upgradable(0).await;
+        rig.d
+            .update(SID, |s| s.goal = Some(goal(GoalState::Met)))
+            .unwrap();
+        assert!(rig.a.restartable(&rig.d));
+
+        // what the agent's own lines say: a wakeup asked for, a scheduled task made
+        for (tool, input) in [
+            (
+                "ScheduleWakeup",
+                json!({"delaySeconds": 1800, "prompt": "look"}),
+            ),
+            ("CronCreate", json!({"cron": "0 9 * * *", "prompt": "look"})),
+        ] {
+            let mut rig = upgradable(0).await;
+            let call = json!({"type":"assistant","message":{"id":"m2","content":[
+                {"type":"tool_use","id":"toolu_1","name":tool,"input":input}]}});
+            let end = json!({"type":"result","subtype":"success","stop_reason":"end_turn"});
+            let at = rig.a.recv_end;
+            rig.a
+                .ingest(&rig.d, at, Bytes::from(format!("{call}\n{end}\n")))
+                .await;
+            assert_eq!(rig.a.driver.status(), AgentStatus::Idle, "{tool}");
+            rig.a.upgrade_check(&rig.d).await;
+            assert_eq!(closed_stdin(&rig), 0, "{tool}");
+        }
+        // a scheduled task made before the daemon restarted is in the saved state
+        let mut rig = upgradable(0).await;
+        rig.a.cron = true;
+        assert!(!rig.a.restartable(&rig.d));
+
+        // a turn running, a prompt held, a turn that ended under the threshold ago
+        let mut rig = upgradable(0).await;
+        let at = rig.a.recv_end;
+        let open = json!({"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"so"}]}});
+        rig.a
+            .ingest(&rig.d, at, Bytes::from(format!("{open}\n")))
+            .await;
+        rig.d
+            .update(SID, |s| s.status = SessionStatus::Idle)
+            .unwrap();
+        assert!(!rig.a.restartable(&rig.d), "the driver is in a turn");
+        let mut rig = upgradable(0).await;
+        rig.a.resend = vec![HeldPrompt {
+            text: "later".into(),
+            how: PromptHow::Queue,
+            queued_at_ms: 0,
+            id: None,
+        }];
+        assert!(!rig.a.restartable(&rig.d), "a prompt waits");
+        let mut rig = upgradable(3600).await;
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 0, "quiet for a moment only");
+
+        // on the installed version already, and an agent that is not Claude
+        let mut rig = upgradable(0).await;
+        rig.a.version = Some("2.1.331".into());
+        rig.a.driver = driver_for(Agent::Claude);
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 0, "the same version");
+        let mut rig = upgradable(0).await;
+        rig.a.agent = Agent::Pi;
+        rig.a.upgrade_check(&rig.d).await;
+        assert_eq!(closed_stdin(&rig), 0, "pi");
     }
 
     #[tokio::test]
