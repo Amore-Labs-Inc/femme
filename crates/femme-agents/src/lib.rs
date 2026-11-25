@@ -578,6 +578,23 @@ pub trait Driver: Send {
     /// Current coarse status.
     fn status(&self) -> AgentStatus;
 
+    /// The version of the agent's CLI this process runs, once it said so (Claude's `init` carries
+    /// `claude_code_version`); `None` for agents that do not say.
+    fn version(&self) -> Option<&str> {
+        None
+    }
+
+    /// The agent asked to be woken later and that has not fired yet (Claude's `ScheduleWakeup`):
+    /// it is lost if the process ends first.
+    fn wakeup_pending(&self) -> bool {
+        false
+    }
+
+    /// The agent made a scheduled task in this process (Claude's `CronCreate`).
+    fn cron_made(&self) -> bool {
+        false
+    }
+
     /// The process exited (stdout EOF). Closes everything still open: in-flight items become
     /// `Failed`, a running turn ends as `Interrupted`, pending questions resolve, every prompt not
     /// run yet is announced with [`AgentEvent::PromptDropped`] ([`DropReason::Exited`]); the last

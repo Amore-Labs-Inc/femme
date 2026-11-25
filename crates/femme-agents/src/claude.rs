@@ -306,6 +306,14 @@ pub struct ClaudeDriver {
     typed: Option<(Value, String)>,
     /// The `reason` of the last `ScheduleWakeup` call, for the row of the wakeup it asked for.
     wake_reason: Option<String>,
+    /// A `ScheduleWakeup` was called and has not fired yet.
+    wake_pending: bool,
+    /// A `CronCreate` was called.
+    // ponytail: never cleared, a `CronDelete` is not followed; count them if a chat with a
+    // deleted cron should count as having none
+    cron_made: bool,
+    /// `claude_code_version` of the last `init`.
+    version: Option<String>,
     /// The `taskId` of the last `scheduled_task_fire` line of a transcript: the prompt line of
     /// the same fire, which follows it, adds no second row.
     fired: Option<Value>,
@@ -370,6 +378,9 @@ impl ClaudeDriver {
             take: None,
             typed: None,
             wake_reason: None,
+            wake_pending: false,
+            cron_made: false,
+            version: None,
             fired: None,
             lines: BTreeMap::new(),
         }
@@ -736,6 +747,7 @@ impl ClaudeDriver {
         // ponytail: a driver made after a daemon restart has not seen the call, so a fire it
         // replays loses its reason; read it from the stored call if that ever shows
         if source == Some("loop_wakeup") {
+            self.wake_pending = false;
             if let Some(r) = self.wake_reason.take() {
                 text.push_str(" · ");
                 text.push_str(&r);
@@ -939,6 +951,9 @@ impl ClaudeDriver {
     fn init(&mut self, v: &Value, ev: &mut Vec<AgentEvent>) {
         let model = v["model"].as_str().map(str::to_owned);
         let mut started = false;
+        if let Some(ver) = v["claude_code_version"].as_str() {
+            self.version = Some(ver.to_owned());
+        }
         if let Some(sid) = v["session_id"].as_str() {
             self.sid = Some(sid.to_owned());
             if self.announced.as_deref() != Some(sid) {
@@ -1268,7 +1283,12 @@ impl ClaudeDriver {
                     let id = b["id"].as_str().map_or(bid, str::to_owned);
                     let name = b["name"].as_str().unwrap_or("tool").to_owned();
                     let input = b["input"].clone();
+                    if name == "CronCreate" {
+                        self.cron_made = true;
+                    }
                     if name == "ScheduleWakeup" && self.parent.is_none() {
+                        // `stop` ends a loop: nothing is scheduled
+                        self.wake_pending = input["stop"] != true;
                         self.wake_reason = input["reason"]
                             .as_str()
                             .map(str::trim)
@@ -2480,6 +2500,18 @@ impl Driver for ClaudeDriver {
 
     fn status(&self) -> AgentStatus {
         self.status
+    }
+
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    fn wakeup_pending(&self) -> bool {
+        self.wake_pending
+    }
+
+    fn cron_made(&self) -> bool {
+        self.cron_made
     }
 
     fn on_exit(&mut self, code: Option<i32>) -> Vec<AgentEvent> {
@@ -4722,6 +4754,44 @@ mod tests {
         assert_eq!(wake(&mut f, "schedule_wakeup"), ["⏰ scheduled run"]);
         assert_eq!(wake(&mut f, "loop_wakeup"), ["⏰ wakeup · check the build"]);
         assert_eq!(wake(&mut f, "loop_wakeup"), ["⏰ wakeup"], "said once");
+    }
+
+    /// The init says which Claude Code the process runs; one without the key says nothing.
+    #[test]
+    fn the_init_says_the_claude_code_version() {
+        let mut f = Feed::new();
+        f.line(json!({"type":"system","subtype":"init","session_id":"s","model":"m"}));
+        assert_eq!(f.d.version(), None);
+        f.line(json!({"type":"system","subtype":"init","session_id":"s","model":"m",
+            "claude_code_version":"2.1.330"}));
+        assert_eq!(f.d.version(), Some("2.1.330"));
+    }
+
+    /// What a restart of the process would lose: a wakeup asked for and not fired yet, a cron.
+    #[test]
+    fn a_wakeup_is_pending_until_it_fires_and_a_cron_is_remembered() {
+        let mut f = Feed::new();
+        let call = |f: &mut Feed, name: &str, input: Value| {
+            f.line(json!({"type":"command_lifecycle","command_uuid":"p1","state":"started"}));
+            f.line(reply(
+                "m1",
+                json!({"type":"tool_use","id":"toolu_1","name":name,"input":input}),
+            ));
+            f.line(json!({"type":"result","subtype":"success","is_error":false}));
+        };
+        assert!(!f.d.wakeup_pending() && !f.d.cron_made());
+        call(&mut f, "ScheduleWakeup", json!({"delaySeconds":60,"prompt":"look"}));
+        assert!(f.d.wakeup_pending());
+        f.line(json!({"type":"command_lifecycle","command_uuid":"w1","state":"started",
+            "wakeup_source":"loop_wakeup"}));
+        f.line(json!({"type":"result","subtype":"success","is_error":false}));
+        assert!(!f.d.wakeup_pending(), "it fired");
+        call(&mut f, "ScheduleWakeup", json!({"delaySeconds":60,"prompt":"look"}));
+        call(&mut f, "ScheduleWakeup", json!({"stop":true}));
+        assert!(!f.d.wakeup_pending(), "the loop was stopped");
+        assert!(!f.d.cron_made());
+        call(&mut f, "CronCreate", json!({"cron":"0 9 * * *","prompt":"look"}));
+        assert!(f.d.cron_made());
     }
 
     /// A prompt's `started` frame opens a turn that is somebody's: no row, no mark. Also for a
