@@ -228,6 +228,26 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_016h8PFN6VQ4cbAyRzfLGaYg:ask",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
+          "Keep planning"
+        ],
+        "prompt": "Approve this plan and start coding?",
+        "request_id": "deab25a3-3557-44dc-91fe-d31d30be358c"
+      }
+    }
+  },
+  {
     "Status": "Working"
   },
   {

@@ -68,6 +68,29 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_01R6ZrTp12z2cR18mkS34Dox",
+      "body": {
+        "answered": {
+          "Options": [
+            0,
+            1
+          ]
+        },
+        "free_text": true,
+        "multi": true,
+        "options": [
+          "A — Option A",
+          "B — Option B",
+          "C — Option C",
+          "None — I don't like any of them"
+        ],
+        "prompt": "Which of A, B, C do you like? (Select all that apply)",
+        "request_id": "81a1f8cd-299c-46d3-a636-1ac7dba22498"
+      }
+    }
+  },
+  {
     "Status": "Working"
   },
   {

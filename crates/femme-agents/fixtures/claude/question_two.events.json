@@ -81,8 +81,44 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_0154s4CM7jKcZFQSrQMHJaiG#0",
+      "body": {
+        "answered": {
+          "Option": 1
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "Red — Choose red",
+          "Blue — Choose blue"
+        ],
+        "prompt": "Color?",
+        "request_id": "c9a7aa79-da76-4f77-8f78-b9bd2a3fadf5#0"
+      }
+    }
+  },
+  {
     "QuestionResolved": {
       "request_id": "c9a7aa79-da76-4f77-8f78-b9bd2a3fadf5#1"
+    }
+  },
+  {
+    "ItemUpdated": {
+      "id": "toolu_0154s4CM7jKcZFQSrQMHJaiG#1",
+      "body": {
+        "answered": {
+          "Option": 1
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "Small — Choose small",
+          "Large — Choose large"
+        ],
+        "prompt": "Size?",
+        "request_id": "c9a7aa79-da76-4f77-8f78-b9bd2a3fadf5#1"
+      }
     }
   },
   {

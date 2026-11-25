@@ -1997,14 +1997,27 @@ impl ClaudeDriver {
         }
     }
 
-    /// The CLI read our answer to `cid` (its echo).
+    /// The CLI read our answer to `cid` (its echo). The items stay `Pending` until the call's
+    /// result (a long tool runs for minutes), but their body says the answer now, so no client
+    /// offers the buttons again (one that switched chats, another device).
     fn resolve(&mut self, cid: &str, ev: &mut Vec<AgentEvent>) {
         if let Some(p) = self.pending.get_mut(cid) {
             if !p.resolved {
                 p.resolved = true;
-                ev.extend(p.parts.iter().map(|x| AgentEvent::QuestionResolved {
-                    request_id: x.request_id.clone(),
-                }));
+                for x in &p.parts {
+                    ev.push(AgentEvent::QuestionResolved {
+                        request_id: x.request_id.clone(),
+                    });
+                    ev.push(AgentEvent::ItemUpdated {
+                        id: x.item_id.clone(),
+                        body: body(&QuestionItem {
+                            q: x.q.clone(),
+                            // a part left unanswered when another was cancelled: the request is over
+                            answered: Some(x.answer.clone().unwrap_or(Answer::Cancel)),
+                            reason: None,
+                        }),
+                    });
+                }
             }
         }
     }

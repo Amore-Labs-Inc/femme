@@ -66,6 +66,22 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_01RJjnqMeDHQ9Mngo5dNyogE",
+      "body": {
+        "answered": "Cancel",
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "prompt": "Do you prefer A or B?",
+        "request_id": "e5e63aec-0791-4dcd-9dc3-c69f274b8683"
+      }
+    }
+  },
+  {
     "Status": "Working"
   },
   {

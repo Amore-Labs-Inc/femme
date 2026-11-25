@@ -191,6 +191,26 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_01RFKfT4NHweEo4yPQfX4Zaz:ask",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "Approve · bypass",
+          "Approve · accept edits",
+          "Approve · manual",
+          "Keep planning"
+        ],
+        "prompt": "Approve this plan and start coding?",
+        "request_id": "92c4bb04-b67a-439b-8804-c989defa4282"
+      }
+    }
+  },
+  {
     "PermissionMode": "bypassPermissions"
   },
   {

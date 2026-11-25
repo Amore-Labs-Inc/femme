@@ -143,6 +143,24 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412:elicit",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": false,
+        "multi": false,
+        "options": [
+          "Accept",
+          "Decline"
+        ],
+        "prompt": "elicit asks: Sign in to Example to continue\nhttps://example.com/auth?state=abc",
+        "request_id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412"
+      }
+    }
+  },
+  {
     "ItemCompleted": {
       "id": "3e7414b3-45c7-4d8c-af8c-ec882c8cf412:elicit",
       "kind": "Question",

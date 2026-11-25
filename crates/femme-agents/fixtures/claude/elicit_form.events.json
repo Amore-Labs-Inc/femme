@@ -143,6 +143,24 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "8372c2c8-ece6-4045-8a4d-ad7394b79e94:elicit",
+      "body": {
+        "answered": {
+          "Option": 0
+        },
+        "free_text": false,
+        "multi": false,
+        "options": [
+          "Accept",
+          "Decline"
+        ],
+        "prompt": "elicit asks: Which release name should I use?\nAccept leaves the form's fields empty: name, draft",
+        "request_id": "8372c2c8-ece6-4045-8a4d-ad7394b79e94"
+      }
+    }
+  },
+  {
     "ItemCompleted": {
       "id": "8372c2c8-ece6-4045-8a4d-ad7394b79e94:elicit",
       "kind": "Question",

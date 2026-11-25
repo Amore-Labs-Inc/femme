@@ -310,6 +310,16 @@ fn ask_user_question_becomes_a_question_not_a_tool_call() {
         .expect("question completed");
     assert_eq!(*done.0, ItemStatus::Answered);
     assert_eq!(done.1["answered"], json!({"Option": 1}));
+    // once the CLI read the answer the still-Pending item already says it, so no client offers
+    // the buttons again while the call runs
+    let upd = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ItemUpdated { id, body } if id == item_id => Some(body),
+            _ => None,
+        })
+        .expect("question updated on the echo");
+    assert_eq!(upd["answered"], json!({"Option": 1}));
 }
 
 #[test]

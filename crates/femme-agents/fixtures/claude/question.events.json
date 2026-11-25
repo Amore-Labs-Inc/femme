@@ -66,6 +66,24 @@
     }
   },
   {
+    "ItemUpdated": {
+      "id": "toolu_01EDYyY65rdNxroQBy5jYmAq",
+      "body": {
+        "answered": {
+          "Option": 1
+        },
+        "free_text": true,
+        "multi": false,
+        "options": [
+          "A — Choose option A",
+          "B — Choose option B"
+        ],
+        "prompt": "Do you prefer A or B?",
+        "request_id": "46a068a7-96d9-44f8-8cad-e2684256baac"
+      }
+    }
+  },
+  {
     "Status": "Working"
   },
   {
