@@ -10,6 +10,7 @@
 //! - `femmed show <file> [caption]`: run by the agent inside a session, puts the file in the
 //!   transcript for the user to see (a screenshot of its work, say); the daemon keeps a copy.
 //!   A video goes as it is (the desktop plays it); one over a blob's size as an animated GIF.
+//! - `femmed mcp`: the daemon's chats as a stdio MCP server for Claude Code ([`crate::mcp`]).
 //! - `femmed hook <agent> <event> [PAYLOAD]`: what a PTY-mode agent runs to report its status
 //!   (Claude `--settings` hooks, Codex `-c notify=[...]`, the pi extension). It wraps the agent's
 //!   JSON in an envelope ([`hook_envelope`]) and posts it to the compat layer's loopback-only
@@ -95,6 +96,8 @@ pub enum Command {
         #[arg(long, value_parser = NonEmptyStringValueParser::new())]
         prompt: Option<String>,
     },
+    /// Serve the daemon's chats to Claude Code as a stdio MCP server (`ssh -T host femmed mcp`).
+    Mcp,
     /// Show the user a file (a screenshot, a chart) in the transcript, from inside a session.
     Show {
         /// The file to show.
@@ -437,6 +440,13 @@ pub async fn run(cli: Cli) -> ExitCode {
             prompt,
         } => finish("open", open(cwd, resume, fork, prompt).await),
         Command::Show { file, caption } => finish("show", show(&file, caption).await),
+        Command::Mcp => match crate::mcp::run().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("femmed mcp: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Hook {
             agent,
             event,

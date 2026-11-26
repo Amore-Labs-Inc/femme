@@ -22,6 +22,7 @@ pub mod front;
 mod headless;
 pub mod holder_client;
 pub mod hub;
+mod mcp;
 pub mod notify;
 pub mod scheduler;
 mod sent;
