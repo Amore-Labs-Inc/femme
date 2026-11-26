@@ -36,6 +36,22 @@ SID = (None if FORK else arg("--resume=", None)) or arg("--session-id=", "fake-1
 MODEL = arg("--model=", "claude-haiku-5-5")
 HOME = os.environ.get("HOME", "/tmp")
 
+
+
+def version():
+    """The version this `claude` is: `$HOME/claude.version` when a test "installed" one."""
+    try:
+        with open(os.path.join(HOME, "claude.version")) as f:
+            return f.read().strip()
+    except OSError:
+        return "2.1.302"
+
+
+VERSION = version()
+if "--version" in ARGV:
+    print(f"{VERSION} (Claude Code)")
+    sys.exit(0)
+
 with open(os.path.join(HOME, "claude.pid"), "w") as f:
     f.write(f"{os.getpid()}\n")
 
@@ -118,7 +134,7 @@ def system(subtype, **kw):
 
 def init():
     system("init", cwd=os.getcwd(), model=MODEL, permissionMode="bypassPermissions", tools=["AskUserQuestion", "Bash"],
-           claude_code_version="2.1.302")
+           claude_code_version=VERSION)
 
 
 def lifecycle(u, state):

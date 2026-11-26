@@ -673,6 +673,88 @@ async fn a_restarted_chat_keeps_its_effort_and_never_gets_a_display_name_as_its_
     d.close_session(sid).await.unwrap();
 }
 
+/// "Installs" Claude Code `version` in the box, as an upgrade does: `claude` becomes a link to
+/// another file, which says that version.
+fn install_claude(b: &Box_, version: &str) {
+    let bin = b.dir.path().join("bin/claude");
+    let new = b.dir.path().join(format!("claude-{version}"));
+    std::fs::copy(&bin, &new).unwrap();
+    std::fs::write(b.home().join("claude.version"), version).unwrap();
+    std::fs::remove_file(&bin).unwrap();
+    std::os::unix::fs::symlink(&new, &bin).unwrap();
+}
+
+/// The terminal's `/restart`, by itself: an idle chat whose process runs an older Claude Code than
+/// the installed one is started again on the same conversation, model and effort, and says so in
+/// one row. A chat on the installed version is left alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_chat_moves_to_a_newly_installed_claude_code_once() {
+    let b = Box_::new();
+    let (d, _stop) = b
+        .start_with(None, |cfg| cfg.upgrade_idle = Duration::from_secs(1))
+        .await;
+    let req = CreateSession {
+        owner: "device:t".into(),
+        ..headless(&b.home())
+    };
+    let s = d.create_session(req).await.unwrap();
+    let (sid, pane) = (s.sid, pane_of(&s));
+    d.prompt(&pane, "hi").await.unwrap();
+    wait_items(&d, sid, "the first turn", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: hi")
+    })
+    .await;
+    let rows = |v: &[Item]| {
+        let all = texts_of(v, ItemKind::Event);
+        let moved = all.into_iter().filter(|t| t.starts_with("Claude Code "));
+        moved.collect::<Vec<_>>()
+    };
+
+    // on the installed version: quiet for several thresholds, and nothing happens
+    let pid1 = b.claude_pid();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(b.claude_pid(), pid1, "restarted on the same version");
+    assert!(rows(&items(&d, sid)).is_empty());
+
+    install_claude(&b, "2.1.331");
+    let t0 = Instant::now();
+    while b.claude_pid() == pid1 {
+        assert!(t0.elapsed() < Duration::from_secs(10), "no restart");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let args = b.claude_args();
+    let conv = d
+        .store
+        .read(|c| femme_store::sessions::get_session(c, sid))
+        .unwrap()
+        .unwrap()
+        .agent_sid
+        .unwrap();
+    assert!(args.contains(&format!("--resume={conv}")), "{args:?}");
+    assert!(args.contains(&"--effort=medium".to_string()), "{args:?}");
+    assert!(
+        args.contains(&"--model=claude-haiku-5-5".to_string()),
+        "{args:?}"
+    );
+    wait_for(&d, sid, "idle on the new one", |s| {
+        s.is_some_and(|s| s.status == SessionStatus::Idle)
+    })
+    .await;
+    let pid2 = b.claude_pid();
+
+    // the conversation goes on, and the chat is not restarted again
+    d.prompt(&pane, "again").await.unwrap();
+    wait_items(&d, sid, "a turn after the restart", |v| {
+        has_text(v, ItemKind::AssistantMessage, "echo: again")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(b.claude_pid(), pid2, "restarted twice");
+    assert_eq!(claude_processes(&b), 1);
+    assert_eq!(rows(&items(&d, sid)), ["Claude Code 2.1.302 → 2.1.331"]);
+    d.close_session(sid).await.unwrap();
+}
+
 /// The daemon comes back to a headless session whose agent died while it was away: the restart
 /// policy applies from `reconcile`, with `--resume`, and the session goes on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

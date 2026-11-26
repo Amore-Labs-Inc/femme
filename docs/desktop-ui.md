@@ -67,7 +67,12 @@ Keep it current: when your module's public API changes, edit your section in the
   goes on with an existing Claude conversation (`~/.claude/projects/*/<uuid>.jsonl`): the chat
   shows what it holds, in its own folder unless `--cwd` says otherwise; one another Claude has open
   is refused until that one exits. A resumed conversation keeps the model and effort it last ran
-  on (its transcript's last reply), and a chat keeps its effort across restarts.
+  on (its transcript's last reply), and a chat keeps its effort across restarts. After a new
+  Claude Code is installed (the nightly upgrade), a Claude chat moves to it by itself, as
+  `/restart` does in the terminal: once it has been quiet for an hour
+  (`FEMME_UPGRADE_IDLE_SECS`) with nothing a restart would lose (no turn, question, background
+  task, goal, wakeup, scheduled task or held message), its process starts again on the same
+  conversation, model and effort, and a row says `Claude Code 2.1.330 → 2.1.331`.
 - **Fork**: a row's right-click menu reads `rename`, `fork`, `close`; `fork` shows on Claude chats
   only, dimmed until the chat has a conversation. It makes a new headless chat that starts as a copy
   of it, `<title> · fork` in the same folder, same model and effort, the original untouched, no

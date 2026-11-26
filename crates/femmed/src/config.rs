@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Everything the daemon reads from `.env` / the environment. Defaults are the scripts' own
 /// (`worker.sh`: `CAP=60`, `PARALLEL=2`; `.env.example`; the board's `127.0.0.1:8787`).
@@ -67,6 +68,9 @@ pub struct Config {
     pub resend_url: String,
     /// `$XDG_RUNTIME_DIR`, else `/run/user/<uid>`: holder sockets live under `<runtime>/femme/s/`.
     pub runtime_dir: PathBuf,
+    /// `FEMME_UPGRADE_IDLE_SECS` (default 3600): how long a chat must have been quiet before it is
+    /// restarted on a newly installed Claude Code. An hour: its prompt cache has expired by then.
+    pub upgrade_idle: Duration,
     /// `FEMME_HOLDER_BIN`: the `femme-holder` binary; default next to `femmed`, else `~/.local/bin/femme-holder`.
     pub holder_bin: Option<PathBuf>,
     /// `FEMME_BIN`: the `femmed` binary the agents' hooks run; default this executable.
@@ -145,6 +149,9 @@ impl Config {
                 "" => runtime_dir(),
                 d => PathBuf::from(d),
             },
+            upgrade_idle: Duration::from_secs(
+                get("FEMME_UPGRADE_IDLE_SECS").parse().unwrap_or(3600),
+            ),
             holder_bin: (!get("FEMME_HOLDER_BIN").is_empty())
                 .then(|| PathBuf::from(get("FEMME_HOLDER_BIN"))),
             femmed_bin: (!get("FEMME_BIN").is_empty()).then(|| PathBuf::from(get("FEMME_BIN"))),
