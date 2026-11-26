@@ -1,0 +1,29 @@
+{
+  "name": "femme",
+  "description": "List, read, start and message the agent chats on your FEMME box, and send this chat to the box to keep going there",
+  "version": "0.1.0",
+  "author": {
+    "name": "Amore Labs"
+  },
+  "userConfig": {
+    "host": {
+      "type": "string",
+      "title": "Box SSH host",
+      "description": "The SSH host of the server FEMME runs on, as you would type it after `ssh` (a name from ~/.ssh/config, or user@address)",
+      "default": "agentbox"
+    }
+  },
+  "mcpServers": {
+    "femme": {
+      "command": "ssh",
+      "args": [
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "${user_config.host}",
+        ".local/bin/femmed",
+        "mcp"
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "femme",
+  "description": "FEMME: run your coding agents on your own server",
+  "owner": {
+    "name": "Amore Labs"
+  },
+  "plugins": [
+    {
+      "name": "femme",
+      "source": "./plugin/claude",
+      "description": "Run and continue Claude chats on your own FEMME box"
+    }
+  ]
+}
