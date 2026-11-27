@@ -154,10 +154,13 @@ fn conv_rows(convs: &Convs, now: i64) -> Vec<ConvRow> {
         Convs::Got(v) => sorted(v)
             .into_iter()
             .map(|c| {
-                let mut meta = format!("{} · {}", short_dir(&c.cwd), age(c.modified, now));
-                if c.open {
-                    meta.push_str(" · in a terminal · opens a copy");
-                }
+                // The folder last: a long one is cut, never the age or the terminal note.
+                let open = if c.open {
+                    " · in a terminal · opens a copy"
+                } else {
+                    ""
+                };
+                let meta = format!("{}{open} · {}", age(c.modified, now), short_dir(&c.cwd));
                 ConvRow {
                     title: if c.title.trim().is_empty() {
                         "untitled".to_owned()
@@ -480,20 +483,21 @@ impl Sidebar {
                             // A note (`looking…`, the error): wraps rather than cut a reason off.
                             return row.h_auto().min_h(px(28.)).py(px(4.)).child(r.title);
                         }
-                        row.h(px(40.))
+                        row.h(px(44.))
                             .flex_col()
                             .items_start()
                             .justify_center()
-                            .gap(px(0.))
+                            .gap(px(2.))
                             .child(
                                 div()
                                     .w_full()
+                                    .line_height(px(20.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .child(r.title),
                             )
-                            .child(meta(r.meta).w_full())
+                            .child(meta(r.meta).w_full().line_height(px(16.)))
                     });
                 // ponytail: the daemon sends at most 30; no search or paging over more.
                 let list = div()
@@ -709,11 +713,11 @@ mod tests {
             [
                 (
                     "Fix the login bug",
-                    "~/femme · 3 m · in a terminal · opens a copy",
+                    "3 m · in a terminal · opens a copy · ~/femme",
                     true
                 ),
-                ("Tidy", "~/x · 2 h", true),
-                ("untitled", "/srv/app · 4 d", true),
+                ("Tidy", "2 h · ~/x", true),
+                ("untitled", "4 d · /srv/app", true),
             ]
         );
         // Row order and the conversation a pick takes agree.

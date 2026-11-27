@@ -61,8 +61,8 @@ Keep it current: when your module's public API changes, edit your section in the
   and is dimmed with `needs this laptop` while the local daemon is down. `existing claude code…`
   asks the box the same way, then lists that machine's Claude Code conversations no FEMME chat
   holds (`Req::Conversations { limit: 30 }`: the ones run in a plain terminal, and those of closed
-  chats), newest first: title (`untitled` without one), folder (`~` for home), age (`3 m`, `2 h`,
-  `4 d`), and `in a terminal · opens a copy` while a Claude process still has it open. Picking one
+  chats), newest first: title (`untitled` without one), then age (`3 m`, `2 h`, `4 d`),
+  `in a terminal · opens a copy` while a Claude process still has it open, and folder (`~` for home). Picking one
   starts a headless Claude chat in its folder with `resume: <uuid>` (and `fork` when open), whose
   transcript shows the history; a refusal goes to the status line like any failed start. `looking…`,
   `no claude code chats here` and a failed request (an older daemon) show as rows. The last row,
