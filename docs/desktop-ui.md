@@ -58,8 +58,15 @@ Keep it current: when your module's public API changes, edit your section in the
   (uncensored)`), then, for claude and deepseek while `femmed local` is connected, the box (`femme`
   or `this laptop`); without the local daemon they start on femme at once. Inkling is served on the
   laptop only (pi's `inkling` provider, a local llama.cpp server): it starts there without asking,
-  and is dimmed with `needs this laptop` while the local daemon is down. The last row, `project…`,
-  opens the projects picker. The chat starts headless in the home directory and is shown; one
+  and is dimmed with `needs this laptop` while the local daemon is down. `existing claude code…`
+  asks the box the same way, then lists that machine's Claude Code conversations no FEMME chat
+  holds (`Req::Conversations { limit: 30 }`: the ones run in a plain terminal, and those of closed
+  chats), newest first: title (`untitled` without one), folder (`~` for home), age (`3 m`, `2 h`,
+  `4 d`), and `in a terminal · opens a copy` while a Claude process still has it open. Picking one
+  starts a headless Claude chat in its folder with `resume: <uuid>` (and `fork` when open), whose
+  transcript shows the history; a refusal goes to the status line like any failed start. `looking…`,
+  `no claude code chats here` and a failed request (an older daemon) show as rows. The last row,
+  `project…`, opens the projects picker. A model's chat starts headless in the home directory and is shown; one
   request at a time (the `+` dims meanwhile). Up/Down/Enter/Esc drive the menu wherever the keyboard
   is, a press outside closes it. The foot keeps only the `ctrl-shift-b` hint; the empty list points
   at the `+`. A folder header's `+` starts a Claude chat in that folder. Nothing else on the left (no accounts, no lanes). From a shell on the box,
