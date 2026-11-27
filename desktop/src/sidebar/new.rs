@@ -1,19 +1,24 @@
 //! The title bar's `+`: the one place a chat starts. Its menu asks for the model (`claude`,
 //! `deepseek`, `inkling 2 mini (uncensored)`), then, for claude and deepseek while `femmed local`
 //! is connected, the box: `femme` or `this laptop`. Inkling is served on the laptop only, so it goes
-//! there without asking and is dimmed while that daemon is down. The last row, `project…`, opens
-//! the projects picker as the `+` did before.
+//! there without asking and is dimmed while that daemon is down. `existing claude code…` asks the
+//! box the same way, then lists that machine's Claude Code conversations no FEMME chat holds (the
+//! ones run in a plain terminal): picking one opens it as a chat, as a copy while a terminal still
+//! has it open. The last row, `project…`, opens the projects picker as the `+` did before.
 //!
 //! While it is open Up/Down move the highlight, Enter picks and Esc closes, wherever the keyboard is
 //! (the femme menu's way: the focus never moves, so the composer keeps its caret); a press outside
 //! closes it.
 
-use femme_proto::rpc::Req;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use femme_proto::rpc::{Conversation, Req, Resp};
+use femme_proto::state::{Agent, Mode};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    anchored, deferred, div, point, px, AnyElement, Context, InteractiveElement as _, IntoElement,
-    KeystrokeEvent, MouseDownEvent, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    anchored, deferred, div, point, px, AnyElement, Context, Div, InteractiveElement as _,
+    IntoElement, KeystrokeEvent, MouseDownEvent, ParentElement as _, ScrollHandle, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Window,
 };
 
 use super::{AddProject, Sidebar};
@@ -28,27 +33,150 @@ pub(super) enum Pick {
     Claude,
     Deepseek,
     Inkling,
+    /// Not a model: a Claude Code conversation already on that box, picked from a list.
+    Existing,
 }
 
 impl Pick {
-    const ALL: [Pick; 3] = [Pick::Claude, Pick::Deepseek, Pick::Inkling];
+    const ALL: [Pick; 4] = [Pick::Claude, Pick::Deepseek, Pick::Inkling, Pick::Existing];
 
     fn label(self) -> &'static str {
         match self {
             Pick::Claude => "claude",
             Pick::Deepseek => "deepseek",
             Pick::Inkling => "inkling 2 mini (uncensored)",
+            Pick::Existing => "existing claude code…",
         }
     }
 
-    /// The session-making request, in the daemon's home directory.
-    fn req(self) -> Req {
+    /// The session-making request, in the daemon's home directory; `None` for `Existing`, whose
+    /// request is made from the conversation picked ([`resume`]).
+    fn req(self) -> Option<Req> {
         match self {
-            Pick::Claude => session::new_claude(""),
-            Pick::Deepseek => session::new_deepseek(""),
-            Pick::Inkling => session::new_inkling(""),
+            Pick::Claude => Some(session::new_claude("")),
+            Pick::Deepseek => Some(session::new_deepseek("")),
+            Pick::Inkling => Some(session::new_inkling("")),
+            Pick::Existing => None,
         }
     }
+
+    /// What going on with `p` on box `on` does: start the chat, or list that box's conversations.
+    fn on(self, on: BoxId) -> Act {
+        match self {
+            Pick::Existing => Act::List(on),
+            p => Act::Start(p, on),
+        }
+    }
+}
+
+/// The chat that takes conversation `c` over: Claude, headless, in its folder, going on from it;
+/// a copy (`fork`) while a terminal has it open, so the two never write one transcript.
+fn resume(c: &Conversation) -> Req {
+    Req::SessionCreate {
+        cwd: c.cwd.clone(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some(c.uuid.clone()),
+        fork: c.open,
+    }
+}
+
+/// How long ago `then` was, from `now` (both ms since the epoch): `3 m`, `2 h`, `4 d`; `now` under
+/// a minute (and for a clock that runs behind the other machine's).
+fn age(then: i64, now: i64) -> String {
+    let m = (now - then) / 60_000;
+    match m {
+        ..=0 => "now".to_owned(),
+        1..60 => format!("{m} m"),
+        60..1440 => format!("{} h", m / 60),
+        _ => format!("{} d", m / 1440),
+    }
+}
+
+/// Milliseconds since the epoch, now.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// `dir` with its home part as `~`, where the path shows it: `/home/<user>`, `/Users/<user>`,
+/// `/root`. The box's home is not known here, so another layout stays whole.
+fn short_dir(dir: &str) -> String {
+    let rest = |p: &str| -> Option<usize> {
+        let tail = dir.strip_prefix(p)?;
+        let user = tail.split('/').next()?;
+        (!user.is_empty()).then(|| p.len() + user.len())
+    };
+    let cut = rest("/home/")
+        .or_else(|| rest("/Users/"))
+        .or_else(|| (dir == "/root" || dir.starts_with("/root/")).then_some(5));
+    match cut {
+        Some(n) => format!("~{}", &dir[n..]),
+        None => dir.to_owned(),
+    }
+}
+
+/// What the list step has: the request is out, the answer, or why there is none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Convs {
+    Looking,
+    Got(Vec<Conversation>),
+    Failed(String),
+}
+
+/// A row of the list step: the title, the dimmer line under it, and whether it can be picked (a
+/// conversation) or only says something (`looking…`, empty, the error).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ConvRow {
+    title: String,
+    meta: String,
+    pick: bool,
+}
+
+/// The rows of the list step for `convs`, newest first, ages counted from `now`.
+fn conv_rows(convs: &Convs, now: i64) -> Vec<ConvRow> {
+    let say = |t: &str| {
+        vec![ConvRow {
+            title: t.to_owned(),
+            meta: String::new(),
+            pick: false,
+        }]
+    };
+    match convs {
+        Convs::Looking => say("looking…"),
+        Convs::Failed(e) => say(e),
+        Convs::Got(v) if v.is_empty() => say("no claude code chats here"),
+        Convs::Got(v) => sorted(v)
+            .into_iter()
+            .map(|c| {
+                let mut meta = format!("{} · {}", short_dir(&c.cwd), age(c.modified, now));
+                if c.open {
+                    meta.push_str(" · in a terminal · opens a copy");
+                }
+                ConvRow {
+                    title: if c.title.trim().is_empty() {
+                        "untitled".to_owned()
+                    } else {
+                        c.title.clone()
+                    },
+                    meta,
+                    pick: true,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// The conversations of the list in the order its rows show them.
+fn sorted(v: &[Conversation]) -> Vec<&Conversation> {
+    let mut v: Vec<&Conversation> = v.iter().collect();
+    v.sort_by_key(|c| std::cmp::Reverse(c.modified));
+    v
 }
 
 /// Which question the menu asks.
@@ -56,6 +184,8 @@ impl Pick {
 pub(super) enum Step {
     Model,
     Place(Pick),
+    /// The conversations of that box.
+    List(BoxId),
 }
 
 /// What picking a row does.
@@ -65,6 +195,8 @@ pub(super) enum Act {
     Ask(Pick),
     /// Start the chat on that box.
     Start(Pick, BoxId),
+    /// List that box's Claude Code conversations.
+    List(BoxId),
     /// The projects picker.
     Project,
 }
@@ -81,16 +213,16 @@ pub(super) struct Entry {
 /// the second question only when both could run it, else straight to the one that can.
 fn after(p: Pick, remote: bool, local: bool) -> (Act, Option<&'static str>) {
     match (p, remote, local) {
-        (Pick::Inkling, _, true) => (Act::Start(p, BoxId::Local), None),
-        (Pick::Inkling, _, false) => (Act::Start(p, BoxId::Local), Some("needs this laptop")),
+        (Pick::Inkling, _, true) => (p.on(BoxId::Local), None),
+        (Pick::Inkling, _, false) => (p.on(BoxId::Local), Some("needs this laptop")),
         (_, true, true) => (Act::Ask(p), None),
-        (_, false, true) => (Act::Start(p, BoxId::Local), None),
-        (_, true, false) => (Act::Start(p, BoxId::Remote), None),
-        (_, false, false) => (Act::Start(p, BoxId::Remote), Some("offline")),
+        (_, false, true) => (p.on(BoxId::Local), None),
+        (_, true, false) => (p.on(BoxId::Remote), None),
+        (_, false, false) => (p.on(BoxId::Remote), Some("offline")),
     }
 }
 
-/// The rows of `step`.
+/// The rows of `step` (none for the list, whose rows are [`conv_rows`]).
 pub(super) fn entries(step: Step, remote: bool, local: bool) -> Vec<Entry> {
     match step {
         Step::Model => Pick::ALL
@@ -116,10 +248,11 @@ pub(super) fn entries(step: Step, remote: bool, local: bool) -> Vec<Entry> {
         .into_iter()
         .map(|(label, on, up)| Entry {
             label,
-            act: Act::Start(p, on),
+            act: p.on(on),
             off: (!up).then_some("offline"),
         })
         .collect(),
+        Step::List(_) => Vec::new(),
     }
 }
 
@@ -146,6 +279,10 @@ pub(super) struct NewMenu {
     lit: Option<usize>,
     /// The window it opened in: another window's keys are not its business.
     window: gpui::AnyWindowHandle,
+    /// The list step's conversations.
+    convs: Convs,
+    /// The list step's scroller, so the arrows keep the lit row in view.
+    scroll: ScrollHandle,
 }
 
 impl Sidebar {
@@ -156,6 +293,8 @@ impl Sidebar {
             step: Step::Model,
             lit: None,
             window: window.window_handle(),
+            convs: Convs::Looking,
+            scroll: ScrollHandle::new(),
         });
         cx.notify();
     }
@@ -173,11 +312,64 @@ impl Sidebar {
         entries(step, self.can_create(), self.can_create_local())
     }
 
+    /// Which rows of the open menu can be picked, in order.
+    fn new_pickable(&self) -> Vec<bool> {
+        let Some(m) = &self.new_menu else {
+            return Vec::new();
+        };
+        match m.step {
+            Step::List(_) => conv_rows(&m.convs, 0).iter().map(|r| r.pick).collect(),
+            step => self
+                .new_entries(step)
+                .iter()
+                .map(|e| e.off.is_none())
+                .collect(),
+        }
+    }
+
+    /// Asks box `on` for its conversations; the answer fills the list step if it is still open.
+    fn list_convs(&mut self, on: BoxId, cx: &mut Context<Self>) {
+        let Some(net) = self.net.clone() else { return };
+        let sent = net.update(cx, |n, cx| {
+            n.try_run_on(on, Req::Conversations { limit: 30 }, cx)
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = sent.await;
+            this.update(cx, |this, cx| {
+                // ponytail: an answer from a list closed and opened again on the same box while
+                // it was out fills the new one; it is the same box's list, so harmless.
+                let Some(m) = this.new_menu.as_mut().filter(|m| m.step == Step::List(on)) else {
+                    return;
+                };
+                m.convs = match answer {
+                    Ok(Resp::Conversations(v)) => Convs::Got(v),
+                    Ok(other) => Convs::Failed(format!("unexpected answer {other:?}")),
+                    Err(e) => Convs::Failed(e),
+                };
+                m.lit = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Runs row `ix` of the open menu; a dimmed row does nothing.
     fn pick_new(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(step) = self.new_menu.as_ref().map(|m| m.step) else {
             return;
         };
+        if let Step::List(on) = step {
+            let req = self.new_menu.as_ref().and_then(|m| match &m.convs {
+                Convs::Got(v) => sorted(v).get(ix).map(|c| resume(c)),
+                _ => None,
+            });
+            if let Some(req) = req {
+                self.close_new(cx);
+                self.start(on, req, cx);
+            }
+            return;
+        }
         let Some(e) = self
             .new_entries(step)
             .into_iter()
@@ -196,7 +388,18 @@ impl Sidebar {
             }
             Act::Start(p, on) => {
                 self.close_new(cx);
-                self.start(on, p.req(), cx);
+                if let Some(req) = p.req() {
+                    self.start(on, req, cx);
+                }
+            }
+            Act::List(on) => {
+                if let Some(m) = &mut self.new_menu {
+                    m.step = Step::List(on);
+                    m.lit = None;
+                    m.convs = Convs::Looking;
+                }
+                self.list_convs(on, cx);
+                cx.notify();
             }
             Act::Project => {
                 self.close_new(cx);
@@ -209,8 +412,7 @@ impl Sidebar {
     /// Esc closes. Anything else goes where it was going.
     pub(super) fn new_key(&mut self, ev: &KeystrokeEvent, window: &Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
-        let Some((step, lit, at)) = self.new_menu.as_ref().map(|m| (m.step, m.lit, m.window))
-        else {
+        let Some((lit, at)) = self.new_menu.as_ref().map(|m| (m.lit, m.window)) else {
             return;
         };
         if at != window.window_handle() || k.modifiers.modified() {
@@ -221,13 +423,12 @@ impl Sidebar {
                 self.close_new(cx);
             }
             key @ ("down" | "up") => {
-                let on: Vec<bool> = self
-                    .new_entries(step)
-                    .iter()
-                    .map(|e| e.off.is_none())
-                    .collect();
+                let on = self.new_pickable();
                 if let Some(m) = &mut self.new_menu {
                     m.lit = next_lit(lit, key == "down", &on).or(lit);
+                    if let (Step::List(_), Some(ix)) = (m.step, m.lit) {
+                        m.scroll.scroll_to_item(ix);
+                    }
                 }
                 cx.notify();
             }
@@ -240,38 +441,88 @@ impl Sidebar {
         cx.stop_propagation();
     }
 
+    /// Row `ix` of the open menu, empty: lit by the pointer or the arrows, picked by a click;
+    /// muted and inert when `off`.
+    fn new_row(&self, ix: usize, off: bool, lit: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let id = SharedString::from(format!("sb-new-{ix}"));
+        (if off {
+            menu_item_off(id)
+        } else {
+            menu_item(id)
+        })
+        .when(lit && !off, |r| r.bg(accent()))
+        .on_mouse_move(cx.listener(move |this, _, _, cx| {
+            if let Some(m) = this.new_menu.as_mut().filter(|_| !off) {
+                if m.lit != Some(ix) {
+                    m.lit = Some(ix);
+                    cx.notify();
+                }
+            }
+        }))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.pick_new(ix, cx);
+        }))
+    }
+
     /// The menu under the `+`, when it is open: a sheet over the window takes the presses outside
     /// it (they close it), so nothing behind reacts to them.
     pub(super) fn new_menu_view(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
         let m = self.new_menu.as_ref()?;
-        let rows = self
-            .new_entries(m.step)
-            .into_iter()
-            .enumerate()
-            .map(|(ix, e)| {
-                let off = e.off.is_some();
-                let id = SharedString::from(format!("sb-new-{ix}"));
-                (if off {
-                    menu_item_off(id)
-                } else {
-                    menu_item(id)
-                })
-                .when(m.lit == Some(ix) && !off, |r| r.bg(accent()))
-                .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                    if let Some(m) = this.new_menu.as_mut().filter(|_| !off) {
-                        if m.lit != Some(ix) {
-                            m.lit = Some(ix);
-                            cx.notify();
+        let (body, width) = match m.step {
+            Step::List(_) => {
+                let rows = conv_rows(&m.convs, now_ms())
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, r)| {
+                        let row = self.new_row(ix, !r.pick, m.lit == Some(ix), cx);
+                        if !r.pick {
+                            // A note (`looking…`, the error): wraps rather than cut a reason off.
+                            return row.h_auto().min_h(px(28.)).py(px(4.)).child(r.title);
                         }
-                    }
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.pick_new(ix, cx);
-                }))
-                .child(e.label)
-                .when_some(e.off, |r, why| r.child(div().flex_1()).child(meta(why)))
-            });
+                        row.h(px(40.))
+                            .flex_col()
+                            .items_start()
+                            .justify_center()
+                            .gap(px(0.))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(r.title),
+                            )
+                            .child(meta(r.meta).w_full())
+                    });
+                // ponytail: the daemon sends at most 30; no search or paging over more.
+                let list = div()
+                    .id("sb-new-list")
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .track_scroll(&m.scroll)
+                    .children(rows)
+                    .into_any_element();
+                (vec![list], px(440.))
+            }
+            step => {
+                let rows = self
+                    .new_entries(step)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, e)| {
+                        self.new_row(ix, e.off.is_some(), m.lit == Some(ix), cx)
+                            .child(e.label)
+                            .when_some(e.off, |r, why| r.child(div().flex_1()).child(meta(why)))
+                            .into_any_element()
+                    })
+                    .collect();
+                (rows, px(340.))
+            }
+        };
         let screen = window.viewport_size();
         let sheet = div()
             .w(screen.width)
@@ -289,11 +540,11 @@ impl Sidebar {
                     menu()
                         .id("sb-new-menu")
                         .occlude()
-                        .w(px(340.))
+                        .w(width)
                         .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.close_new(cx);
                         }))
-                        .children(rows),
+                        .children(body),
                 ))
                 .into_any_element(),
         )
@@ -331,6 +582,7 @@ mod tests {
                     Start(Pick::Inkling, Local),
                     Some("needs this laptop")
                 ),
+                ("existing claude code…", List(Remote), None),
                 ("project…", Project, None),
             ]
         );
@@ -340,6 +592,7 @@ mod tests {
                 ("claude", Ask(Pick::Claude), None),
                 ("deepseek", Ask(Pick::Deepseek), None),
                 (inkling, Start(Pick::Inkling, Local), None),
+                ("existing claude code…", Ask(Pick::Existing), None),
                 ("project…", Project, None),
             ]
         );
@@ -372,7 +625,8 @@ mod tests {
 
     #[test]
     fn each_model_starts_a_headless_chat_on_its_own_model() {
-        let of = |p: Pick| match p.req() {
+        assert_eq!(Pick::Existing.req(), None);
+        let of = |p: Pick| match p.req().unwrap() {
             Req::SessionCreate {
                 agent, model, cwd, ..
             } => (agent, model.unwrap(), cwd),
@@ -394,5 +648,143 @@ mod tests {
                 String::new()
             )
         );
+    }
+
+    #[test]
+    fn existing_claude_code_asks_the_box_like_claude_then_lists_it() {
+        use Act::*;
+        use BoxId::*;
+        let row = |remote, local| say(Step::Model, remote, local)[3];
+        let name = "existing claude code…";
+        assert_eq!(row(true, true), (name, Ask(Pick::Existing), None));
+        assert_eq!(row(true, false), (name, List(Remote), None));
+        assert_eq!(row(false, true), (name, List(Local), None));
+        assert_eq!(row(false, false), (name, List(Remote), Some("offline")));
+        assert_eq!(
+            say(Step::Place(Pick::Existing), true, true),
+            [
+                ("femme", List(Remote), None),
+                ("this laptop", List(Local), None),
+            ]
+        );
+        assert_eq!(
+            say(Step::Place(Pick::Existing), true, false)[1],
+            ("this laptop", List(Local), Some("offline"))
+        );
+    }
+
+    fn conv(uuid: &str, cwd: &str, title: &str, modified: i64, open: bool) -> Conversation {
+        Conversation {
+            uuid: uuid.into(),
+            cwd: cwd.into(),
+            title: title.into(),
+            modified,
+            open,
+        }
+    }
+
+    const MIN: i64 = 60_000;
+
+    #[test]
+    fn the_list_says_each_conversation_newest_first_and_its_states() {
+        let now = 1_000 * 24 * 60 * MIN;
+        let v = vec![
+            conv("a", "/srv/app", "", now - 4 * 24 * 60 * MIN, false),
+            conv(
+                "b",
+                "/home/cem/femme",
+                "Fix the login bug",
+                now - 3 * MIN,
+                true,
+            ),
+            conv("c", "/root/x", "Tidy", now - 2 * 60 * MIN, false),
+        ];
+        let rows = conv_rows(&Convs::Got(v.clone()), now);
+        let said: Vec<(&str, &str, bool)> = rows
+            .iter()
+            .map(|r| (r.title.as_str(), r.meta.as_str(), r.pick))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (
+                    "Fix the login bug",
+                    "~/femme · 3 m · in a terminal · opens a copy",
+                    true
+                ),
+                ("Tidy", "~/x · 2 h", true),
+                ("untitled", "/srv/app · 4 d", true),
+            ]
+        );
+        // Row order and the conversation a pick takes agree.
+        let order: Vec<&str> = sorted(&v).iter().map(|c| c.uuid.as_str()).collect();
+        assert_eq!(order, ["b", "c", "a"]);
+        let note = |c: &Convs| {
+            let r = conv_rows(c, now);
+            assert_eq!(r.len(), 1);
+            assert!(!r[0].pick);
+            r[0].title.clone()
+        };
+        assert_eq!(note(&Convs::Looking), "looking…");
+        assert_eq!(note(&Convs::Got(Vec::new())), "no claude code chats here");
+        assert_eq!(
+            note(&Convs::Failed("unknown request".into())),
+            "unknown request"
+        );
+        // The arrows have nothing to light while it only says something.
+        let on: Vec<bool> = conv_rows(&Convs::Looking, now)
+            .iter()
+            .map(|r| r.pick)
+            .collect();
+        assert_eq!(next_lit(None, true, &on), None);
+    }
+
+    #[test]
+    fn a_picked_conversation_goes_on_in_its_folder_as_a_copy_only_while_open() {
+        let of = |c: &Conversation| match resume(c) {
+            Req::SessionCreate {
+                cwd,
+                agent,
+                mode,
+                label,
+                name,
+                prompt,
+                model,
+                resume,
+                fork,
+            } => {
+                assert_eq!((agent, mode), (Agent::Claude, Mode::Headless));
+                assert_eq!((label, name, prompt, model), (None, None, None, None));
+                (cwd, resume.unwrap(), fork)
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            of(&conv("u1", "/tmp/demo", "t", 0, false)),
+            ("/tmp/demo".into(), "u1".into(), false)
+        );
+        assert_eq!(
+            of(&conv("u2", "/home/cem", "", 0, true)),
+            ("/home/cem".into(), "u2".into(), true)
+        );
+    }
+
+    #[test]
+    fn ages_and_folders_read_short() {
+        assert_eq!(age(0, 59_999), "now");
+        assert_eq!(age(10 * MIN, 0), "now");
+        assert_eq!(age(0, 3 * MIN), "3 m");
+        assert_eq!(age(0, 59 * MIN), "59 m");
+        assert_eq!(age(0, 60 * MIN), "1 h");
+        assert_eq!(age(0, 23 * 60 * MIN + 59 * MIN), "23 h");
+        assert_eq!(age(0, 4 * 24 * 60 * MIN), "4 d");
+        assert_eq!(short_dir("/home/cem/femme"), "~/femme");
+        assert_eq!(short_dir("/home/cem"), "~");
+        assert_eq!(short_dir("/Users/cem/code/x"), "~/code/x");
+        assert_eq!(short_dir("/root"), "~");
+        assert_eq!(short_dir("/root/a"), "~/a");
+        assert_eq!(short_dir("/rootless/a"), "/rootless/a");
+        assert_eq!(short_dir("/home/"), "/home/");
+        assert_eq!(short_dir("/tmp/demo"), "/tmp/demo");
     }
 }
