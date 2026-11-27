@@ -2757,3 +2757,53 @@ async fn a_session_resumes_an_existing_conversation_with_its_history() {
     };
     assert_eq!(c.call(shell).await.unwrap_err().code, ErrCode::Bad);
 }
+
+/// `Conversations` lists the Claude Code conversations on the machine that no open session holds:
+/// one run in a plain terminal shows until a chat takes it over, and again once that chat is closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversations_lists_what_claude_code_ran_until_a_session_holds_it() {
+    let rig = rig().await;
+    let dev = rig.enroll("laptop");
+    let mut c = rig.desktop(&dev, Cursors::default()).await;
+    let home = rig.home().display().to_string();
+    let proj = rig.home().join(".claude/projects/-w");
+    std::fs::create_dir_all(&proj).unwrap();
+    let typed = serde_json::json!({"type": "user", "uuid": "m1", "cwd": home,
+        "message": {"role": "user", "content": "list it"}});
+    let title = r#"{"type":"ai-title","aiTitle":"Listing files"}"#;
+    std::fs::write(proj.join("u-7.jsonl"), format!("{typed}\n{title}\n")).unwrap();
+    let list = || Req::Conversations { limit: 10 };
+
+    let Ok(Resp::Conversations(got)) = c.call(list()).await else {
+        panic!("no list")
+    };
+    let rows: Vec<_> = got
+        .iter()
+        .map(|c| (c.uuid.as_str(), c.cwd.as_str(), c.title.as_str(), c.open))
+        .collect();
+    assert_eq!(rows, [("u-7", home.as_str(), "Listing files", false)]);
+    assert!(got[0].modified > 0);
+    // a chat goes on with it: it is a session now, not a conversation to pick
+    let create = Req::SessionCreate {
+        cwd: home.clone(),
+        agent: Agent::Claude,
+        mode: Mode::Headless,
+        label: None,
+        name: None,
+        prompt: None,
+        model: None,
+        resume: Some("u-7".into()),
+        fork: false,
+    };
+    let Ok(Resp::Session(sid)) = c.call(create).await else {
+        panic!("no session")
+    };
+    assert_eq!(c.call(list()).await, Ok(Resp::Conversations(Vec::new())));
+    // closed, it can be picked again
+    assert_eq!(c.call(Req::SessionClose { sid }).await, Ok(Resp::Ok));
+    let Ok(Resp::Conversations(again)) = c.call(list()).await else {
+        panic!("no list")
+    };
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].uuid, "u-7");
+}

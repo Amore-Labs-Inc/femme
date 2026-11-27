@@ -19,6 +19,8 @@ use crate::session::MAIN;
 
 /// The most rows a transcript page returns, whatever the client asked for.
 const PAGE_MAX: usize = 500;
+/// The most conversations `Conversations` lists, whatever the client asked for.
+const CONVERSATIONS_MAX: usize = 200;
 
 // What `BlobPut` may carry must be storable (and `BlobGet` readable) whole.
 const _: () = assert!(MAX_BLOB_PUT <= femme_store::items::BLOB_BYTES_MAX);
@@ -72,6 +74,7 @@ pub(crate) fn mutates(req: &Req) -> bool {
             | Req::PrVideo { .. }
             | Req::PrAutoFix { on: None }
             | Req::TaskOutput { .. }
+            | Req::Conversations { .. }
     )
 }
 
@@ -157,6 +160,7 @@ pub(crate) async fn dispatch(ctx: &Ctx, op: OpId, req: Req) -> Result<Resp, Wire
             Ok((output, truncated)) => Ok(Resp::TaskOutput { output, truncated }),
             Err(e) => Err(wire(e)),
         },
+        Req::Conversations { limit } => conversations(d, limit).await,
         Req::Background { sid, tool_use_id } => {
             done(d.background(sid, tool_use_id.as_deref()).await)
         }
@@ -514,6 +518,26 @@ async fn create(
 }
 
 /// A page of a session's transcript, newest first. `before_seq` 0 (or `u64::MAX`) is "from the end".
+/// `Conversations`: Claude Code's own conversations on this machine that no open session holds
+/// (a chat that has one is in the list of sessions already).
+async fn conversations(d: &Daemon, limit: u16) -> Result<Resp, WireErr> {
+    let limit = usize::from(limit).clamp(1, CONVERSATIONS_MAX);
+    let store = d.store.clone();
+    let home = d.cfg.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let held = store
+            .read(|c| sessions::list_sessions(c, false))?
+            .into_iter()
+            .filter_map(|s| s.agent_sid)
+            .collect();
+        Ok(crate::headless::convs::list(&home, &held, limit))
+    })
+    .await
+    .map_err(|e| err(ErrCode::Internal, e.to_string()))?
+    .map(Resp::Conversations)
+    .map_err(|e: femme_store::Error| wire(core_err(e)))
+}
+
 async fn page(d: &Daemon, sid: Sid, before_seq: u64, limit: u16) -> Result<Resp, WireErr> {
     let limit = usize::from(limit).clamp(1, PAGE_MAX);
     let before = Some(before_seq).filter(|&b| b != 0);

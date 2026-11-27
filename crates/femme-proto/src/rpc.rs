@@ -327,6 +327,13 @@ pub enum Req {
         sid: Sid,
         task_id: String,
     },
+    /// Claude Code's own conversations on the daemon's machine
+    /// (`~/.claude/projects/*/<uuid>.jsonl`) that no open session holds: the ones run in a
+    /// terminal, and those of closed chats. Newest first, at most `limit`. Answered with
+    /// `Resp::Conversations`; `SessionCreate.resume` goes on with one.
+    Conversations {
+        limit: u16,
+    },
 }
 
 /// Where a phone's pushes are delivered.
@@ -385,6 +392,23 @@ pub struct Pr {
     /// pushes, then it is merged (and deployed) without anyone clicking again.
     #[serde(default)]
     pub merging: bool,
+}
+
+/// One conversation of Claude Code's own, as `Resp::Conversations` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    /// The uuid of `~/.claude/projects/*/<uuid>.jsonl`: what `SessionCreate.resume` takes.
+    pub uuid: String,
+    /// The folder it runs in.
+    pub cwd: String,
+    /// Its title as Claude Code wrote it, else the start of its first message; empty when it has
+    /// neither.
+    pub title: String,
+    /// When its transcript was last written, in ms since the epoch.
+    pub modified: i64,
+    /// A Claude process on that machine has it open (a terminal): `SessionCreate` takes it only
+    /// as a copy (`fork`) until that process exits.
+    pub open: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +487,8 @@ pub enum Resp {
         output: String,
         truncated: bool,
     },
+    /// The answer to `Conversations`.
+    Conversations(Vec<Conversation>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
