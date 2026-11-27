@@ -1,5 +1,5 @@
 [Unit]
-Description=FEMME auto-rotate on the Fable weekly limit: hold accounts past FABLE_CAP out of rotation and move off them
+Description=FEMME auto-rotate on account-wide 5h/7d caps: hold accounts past their caps out of rotation and move off them
 After=femme-cswap.service
 
 [Service]

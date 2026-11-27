@@ -2,7 +2,6 @@
 # Holds Claude accounts out of cswap's rotation (femme-fable-cap.service). Each pass (every
 # FABLE_CAP_INTERVAL seconds, default 60) holds an account, with `cswap disable` and a line in
 # $STATE/fable-held, when one of its rules trips:
-#   - every account: its Fable weekly is at FABLE_CAP% (default 96) or more;
 #   - an account with an entry in $STATE/caps.json, which femmed writes for the desktop app and this
 #     loop re-reads every pass ({"<number>": {"five_hour": 80, "weekly": 90}}, either key optional):
 #     its 5-hour or its 7-day window is at that cap or more. A cap is a whole number from 50 to 99;
@@ -10,11 +9,13 @@
 #   - every account: its claude.ai sign-in has ended (`loginExpiresAt` in `cswap list --json` is in
 #     the past), so every run on it would fail at sign-in. No date, or one that is not ISO 8601 UTC:
 #     no sign-in rule for that account. A new sign-in that moves the date ahead clears it.
-# If the active account trips, the box moves: `cswap switch --strategy best`, plus `--model Fable`
-# when its Fable rule tripped (cswap only moves to an account with more headroom; the next pass
-# retries). A held account comes back (`cswap enable`) once none of its rules trips; only accounts
-# held here are re-enabled. Unknown usage (cswap has no recent measurement, or a capped window has
-# no pct) neither holds nor releases; a Fable window cswap does not list counts as 0%, as before.
+# A per-model window (the Fable weekly) is deliberately not a rule: the owner runs Opus almost
+# always and Fable only now and then, so an account whose Fable is spent keeps serving Opus rather
+# than being held out of rotation. A Fable job on such an account fails at its own per-model limit.
+# If the active account trips, the box moves: `cswap switch --strategy best` (cswap only moves to an
+# account with more headroom; the next pass retries). A held account comes back (`cswap enable`) once
+# none of its rules trips; only accounts held here are re-enabled. Unknown usage (cswap has no recent
+# measurement, or a capped window has no pct) neither holds nor releases.
 # Limitation: femme-cswap.service (`cswap auto --threshold $CAP`) still moves the box off the active
 # account at the global CAP, so a per-account cap above CAP cannot keep the box on that account any
 # longer: per-account caps only take an account out of rotation earlier, or on their own.
@@ -23,13 +24,11 @@ set -u
 cd "$(dirname "$0")/.." || exit 1  # the checkout root: .env and every path below are relative to it
 # shellcheck source=/dev/null
 [ -f ./.env ] && . ./.env
-FABLE_CAP=${FABLE_CAP:-96}
 interval=${FABLE_CAP_INTERVAL:-60}
 state=${FEMME_STATE:-$HOME/.local/state/femme}
 held=$state/fable-held      # account numbers this loop disabled, one per line
 caps_file=$state/caps.json  # per-account caps, written by femmed
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
-case $FABLE_CAP in ''|*[!0-9]*) log "FABLE_CAP is not a whole percent: $FABLE_CAP"; exit 1 ;; esac
 case $interval in ''|*[!0-9]*) log "FABLE_CAP_INTERVAL is not a whole number of seconds: $interval"; exit 1 ;; esac
 mkdir -p "$state"; touch "$held"
 
@@ -46,25 +45,21 @@ caps_problems=$is_cap'
       | "caps.json: account \($k) \(.key) cap ignored: \(.value | tojson) is not a whole number from 50 to 99"
     end'
 
-# jq over `cswap list --json`: one line per account, "number active disabled fable_tripped tripped
-# all_known what", where what names the tripped rules (else all of them) with their pct and cap, or
-# the sign-in date. A usage rule whose pct is unknown (null) neither trips nor counts as known; an
-# account without a usable loginExpiresAt has no sign-in rule at all. $now is ISO 8601 UTC with
-# whole seconds, so it compares with the date (fraction cut) as a string.
+# jq over `cswap list --json`: one line per account, "number active disabled tripped known what",
+# where what names the tripped rules with their pct and cap, or the sign-in date. A usage rule whose
+# pct is unknown (null) neither trips nor counts as known; an account without a usable loginExpiresAt
+# has no sign-in rule at all. $now is ISO 8601 UTC with whole seconds, so it compares with the date
+# (fraction cut) as a string.
 # shellcheck disable=SC2016
 rows_jq=$is_cap'
   def pct: if type == "object" and (.pct | type) == "number" then .pct | floor else null end;
   def usage_rule: . + {trip: (if .pct == null then null else .pct >= .cap end),
                        what: "\(.name) at \(.pct)% (cap \(.cap)%)"};
-  ($fable_cap | tonumber) as $fcap
-  | .accounts[] | select((.number | type) == "number")
+  .accounts[] | select((.number | type) == "number")
   | (.number | tostring) as $n
   | (.usage | if type == "object" then . else null end) as $u
   | ($caps[$n] | if type == "object" then . else {} end) as $c
-  | [ ({name: "Fable weekly", fable: true, cap: $fcap,
-        pct: (if $u == null then null
-              else first($u.scoped[]? | select(.name? == "Fable")) // {pct: 0} | pct end)} | usage_rule),
-      ($c.five_hour | select(is_cap) | {name: "5-hour", cap: ., pct: ($u.fiveHour | pct)} | usage_rule),
+  | [ ($c.five_hour | select(is_cap) | {name: "5-hour", cap: ., pct: ($u.fiveHour | pct)} | usage_rule),
       ($c.weekly | select(is_cap) | {name: "7-day", cap: ., pct: ($u.sevenDay | pct)} | usage_rule),
       (.loginExpiresAt
        | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
@@ -72,7 +67,7 @@ rows_jq=$is_cap'
        | {trip: $ended, what: (if $ended then "sign-in ended \(.)" else "sign-in ends \(.)" end)})
     ] as $rules
   | [$rules[] | select(.trip == true)] as $trips
-  | [$n, .active == true, .disabled == true, any($trips[]; .fable == true), $trips != [],
+  | [$n, .active == true, .disabled == true, $trips != [],
      all($rules[]; .trip != null),
      (if $trips == [] then $rules else $trips end | map(.what) | join(", "))]
   | map(tostring) | join(" ")'
@@ -120,19 +115,15 @@ pass() {
   fi
   load_caps
   if ! rows=$(printf '%s\n' "$list" \
-      | jq -r --argjson caps "$caps" --arg fable_cap "$FABLE_CAP" \
-        --arg now "$(date -u +%FT%TZ)" "$rows_jq" 2>/dev/null); then
+      | jq -r --argjson caps "$caps" --arg now "$(date -u +%FT%TZ)" "$rows_jq" 2>/dev/null); then
     log "cswap list --json gave no account list: nothing changed this pass"
     return 0
   fi
-  move='' fable_move=''
-  while read -r n active disabled fable trip known what; do
+  move=''
+  while read -r n active disabled trip known what; do
     [ -n "$n" ] || continue
     if [ "$trip" = true ]; then
-      if [ "$active" = true ]; then
-        move=$n
-        [ "$fable" = true ] && fable_move=1
-      fi
+      [ "$active" = true ] && move=$n
       [ "$disabled" = true ] || hold "$n" "$what"
     elif [ "$disabled" = true ]; then
       # Back only when every rule is known and clear, and only if this loop held it.
@@ -146,11 +137,7 @@ pass() {
 $rows
 ROWS
   [ -n "$move" ] || return 0
-  if [ -n "$fable_move" ]; then
-    log "moving off account $move: $(cswap switch --strategy best --model Fable </dev/null 2>&1 | tail -n 1)"
-  else
-    log "moving off account $move: $(cswap switch --strategy best </dev/null 2>&1 | tail -n 1)"
-  fi
+  log "moving off account $move: $(cswap switch --strategy best </dev/null 2>&1 | tail -n 1)"
 }
 
 while :; do
