@@ -949,6 +949,12 @@ impl ClaudeDriver {
     }
 
     fn init(&mut self, v: &Value, ev: &mut Vec<AgentEvent>) {
+        // A new CLI process waits for nobody. The old one's `requires_action` stays in a replayed
+        // spool (the turn it fell in is still open) with no state after it, and kept the session
+        // `Blocked` for hours after its process, and the request, were gone. Our own requests are
+        // in `pending`, which the exit closed.
+        self.waits = false;
+        self.waits_ours = false;
         let model = v["model"].as_str().map(str::to_owned);
         let mut started = false;
         if let Some(ver) = v["claude_code_version"].as_str() {

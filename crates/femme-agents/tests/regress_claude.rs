@@ -1462,6 +1462,19 @@ fn requires_action_blocks_until_the_next_state() {
     assert_eq!(s.d.status(), AgentStatus::Idle);
 }
 
+/// A daemon restart replays the spool from the open turn, past a dead process's
+/// `requires_action` that no state followed: the next process's `init` ends that wait.
+#[test]
+fn a_new_process_ends_an_old_requires_action() {
+    let mut s = S::ready();
+    let u = s.send("go", PromptHow::Queue).unwrap();
+    s.start(&u);
+    s.feed(state("requires_action"));
+    assert_eq!(s.d.status(), AgentStatus::Blocked);
+    s.feed(sys_init("sid-1"));
+    assert_ne!(s.d.status(), AgentStatus::Blocked);
+}
+
 // ---- MCP elicitation ----------------------------------------------------------------------------
 
 /// The `control_request` claude 2.1.319 sends for an MCP server's `elicitation/create`.
