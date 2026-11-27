@@ -517,20 +517,29 @@ async fn create(
     Ok(Resp::Session(info.sid))
 }
 
-/// A page of a session's transcript, newest first. `before_seq` 0 (or `u64::MAX`) is "from the end".
 /// `Conversations`: Claude Code's own conversations on this machine that no open session holds
-/// (a chat that has one is in the list of sessions already).
+/// (a chat that has one is in the list of sessions already). A closed chat's conversation goes
+/// by the name that chat had: a headless chat's transcript holds no title, FEMME named it.
 async fn conversations(d: &Daemon, limit: u16) -> Result<Resp, WireErr> {
     let limit = usize::from(limit).clamp(1, CONVERSATIONS_MAX);
     let store = d.store.clone();
     let home = d.cfg.home.clone();
     tokio::task::spawn_blocking(move || {
-        let held = store
-            .read(|c| sessions::list_sessions(c, false))?
-            .into_iter()
-            .filter_map(|s| s.agent_sid)
-            .collect();
-        Ok(crate::headless::convs::list(&home, &held, limit))
+        let rows = store.read(|c| sessions::list_sessions(c, true))?;
+        let of = |s: &femme_proto::state::Session| s.agent_sid.clone();
+        let held = rows.iter().filter(|s| s.closed.is_none()).filter_map(of);
+        let mut out = crate::headless::convs::list(&home, &held.collect(), limit);
+        for c in &mut out {
+            let named = rows
+                .iter()
+                .filter(|s| s.agent_sid.as_deref() == Some(c.uuid.as_str()))
+                .filter(|s| s.label.as_deref().is_some_and(|l| !l.trim().is_empty()))
+                .max_by_key(|s| s.created);
+            if let Some(label) = named.and_then(|s| s.label.as_deref()) {
+                c.title = label.trim().to_owned();
+            }
+        }
+        Ok(out)
     })
     .await
     .map_err(|e| err(ErrCode::Internal, e.to_string()))?
@@ -538,6 +547,7 @@ async fn conversations(d: &Daemon, limit: u16) -> Result<Resp, WireErr> {
     .map_err(|e: femme_store::Error| wire(core_err(e)))
 }
 
+/// A page of a session's transcript, newest first. `before_seq` 0 (or `u64::MAX`) is "from the end".
 async fn page(d: &Daemon, sid: Sid, before_seq: u64, limit: u16) -> Result<Resp, WireErr> {
     let limit = usize::from(limit).clamp(1, PAGE_MAX);
     let before = Some(before_seq).filter(|&b| b != 0);

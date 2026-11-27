@@ -2799,11 +2799,16 @@ async fn conversations_lists_what_claude_code_ran_until_a_session_holds_it() {
         panic!("no session")
     };
     assert_eq!(c.call(list()).await, Ok(Resp::Conversations(Vec::new())));
-    // closed, it can be picked again
+    // closed, it can be picked again, under the name the chat had
+    let label = Some("Renamed in FEMME".to_owned());
+    assert_eq!(c.call(Req::SessionLabel { sid, label }).await, Ok(Resp::Ok));
     assert_eq!(c.call(Req::SessionClose { sid }).await, Ok(Resp::Ok));
     let Ok(Resp::Conversations(again)) = c.call(list()).await else {
         panic!("no list")
     };
-    assert_eq!(again.len(), 1);
-    assert_eq!(again[0].uuid, "u-7");
+    let rows: Vec<_> = again
+        .iter()
+        .map(|c| (c.uuid.as_str(), c.title.as_str()))
+        .collect();
+    assert_eq!(rows, [("u-7", "Renamed in FEMME")]);
 }
